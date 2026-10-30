@@ -72,12 +72,22 @@ class OracleTemporalSql(
         "(EXTRACT(DAY FROM $interval) * 86400 + EXTRACT(HOUR FROM $interval) * 3600 + EXTRACT(MINUTE FROM $interval) * 60 + EXTRACT(SECOND FROM $interval))"
     }
 
+    /**
+     * `TRUNC` of a date to a format model: `IYYY` is the first day of the ISO week-based year. A millennium, a century
+     * and a decade are the year less its years into the span (see [YEARS_OF]), as months before the year's first day.
+     */
     override fun truncate(unit: String, timestamp: String): String? {
-        val format = mapOf("year" to "YYYY", "quarter" to "Q", "month" to "MM", "week" to "IW", "day" to "DD", "hour" to "HH24", "minute" to "MI")[unit]
+        val format = mapOf(
+            "year" to "YYYY", "weekYear" to "IYYY", "quarter" to "Q", "month" to "MM", "week" to "IW", "day" to "DD", "hour" to "HH24", "minute" to "MI",
+        )[unit]
         return when {
             format != null -> "CAST(TRUNC(CAST($timestamp AS DATE), '$format') AS TIMESTAMP)"
             unit == "second" -> "CAST(CAST($timestamp AS DATE) AS TIMESTAMP)"
             unit == "millisecond" -> "TO_TIMESTAMP(TO_CHAR($timestamp, 'YYYY-MM-DD HH24:MI:SS.FF3'), 'YYYY-MM-DD HH24:MI:SS.FF3')"
+            unit == "microsecond" -> timestamp
+            unit in YEARS_OF -> shared(listOf(timestamp)) { (t) ->
+                "CAST(ADD_MONTHS(TRUNC(CAST($t AS DATE), 'YYYY'), -12 * MOD(EXTRACT(YEAR FROM $t), ${YEARS_OF.getValue(unit)})) AS TIMESTAMP)"
+            }
             else -> null
         }
     }
