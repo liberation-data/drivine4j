@@ -2506,6 +2506,76 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a CALL sees only the variables it imports, and a name it does not import is a new variable in it`() {
+        // Not in the spec yet (#410). A CALL saw every variable of its row, so an inner MATCH that reused a name it did not
+        // import joined to the row's variable, and gave no rows, or was refused where it bound a relationship of a node's
+        // name. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val titles = listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded")
+        // A CALL with no brackets and no leading WITH imports nothing.
+        assertEquals(listOf(listOf(12L, 3L)), query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN p.title AS t } RETURN count(*) AS n, count(DISTINCT t) AS d"))
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN count(p) AS n } RETURN p.name, n ORDER BY p.name"),
+        )
+        // CALL () imports nothing.
+        assertEquals(
+            titles.map { listOf("Keanu", it) },
+            query("MATCH (p:Person {name: 'Keanu'}) CALL () { MATCH (p:Movie) RETURN p.title AS t } RETURN p.name, t ORDER BY t"),
+        )
+        // CALL (a) imports a alone, and a leading WITH a alone: b in it is new.
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        // A node's name, not imported, is a relationship's in the CALL.
+        assertEquals(listOf(listOf("Keanu", 2L)), query("MATCH (a:Person {name: 'Keanu'}) CALL { MATCH ()-[a:KNOWS]->() RETURN count(a) AS n } RETURN a.name, n"))
+        assertEquals(
+            listOf(listOf("Laurence", "Carrie"), listOf("Laurence", "Keanu")),
+            query("MATCH (a:Person {name: 'Laurence'}) CALL () { MATCH ()-[a:KNOWS]->(b) RETURN b.name AS k } RETURN a.name, k ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf("The Matrix", 4L)),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Movie {title: 'The Matrix'}) CALL (a) { MATCH (a)-[b]->() RETURN count(b) AS n } RETURN b.title, n"),
+        )
+        // What a leading WITH imports is gone after a WITH that does not pass it on.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH a WITH 1 AS one MATCH (a:Movie) RETURN count(a) AS n } RETURN n"))
+        // What brackets import is seen throughout the CALL, after a WITH that does not pass it on too, as Neo4j has it.
+        assertEquals(
+            listOf("Carrie"),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a, b) { WITH 1 AS one RETURN b.name AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (a:Person) CALL (a) { UNWIND [1, 2] AS i WITH i RETURN a.name AS n, sum(i) AS s } RETURN n, s ORDER BY n"),
+        )
+        // CALL (*), and a leading WITH *, import every variable.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH * MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        // In a UNION, each query imports what its own leading WITH names.
+        assertEquals(
+            listOf(listOf("Keanu", 3L), listOf("Keanu", 3L)),
+            query(
+                "MATCH (a:Person {name: 'Keanu'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n " +
+                    "UNION ALL MATCH (a:Movie) RETURN count(a) AS n } RETURN a.name, n"
+            ),
+        )
+    }
+
+    @Test
     fun `properties of a node beside another node's table give the rows of the pattern, and that node's values`() {
         // Not in the spec yet: Oracle's JSON table transformation lost a node's label test where the query read two of its
         // properties, or one two ways, beside another node's table, and gave a row for each two nodes (#415).
