@@ -1553,6 +1553,78 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB compares as equal, unequal, in a list and in order, stored, given and beside a long value, on several rows`() {
+        // On Oracle two values were compared as JSON: = and IN with a text past 32 KB on either side were refused (ORA-40180,
+        // #389), and <, >, <= and >= of one read from the store on two rows or more closed the session on the first run or a
+        // later one (ORA-03113). A node of another label holds the same text, and is not read.
+        clear()
+        val long = "a".repeat(40_000) + "x"
+        // Equal, equal again, differing in the last character either way, short, null, and a number.
+        val values = listOf(long, long, long.dropLast(1) + "y", long.dropLast(1) + "w", "abc", null, 5L)
+        // And a short text of each, to compare the long ones with through a long value.
+        val shorts = listOf("abc", "zzz", "a", null, "abc", "b", "q")
+        for (i in values.indices) query("CREATE (:CyCompare {i: \$i, t: \$t, s: \$s})", mapOf("i" to i, "t" to values[i], "s" to shorts[i]))
+        query("CREATE (:CyCompareOther {i: 0, t: \$t})", mapOf("t" to long))
+        // As Cypher compares two values: null beside null, a text and a number are not equal and are not ordered.
+        fun compared(a: Any?, operator: String, b: Any?): Boolean? {
+            if (a == null || b == null) return null
+            val order = when {
+                a is String && b is String -> a.compareTo(b)
+                a is Long && b is Long -> a.compareTo(b)
+                else -> return when (operator) { "=" -> false; "<>" -> true; else -> null }
+            }
+            return when (operator) { "=" -> order == 0; "<>" -> order != 0; "<" -> order < 0; ">" -> order > 0; "<=" -> order <= 0; else -> order >= 0 }
+        }
+        // An empty text, which Oracle reads as null, as a VARCHAR2 and as a CLOB, comes before any other.
+        val given = mapOf("same" to long, "last" to long.dropLast(1) + "y", "short" to "abc", "empty" to "", "none" to null, "number" to 5L)
+        val list = listOf(long, "abc", 5L)
+        // A value too long to write as SQL, so bound beside the property: the issue's own form, of a node's short text, and of
+        // a long text a parameter gives.
+        val bound = "toLower(trim(coalesce(\$p.q, m.s)))"
+        val boundLong = "toLower(trim(coalesce(\$p.q, \$same)))"
+        val pairs = values.indices.flatMap { i -> values.indices.map { j -> i to j } }
+        fun count(of: List<Boolean?>) = listOf(of.count { it == true }.toLong())
+        // Texts of an unwound parameter's items, two of them long, compared in a read.
+        val rows = listOf(long, long.dropLast(1) + "y", "abc")
+        onOneSession(given + mapOf("p" to mapOf("q" to null), "list" to list, "prefix" to long.take(32_768), "rows" to rows.map { mapOf("a" to it) })) { query ->
+            repeat(3) { run ->
+                for (operator in listOf("=", "<>", "<", ">", "<=", ">=")) {
+                    val described = "$operator, run ${run + 1}"
+                    val stored = pairs.map { (i, j) -> compared(values[i], operator, values[j]) }
+                    assertEquals(stored, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t $operator m.t ORDER BY n.i, m.i"), "stored, $described")
+                    assertEquals(count(stored), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t $operator m.t RETURN count(*)"), "stored in a WHERE, $described")
+                    val beside = pairs.map { (i, j) -> compared(values[i], operator, shorts[j]) }
+                    assertEquals(beside, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t $operator $bound ORDER BY n.i, m.i"), "beside a long value, $described")
+                    assertEquals(count(beside), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t $operator $bound RETURN count(*)"), "beside a long value in a WHERE, $described")
+                    assertEquals(values.map { compared(it, operator, long) }, query("MATCH (n:CyCompare) RETURN n.t $operator $boundLong ORDER BY n.i"), "beside a long text, $described")
+                    val unwound = rows.flatMap { row -> values.map { compared(it, operator, row) } }
+                    assertEquals(count(unwound), query("UNWIND \$rows AS r MATCH (n:CyCompare) WHERE n.t $operator r.a RETURN count(*)"), "an unwound item's text, $described")
+                    for ((name, value) in given) {
+                        assertEquals(values.map { compared(it, operator, value) }, query("MATCH (n:CyCompare) RETURN n.t $operator \$$name ORDER BY n.i"), "given $name, $described")
+                        for ((other, otherValue) in given) {
+                            assertEquals(listOf(compared(value, operator, otherValue)), query("WITH \$$name AS a, \$$other AS b RETURN a $operator b"), "$name and $other, $described")
+                        }
+                    }
+                }
+                // IN, of a list the statement writes, of one a parameter gives, and of a bound value's.
+                val inLists = pairs.map { (i, j) -> if (values[i] == null || values[j] == null) null else values[i] == values[j] }
+                assertEquals(inLists, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t IN [m.t] ORDER BY n.i, m.i"), "IN, run ${run + 1}")
+                assertEquals(count(inLists), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t IN [m.t] RETURN count(*)"), "IN in a WHERE, run ${run + 1}")
+                val inBound = pairs.map { (i, j) -> if (values[i] == null || shorts[j] == null) null else values[i] == shorts[j] }
+                assertEquals(inBound, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t IN [$bound] ORDER BY n.i, m.i"), "IN beside a long value, run ${run + 1}")
+                assertEquals(count(inBound), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t IN [$bound] RETURN count(*)"), "IN beside a long value in a WHERE, run ${run + 1}")
+                assertEquals(values.map { it?.let { it == long } }, query("MATCH (n:CyCompare) RETURN n.t IN [$boundLong, 'x'] ORDER BY n.i"), "IN beside a long text, run ${run + 1}")
+                assertEquals(values.map { it?.let { it in list } }, query("MATCH (n:CyCompare) RETURN n.t IN \$list ORDER BY n.i"), "IN a given list, run ${run + 1}")
+                assertEquals(count(values.map { it?.let { it in list } }), query("MATCH (n:CyCompare) WHERE n.t IN \$list RETURN count(*)"), "IN a given list in a WHERE, run ${run + 1}")
+                // A long text the statement makes, beside no property and no long value.
+                assertEquals(listOf(true), query("WITH \$same AS t, \$prefix AS x RETURN substring(t, 0, 32768) = x"), "made, run ${run + 1}")
+                assertEquals(listOf(listOf(true, false, true)), query("WITH \$same AS t RETURN [substring(t, 0, 40001) = t, substring(t, 0, 40000) = t, substring(t, 0, 40000) < t]"), "made, run ${run + 1}")
+            }
+        }
+        clear()
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()

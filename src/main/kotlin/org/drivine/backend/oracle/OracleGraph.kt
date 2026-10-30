@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.DdlContention
 import org.drivine.backend.sql.SqlGraph
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.manager.PersistenceManager
@@ -124,9 +125,16 @@ internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
     /**
      * Runs [ensuring]. Schema statements commit as they run. A session found to call none of the
      * [functions] is asked again (see [OracleStoredFunctions]).
+     *
+     * A block turned away by a deadlock with another session's is run again after a pause (see [DdlContention]): as when
+     * the DDL of one pool's first connection and other pools' first writes each wait on the other's library cache lock
+     * on the node table (`ORA-04020`), and Oracle turns one away (#450). A busy lock (`ORA-00054`) is not: the block has
+     * waited it out for as long as it allows already. What the block made before it was turned away
+     * stays, and run again it makes the rest, or finds the property graph another session finished meanwhile and does
+     * nothing.
      */
     override fun ensure(run: (String) -> List<Any?>) {
-        run(ensuring)
+        DdlContention.whenNotContended { run(ensuring) }
         OracleStoredFunctions.ensured(name)
     }
 
