@@ -72,6 +72,20 @@ internal class PostgresRowSources(private val graph: PostgresGraph, private val 
     /** Steps of one hop each, as one join of an edge and a node to each. */
     private fun hops(anchor: Anchor?, steps: List<Step>, alias: String, where: List<String>, extra: List<Pair<String, String>>): RowSource {
         val single = steps.size == 1
+        val (joins, tests) = joined(anchor, steps, alias, where)
+        val start = Ends.of(steps.first().direction, if (single) "e" else "e1").near
+        val columns = listOf("$start AS src") +
+            (if (single) listOf("e.eid", "e.props AS eprops") else emptyList()) +
+            PostgresSql.NODE_COLUMNS.map { "$alias.$it" } + extra.map { (name, expression) -> "$expression AS $name" }
+        return Derived(Query(columns.joinToString(", "), joins, tests).text(), alias)
+    }
+
+    /**
+     * Steps of one hop each, as the tables they join and the tests the rows meet: an edge and a node
+     * to each, the last node named [alias] and one before it as [stepNode] names it.
+     */
+    private fun joined(anchor: Anchor?, steps: List<Step>, alias: String, where: List<String>): Pair<RowSource, List<String>> {
+        val single = steps.size == 1
         val joins = StringBuilder()
         val tests = mutableListOf<String>()
         steps.forEachIndexed { i, step ->
@@ -93,11 +107,7 @@ internal class PostgresRowSources(private val graph: PostgresGraph, private val 
             (i + 1..steps.lastIndex).filter { steps[it].type == steps[i].type }.forEach { j -> tests += "e${i + 1}.eid <> e${j + 1}.eid" }
         }
         tests += where
-        val start = Ends.of(steps.first().direction, if (single) "e" else "e1").near
-        val columns = listOf("$start AS src") +
-            (if (single) listOf("e.eid", "e.props AS eprops") else emptyList()) +
-            PostgresSql.NODE_COLUMNS.map { "$alias.$it" } + extra.map { (name, expression) -> "$expression AS $name" }
-        return Derived(Query(columns.joinToString(", "), Joined(joins.toString()), tests).text(), alias)
+        return Joined(joins.toString()) to tests
     }
 
     /**
@@ -159,9 +169,24 @@ internal class PostgresRowSources(private val graph: PostgresGraph, private val 
     fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String> = emptyList()): Query =
         Query(select, reached(Anchor.row(parent), steps, row), emptyList(), tail)
 
-    /** Whether some node reached from the row [parent] by [steps] meets [predicates], which name the reached node's row as [row]. */
-    fun exists(parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList()): String =
-        "EXISTS ${Query("1", reached(Anchor.row(parent), steps, row, predicates)).nested()}"
+    /**
+     * Whether some node reached from the row [parent] by [steps] meets [predicates], which name the reached node's row as [row].
+     *
+     * Steps of one hop each are joined in the `EXISTS` itself, not read through the derived table [reached] gives: Postgres
+     * makes an `EXISTS` a semi-join, or a `NOT EXISTS` an anti-join, only when the test that ties it to [parent] is in its own
+     * `WHERE`. Within a derived table it is a subplan run once for each row of [parent], and the reached node can't be found
+     * first, by its label's index. A step taken to a depth is still the recursive query [reached] gives, though a condition
+     * of the query DSL spells such a step as paths of single hops first ([Step.anyPath]), each of which is joined here.
+     */
+    fun exists(parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList()): String {
+        val query = if (steps.all { it.maxDepth == 1 }) {
+            val (joins, tests) = joined(Anchor.row(parent), steps, row, predicates)
+            Query("1", joins, tests)
+        } else {
+            Query("1", reached(Anchor.row(parent), steps, row, predicates))
+        }
+        return "EXISTS ${query.nested()}"
+    }
 
     /**
      * The edge table as a step in [direction] reads it, named [edge]. A step either way reads each
