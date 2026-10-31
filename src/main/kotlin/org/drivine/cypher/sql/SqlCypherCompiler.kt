@@ -886,15 +886,17 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * A reading clause over the rows [select] reads, and the rows the clauses after it read: a `WITH` is a query
          * of its own. [outer] is what a subquery reads from the row it is in. A `WITH *` alone where nothing is bound passes
-         * on nothing, as Neo4j has it, and is left out: SQL has no query of no column (#472).
+         * on nothing, as Neo4j has it, and is left out: SQL has no query of no column (#472). Its `WHERE` is met on the rows it
+         * reads, which hold what that reads; with `DISTINCT`, an order, `SKIP` or `LIMIT` it is refused, as it was.
          */
         private fun read(select: Select, clause: Clause, outer: Map<String, Value> = emptyMap()): Select = when (clause) {
             is Clause.Match -> match(select, clause)
             is Clause.Unwind -> anewBefore(select, listOf(clause.list), whole = true)
                 ?.let { (made, read) -> made.also { unwind(it, clause.copy(list = read.single())) } } ?: select.also { unwind(it, clause) }
             is Clause.With ->
-                if (clause.where == null && clause.projection == Projection(false, true, emptyList(), emptyList(), null, null) && select.bound.keys.all { it in madeAnew }) select
-                else with(select, clause, outer)
+                if (clause.projection == Projection(false, true, emptyList(), emptyList(), null, null) && select.bound.keys.all { it in madeAnew }) {
+                    clause.where?.let { filtered(select, it) } ?: select
+                } else with(select, clause, outer)
             is Clause.Call -> anewCall(select, clause)
             else -> error("${clause::class.simpleName} reads nothing")
         }

@@ -2614,9 +2614,9 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a WITH star at the start of a CALL passes on what the CALL imports, and nothing where nothing is bound`() {
-        // Not in the spec yet (#472). The star expanded to the variables the CALL's first query bound, not those it imported,
-        // so it was refused with "A projection has at least one item" unless an aggregate had bound them; and a WITH * where
-        // nothing was bound was refused so. The rows are Neo4j's (2026.10).
+        // #472: until the spec holds these (drivine-cypher-spec#35), held here. The star expanded to the variables the CALL's
+        // first query bound, not those it imported, so it was refused with "A projection has at least one item" unless an
+        // aggregate had bound them; and a WITH * where nothing was bound was refused so. The rows are Neo4j's (2026.10).
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(listOf(1L, 2L), query("UNWIND [1, 2] AS i CALL { WITH * RETURN i AS x } RETURN x"))
@@ -2639,6 +2639,19 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("UNWIND [1, 2] AS i CALL () { WITH * WITH * RETURN 3 AS x } RETURN i, x"))
         assertEquals(listOf(1L), query("WITH * RETURN 1 AS x"))
         assertThrows<Exception> { query("UNWIND [1] AS i CALL () { WITH * RETURN i AS x } RETURN x") }
+        // Its WHERE is met still, on the rows it reads; with DISTINCT, an order, SKIP or LIMIT it is refused, not left out.
+        assertEquals(emptyList<Any?>(), query("WITH * WHERE false RETURN 1 AS x"))
+        assertEquals(listOf(1L), query("WITH * WHERE true RETURN 1 AS x"))
+        assertEquals(listOf(1L), query("RETURN 1 AS x UNION ALL WITH * WHERE false RETURN 2 AS x"))
+        assertEquals(emptyList<Any?>(), query("UNWIND [1, 2] AS i CALL () { WITH * WHERE false RETURN 1 AS x } RETURN i, x"))
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL (i) { WITH * WHERE i > 1 RETURN i AS x } RETURN x"))
+        // Neo4j gives [], [], [] and [1, 2] for these.
+        if (pm.type != DatabaseType.NEO4J) {
+            assertThrows<Exception> { query("WITH * LIMIT 0 RETURN 1 AS x") }
+            assertThrows<Exception> { query("WITH * SKIP 1 RETURN 1 AS x") }
+            assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH * LIMIT 0 RETURN i AS x } RETURN x") }
+            assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH DISTINCT * RETURN i AS x } RETURN x") }
+        }
         // A RETURN * of the CALL returns what it imports, which the row holds already.
         assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL { WITH * RETURN * } RETURN i") }
         // Made for each row, beside a randomUUID(): not the compiler's own variables (#412), which no star shows.
@@ -2647,6 +2660,10 @@ abstract class CypherQueryContract {
         query("UNWIND [1, 2] AS i CALL { WITH * RETURN toUpper(randomUUID()) AS u } RETURN *").let { rows ->
             assertEquals(listOf(1L, 2L), rows.map { (it as List<*>).first() })
             assertTrue(rows.all { (it as List<*>).size == 2 && (it[1] as String).length == 36 }, "$rows")
+        }
+        query("UNWIND [1, 2] AS i CALL { WITH * WITH i AS j, toUpper(randomUUID()) AS u RETURN * } RETURN *").let { rows ->
+            assertEquals(listOf(listOf(1L, 1L), listOf(2L, 2L)), rows.map { (it as List<*>).take(2) })
+            assertTrue(rows.all { (it as List<*>).size == 3 && (it[2] as String).length == 36 }, "$rows")
         }
         query("UNWIND [1, 2] AS i CALL (i) { WITH * RETURN i AS x, toUpper(randomUUID()) AS u } RETURN *").let { rows ->
             assertEquals(listOf(listOf(1L, 1L), listOf(2L, 2L)), rows.map { (it as List<*>).let { r -> listOf(r[0], r[2]) } })
