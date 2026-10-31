@@ -125,13 +125,16 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> PersistenceManager) {
 /**
  * [verifyConcurrentFirstBootsAgree] on a store that has never had the key's constraint, so that the managers race to
  * make it too, a few rounds over. A manager that makes it after another's, or is turned away making it, and writes
- * its stamp once the other's is in force, has the stamp refused; it must write it again rather than fail (#473).
+ * its stamp once the other's is in force, has the stamp refused; it must write it again rather than fail (#473). One
+ * whose statement is refused for what another made meanwhile (on Postgres a 23505 on `pg_class_relname_nsp_index`)
+ * must still end up under the other's constraint, so no manager may warn that identity is best-effort
+ * (liberation-data/drivine#489).
  */
 private fun verifyConcurrentFirstBootsWithoutTheConstraintAgree(
     open: () -> PersistenceManager,
     wipe: () -> Unit,
     rounds: Int,
-) {
+) = assertNoBestEffortWarning {
     repeat(rounds) {
         open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
         wipe()
