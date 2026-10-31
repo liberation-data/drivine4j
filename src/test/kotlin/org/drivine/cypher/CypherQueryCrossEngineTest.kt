@@ -2763,6 +2763,82 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an aggregating item over a key that is a property groups by the property, as Neo4j does`() {
+        // #491: beside the shapes now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#39), held here.
+        // The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val roles = listOf("Johnny", "Morpheus", "Neo", "Trinity")
+        // Grouped by the property, not by its variable: one row for "Neo", which two relationships have.
+        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a AS a, x.a + count(*) AS b ORDER BY a"))
+        assertEquals(
+            listOf(listOf(1L, 3L), listOf(2L, 3L)),
+            query("UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x WITH x.a AS a, x.a + count(*) AS b RETURN a, b ORDER BY a"),
+        )
+        assertEquals(
+            roles.zip(listOf("Johnny1", "Morpheus1", "Neo2", "Trinity2")).map { (role, n) -> listOf(role, n) },
+            query("MATCH (:Person)-[r:ACTED_IN]->() RETURN r.role AS role, r.role + count(*) AS n ORDER BY role"),
+        )
+        assertEquals(
+            roles.zip(listOf(1L, 1L, 2L, 2L)).map { (role, n) -> listOf(role, mapOf("role" to role, "n" to n)) },
+            query("MATCH (:Person)-[r:ACTED_IN]->() RETURN r.role AS role, {role: r.role, n: count(*)} AS n ORDER BY role"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 35L), listOf("Keanu", 49L), listOf("Laurence", 18L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, size(reduce(s = p.name, t IN collect(m.title) | s + t)) AS r ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", false), listOf("Keanu", false), listOf("Laurence", false)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, p.name IN collect(m.title) AS r ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf(mapOf("b" to 1L), 3L), listOf(mapOf("b" to 2L), 3L)),
+            query("UNWIND [{a: {b: 1}}, {a: {b: 1}}, {a: {b: 2}}] AS x RETURN x.a AS k, x.a.b + count(*) AS c ORDER BY k.b"),
+        )
+        // In a list comprehension's WHERE, the key; in its projection or a quantifier's WHERE, Neo4j groups by its variable too.
+        assertEquals(
+            roles.zip(listOf(1L, 0L, 0L, 0L)).map { (role, n) -> listOf(role, n) },
+            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE t STARTS WITH r.role | t]) AS n ORDER BY role"),
+        )
+        val each = listOf("Johnny", "Morpheus", "Neo", "Neo", "Trinity", "Trinity")
+        assertEquals(each.map { listOf(it, listOf(it)) }, query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, [t IN collect(m.title) | r.role] AS n ORDER BY role"))
+        assertEquals(
+            each.map { listOf(it, it == "Johnny") },
+            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, any(t IN collect(m.title) WHERE t CONTAINS r.role) AS n ORDER BY role"),
+        )
+        // Unnamed, a map projection is the item p, which an order term reads.
+        assertEquals(
+            listOf(listOf(mapOf("name" to "Carrie"), 2L), listOf(mapOf("name" to "Keanu"), 3L), listOf(mapOf("name" to "Laurence"), 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name}, count(*) AS c ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(
+                listOf(mapOf("name" to "Laurence", "born" to 1961L), 1L),
+                listOf(mapOf("name" to "Keanu", "born" to 1964L), 3L),
+                listOf(mapOf("name" to "Carrie", "born" to 1967L), 2L),
+            ),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name, .born}, count(*) AS c ORDER BY p.born"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p {.name}, count(*) AS c RETURN p.name, c ORDER BY p.name"),
+        )
+        // A function named in another case is the same function.
+        assertEquals(
+            listOf(listOf("LAURENCE", 1L), listOf("KEANU", 3L), listOf("CARRIE", 2L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, count(*) AS c ORDER BY TOUPPER(p.name) + count(*) DESC"),
+        )
+        assertEquals(
+            listOf(listOf("CARRIE", 2L), listOf("KEANU", 3L), listOf("LAURENCE", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN TOUPPER(p.name) AS u, count(*) AS c ORDER BY toupper(p.name)"),
+        )
+        assertEquals(
+            listOf(listOf("X", 2L), listOf("Y", 1L)),
+            query("UNWIND [{a: 'x'}, {a: 'x'}, {a: 'y'}] AS x RETURN toUpper(x.a), count(*) ORDER BY TOUPPER(x.a) + count(*)"),
+        )
+    }
+
+    @Test
     fun `properties of a node beside another node's table give the rows of the pattern, and that node's values`() {
         // Not in the spec yet: Oracle's JSON table transformation lost a node's label test where the query read two of its
         // properties, or one two ways, beside another node's table, and gave a row for each two nodes (#415).

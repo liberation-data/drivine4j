@@ -533,4 +533,50 @@ class CompilerRefusalTest {
             ).forEach { compiler.compile(it) }
         }
     }
+
+    @Test
+    fun `an aggregating item reads a key that is a variable or a variable's property, and an order term a key written in any case`() {
+        // #491: Neo4j reads `x.a` in `x.a + count(*)` as the key `x.a`, but no key of another shape there (its 42I18), and in a
+        // pattern's parts only a key that is a variable. It names a function in any case. Until the spec holds these
+        // (drivine-cypher-spec#39), held here.
+        fun item(name: String, variable: String) = "$name aggregates, and names $variable outside its aggregates, which no other item is: " +
+            "Cypher would group by it without being told. Aggregate in a WITH first, as in WITH $variable, collect(…) AS items RETURN { … }."
+        val refused = listOf(
+            "UNWIND [{a: 1, b: 2}] AS x RETURN x.a AS a, x.b + count(*) AS c" to item("c", "x"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, toUpper(p.name) + count(*) AS c ORDER BY u" to item("c", "p"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, [t IN collect(m.title) | t + toUpper(p.name)] AS c ORDER BY u" to item("c", "p"),
+            "UNWIND [{a: {b: 1}}, {a: {b: 1}}, {a: {b: 2}}] AS x RETURN x.a.b AS k, x.a.b + count(*) AS c ORDER BY k" to item("c", "x"),
+            "UNWIND [{a: {b: 1}}, {a: {b: 1}}, {a: {b: 2}}] AS x RETURN x.a.b AS k, [y IN collect(x) | y.a.b + x.a.b] AS c ORDER BY k" to item("c", "x"),
+            "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a + 1 AS k, x.a + 1 + count(*) AS c ORDER BY k" to item("c", "x"),
+            "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x['a'] AS a, x['a'] + count(*) AS b ORDER BY a" to item("b", "x"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS name, size([(q:Person)-[:KNOWS]->() WHERE q.name = p.name | q]) + count(*) AS c ORDER BY name" to
+                item("c", "p"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS name, [x IN collect(m) | size([(x)<-[:ACTED_IN]-(q) WHERE q.name = p.name | q])] AS c ORDER BY name" to
+                item("c", "p"),
+            // Unnamed, the map projection is the item p, not the variable.
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name}, count(*) + size(p.name) AS c ORDER BY p.name" to item("c", "p"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name} AS q, p {.name}.name + count(*) AS c" to item("c", "p"),
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                val store = compiler::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message, "$store: $cypher")
+            }
+            listOf(
+                "MATCH (x) RETURN x.a AS a, x.a + count(*) AS b",
+                "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a, x.a + count(*) AS b ORDER BY x.a",
+                "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a + count(*) AS b, x.a AS a ORDER BY a",
+                "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a AS a, count(*) + x.a AS b, max(x.a) - x.a AS c ORDER BY a",
+                "MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, CASE WHEN r.role STARTS WITH 'N' THEN count(*) ELSE 0 END AS n ORDER BY role",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, reduce(s = p.name, t IN collect(m.title) | s + t) AS r ORDER BY p.name",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, p.name IN collect(m.title) AS r ORDER BY p.name",
+                "UNWIND [{a: {b: 1}}, {a: {b: 1}}, {a: {b: 2}}] AS x RETURN x.a AS k, [y IN collect(x) | x.a.b] AS c ORDER BY c",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, p.name + count(*) AS c ORDER BY c",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name}, collect(m.title) AS ts ORDER BY p.name",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p {.name}, count(*) AS c RETURN p.name, c ORDER BY p.name",
+                "UNWIND [{a: 'x'}, {a: 'x'}, {a: 'y'}] AS x RETURN toUpper(x.a), count(*) ORDER BY TOUPPER(x.a) + count(*)",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, COUNT(m) AS c ORDER BY toUpper(p.name) + count(m) DESC",
+            ).forEach { compiler.compile(it) }
+        }
+    }
 }
