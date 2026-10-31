@@ -4874,7 +4874,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Expression.PatternPredicate -> pattern(expression.pattern)
                     is Expression.Exists -> { expression.patterns.forEach(::pattern); expression(expression.where) }
                     is Expression.Subquery -> query(expression.query)
-                    else -> children(expression).forEach(::expression)
+                    // No else: a kind of expression added later is not compiled until it is read here too.
+                    is Expression.ListLiteral, is Expression.Binary, is Expression.Unary, is Expression.Index, is Expression.Slice, is Expression.Case ->
+                        children(expression).forEach(::expression)
                 }
             }
         }
