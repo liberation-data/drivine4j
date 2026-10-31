@@ -236,11 +236,18 @@ abstract class CypherQueryContract {
             "OPTIONAL MATCH (p:Person) RETURN p.name, size([(p)-->() | p.name]) ORDER BY p.name",
             // Its WHERE may read only the row too.
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) WHERE p.born > 0 OR p.born IS NULL | p.name]) ORDER BY p.name",
+            // A name of the pattern's that the body binds again for its own, and reads only so, is not the pattern's.
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] | m]]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | reduce(m = '', x IN [1] | m + p.name)]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | any(m IN [p.name] WHERE m = 'Keanu')]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-[r]->() | p {.name, n: [r IN [1] | r]}]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [(p)-->() | [m IN [p.name] | m]]]) ORDER BY p.name",
         ).forEach { assertEquals(sizes, query(it), it) }
         // One that reads no row, a parameter, is gathered as it was.
         assertEquals(sizes, query("MATCH (p:Person) RETURN p.name, size([(p)-->() | \$x]) ORDER BY p.name", mapOf("x" to 5)))
         // Read by a relationship of the row, in another comprehension's body, or in a WHERE.
         assertEquals(listOf(listOf("Keanu", listOf("KNOWS", "KNOWS")), listOf("Laurence", List(4) { "KNOWS" })), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, [(q)-->() | type(r)] ORDER BY p.name"))
+        assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, size([(q)-->() | r]) ORDER BY p.name"))
         assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person) UNWIND [(p)-->(m) | [(m)-->() | p.name]] AS l WITH p, l WHERE size(l) > 0 RETURN p.name, size(l) ORDER BY p.name"))
         assertEquals(listOf("Carrie", "Keanu", "Laurence"), query("MATCH (p:Person) WHERE size([(p)-->() | p.name]) > 1 RETURN p.name ORDER BY p.name"))
         // A UUID made for each match, as it was.
