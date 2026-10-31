@@ -153,8 +153,9 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                     constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)
                 }
             } catch (e: Exception) {
-                // A deadlock has been run again already, by whenNotContended, as many times as it runs one.
-                if (attempt >= MAX_ENSURE_ATTEMPTS || !madeMeanwhile(e, constraints.grammar)) throw e
+                // A deadlock has been run again already, by whenNotContended, as many times as it runs one, and one it
+                // gave up on is not run again here: at most MAX_ENSURE_ATTEMPTS × DdlContention.ATTEMPTS ensures in all.
+                if (attempt >= MAX_ENSURE_ATTEMPTS || DdlContention.gaveUp(e) || !madeMeanwhile(e, constraints.grammar)) throw e
                 logger.debug("[store-identity] DrivineStore(key) made meanwhile by another manager on attempt {}; ensuring again", attempt)
                 Thread.sleep(SaveExecutor.contendedPause(attempt - 1))
                 attempt++
@@ -260,25 +261,36 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         /** A graph engine refusing a schema statement for what is there: FalkorDB's "Constraint already exists", "Attribute 'key' is already indexed". */
         private val ALREADY_MADE = Regex("already (exists|indexed)", RegexOption.IGNORE_CASE)
 
-        /** A Postgres unique violation in its own catalog, as on `pg_class_relname_nsp_index`, rather than in a graph's rows. */
-        private val PG_CATALOG = Regex("unique constraint \"pg_")
+        /** The schema of Postgres's own catalog, whose `pg_class_relname_nsp_index` two sessions making one index can both write. */
+        private const val PG_CATALOG = "pg_catalog"
 
         /**
          * Whether [e], or a cause under it, is a schema statement refused for what another session made meanwhile.
-         * On the SQL stores only by code: Oracle's `ORA-00955` (a name already used), and Postgres's `23505` on one of
-         * its catalog's constraints, as two sessions running `CREATE UNIQUE INDEX IF NOT EXISTS` at once get; a 23505
+         * On the SQL stores only by code: Oracle's `ORA-00955` (a name already used), and Postgres's `23505` in its
+         * catalog ([inPostgresCatalog]), as two sessions running `CREATE UNIQUE INDEX IF NOT EXISTS` at once get; a 23505
          * on a graph's rows is a violation, and not this. On a graph engine, "already exists" or "already indexed",
          * unless it is an index in the way of the constraint ([SchemaGrammar.isBlockedByIndex]), which
-         * [ConstraintManager.ensure] answers itself.
+         * [ConstraintManager.ensure] answers itself. The graph engines' messages are in English whatever the locale.
          */
         internal fun madeMeanwhile(e: Throwable, grammar: SchemaGrammar): Boolean {
             val causes = generateSequence(e) { it.cause }.take(MAX_CAUSE_DEPTH).toList()
             val sql = causes.filterIsInstance<SQLException>()
             if (sql.isNotEmpty()) {
-                return sql.any { it.errorCode == 955 || (it.sqlState == "23505" && PG_CATALOG.containsMatchIn(it.message.orEmpty())) }
+                return sql.any { it.errorCode == 955 || (it.sqlState == "23505" && inPostgresCatalog(it)) }
             }
             return !grammar.isBlockedByIndex(e) && causes.any { ALREADY_MADE.containsMatchIn(it.message.orEmpty()) }
         }
+
+        /**
+         * Whether the Postgres driver's [e] names a constraint of the catalog, by the schema the server sends in its own
+         * field (`PSQLException.getServerErrorMessage().getSchema()`). Not by the message, which is in the server's
+         * language (`lc_messages`), and which names a graph's own index alike when the graph's name starts `pg_`. The
+         * driver is not a dependency of Drivine's, so it is asked by reflection; another driver's failure is not this.
+         */
+        private fun inPostgresCatalog(e: SQLException): Boolean = runCatching {
+            val detail = e.javaClass.getMethod("getServerErrorMessage").invoke(e) ?: return false
+            detail.javaClass.getMethod("getSchema").invoke(detail) == PG_CATALOG
+        }.getOrDefault(false)
 
         /** The MERGE key. Fixed, so a second boot matches the node the first one wrote. */
         internal const val SINGLETON_KEY = "singleton"
