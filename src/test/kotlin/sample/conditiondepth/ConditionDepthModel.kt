@@ -35,6 +35,20 @@ data class CdHolderView(
     val windows: List<CdWindowView> = emptyList(),
 )
 
+@NodeFragment(labels = ["CdPeer"])
+data class CdPeer(@NodeId val id: String)
+
+/**
+ * The peers up to two hops along `LINK`, either way: a walk back over the relationship it came by
+ * reaches the node it started from, which no path does, since a path takes a relationship once.
+ */
+@GraphView
+data class CdPeerView(
+    @Root val peer: CdPeer,
+    @GraphRelationship(type = "LINK", direction = Direction.UNDIRECTED, maxDepth = 2)
+    val peers: List<CdPeer> = emptyList(),
+)
+
 // Hand-written query DSL, mirroring what `drivine4j-codegen` emits.
 
 class CdNodeProperties(override val nodeAlias: String) : NodeReference {
@@ -48,6 +62,15 @@ class CdWindowViewQueryDsl {
 
     companion object {
         val INSTANCE = CdWindowViewQueryDsl()
+    }
+}
+
+class CdPeerViewQueryDsl {
+    val peer = CdNodeProperties("peer")
+    val peers = CdNodeProperties("peers")
+
+    companion object {
+        val INSTANCE = CdPeerViewQueryDsl()
     }
 }
 

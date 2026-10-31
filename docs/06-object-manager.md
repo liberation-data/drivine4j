@@ -191,6 +191,12 @@ data class OrgPersonView(
 )
 ```
 
+**A list of fragments over several hops.** `maxDepth` above 1 on a `List<Fragment>` field reads every node of the
+target's labels within that many hops (`-[:NEXT*1..2]->`), each once, and never over one relationship twice in a
+path. It does so at every level, on a view nested in another too: there the graph engines read only one hop before
+liberation-data/drivine4j#461, while the SQL stores read the whole depth, so a nested load on Neo4j, Memgraph or
+FalkorDB may now give more nodes than it did.
+
 **Saving.** A view nested in itself, as above, is saved: each level is one relationship from the level above. A list of *fragments* read over several hops (`maxDepth` above 1 on a `List<Fragment>` field) is loaded and never written, like a path field: see [`@ReadOnly`](#readonly-a-field-that-is-loaded-and-never-written). A recursive collection cannot be sorted in the query; use [`@SortedBy`](#client-side-sorting-with-sortedby), which orders every level.
 
 #### 5. Path Traversal - Skipping Intermediary Nodes

@@ -29,6 +29,8 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
 import sample.conditiondepth.CdHolderView
 import sample.conditiondepth.CdHolderViewQueryDsl
+import sample.conditiondepth.CdPeerView
+import sample.conditiondepth.CdPeerViewQueryDsl
 import sample.conditiondepth.CdWindowView
 import sample.conditiondepth.CdWindowViewQueryDsl
 import kotlin.test.assertEquals
@@ -42,6 +44,9 @@ import kotlin.test.assertEquals
  * itself in two hops, and no walk takes a relationship twice; s1 → x1, a stranger whose text is "c",
  * which no field loads; and s2 → x2 → m, where m, two hops away, is reached through a stranger. Holders
  * hold the windows: h1 holds a, h2 c, h3 p and h5 s2; h4 holds nothing.
+ *
+ * `peers` is `LINK` either way to two hops. u — v, one relationship, so neither reaches itself; f and g
+ * linked twice, two relationships, so each reaches itself over both, and g — k.
  */
 private const val SEED = """
     CREATE (a:CdNode {id: 'a', text: 'a'})
@@ -72,14 +77,25 @@ private const val SEED = """
     CREATE (h2)-[:HAS]->(c)
     CREATE (h3)-[:HAS]->(p)
     CREATE (h5)-[:HAS]->(s2)
+    CREATE (u:CdPeer {id: 'u'})
+    CREATE (v:CdPeer {id: 'v'})
+    CREATE (f:CdPeer {id: 'f'})
+    CREATE (g:CdPeer {id: 'g'})
+    CREATE (k:CdPeer {id: 'k'})
+    CREATE (u)-[:LINK]->(v)
+    CREATE (f)-[:LINK]->(g)
+    CREATE (f)-[:LINK]->(g)
+    CREATE (g)-[:LINK]->(k)
 """
 
 private val WINDOW = CdWindowViewQueryDsl.INSTANCE
 private val HOLDER = CdHolderViewQueryDsl.INSTANCE
+private val PEER = CdPeerViewQueryDsl.INSTANCE
 
 private fun verify(gom: StatelessGraphObjectManager) {
     windows(gom)
     holders(gom)
+    peers(gom)
 }
 
 /** The texts of the nodes each window's `following` loads, by the window's id, with [depth] for `following` when given. */
@@ -137,7 +153,30 @@ private fun windows(gom: StatelessGraphObjectManager) {
     // A depth given for the query: deeper, and down to one hop.
     agrees(setOf("a", "b", "c"), depth = 3, holds = { _, it -> "d" in it }) { where { query.following.any { text eq "d" } } }
     agrees(setOf("b"), depth = 1, holds = { _, it -> "c" in it }) { where { query.following.any { text eq "c" } } }
+    // A depth below one reads one hop, as the load does.
+    agrees(setOf("b"), depth = 0, holds = { _, it -> "c" in it }) { where { query.following.any { text eq "c" } } }
     agrees(setOf("a", "b", "c", "p", "q"), depth = 1, holds = { _, it -> it.isNotEmpty() }) { where { query.following.any { } } }
+}
+
+/**
+ * A walk that takes a relationship twice reaches nothing a path does, for the load or for a condition:
+ * u reaches itself only back over the one relationship to v, so it neither loads u nor is found by it,
+ * while f and g, linked twice, each reach themselves over the two.
+ */
+private fun peers(gom: StatelessGraphObjectManager) {
+    val loaded = gom.loadAll(CdPeerView::class.java, PEER) { }.associate { it.peer.id to it.peers.map { peer -> peer.id }.sorted() }
+    assertEquals(
+        mapOf("u" to listOf("v"), "v" to listOf("u"), "f" to listOf("f", "g", "k"), "g" to listOf("f", "g", "k"), "k" to listOf("f", "g")),
+        loaded,
+    )
+    fun found(id: String) = gom.loadAll(CdPeerView::class.java, PEER) { where { query.peers.any { this.id eq id } } }.map { it.peer.id }
+    for (id in loaded.keys) {
+        val expected = loaded.filterValues { id in it }.keys
+        val found = found(id)
+        assertEquals(expected, found.toSet(), "the filter and the load disagree on $id")
+        assertEquals(expected.size, found.size, "a peer is found once: $found")
+        assertEquals(expected.size.toLong(), gom.count(CdPeerView::class.java, PEER) { where { query.peers.any { this.id eq id } } })
+    }
 }
 
 private fun holders(gom: StatelessGraphObjectManager) {

@@ -40,8 +40,9 @@ internal class Step(val type: String, val direction: Direction, val labels: List
          * steps are the one path they are. A condition asks whether some node such a step reaches meets it,
          * which a path of each length answers by joins: a walk from each node, which the load reads, is
          * answered by a recursive query that the store runs for every node of the graph where a condition
-         * correlates it with one (SQLite: 14 s for a count over 5,000 nodes, two hops). The nodes are the same:
-         * a node that a path taking a relationship twice reaches, a shorter path reaches too.
+         * correlates it with one (SQLite: 14 s for a count over 5,000 nodes, two hops). The nodes are the same,
+         * since each store reads a path of hops, as it walks, over a relationship once: two hops of one type
+         * are two relationships, so u — v alone does not reach u back over the relationship to v.
          */
         fun spelled(steps: List<Step>): List<List<Step>> {
             val walked = steps.singleOrNull()?.takeIf { it.maxDepth > 1 } ?: return listOf(steps)

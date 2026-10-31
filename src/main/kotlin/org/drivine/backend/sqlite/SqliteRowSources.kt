@@ -8,7 +8,6 @@ import org.drivine.backend.sql.StatementScope
 import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
 import org.drivine.backend.sql.under
-import org.drivine.model.RelationshipModel
 
 /**
  * The row sources a statement over a [SqliteGraph] reads from: the nodes of the node table, and
@@ -153,10 +152,6 @@ internal class SqliteRowSources(private val graph: SqliteGraph, private val scop
         }
         return reached!!
     }
-
-    /** The steps that reach the nodes of [relationship]: see [Step.reaching]. */
-    fun steps(relationship: RelationshipModel, targetLabels: List<String>, maxDepth: Int = 1): List<Step> =
-        Step.reaching(relationship, targetLabels, maxDepth)
 
     /**
      * The rows named [row] reached from the row [parent] by [steps]: the query a relationship field or
