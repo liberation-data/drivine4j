@@ -121,6 +121,12 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "DECODE(${kind(x)}, 'object', 1, 'array', 2, 'string', 3, 'boolean', 4, 'number', 5, 'double', 5, 'float', 5)"
     }.let { rank -> listOf(rank, json) }
 
+    /** JSON's null is ranked null, as SQL's is, but `JSON` orders it apart from SQL's: so the value is read with it as SQL's (#500). */
+    override fun jsonNullSortKey(json: String) = openSortKey(json).let { (rank) -> listOf(rank, comparedNull(json)) }
+
+    /** Oracle groups by no subquery, so the value is not bound in one, as [nullIfJsonNull] binds a long one: it is read twice. */
+    override fun comparedNull(json: String) = "CASE WHEN ${kind(json)} <> 'null' THEN $json END"
+
     override fun number(json: String) = shared(json) { (x) -> "CASE WHEN ${typeOf(x)} = 'number' THEN JSON_VALUE($x, '$' RETURNING NUMBER) END" }
 
     /** A whole number, and no floating-point number, as Cypher has an integer. */

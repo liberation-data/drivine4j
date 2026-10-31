@@ -2763,6 +2763,47 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a null in a map or a list and a missing key are one null, grouped, kept distinct and sorted as one`() {
+        // #500: on the SQL stores a map's null is JSON's null and a missing key SQL's. Until the spec holds these, held here.
+        // The rows are Neo4j's (2026.10).
+        val one = listOf(listOf(null, 2L))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN x.a, count(*)"))
+        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [{a: null}, {b: 1}, {a: 1}] AS x RETURN x.a AS a, count(*) AS c ORDER BY a"))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH x.a AS a, count(*) AS c RETURN a, c"))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH x.a AS a RETURN a, count(*) AS c"))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN x['a'] AS a, count(*) AS c"))
+        assertEquals(one, query("UNWIND [{a: {b: null}}, {a: {}}] AS x RETURN x.a.b AS v, count(*) AS c"))
+        assertEquals(one, query("UNWIND [[null], []] AS l RETURN l[0] AS v, count(*) AS c"))
+        assertEquals(listOf(listOf(null, 3L)), query("UNWIND [{a: null}, {b: 1}, {c: 2}] AS x RETURN CASE WHEN x.c IS NULL THEN x.a ELSE null END AS v, count(*) AS c"))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH collect(x) AS xs UNWIND xs AS y RETURN y.a AS a, count(*) AS c"))
+        assertEquals(one, query("UNWIND \$p AS x RETURN x.a AS a, count(*) AS c", mapOf("p" to listOf(mapOf("a" to null), mapOf("b" to 1L)))))
+        assertEquals(one, query("UNWIND [{b: 1}, \$p] AS x RETURN x.a AS a, count(*) AS c", mapOf("p" to mapOf("a" to null))))
+        // DISTINCT and UNION keep it once.
+        assertEquals(listOf(null), query("UNWIND [{a: null}, {b: 1}] AS x RETURN DISTINCT x.a"))
+        assertEquals(listOf(1L), query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a RETURN count(*)"))
+        assertEquals(listOf(null), query("UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"))
+        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p.a AS v", mapOf("p" to mapOf("a" to null))))
+        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p[0] AS v", mapOf("p" to listOf(null, 1L))))
+        // An order ties them, so the next term decides.
+        assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a, x.i DESC"))
+        assertEquals(listOf(2L, 1L, 3L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a DESC, x.i DESC"))
+        assertEquals(listOf(listOf(3L, 2L, 1L)), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH x ORDER BY x.a, x.i DESC RETURN collect(x.i) AS l"))
+        // A null written, an unwound null and a reduce()'s are the same null as a property a node has not.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(listOf(listOf(null, 4L)), query("MATCH (p:Person) RETURN CASE WHEN p.born > 1960 THEN p.nickname ELSE null END AS v, count(*) AS c"))
+        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN null AS v"))
+        assertEquals(listOf(null), query("UNWIND [null] AS v RETURN v UNION MATCH (p:Person {name: 'Keanu'}) RETURN p.nickname AS v"))
+        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN reduce(s = null, t IN [1] | x.a) AS v, count(*) AS c"))
+        assertEquals(
+            listOf(listOf("Laurence", "Keanu", "Hugo", "Carrie")),
+            query("MATCH (p:Person) WITH p ORDER BY CASE WHEN p.born > 1964 THEN null ELSE p.nickname END, p.name DESC RETURN collect(p.name) AS l"),
+        )
+        // Grouped by a value of an unwound list that holds a null, and sorted by it.
+        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [null, 1, null] AS v RETURN v, count(*) AS c ORDER BY v"))
+    }
+
+    @Test
     fun `an aggregating item over a key that is a property groups by the property, as Neo4j does`() {
         // #491: beside the shapes now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#39), held here.
         // The rows are Neo4j's (2026.10).
