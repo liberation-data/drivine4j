@@ -5,7 +5,8 @@ package org.drivine.cypher.sql
  * text, as a store keeps a moment: `2024-03-01`, `10:30:00`, `10:30:00+02:00`, `2024-03-01T10:30:00`,
  * `2024-03-01T10:30:00.500Z`, `P1Y2M3DT4H`. A zoned value keeps the offset it was written with, its fields
  * read on its wall clock and compared as the moment it is. A duration is months, days and seconds, as
- * Cypher's is, and as a Postgres interval is.
+ * Cypher's is, and as a Postgres interval is. A year is numbered as Neo4j writes it, astronomically: `0000` is
+ * 1 BC and `-0044` is 45 BC, and each store's [TemporalSql] reads and writes a year BC as the store keeps one.
  *
  * Every argument and result is SQL: a text, a number, or with [shared] a value written once where it is read
  * more than once.
@@ -37,9 +38,9 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     fun format(timestamp: String, kind: Temporal, offset: String? = null): String = shared(listOf(timestamp)) { (t) ->
         val time = "${sql.toChar}($t, 'HH24:MI:SS') || ${fraction(t)}"
         val text = when (kind) {
-            Temporal.DATE -> "${sql.toChar}($t, 'YYYY-MM-DD')"
-            Temporal.LOCAL_DATE_TIME -> "${sql.toChar}($t, 'YYYY-MM-DD\"T\"') || $time"
-            Temporal.DATE_TIME -> "${sql.toChar}($t, 'YYYY-MM-DD\"T\"') || $time || ${offset ?: "'Z'"}"
+            Temporal.DATE -> sql.date(t)
+            Temporal.LOCAL_DATE_TIME -> "${sql.date(t, "\"T\"")} || $time"
+            Temporal.DATE_TIME -> "${sql.date(t, "\"T\"")} || $time || ${offset ?: "'Z'"}"
             Temporal.LOCAL_TIME -> time
             Temporal.TIME -> "$time || ${offset ?: "'Z'"}"
             Temporal.DURATION -> error("a duration is no moment")
@@ -114,11 +115,11 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         val number = shared(listOf(sql.local(text, kind))) { (t) ->
             val second = sql.extract("SECOND", t)
             when (name) {
-                "year" -> sql.extract("YEAR", t)
+                "year" -> sql.year(t)
                 "quarter" -> "${sql.trunc}((${sql.extract("MONTH", t)} + 2) / 3)"
                 "month" -> sql.extract("MONTH", t)
                 "week" -> sql.number("${sql.toChar}($t, 'IW')")
-                "weekYear" -> sql.number("${sql.toChar}($t, 'IYYY')")
+                "weekYear" -> sql.weekYear(t)
                 "day" -> sql.extract("DAY", t)
                 "ordinalDay" -> sql.number("${sql.toChar}($t, 'DDD')")
                 "dayOfWeek", "weekDay" -> sql.dayOfWeek(t)
@@ -213,7 +214,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     private fun overridden(cut: String, unit: String, kind: Temporal, overrides: Overrides, offset: String?): String {
         val given = overrides.fields
         val own = mapOf(
-            "year" to sql.extract("YEAR", cut), "month" to sql.extract("MONTH", cut), "day" to sql.extract("DAY", cut),
+            "year" to sql.year(cut), "month" to sql.extract("MONTH", cut), "day" to sql.extract("DAY", cut),
             "hour" to sql.extract("HOUR", cut), "minute" to sql.extract("MINUTE", cut), "second" to "${sql.trunc}(${sql.extract("SECOND", cut)})",
         )
         val micros = sql.number(sql.micros(cut))

@@ -32,9 +32,11 @@ class SqliteTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
     /** A timestamp is such a text already. */
     override fun sortable(timestamp: String) = timestamp
 
-    override fun micros(timestamp: String) = "substr($timestamp, 21, 6)"
+    /** The last six digits, for a timestamp of a year BC is a character longer: `-0044-03-15T10:30:00.000000`. */
+    override fun micros(timestamp: String) = "substr($timestamp, -6)"
 
-    override fun dayOfWeek(timestamp: String) = "((CAST(strftime('%w', $timestamp) AS INTEGER) + 6) % 7 + 1)"
+    /** `java.time`'s, for SQLite's own `strftime` reads no year before 0. */
+    override fun dayOfWeek(timestamp: String) = temporal("day_of_week", timestamp)
 
     override fun addMonths(timestamp: String, months: String) = temporal("add_months", timestamp, months)
 
@@ -58,6 +60,9 @@ class SqliteTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
     override fun quotient(dividend: String, divisor: String) = "($dividend + 0.0) / $divisor"
 
     override fun extract(field: String, timestamp: String) = temporal("extract", timestamp, "'$field'")
+
+    /** `java.time` numbers years as Cypher does, and its `to_char` writes one before 0 with its sign. */
+    override val numbersBcFromOne = false
 
     /** The temporal function's [operation] of [arguments]. */
     private fun temporal(operation: String, vararg arguments: String) = "${SqliteFunctions.TEMPORAL}('$operation', ${arguments.joinToString(", ")})"

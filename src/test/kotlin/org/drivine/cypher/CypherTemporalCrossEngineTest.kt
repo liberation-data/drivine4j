@@ -61,6 +61,28 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a year before 1 is numbered as Neo4j numbers it, made, worked out, written and read`() {
+        // #469: Postgres and Oracle number a year BC from -1, with no year 0, and wrote 1 BC back as 0001; none read a year before 0.
+        assertEquals(
+            listOf(listOf("0000-12-31", "-0044-03-15", "-0001-01-01", "0000-01-01", "-1000-01-01", "0000-01-01T00:00:00Z", -44L, 0L, "P1Y", true)),
+            query(
+                """
+                RETURN [toString(date('0001-01-01') - duration('P1D')), toString(date({year: -44, month: 3, day: 15})), toString(date({year: -1})),
+                        toString(date.truncate('millennium', date('0999-12-31'))), toString(date.truncate('millennium', date('-1234-06-01'))),
+                        toString(datetime.truncate('century', datetime('0050-06-01T10:00:00Z'))), date('-0044-03-15').year, date('0000-06-01').year,
+                        toString(duration.between(date('0000-01-01'), date('0001-01-01'))), date('-0044-03-15') < date('0001-01-01')]
+                """,
+            ),
+        )
+        // A parameter of java.time's, written and read back, its kind told by its text.
+        query("CREATE (:CyTemporal {id: 'a', day: \$day, at: datetime('-0044-03-15T12:00:00+02:00')})", mapOf("day" to LocalDate.of(-44, 3, 15)))
+        assertEquals(
+            listOf(listOf("-0044-03-16", -44L, "-0043-03-15T12:00:00+02:00", true)),
+            query("MATCH (n:CyTemporal) RETURN [toString(n.day + duration('P1D')), n.day.year, toString(n.at + duration('P1Y')), n.day < date('0001-01-01')]"),
+        )
+    }
+
+    @Test
     fun `a parameter of a time of day, a local or zoned moment, or a Date is a temporal value of its kind`() {
         val offset = java.time.ZoneOffset.ofHours(2)
         assertEquals(

@@ -12,19 +12,30 @@ class OracleTemporalSql(
 ) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE -> "TO_TIMESTAMP($text, 'YYYY-MM-DD')"
-        Temporal.LOCAL_DATE_TIME -> iso(text, "TIMESTAMP")
-        Temporal.DATE_TIME -> iso(unzoned(text), "TIMESTAMP")
+        Temporal.DATE -> "TO_TIMESTAMP(${era(text)}, 'SYYYY-MM-DD')"
+        Temporal.LOCAL_DATE_TIME -> iso(era(text), "TIMESTAMP")
+        Temporal.DATE_TIME -> iso(era(unzoned(text)), "TIMESTAMP")
         Temporal.LOCAL_TIME -> iso("'1970-01-01T' || $text", "TIMESTAMP")
         Temporal.TIME -> iso("'1970-01-01T' || ${unzoned(text)}", "TIMESTAMP")
         Temporal.DURATION -> error("a duration is no moment")
     }
 
     override fun utc(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE_TIME -> "CAST(SYS_EXTRACT_UTC(${iso(text, "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
+        Temporal.DATE_TIME -> "CAST(SYS_EXTRACT_UTC(${iso(era(text), "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
         Temporal.TIME -> "CAST(SYS_EXTRACT_UTC(${iso("'1970-01-01T' || $text", "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
         else -> local(text, kind)
     }
+
+    /**
+     * Oracle numbers a year BC from -1, with no year 0, in ISO text as in its own: so 1 BC, the year `0000`, is `-0001`,
+     * and 45 BC, the year `-0044`, is `-0045`.
+     */
+    override fun era(text: String) =
+        "REGEXP_REPLACE($text, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR($text, '^-?[0-9]{4}')) - 1, 'FM0000'))"
+
+    /** `SYYYY` writes a year with its sign, as Oracle numbers it. */
+    override fun date(timestamp: String, then: String) =
+        "REGEXP_REPLACE(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')), '^-[0-9]{4}', TO_CHAR(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000'))"
 
     /**
      * The clock as a query starts. A block reads it once, into its variable [NOW], where each statement of the block
@@ -62,7 +73,7 @@ class OracleTemporalSql(
     /** The months between the calendar months, less one where [to]'s day and time of the month are short of [from]'s. */
     override fun monthsBetween(from: String, to: String) = shared(listOf(from, to)) { (f, t) ->
         val (since, until) = listOf(f, t).map { "TO_CHAR($it, 'DDHH24MISSFF6')" }
-        shared(listOf("((EXTRACT(YEAR FROM $t) - EXTRACT(YEAR FROM $f)) * 12 + EXTRACT(MONTH FROM $t) - EXTRACT(MONTH FROM $f))")) { (m) ->
+        shared(listOf("((${year(t)} - ${year(f)}) * 12 + EXTRACT(MONTH FROM $t) - EXTRACT(MONTH FROM $f))")) { (m) ->
             "($m - CASE WHEN $m > 0 AND $until < $since THEN 1 WHEN $m < 0 AND $until > $since THEN -1 ELSE 0 END)"
         }
     }
@@ -83,10 +94,10 @@ class OracleTemporalSql(
         return when {
             format != null -> "CAST(TRUNC(CAST($timestamp AS DATE), '$format') AS TIMESTAMP)"
             unit == "second" -> "CAST(CAST($timestamp AS DATE) AS TIMESTAMP)"
-            unit == "millisecond" -> "TO_TIMESTAMP(TO_CHAR($timestamp, 'YYYY-MM-DD HH24:MI:SS.FF3'), 'YYYY-MM-DD HH24:MI:SS.FF3')"
+            unit == "millisecond" -> "TO_TIMESTAMP(TO_CHAR($timestamp, 'SYYYY-MM-DD HH24:MI:SS.FF3'), 'SYYYY-MM-DD HH24:MI:SS.FF3')"
             unit == "microsecond" -> timestamp
             unit in YEARS_OF -> shared(listOf(timestamp)) { (t) ->
-                "CAST(ADD_MONTHS(TRUNC(CAST($t AS DATE), 'YYYY'), -12 * MOD(EXTRACT(YEAR FROM $t), ${YEARS_OF.getValue(unit)})) AS TIMESTAMP)"
+                "CAST(ADD_MONTHS(TRUNC(CAST($t AS DATE), 'YYYY'), -12 * MOD(${year(t)}, ${YEARS_OF.getValue(unit)})) AS TIMESTAMP)"
             }
             else -> null
         }

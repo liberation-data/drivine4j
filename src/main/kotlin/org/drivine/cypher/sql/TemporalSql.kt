@@ -64,6 +64,35 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
     /** The field [field] (`YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND` with its fraction) of the timestamp [timestamp], a number. */
     open fun extract(field: String, timestamp: String) = "EXTRACT($field FROM $timestamp)"
 
+    /**
+     * Whether the store numbers a year BC from -1, with no year 0, as Postgres and Oracle do, where Cypher numbers years
+     * astronomically: 0 for 1 BC and -44 for 45 BC. Where it does, a year before 1 is one more than the store's.
+     */
+    protected open val numbersBcFromOne = true
+
+    /** The year of [timestamp], a number, as Cypher numbers it: see [numbersBcFromOne]. */
+    open fun year(timestamp: String): String =
+        if (!numbersBcFromOne) extract("YEAR", timestamp) else shared(listOf(extract("YEAR", timestamp))) { (y) -> "($y + CASE WHEN $y < 0 THEN 1 ELSE 0 END)" }
+
+    /** The year of the ISO week of [timestamp], a number, as Cypher numbers a year: `to_char` writes one BC unsigned. */
+    open fun weekYear(timestamp: String): String {
+        val week = number("$toChar($timestamp, 'IYYY')")
+        return if (!numbersBcFromOne) week else shared(listOf(timestamp)) { (t) -> "CASE WHEN ${extract("YEAR", t)} < 0 THEN 1 - $week ELSE $week END" }
+    }
+
+    /**
+     * The date of [timestamp] as ISO 8601 writes it, `2024-03-15`, followed by the `to_char` pattern [then]: its year as
+     * Cypher numbers it, `0000` for 1 BC and `-0044` for 45 BC. A store's own, and its [era], read their operand twice at
+     * most: a value an aggregate's argument reads is bound nowhere, and is written out again wherever it is read.
+     */
+    open fun date(timestamp: String, then: String = ""): String = "$toChar($timestamp, 'YYYY-MM-DD$then')"
+
+    /**
+     * The ISO 8601 text [text] of a date or a moment, its year numbered as Cypher numbers it, as the store reads one:
+     * itself, where the store numbers years so too, or the year is after 0.
+     */
+    open fun era(text: String): String = text
+
     /** The text [text] with every match of [pattern], a SQL text, replaced by [replacement]. */
     open fun replace(text: String, pattern: String, replacement: String) = "REGEXP_REPLACE($text, $pattern, $replacement)"
 
