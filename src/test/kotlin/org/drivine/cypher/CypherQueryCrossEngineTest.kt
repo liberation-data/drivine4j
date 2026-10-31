@@ -2672,6 +2672,56 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an aggregate beside a WHERE, a grouping key's body or an order term that Neo4j takes gives Neo4j's rows`() {
+        // #489, #482: beside the aggregates now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#38),
+        // held here. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // A WHERE over what an aggregate gave, and one in a subquery's or a CALL's own query, which aggregates in its projection.
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i WITH count(*) AS c WHERE c > 1 RETURN c"))
+        assertEquals(
+            listOf("Carrie", "Keanu"),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, collect(m.title) AS ts WHERE size(ts) > 1 RETURN p.name ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 1L), listOf("Hugo", 0L), listOf("Keanu", 1L), listOf("Laurence", 0L)),
+            query("MATCH (p:Person) RETURN p.name, COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } AS k ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf("Carrie", "Keanu"),
+            query("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } RETURN p.name ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L)),
+            query("MATCH (p:Person) CALL (p) { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } RETURN p.name, c ORDER BY p.name"),
+        )
+        // An aggregate beside its grouping keys, and a body that names only them, or a variable of its own.
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(2L))), query("UNWIND [1, 2] AS x RETURN x, collect(x) AS c ORDER BY x"))
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, count(*) ORDER BY p.name"),
+        )
+        assertEquals(listOf(listOf(1L, listOf(2L)), listOf(2L, listOf(4L))), query("UNWIND [1, 2] AS x RETURN x, [y IN collect(x) | y + x] AS l ORDER BY x"))
+        assertEquals(
+            listOf(listOf(1L, listOf(4L)), listOf(2L, listOf(5L))),
+            query("UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, [y IN collect(z) | y + x] AS l ORDER BY x"),
+        )
+        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 4L)), query("UNWIND [1, 2] AS x RETURN x, reduce(s = 0, y IN collect(x) | s + y + x) AS l ORDER BY x"))
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, size([x IN collect(m.title) WHERE x <> p.name | x + p.name]) ORDER BY p.name"),
+        )
+        // An order term that names an item's name, or what an item that does not aggregate is.
+        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [{a: 1}, {a: 2}] AS x RETURN x.a AS a, count(*) AS c ORDER BY x.a + count(*) DESC"))
+        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY x + count(*) DESC"))
+        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY y + count(*) DESC"))
+        assertEquals(
+            listOf(listOf(2L, 1L), listOf(1L, 1L)),
+            query("UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + x][0] DESC"),
+        )
+    }
+
+    @Test
     fun `properties of a node beside another node's table give the rows of the pattern, and that node's values`() {
         // Not in the spec yet: Oracle's JSON table transformation lost a node's label test where the query read two of its
         // properties, or one two ways, beside another node's table, and gave a row for each two nodes (#415).

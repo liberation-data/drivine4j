@@ -104,6 +104,8 @@ abstract class SqlCypherCompiler(graph: String) {
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
         VariableKinds.check(query)
+        // An aggregate in a WHERE too.
+        Aggregates.check(query)
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
@@ -2135,7 +2137,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val items = (if (projection.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
-            requireExplicitGrouping(items)
+            requireExplicitGrouping(items, projection.orderBy, select.scope.keys)
             anewFirst(select, projection, items)?.let { (made, kept) -> return project(made, kept, final) }
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
             // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
@@ -2672,13 +2674,18 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * Refuses what Cypher refuses: an item that aggregates and names a variable outside its aggregates, where
-         * that variable is not an item of its own, which a graph engine would have to group by without being told.
+         * Refuses what Cypher refuses (Neo4j's 42I18): an item that aggregates and names a variable outside its aggregates
+         * that is not an item of its own, which a graph engine would have to group by without being told; in a comprehension's,
+         * a quantifier's, a reduce's or a pattern's body, a variable of [scope] outside an item that does not aggregate. So too
+         * a term of [orderBy] that aggregates, beside items that aggregate, and names a variable of [scope] outside an item's
+         * name and an item that does not aggregate, as Neo4j takes them.
          */
-        private fun requireExplicitGrouping(items: List<Projection.Item>) {
-            val keys = items.filterNot { contains(it.expression, ::isAggregate) }.mapNotNull { (it.expression as? Expression.Variable)?.name }.toSet()
+        private fun requireExplicitGrouping(items: List<Projection.Item>, orderBy: List<Projection.SortItem>, scope: Set<String>) {
+            val grouping = items.filterNot { contains(it.expression, ::isAggregate) }
+            val keys = grouping.mapNotNull { (it.expression as? Expression.Variable)?.name }.toSet()
+            val grouped = grouping.map { it.expression }.toSet()
             items.filter { contains(it.expression, ::isAggregate) }.forEach { item ->
-                val implicit = variablesOutsideAggregates(item.expression) - keys
+                val implicit = variablesOutsideAggregates(item.expression) + namedInBodies(item.expression, scope, grouped) - keys
                 if (implicit.isNotEmpty()) {
                     throw DrivineException(
                         "${item.name} aggregates, and names ${implicit.joinToString()} outside its aggregates, which no other item is: " +
@@ -2686,6 +2693,63 @@ abstract class SqlCypherCompiler(graph: String) {
                             "as in WITH ${implicit.joinToString()}, collect(…) AS items RETURN { … }."
                     )
                 }
+            }
+            if (grouping.size == items.size) return
+            val names = items.map { it.name }.toSet()
+            orderBy.filter { contains(it.expression, ::isAggregate) }.forEach { sort ->
+                val implicit = namedOutside(sort.expression, names, scope, grouped)
+                if (implicit.isNotEmpty()) {
+                    throw DrivineException(
+                        "A term of an ORDER BY aggregates, and names ${implicit.joinToString()} outside its aggregates and the items: " +
+                            "Cypher would group by it without being told. Order by an item's name, or by an expression of the items and aggregates."
+                    )
+                }
+            }
+        }
+
+        /**
+         * The variables of [scope] that [expression] names outside its aggregates and each part of it [keys] holds, in a
+         * comprehension's, a quantifier's, a reduce's or a pattern's body, which [variablesOutsideAggregates] does not read.
+         */
+        private fun namedInBodies(expression: Expression, scope: Set<String>, keys: Set<Expression>): Set<String> = when {
+            isAggregate(expression) || expression in keys -> emptySet()
+            expression is Expression.ListComprehension -> namedInBodies(expression.list, scope, keys) +
+                listOfNotNull(expression.where, expression.projection).flatMap { namedOutside(it, setOf(expression.variable), scope, keys) }
+            expression is Expression.Quantifier -> namedInBodies(expression.list, scope, keys) +
+                listOfNotNull(expression.where).flatMap { namedOutside(it, setOf(expression.variable), scope, keys) }
+            expression is Expression.Reduce -> namedInBodies(expression.initial, scope, keys) + namedInBodies(expression.list, scope, keys) +
+                namedOutside(expression.expression, setOf(expression.accumulator, expression.variable), scope, keys)
+            expression is Expression.PatternComprehension || expression is Expression.PatternPredicate || expression is Expression.Exists ->
+                namedOutside(expression, emptySet(), scope, keys)
+            else -> children(expression).flatMap { namedInBodies(it, scope, keys) }.toSet()
+        }
+
+        /**
+         * The variables of [scope] that [expression] names outside its aggregates, and outside each part of it [keys] holds,
+         * a comprehension's, a quantifier's, a reduce's or a pattern's body among them, but for those it binds or [local]
+         * holds. A pattern binds each of its variables not of [scope]. A subquery's own query is read for none.
+         */
+        private fun namedOutside(expression: Expression, local: Set<String>, scope: Set<String>, keys: Set<Expression>): Set<String> {
+            fun outside(part: Expression, inner: Set<String> = local) = namedOutside(part, inner, scope, keys)
+            fun patterned(pattern: Pattern, parts: List<Expression>): Set<String> {
+                val named = variablesIn(pattern) + listOfNotNull(pattern.variable)
+                val bound = local + (named - scope)
+                return (named intersect scope) - local + parts.flatMap { outside(it, bound) }
+            }
+            return when {
+                isAggregate(expression) || expression in keys -> emptySet()
+                expression is Expression.Variable -> if (expression.name in local || expression.name !in scope) emptySet() else setOf(expression.name)
+                expression is Expression.MapProjection -> (if (expression.variable in local || expression.variable !in scope) emptySet() else setOf(expression.variable)) +
+                    children(expression).flatMap { outside(it) }
+                expression is Expression.ListComprehension -> outside(expression.list) +
+                    listOfNotNull(expression.where, expression.projection).flatMap { outside(it, local + expression.variable) }
+                expression is Expression.Quantifier -> outside(expression.list) + listOfNotNull(expression.where).flatMap { outside(it, local + expression.variable) }
+                expression is Expression.Reduce -> outside(expression.initial) + outside(expression.list) +
+                    outside(expression.expression, local + expression.accumulator + expression.variable)
+                expression is Expression.PatternComprehension -> patterned(expression.pattern, listOfNotNull(expression.where, expression.projection))
+                expression is Expression.PatternPredicate -> patterned(expression.pattern, emptyList())
+                expression is Expression.Exists -> expression.patterns.flatMap { patterned(it, listOfNotNull(expression.where)) }.toSet()
+                else -> children(expression).flatMap { outside(it) }.toSet()
             }
         }
 
@@ -4399,7 +4463,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** What a variable a row holds is. */
     private enum class Kind { NODE, RELATIONSHIP, VALUE, NODES, RELATIONSHIPS, PATH }
 
-    protected companion object {
+    internal companion object {
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
         const val PENDING = "__with__"
 

@@ -429,4 +429,93 @@ class CompilerRefusalTest {
             ).forEach { compiler.compile(it, mapOf("at" to "2024-03-15T10:00")) }
         }
     }
+
+    @Test
+    fun `an aggregate in a WHERE is refused, as Neo4j refuses it`() {
+        // #489: Neo4j's 42I24, "invalid use of aggregate function". Before, SQLite and Postgres failed with an error of their own, and
+        // Oracle gave rows. Until the spec holds these (drivine-cypher-spec#38), held here.
+        fun where(aggregate: String) = "$aggregate aggregates, and a WHERE holds no aggregate, as in Neo4j: aggregate in a WITH first, " +
+            "and filter what it gives in that WITH's WHERE, as in WITH x, count(*) AS c WHERE c > 1."
+        val refused = listOf(
+            "UNWIND [1, 2] AS i WITH i WHERE sum(i) > 1 RETURN i" to where("sum()"),
+            "UNWIND [1, 2] AS i WITH i WHERE i > 1 AND count(*) > 0 RETURN i" to where("count(*)"),
+            "MATCH (n) WHERE count(*) > 1 RETURN n" to where("count(*)"),
+            "MATCH (a) WHERE a.x IN collect(a.y) RETURN a" to where("collect()"),
+            "MATCH (n) RETURN [(n)-->(m) WHERE count(m) > 1 | m] AS ms" to where("count()"),
+            "UNWIND [[1, 2]] AS l RETURN all(x IN l WHERE sum(x) > 1) AS a" to where("sum()"),
+            "UNWIND [[1, 2]] AS l RETURN [x IN l WHERE count(x) > 1 | x] AS a" to where("count()"),
+            "MATCH (a) ((x)-[:R]->(y) WHERE count(x) > 1)+ (b) RETURN a" to where("count()"),
+            "MATCH (n) WHERE EXISTS { (n)-->(m) WHERE count(m) > 1 } RETURN n" to where("count()"),
+            "MATCH (n) WHERE COUNT { (n)-->(m) WHERE count(m) > 1 } > 0 RETURN n" to where("count()"),
+            "MATCH (n) RETURN COUNT { MATCH (n)-->(m) WHERE count(m) > 1 RETURN m } AS c" to where("count()"),
+            "MATCH (n) RETURN COUNT { MATCH (n)-->(m) WITH m WHERE count(m) > 1 RETURN m } AS c" to where("count()"),
+            "UNWIND [1, 2] AS i CALL (i) { WITH i WHERE sum(i) > 1 RETURN i AS j } RETURN j" to where("sum()"),
+            "UNWIND [1, 2] AS i CALL { WITH i MATCH (n) WHERE max(n.x) > i RETURN n } RETURN n" to where("max()"),
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                val store = compiler::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message, "$store: $cypher")
+            }
+            // A WHERE over what an aggregate gave, or in a subquery or a CALL that aggregates in its own query, is compiled, as Neo4j runs it.
+            listOf(
+                "UNWIND [1, 2] AS i WITH count(*) AS c WHERE c > 1 RETURN c",
+                "UNWIND [1, 2] AS i WITH collect(i) AS l WHERE size(l) > 1 RETURN l",
+                "MATCH (n) RETURN COUNT { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } AS k",
+                "MATCH (n) WHERE EXISTS { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x",
+                "MATCH (n) CALL (n) { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x, c",
+                "MATCH (n) WITH n, count { (n)-->() } AS c WHERE c > 0 RETURN n.x",
+            ).forEach { compiler.compile(it) }
+        }
+    }
+
+    @Test
+    fun `an aggregating item or order term that names a variable no item groups by, in a comprehension's or a pattern's body too, is refused`() {
+        // #482: Neo4j's 42I18, "reference to non-grouping sub-expression". The body of a comprehension, a quantifier, a reduce() or a
+        // pattern was not read for the variables it names, nor an order term at all. Until the spec holds these (drivine-cypher-spec#38),
+        // held here.
+        fun item(name: String, variable: String) = "$name aggregates, and names $variable outside its aggregates, which no other item is: " +
+            "Cypher would group by it without being told. Aggregate in a WITH first, as in WITH $variable, collect(…) AS items RETURN { … }."
+        fun sort(variable: String) = "A term of an ORDER BY aggregates, and names $variable outside its aggregates and the items: " +
+            "Cypher would group by it without being told. Order by an item's name, or by an expression of the items and aggregates."
+        val refused = listOf(
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, [y IN collect(z) | y + z] AS l" to item("l", "z"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z WITH x, [y IN collect(z) | y + z] AS l RETURN x, l" to item("l", "z"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, [y IN collect(x) WHERE y > z | y] AS l" to item("l", "z"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, any(y IN collect(x) WHERE y > z) AS l" to item("l", "z"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, reduce(s = 0, y IN collect(x) | s + z) AS l" to item("l", "z"),
+            "UNWIND [{a: 1, b: 2}] AS x RETURN x.a, [y IN collect(x) | y.a + x.b] AS l" to item("l", "x"),
+            "MATCH (n) RETURN size([(n)-->(m) | m]) + count(*) AS c" to item("c", "n"),
+            "MATCH (n) RETURN n.x, size([(n)-->(m) | m.x]) + count(*) AS c" to item("c", "n"),
+            "MATCH (n) RETURN EXISTS { (n)-->() } AND count(*) > 0 AS b" to item("b", "n"),
+            "UNWIND [{a: 1}, {a: 2}] AS x RETURN x.a AS a, count(*) AS c ORDER BY x.b + count(*)" to sort("x"),
+            "UNWIND [{a: 1, b: 2}] AS x WITH x.a AS a, count(*) AS c ORDER BY x.b + count(*) RETURN a" to sort("x"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY z + count(*)" to sort("z"),
+            "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + z]" to sort("z"),
+            "MATCH (me:Person)--(you:Person) RETURN count(you.age) AS agg ORDER BY me.age + count(you.age)" to sort("me"),
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                val store = compiler::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message, "$store: $cypher")
+            }
+            // A body or an order term that names only what the projection groups by, an item's name, or a variable of its own is compiled,
+            // as Neo4j runs it.
+            listOf(
+                "UNWIND [1, 2] AS x RETURN x, [y IN collect(x) | y + x] AS l",
+                "UNWIND [1, 2] AS x RETURN x, collect(x) AS c",
+                "UNWIND [1, 2] AS x RETURN [x IN collect(x) | x + 1] AS l",
+                "UNWIND [1, 2] AS x RETURN x, reduce(s = 0, y IN collect(x) | s + y + x) AS l",
+                "UNWIND [{a: 1}, {a: 2}] AS x RETURN x.a, count(*) AS c",
+                "UNWIND [{a: 1}] AS x RETURN x.a, [y IN collect(x) | y.a + x.a] AS l",
+                "MATCH (n) RETURN n, size([(n)-->(m) | m]) + count(*) AS c",
+                "MATCH (n) RETURN n, EXISTS { (n)-->() } AND count(*) > 0 AS b",
+                "UNWIND [{a: 1}, {a: 2}] AS x RETURN x.a AS a, count(*) AS c ORDER BY x.a + count(*)",
+                "UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY x + count(*)",
+                "UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY y + count(*)",
+                "UNWIND [{a: 1, b: 2}] AS x RETURN x.a + x.b, count(*) AS cnt ORDER BY x.a + x.b + count(*)",
+                "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + x]",
+            ).forEach { compiler.compile(it) }
+        }
+    }
 }
