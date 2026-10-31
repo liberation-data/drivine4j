@@ -46,34 +46,9 @@ abstract class CypherQueryContract {
     private fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher.trimIndent())).bind(parameters))
 
-    /**
-     * The spec's queries, but for the steps of [PENDING_505] on the SQL stores, which group by a key's variable where Neo4j
-     * groups by the key (#505). Remove this when #505 is fixed.
-     */
     @TestFactory
     fun spec() = CypherSpec.load("queries.yaml").let { spec ->
-        val store = CypherSpec.storeOf(pm.type)
-        val run = if (store == "neo4j") spec else spec.copy(cases = spec.cases.map { case -> case.copy(steps = case.steps.filterNot { it.cypher in PENDING_505 }) })
-        run.tests(store, before = { clear(); seed(requireNotNull(spec.graph)) }) { step -> query(step.cypher, step.parameters) }
-    }
-
-    private companion object {
-        /** drivine-cypher-spec#43's steps that drivine4j gives otherwise on the SQL stores (#505). */
-        val PENDING_505 = setOf(
-            "MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE any(u IN [t] WHERE u CONTAINS r.role)]) AS n ORDER BY role",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, size([t IN collect(x.b) WHERE reduce(s = false, u IN [t] | s OR u > x.a)]) AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, size([t IN collect(x.b) WHERE [u IN [t] | u > x.a][0]]) AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, count(*) + [y IN [1] | x.a][0] AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, count(*) + reduce(s = 0, y IN [1] | s + x.a) AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, [count(*), any(y IN [0, 1] WHERE y > x.a)] AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, any(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, none(y IN collect(x.b) WHERE x.a = y) AS n ORDER BY a",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, any(y IN collect(x.b) WHERE y IN [x.a]) AS n ORDER BY a",
-            "MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, any(t IN collect(m.title) WHERE t = r.role) AS n ORDER BY role",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, count(*) AS n ORDER BY size([y IN collect(x.b) WHERE y > x.a])",
-            "MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, count(*) AS n ORDER BY size([t IN collect(m.title) WHERE t CONTAINS r.role]) DESC, role",
-            "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a, count(*) AS n ORDER BY size([y IN collect(x.b) | x.a]), a",
-        )
+        spec.tests(CypherSpec.storeOf(pm.type), before = { clear(); seed(requireNotNull(spec.graph)) }) { step -> query(step.cypher, step.parameters) }
     }
 
     @Test
@@ -2797,45 +2772,18 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a key read in a body nested in a list comprehension's WHERE, in a body over no aggregate, in any(y IN … WHERE y = e) or in an order term groups by the property`() {
-        // #505: until the spec holds these (drivine-cypher-spec#43), held here. The rows are Neo4j's (2026.10). Two x share
-        // a = 1, so grouping by x gives a = 1 twice.
+        // #505: the spec holds the rest (drivine-cypher-spec#43, in "Implicit grouping key"). The rows are Neo4j's
+        // (2026.10). Two x share a = 1, so grouping by x gives a = 1 twice.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         val x = "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a"
-        val byProperty = listOf(listOf(1L, 1L), listOf(2L, 0L))
-        // Inside a list comprehension's WHERE, the key all through; not in a comprehension's WHERE inside a quantifier's.
-        assertEquals(
-            listOf(listOf("Johnny", 1L), listOf("Morpheus", 0L), listOf("Neo", 0L), listOf("Trinity", 0L)),
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE any(u IN [t] WHERE u CONTAINS r.role)]) AS n ORDER BY role"),
-        )
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE reduce(s = false, u IN [t] | s OR u > x.a)]) AS n ORDER BY a"))
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE [u IN [t] | u > x.a][0]]) AS n ORDER BY a"))
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE any(u IN [t] WHERE all(v IN [u] WHERE v > x.a))]) AS n ORDER BY a"))
-        assertEquals(
-            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
-            query("$x, any(t IN collect(x.b) WHERE size([u IN [t] WHERE u > x.a]) > 0) AS n ORDER BY a, n"),
-        )
-        // A comprehension, a quantifier or a reduce over no aggregate reads the key in each body; one over an aggregate, in its
-        // projection, is grouped by x, whatever the projection holds.
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("$x, count(*) + [y IN [1] | x.a][0] AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("$x, count(*) + reduce(s = 0, y IN [1] | s + x.a) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, listOf(2L, false)), listOf(2L, listOf(1L, false))), query("$x, [count(*), any(y IN [0, 1] WHERE y > x.a)] AS n ORDER BY a"))
-        assertEquals(
-            listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 0L)),
-            query("$x, size([t IN collect(x.b) WHERE t >= x.a | [y IN [1] | x.a][0]]) AS n ORDER BY a, n"),
-        )
-        // Neo4j reads any(y IN list WHERE y = e) as e IN list, and none(…) as NOT e IN list; not all(…).
-        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a"))
+        // Inside a list comprehension's WHERE, the key all through.
+        assertEquals(listOf(listOf(1L, 1L), listOf(2L, 0L)), query("$x, size([t IN collect(x.b) WHERE any(u IN [t] WHERE all(v IN [u] WHERE v > x.a))]) AS n ORDER BY a"))
+        // Neo4j reads any(y IN list WHERE y = e) as e IN list; not all(…) or an OR.
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + 0) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, false), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE x.a = y) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y IN [x.a]) AS n ORDER BY a"))
         assertEquals(
             listOf(listOf(1L, true), listOf(2L, false)),
             query("UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x WITH x.a AS a, any(y IN collect(x.b) WHERE y = x.a) AS n RETURN a, n ORDER BY a"),
-        )
-        assertEquals(
-            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
-            query("$x, all(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"),
         )
         assertEquals(
             listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
@@ -2855,12 +2803,6 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("$z, size([t IN collect(x.b) WHERE any(u IN [t] WHERE u > coalesce(x.a, 0))]) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
         // An order term that aggregates reads the key as an item does.
-        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 2L)), query("$x, count(*) AS n ORDER BY size([y IN collect(x.b) WHERE y > x.a])"))
-        assertEquals(
-            listOf(listOf("Johnny", 1L), listOf("Morpheus", 1L), listOf("Neo", 2L), listOf("Trinity", 2L)),
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, count(*) AS n ORDER BY size([t IN collect(m.title) WHERE t CONTAINS r.role]) DESC, role"),
-        )
-        assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY size([y IN collect(x.b) | x.a]), a"))
         assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY reduce(s = 0, y IN collect(x.b) | s + x.a), a"))
     }
 
