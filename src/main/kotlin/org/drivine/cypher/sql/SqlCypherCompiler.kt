@@ -3493,10 +3493,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
                 if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
                 val timezone = fields["timezone"]?.let { text(comparable(json(it))) }
+                // A zone by name, which no store's text holds yet, is refused rather than given as null, or on SQLite failing as
+                // the statement runs: so a value made from such a moment, `time({time: other})`, is refused too (#508).
+                val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
+                if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
                 if (fields.keys.any { it in Temporals.CALENDAR_FIELDS }) {
-                    // A zone by name, which no store's text holds yet, is refused rather than given as null.
-                    val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
-                    if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
                     val date = calendarDate(function, written)
                     if (date != null) {
                         val day = mapOf("year" to "${date.year}", "month" to "${date.monthValue}", "day" to "${date.dayOfMonth}")

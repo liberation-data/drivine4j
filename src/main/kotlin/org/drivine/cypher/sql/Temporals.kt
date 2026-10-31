@@ -168,13 +168,14 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
      *   [ofCalendar] works it out.
      * - Else a `year`, a `month` and a `day` given make a date with the base's others, which fails where it is none (February
      *   29th of another year); then a `quarter` alone moves it so many quarters, to the month's last day where it has fewer,
-     *   and a `dayOfWeek` alone to that day of its week.
+     *   and a `dayOfWeek` alone to that day of its week. Beside a `dayOfWeek` the `year` moves the date so many years, to the
+     *   month's last day where it has fewer, and doesn't fail.
      * - A millisecond, a microsecond or a nanosecond given makes the whole fraction of the second.
      * - A time of day or a moment that gives the time keeps its offset, else UTC's; with a [timezone] it is moved there, the same
      *   moment, where it has an offset, and given that offset where it has none.
      *
-     * Without [date], the fields give the date as a map's fields do; without [time], the time. Null where a value given is null,
-     * or of a kind that hasn't what it is to give.
+     * Without [date], the fields give the date as a map's fields do; without [time], the time. Fails as the statement runs where a value
+     * given is null, or of a kind that hasn't what it is to give, or the [timezone] is null or no offset, as Neo4j fails.
      */
     fun over(date: Base?, time: Base?, fields: Map<String, String>, timezone: String?, kind: Temporal): String {
         val bases = listOfNotNull(date, time).distinct()
@@ -200,7 +201,14 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
                     own == null -> overFields(day, clock, fields, timezone, kind)
                     else -> moved(overFields(day, clock, fields, if (open) "COALESCE($own, $timezone)" else own, kind), kind, timezone)
                 }
-                "CASE WHEN ${bound.joinToString(" AND ") { "$it IS NOT NULL" }} THEN $made END"
+                // A value given that is null, or of a kind that hasn't what it is to give, or a time zone an expression gives that
+                // is null or none, fails as on Neo4j: its date is the day 0, which every store fails on, written of the condition
+                // so that a store can't fail on it where it isn't reached.
+                shared(listOf(made)) { (value) ->
+                    // The time zone too, which Oracle's `||` would drop where it is null, not make the text null.
+                    val given = (bound + listOfNotNull(timezone) + value).joinToString(" AND ") { "$it IS NOT NULL" }
+                    "CASE WHEN $given THEN $value ELSE ${of(mapOf("day" to "CASE WHEN $given THEN 1 ELSE 0 END"), null, Temporal.DATE)} END"
+                }
             }
         }
     }
@@ -227,6 +235,9 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             "ordinalDay" in fields -> ofCalendar(mapOf("year" to own("year"), "ordinalDay" to own("ordinalDay")) + time, offset, kind)
             "dayOfQuarter" in fields -> ofCalendar(mapOf("year" to own("year"), "quarter" to own("quarter"), "dayOfQuarter" to own("dayOfQuarter")) + time, offset, kind)
             DAY.none { it in fields } -> moveDay(day, fields, time, offset, kind)
+            // Beside a day of the week (no month or day can be), a year moves the date so many years, to February 28th from the
+            // 29th of a common year, as Neo4j moves it, where alone it fails there.
+            "dayOfWeek" in fields -> moveDay(sql.addMonths(day, "(${own("year")} - ${clockField(day, "year")}) * 12"), fields, time, offset, kind)
             else -> shared(listOf(sql.local(of(DAY.associateWith { own(it) }, null, Temporal.DATE), Temporal.DATE))) { (checked) -> moveDay(checked, fields, time, offset, kind) }
         }
     }

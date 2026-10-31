@@ -382,6 +382,8 @@ abstract class CypherTemporalContract {
             "WITH time({time: time('12:31:14.645+01:00'), minute: 5}) AS a, localdatetime({datetime: localdatetime('2024-03-15T10:11:12.123456'), millisecond: 7}) AS b, localdatetime({datetime: localdatetime('2024-03-15T10:11:12.123456'), minute: 7}) AS c, datetime({datetime: datetime('2024-03-15T10:00+03:00'), hour: null}) AS e RETURN [[a.hour, a.minute, a.millisecond, a.timezone], [b.second, b.microsecond], [c.minute, c.microsecond], [e.day, e.hour, e.timezone]]" to listOf(listOf(listOf(12L, 5L, 645L, "+01:00"), listOf(12L, 7000L), listOf(7L, 123456L), listOf(15L, 0L, "+03:00"))),
             "WITH date('1984-10-11') AS d, localtime('12:31:14.645') AS lt, time('12:31:14+01:00') AS t WITH localdatetime({date: d, hour: 10, minute: 10, second: 10}) AS a, datetime({date: datetime('1984-10-11T12:00-05:00'), hour: 10}) AS b, localdatetime({date: d, hour: 5, minute: 3, second: 2, nanosecond: 1000}) AS c, localdatetime({year: 1984, month: 10, day: 11, time: lt}) AS e, datetime({year: 2024, week: 3, dayOfWeek: 2, time: t}) AS f, localdatetime({year: 2024, ordinalDay: 3, time: lt}) AS g, localdatetime({year: 2024, quarter: 3, dayOfQuarter: 2, time: lt}) AS h RETURN [[a.day, a.hour, a.minute, a.second], [b.day, b.hour, b.timezone], [c.second, c.microsecond], [e.month, e.day, e.minute, e.millisecond], [f.month, f.day, f.hour, f.timezone], [g.month, g.day, g.hour], [h.month, h.day, h.hour]]" to listOf(listOf(listOf(11L, 10L, 10L, 10L), listOf(11L, 10L, "Z"), listOf(2L, 1L), listOf(10L, 11L, 31L, 645L), listOf(1L, 16L, 12L, "+01:00"), listOf(1L, 3L, 12L), listOf(7L, 2L, 12L))),
             "WITH date('1984-10-11') AS d, localtime('12:31:14.645') AS lt WITH localdatetime({date: d, time: lt, day: 28, second: 42}) AS a, localdatetime({date: date('2024-03-15'), time: localtime('10:11:12'), week: 1}) AS b, datetime({date: date('2024-03-15'), hour: 10, timezone: '+01:00', week: 2}) AS c, localdatetime({date: date('2024-03-15'), time: localtime('10:11:12'), year: 2020, hour: 1}) AS e RETURN [[a.day, a.second, a.millisecond], [b.month, b.day, b.hour], [c.month, c.day, c.hour, c.timezone], [e.year, e.hour, e.minute]]" to listOf(listOf(listOf(28L, 42L, 645L), listOf(1L, 5L, 10L), listOf(1L, 12L, 10L, "+01:00"), listOf(2020L, 1L, 11L))),
+            // Beside a day of the week a year moves the date so many years, to February 28th from the 29th, then to the day of its week.
+            "WITH date({date: date('2024-02-29'), year: 2023, dayOfWeek: 3}) AS a, date({date: date('2021-01-02'), year: 2021, dayOfWeek: 1}) AS b, date({date: date('2020-12-31'), year: 2021, dayOfWeek: 1}) AS c, localdatetime({date: date('2024-02-29'), year: 2023, dayOfWeek: 2, hour: 1}) AS e RETURN [[a.year, a.month, a.day], [b.year, b.month, b.day], [c.year, c.month, c.day], [e.year, e.month, e.day, e.hour]]" to listOf(listOf(listOf(2023L, 3L, 1L), listOf(2020L, 12L, 28L), listOf(2021L, 12L, 27L), listOf(2023L, 2L, 28L, 1L))),
         ).forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
     }
 
@@ -419,6 +421,22 @@ abstract class CypherTemporalContract {
             "RETURN datetime({datetime: datetime('2024-01-31T10:00Z'), month: 2})",
             "UNWIND [datetime('2023-12-31T10:00Z')] AS d RETURN datetime({date: d, ordinalDay: 366, hour: 1})",
             "UNWIND [[date('2024-03-15'), 5]] AS p RETURN date({date: p[0], quarter: p[1]})",
+        ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
+    }
+
+    @Test
+    fun `another temporal value or a time zone an expression gives that is null or of the wrong kind fails as the statement runs`() {
+        // #508: as Neo4j fails (22007, 22G05, 22G06), not given as null. Until the spec holds these, held here.
+        listOf(
+            "UNWIND [date('2024-03-15'), null] AS x RETURN date({date: x, day: 1})",
+            "OPTIONAL MATCH (n:CyNothing) RETURN date({date: n.at})",
+            "UNWIND ['hello'] AS x RETURN localtime({time: x})",
+            "UNWIND [localtime('10:00')] AS x RETURN date({date: x})",
+            "UNWIND [date('2024-03-15')] AS x RETURN time({time: x, timezone: '+01:00'})",
+            "UNWIND [null] AS t RETURN datetime({date: date('2024-03-15'), time: t})",
+            "UNWIND [null] AS z RETURN datetime({datetime: datetime('2024-03-15T10:00Z'), timezone: z})",
+            "UNWIND [null] AS z RETURN time({time: localtime('10:00'), timezone: z})",
+            "UNWIND ['hello'] AS z RETURN datetime({date: date('2024-03-15'), timezone: z})",
         ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
     }
 

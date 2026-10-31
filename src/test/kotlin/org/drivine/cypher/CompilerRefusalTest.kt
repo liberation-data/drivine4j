@@ -461,6 +461,9 @@ class CompilerRefusalTest {
             "RETURN datetime({date: date('2024-03-15'), time: localtime('10:00'), timezone: 5})" to "datetime() takes a time zone, not 5.",
             "RETURN time({time: time('10:00+01:00'), timezone: '+0500'})" to "'+0500' is no time zone.",
             "RETURN datetime({datetime: localdatetime('2024-03-15T10:00'), timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+            // A zone by name in the constructor of the value given, which Postgres and Oracle gave as null and SQLite failed on.
+            "WITH datetime({year: 1984, month: 10, day: 11, hour: 12, timezone: 'Europe/Stockholm'}) AS other RETURN time({time: other})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+            "RETURN datetime({year: 1984, month: 10, day: 11, timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             refused.forEach { (cypher, message) ->
