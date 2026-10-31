@@ -2741,6 +2741,23 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
+        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
+        fun unordered(rows: List<Any?>) = rows.groupingBy { it }.eachCount()
+        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
+        assertEquals(
+            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
+            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
+        )
+        // In a part of an outer UNION, which compares rows by it.
+        assertEquals(
+            unordered(listOf(null, 1L, 2L)),
+            unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
+        )
+    }
+
+    @Test
     fun `an aggregating item over a key that is a property groups by the property, as Neo4j does`() {
         // #491: beside the shapes now refused, those Neo4j takes. The spec holds the rest ("Implicit grouping key"). The rows are
         // Neo4j's (2026.10).
