@@ -185,8 +185,11 @@ object CypherReader {
         return Projection(
             distinct = context.DISTINCT() != null,
             star = items.children.firstOrNull()?.text == "*",
+            // As Neo4j names them: an item a map projection is, unnamed, after its variable, so `ORDER BY p.name` after
+            // `RETURN p {.name}, count(*)` reads the item.
             items = items.oC_ProjectionItem().map { item ->
-                Projection.Item(expression(item.oC_Expression()), item.oC_Variable()?.let(::name) ?: item.oC_Expression().text)
+                val expression = expression(item.oC_Expression())
+                Projection.Item(expression, item.oC_Variable()?.let(::name) ?: (expression as? Expression.MapProjection)?.variable ?: item.oC_Expression().text)
             },
             orderBy = context.oC_Order()?.oC_SortItem()?.map { sort ->
                 Projection.SortItem(expression(sort.oC_Expression()), sort.DESC() != null || sort.DESCENDING() != null)

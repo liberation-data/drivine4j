@@ -2130,12 +2130,19 @@ abstract class SqlCypherCompiler(graph: String) {
          * aggregates, then ordered, skipped and limited. Rows it does not order, group or keep distinct
          * stay in the order [select] reads them, as a graph engine keeps them.
          */
-        fun project(select: Select, projection: Projection, final: Boolean): Projected {
+        fun project(select: Select, written: Projection, final: Boolean): Projected {
             // As in Neo4j, a star gives the variables in the order of their names, before the items named after it.
             // Not a randomUUID() made first for a CALL or a condition (see `anewCall`), which the statement never named.
             val starred = select.bound.keys.filterNot { it in madeAnew }.sorted()
-            val items = (if (projection.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
+            val items = (if (written.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + written.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
+            // An order term, or a part of one, written as an item but for its functions' names' case is that item, as Neo4j
+            // names a function in any case: so `ORDER BY TOUPPER(x.a) + count(*)` after `toUpper(x.a)` reads the key.
+            val projection = written.copy(
+                orderBy = written.orderBy.map { sort ->
+                    sort.copy(expression = replaced(sort.expression) { part -> items.firstOrNull { it.expression != part && keyOf(it.expression) == keyOf(part) }?.expression })
+                },
+            )
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
             requireExplicitGrouping(items, projection.orderBy, select.scope.keys)
             anewFirst(select, projection, items)?.let { (made, kept) -> return project(made, kept, final) }
@@ -2591,8 +2598,10 @@ abstract class SqlCypherCompiler(graph: String) {
          * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
          * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
          * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
-         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
-         * does none of these.
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. So too where an item that
+         * aggregates reads a key that is a property ([readsOutsideAggregates]), as `r.role + count(*)` beside `r.role`:
+         * grouped in place, it would be grouped by the variable `r` it names, a row for each relationship, where Neo4j gives
+         * one for each role (#491); over the keys' columns, it reads the key's. Null where the projection does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
@@ -2600,16 +2609,20 @@ abstract class SqlCypherCompiler(graph: String) {
             val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
             // An order term reads an item by its name.
             val byName = items.associate { it.name to it.expression }
+            // A key that is a property, read by an item that aggregates: grouped by as itself, not by its variable.
+            val properties = items.map { it.expression }.filter { it is Expression.Property && !contains(it, ::isAggregate) }.toSet()
             if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) } &&
                 items.none { bindsOverAggregates(it.expression, select) } &&
-                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) }
+                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) } &&
+                items.none { contains(it.expression, ::isAggregate) && readsOutsideAggregates(it.expression, properties) }
             ) return null
             // Named as no variable is, unless quoted so.
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
             terms.forEach { term -> contains(term) { if (isAggregate(it)) aggregates.getOrPut(it) { "#aggregate${++counter}" }; false } }
-            // A comprehension's, a quantifier's or a reduce's body is kept as it is, so a variable it names outside its own is kept too,
-            // and so is a pattern's or a subquery's. A subquery may name any variable: each the projection groups by is kept.
+            // A variable a comprehension's, a quantifier's or a reduce's body names outside its own is kept, but where it is read
+            // only in a key that `rekeyed` reads by its name; so is a pattern's or a subquery's. A subquery may name any variable:
+            // each the projection groups by is kept.
             fun named(expression: Expression): Set<String> = if (isAggregate(expression)) emptySet() else variablesOutsideAggregates(expression) + when (expression) {
                 is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::named) - expression.variable
                 is Expression.Quantifier -> listOfNotNull(expression.where).flatMap(::named) - expression.variable
@@ -2618,9 +2631,24 @@ abstract class SqlCypherCompiler(graph: String) {
                 is Expression.Subquery -> keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
                 else -> emptySet()
             } + children(expression).flatMap(::named)
+            fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
+                if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
+            }
+            // A list comprehension's WHERE reads a key by its name too, where it binds no variable the key reads. In its projection,
+            // a quantifier's WHERE or a reduce's step, Neo4j groups by each variable the key reads as well, so the body is kept as it
+            // is, and those variables beside: `[t IN collect(m.title) | r.role]` beside `r.role` gives a row for each `r`.
+            fun rekeyed(term: Expression, bound: Set<String> = emptySet()): Expression = replaced(term) { part ->
+                when {
+                    (bound.isEmpty() || part in keys) && variablesIn(part).none { it in bound } && kept(part) != null -> kept(part)
+                    part is Expression.ListComprehension && part.where != null ->
+                        part.copy(list = rekeyed(part.list, bound), where = rekeyed(part.where, bound + part.variable))
+                    else -> null
+                }
+            }
+            val rekeyedItems = items.map { it.copy(expression = rekeyed(it.expression)) }
             // An order term that aggregates may name a key too, by the variable the projection groups by.
             val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
-            val beside = (items.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) } +
+            val beside = (items.zip(rekeyedItems).filter { (item, _) -> contains(item.expression, ::isAggregate) }.flatMap { (_, item) -> named(item.expression) } +
                 projection.orderBy.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) }.filter { it in keyed })
                 .distinct().filter { it in select.scope }
             val grouped = Projection(
@@ -2632,15 +2660,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 skip = null,
                 limit = null,
             )
-            fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
-                if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
-            }
             // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
             // a variable an item is named after is that item, not the variable of that name before it.
             val itemNames = items.associate { it.expression to it.name }
             val kept = projection.copy(
                 star = false,
-                items = items.map { it.copy(expression = replaced(it.expression, ::kept)) },
+                items = rekeyedItems,
                 orderBy = projection.orderBy.map { sort ->
                     sort.copy(
                         expression = replaced(sort.expression) { term ->
@@ -2674,18 +2699,20 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * Refuses what Cypher refuses (Neo4j's 42I18): an item that aggregates and names a variable outside its aggregates
-         * that is not an item of its own, which a graph engine would have to group by without being told; in a comprehension's,
-         * a quantifier's, a reduce's or a pattern's body, a variable of [scope] outside an item that does not aggregate. So too
+         * Refuses what Cypher refuses (Neo4j's 42I18): an item that aggregates and names a variable of [scope] outside its
+         * aggregates and each key it reads, in a comprehension's, a quantifier's, a reduce's or a pattern's body too, which a
+         * graph engine would have to group by without being told. A key is an item that does not aggregate, and Neo4j reads
+         * one there only where it is a variable or a variable's property ([isPlainKey]): `x.a + count(*)` beside `x.a`, but
+         * not `toUpper(p.name) + count(*)` beside `toUpper(p.name)`; in a pattern's parts, only where it is a variable. So too
          * a term of [orderBy] that aggregates, beside items that aggregate, and names a variable of [scope] outside an item's
-         * name and an item that does not aggregate, as Neo4j takes them.
+         * name and an item that does not aggregate, whatever that item is, as Neo4j takes them.
          */
         private fun requireExplicitGrouping(items: List<Projection.Item>, orderBy: List<Projection.SortItem>, scope: Set<String>) {
             val grouping = items.filterNot { contains(it.expression, ::isAggregate) }
-            val keys = grouping.mapNotNull { (it.expression as? Expression.Variable)?.name }.toSet()
             val grouped = grouping.map { it.expression }.toSet()
+            val keys = grouped.filter(::isPlainKey).toSet()
             items.filter { contains(it.expression, ::isAggregate) }.forEach { item ->
-                val implicit = variablesOutsideAggregates(item.expression) + namedInBodies(item.expression, scope, grouped) - keys
+                val implicit = namedOutside(item.expression, emptySet(), scope, keys) - keys.filterIsInstance<Expression.Variable>().map { it.name }.toSet()
                 if (implicit.isNotEmpty()) {
                     throw DrivineException(
                         "${item.name} aggregates, and names ${implicit.joinToString()} outside its aggregates, which no other item is: " +
@@ -2710,33 +2737,19 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * The variables of [scope] that [expression] names outside its aggregates and each part of it [keys] holds, in a
-         * comprehension's, a quantifier's, a reduce's or a pattern's body, which [variablesOutsideAggregates] does not read.
-         */
-        private fun namedInBodies(expression: Expression, scope: Set<String>, keys: Set<Expression>): Set<String> = when {
-            isAggregate(expression) || expression in keys -> emptySet()
-            expression is Expression.ListComprehension -> namedInBodies(expression.list, scope, keys) +
-                listOfNotNull(expression.where, expression.projection).flatMap { namedOutside(it, setOf(expression.variable), scope, keys) }
-            expression is Expression.Quantifier -> namedInBodies(expression.list, scope, keys) +
-                listOfNotNull(expression.where).flatMap { namedOutside(it, setOf(expression.variable), scope, keys) }
-            expression is Expression.Reduce -> namedInBodies(expression.initial, scope, keys) + namedInBodies(expression.list, scope, keys) +
-                namedOutside(expression.expression, setOf(expression.accumulator, expression.variable), scope, keys)
-            expression is Expression.PatternComprehension || expression is Expression.PatternPredicate || expression is Expression.Exists ->
-                namedOutside(expression, emptySet(), scope, keys)
-            else -> children(expression).flatMap { namedInBodies(it, scope, keys) }.toSet()
-        }
-
-        /**
          * The variables of [scope] that [expression] names outside its aggregates, and outside each part of it [keys] holds,
          * a comprehension's, a quantifier's, a reduce's or a pattern's body among them, but for those it binds or [local]
-         * holds. A pattern binds each of its variables not of [scope]. A subquery's own query is read for none.
+         * holds. A pattern binds each of its variables not of [scope], and in its parts, as Neo4j reads them, a key is only one
+         * that is a variable: `q.name = p.name` in a pattern comprehension's WHERE names `p`, though `p.name` is a key.
+         * A subquery's own query is read for none.
          */
         private fun namedOutside(expression: Expression, local: Set<String>, scope: Set<String>, keys: Set<Expression>): Set<String> {
             fun outside(part: Expression, inner: Set<String> = local) = namedOutside(part, inner, scope, keys)
             fun patterned(pattern: Pattern, parts: List<Expression>): Set<String> {
                 val named = variablesIn(pattern) + listOfNotNull(pattern.variable)
                 val bound = local + (named - scope)
-                return (named intersect scope) - local + parts.flatMap { outside(it, bound) }
+                val variables = keys.filterIsInstance<Expression.Variable>().toSet<Expression>()
+                return (named intersect scope) - local + parts.flatMap { namedOutside(it, bound, scope, variables) }
             }
             return when {
                 isAggregate(expression) || expression in keys -> emptySet()
@@ -4739,6 +4752,13 @@ abstract class SqlCypherCompiler(graph: String) {
             expression == Expression.CountStar || (expression is Expression.Function && expression.name.lowercase() in AGGREGATES)
 
         /**
+         * Whether [expression], an item that does not aggregate, is a key that an item that aggregates may read, as Neo4j
+         * takes one there: a variable, or a variable's property. Not `x.a.b`, `x['a']` or `toUpper(x.a)`.
+         */
+        fun isPlainKey(expression: Expression): Boolean =
+            expression is Expression.Variable || (expression is Expression.Property && expression.subject is Expression.Variable)
+
+        /**
          * The lists [expression] reads item by item, in a subquery of its own: a comprehension's, a quantifier's or a reduce's,
          * what `IN` searches, what a slice, `reverse` or `tail` takes items of.
          */
@@ -4780,6 +4800,30 @@ abstract class SqlCypherCompiler(graph: String) {
                     relationship.properties?.let(::holdsSubquery) == true ||
                         relationship.group?.let { holdsSubquery(it.pattern) || it.where?.let(::holdsSubquery) == true } == true
                 }
+
+        /**
+         * [expression] with each function's name in lower case, in a comprehension's, a quantifier's or a reduce's body too: the
+         * same for two expressions that are the same to Neo4j, which names a function in any case. For comparing only.
+         */
+        fun keyOf(expression: Expression): Expression = replaced(expression) { part ->
+            when (part) {
+                is Expression.Function -> part.copy(name = part.name.lowercase(), arguments = part.arguments.map(::keyOf))
+                is Expression.ListComprehension -> part.copy(list = keyOf(part.list), where = part.where?.let(::keyOf), projection = part.projection?.let(::keyOf))
+                is Expression.Quantifier -> part.copy(list = keyOf(part.list), where = part.where?.let(::keyOf))
+                is Expression.Reduce -> part.copy(initial = keyOf(part.initial), list = keyOf(part.list), expression = keyOf(part.expression))
+                else -> null
+            }
+        }
+
+        /** Whether [expression], outside its aggregates, holds one of [parts], in a comprehension's, a quantifier's or a reduce's body too. */
+        fun readsOutsideAggregates(expression: Expression, parts: Set<Expression>): Boolean = !isAggregate(expression) && (
+            expression in parts || (children(expression) + when (expression) {
+                is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection)
+                is Expression.Quantifier -> listOfNotNull(expression.where)
+                is Expression.Reduce -> listOf(expression.expression)
+                else -> emptyList()
+            }).any { readsOutsideAggregates(it, parts) }
+            )
 
         /** The variables [expression] names outside its aggregates: what an aggregating projection is grouped by. */
         fun variablesOutsideAggregates(expression: Expression): Set<String> = when {
