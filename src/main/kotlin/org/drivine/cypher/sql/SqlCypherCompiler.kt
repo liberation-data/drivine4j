@@ -105,7 +105,7 @@ abstract class SqlCypherCompiler(graph: String) {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
         VariableKinds.check(query)
         // An aggregate in a WHERE too.
-        Aggregates.check(query)
+        Aggregates(::isAggregate, ::children).check(query)
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
@@ -2697,6 +2697,8 @@ abstract class SqlCypherCompiler(graph: String) {
             if (grouping.size == items.size) return
             val names = items.map { it.name }.toSet()
             orderBy.filter { contains(it.expression, ::isAggregate) }.forEach { sort ->
+                // Not less the variables an item is: one an item renames, named in an order term's pattern, is a new variable of the
+                // pattern's to Neo4j, which matches any node, so it is refused rather than read as the key.
                 val implicit = namedOutside(sort.expression, names, scope, grouped)
                 if (implicit.isNotEmpty()) {
                     throw DrivineException(
@@ -2739,7 +2741,11 @@ abstract class SqlCypherCompiler(graph: String) {
             return when {
                 isAggregate(expression) || expression in keys -> emptySet()
                 expression is Expression.Variable -> if (expression.name in local || expression.name !in scope) emptySet() else setOf(expression.name)
-                expression is Expression.MapProjection -> (if (expression.variable in local || expression.variable !in scope) emptySet() else setOf(expression.variable)) +
+                // A map projection of a key reads the key, as Neo4j reads it.
+                expression is Expression.MapProjection -> (
+                    if (expression.variable in local || expression.variable !in scope || Expression.Variable(expression.variable) in keys) emptySet()
+                    else setOf(expression.variable)
+                    ) +
                     children(expression).flatMap { outside(it) }
                 expression is Expression.ListComprehension -> outside(expression.list) +
                     listOfNotNull(expression.where, expression.projection).flatMap { outside(it, local + expression.variable) }
@@ -4475,7 +4481,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** What a variable a row holds is. */
     private enum class Kind { NODE, RELATIONSHIP, VALUE, NODES, RELATIONSHIPS, PATH }
 
-    internal companion object {
+    protected companion object {
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
         const val PENDING = "__with__"
 

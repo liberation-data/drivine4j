@@ -13,8 +13,14 @@ import org.drivine.cypher.ast.SetItem
  * InvalidAggregation), of a `MATCH`, a `WITH`, a comprehension, a quantifier, a pattern's or `EXISTS { … }`'s, in a
  * `CALL { … }` or a subquery too. Read from the statement alone, before it is compiled, so a statement that compiles is
  * compiled as it was. A subquery's own query, `COUNT { MATCH … RETURN count(*) }`, aggregates in its own projections.
+ *
+ * [isAggregate] and [children] are the compiler's, passed in so that its companion, part of what a subclass outside
+ * Drivine sees, stays as it is.
  */
-internal object Aggregates {
+internal class Aggregates(
+    private val isAggregate: (Expression) -> Boolean,
+    private val children: (Expression) -> List<Expression>,
+) {
 
     /** Refuses [query] where it aggregates as Cypher does not. */
     fun check(query: Query) = query(query)
@@ -79,7 +85,7 @@ internal object Aggregates {
     /** The first aggregate [expression] holds, a comprehension's, a pattern's or `EXISTS { … }`'s among them, but not one a subquery's own query holds. */
     private fun aggregateIn(expression: Expression?): Expression? {
         if (expression == null) return null
-        if (SqlCypherCompiler.isAggregate(expression)) return expression
+        if (isAggregate(expression)) return expression
         return when (expression) {
             is Expression.Subquery -> null
             else -> parts(expression).firstNotNullOfOrNull(::aggregateIn)
@@ -109,7 +115,7 @@ internal object Aggregates {
         is Expression.PatternPredicate -> patternParts(expression.pattern)
         is Expression.Exists -> expression.patterns.flatMap(::patternParts) + listOfNotNull(expression.where)
         is Expression.Subquery -> emptyList()
-        else -> SqlCypherCompiler.children(expression)
+        else -> children(expression)
     }
 
     private fun patternParts(pattern: Pattern): List<Expression> =

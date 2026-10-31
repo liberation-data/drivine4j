@@ -451,6 +451,13 @@ class CompilerRefusalTest {
             "MATCH (n) RETURN COUNT { MATCH (n)-->(m) WITH m WHERE count(m) > 1 RETURN m } AS c" to where("count()"),
             "UNWIND [1, 2] AS i CALL (i) { WITH i WHERE sum(i) > 1 RETURN i AS j } RETURN j" to where("sum()"),
             "UNWIND [1, 2] AS i CALL { WITH i MATCH (n) WHERE max(n.x) > i RETURN n } RETURN n" to where("max()"),
+            "UNWIND [1, 2] AS i CALL (i) { CALL (i) { UNWIND [1, 2] AS x WITH x WHERE sum(x) > i RETURN x } RETURN x } RETURN x" to where("sum()"),
+            "MATCH (p:Person) RETURN p.name AS n UNION MATCH (m:Movie) WHERE count(*) > 1 RETURN m.title AS n" to where("count(*)"),
+            "UNWIND [x IN [1, 2] WHERE count(x) > 0 | x] AS y RETURN y" to where("count()"),
+            "MATCH (n) SET n.v = [x IN [1, 2] WHERE sum(x) > 0 | x]" to where("sum()"),
+            "MERGE (n:N) ON CREATE SET n.v = [x IN [1, 2] WHERE min(x) > 0 | x]" to where("min()"),
+            "CREATE (n:N {v: [x IN [1, 2] WHERE avg(x) > 0 | x]})" to where("avg()"),
+            "FOREACH (i IN [1] | CREATE (:N {v: [x IN [1, 2] WHERE max(x) > 0 | x]}))" to where("max()"),
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             refused.forEach { (cypher, message) ->
@@ -493,6 +500,10 @@ class CompilerRefusalTest {
             "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY z + count(*)" to sort("z"),
             "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + z]" to sort("z"),
             "MATCH (me:Person)--(you:Person) RETURN count(you.age) AS agg ORDER BY me.age + count(you.age)" to sort("me"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, count(*) AS c ORDER BY size(keys(m {.title})) + count(*)" to sort("m"),
+            // Neo4j runs these, but reads p in the pattern as a new variable that matches any node, not as the key q is.
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, count(*) AS c ORDER BY size([(p)-[:KNOWS]->(k) | k]) + count(*)" to sort("p"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, count(*) AS c ORDER BY EXISTS { (p)-[:KNOWS]->() } AND count(*) > 1" to sort("p"),
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             refused.forEach { (cypher, message) ->
@@ -515,6 +526,10 @@ class CompilerRefusalTest {
                 "UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY y + count(*)",
                 "UNWIND [{a: 1, b: 2}] AS x RETURN x.a + x.b, count(*) AS cnt ORDER BY x.a + x.b + count(*)",
                 "UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + x]",
+                // A key an item renames, named by an order term's map projection, or by a pattern where no item renames it.
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, count(*) AS c ORDER BY size(keys(p {.name})) + count(*)",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS q, count(*) AS c ORDER BY p {.born}.born + count(*)",
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p, count(*) AS c ORDER BY size([(p)-[:KNOWS]->(k) | k]) + count(*)",
             ).forEach { compiler.compile(it) }
         }
     }
