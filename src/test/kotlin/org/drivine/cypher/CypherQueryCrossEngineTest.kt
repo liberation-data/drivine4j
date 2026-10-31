@@ -217,6 +217,47 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a pattern comprehension whose body reads none of its pattern's variables gives an item for each match, on each row`() {
+        // Not in the spec yet (#467): its aggregate read only the row's columns, so it was the row query's, which Postgres refused
+        // and SQLite worked out over every row, giving one.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val sizes = listOf(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 4L), listOf("Laurence", 2L))
+        assertEquals(
+            listOf(listOf("Carrie", listOf("Carrie", "Carrie")), listOf("Hugo", emptyList<String>()), listOf("Keanu", List(4) { "Keanu" }), listOf("Laurence", listOf("Laurence", "Laurence"))),
+            query("MATCH (p:Person) RETURN p.name, [(p)-->() | p.name] ORDER BY p.name"),
+        )
+        listOf(
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | p]) ORDER BY p.name",
+            "MATCH (p:Person) WITH p, 7 AS k RETURN p.name, size([(p)-->() | k]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | COUNT { (p)-->() }]) ORDER BY p.name",
+            "MATCH (p:Person) CALL (p) { RETURN [(p)-->() | p.name] AS names } RETURN p.name, size(names) ORDER BY p.name",
+            "MATCH (p:Person) CALL { WITH p RETURN [(p)-->(m) | p.name] AS names } RETURN p.name, size(names) ORDER BY p.name",
+            "OPTIONAL MATCH (p:Person) RETURN p.name, size([(p)-->() | p.name]) ORDER BY p.name",
+            // Its WHERE may read only the row too.
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) WHERE p.born > 0 OR p.born IS NULL | p.name]) ORDER BY p.name",
+            // A name of the pattern's that the body binds again for its own, and reads only so, is not the pattern's.
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] | m]]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | reduce(m = '', x IN [1] | m + p.name)]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | any(m IN [p.name] WHERE m = 'Keanu')]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-[r]->() | p {.name, n: [r IN [1] | r]}]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [(p)-->() | [m IN [p.name] | m]]]) ORDER BY p.name",
+        ).forEach { assertEquals(sizes, query(it), it) }
+        // One that reads no row, a parameter, is gathered as it was.
+        assertEquals(sizes, query("MATCH (p:Person) RETURN p.name, size([(p)-->() | \$x]) ORDER BY p.name", mapOf("x" to 5)))
+        // Read by a relationship of the row, in another comprehension's body, or in a WHERE.
+        assertEquals(listOf(listOf("Keanu", listOf("KNOWS", "KNOWS")), listOf("Laurence", List(4) { "KNOWS" })), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, [(q)-->() | type(r)] ORDER BY p.name"))
+        assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, size([(q)-->() | r]) ORDER BY p.name"))
+        assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person) UNWIND [(p)-->(m) | [(m)-->() | p.name]] AS l WITH p, l WHERE size(l) > 0 RETURN p.name, size(l) ORDER BY p.name"))
+        assertEquals(listOf("Carrie", "Keanu", "Laurence"), query("MATCH (p:Person) WHERE size([(p)-->() | p.name]) > 1 RETURN p.name ORDER BY p.name"))
+        // A UUID made for each match, as it was.
+        assertEquals(listOf(listOf(8L, 8L)), query("MATCH (p:Person) UNWIND [(p)-->(m) | p.name + randomUUID()] AS u RETURN count(u), count(DISTINCT u)"))
+        // In a write, which Postgres refused and SQLite wrote wrong.
+        query("MATCH (p:Person) SET p.knows = size([(p)-->() | p.name])")
+        assertEquals(sizes, query("MATCH (p:Person) RETURN p.name, p.knows ORDER BY p.name"))
+    }
+
+    @Test
     fun `a list comprehension over nodes or relationships that keeps them gives a list of them, compared by id`() {
         // Not in the spec yet: what entityComprehension keeps, with no projection or one of the item, is still a list of nodes or relationships.
         clear()
