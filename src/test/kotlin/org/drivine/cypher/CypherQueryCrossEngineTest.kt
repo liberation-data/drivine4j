@@ -3049,6 +3049,19 @@ abstract class CypherQueryContract {
             listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
             query("$x, any(y IN collect(x.b) WHERE y = x.a OR y = 5) AS n ORDER BY a, n"),
         )
+        // Nor single(…), y.p = e, y IN [e1, e2], or an e that reads y; e IN [y] is y = e. With a null in the list, as e IN list.
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)), query("$x, single(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x) WHERE y.b = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE y IN [x.a, 5]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, false), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + y) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE x.a IN [y]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(2L, null)), query("$x, any(y IN collect(x.b) + [null] WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(2L, null)), query("$x, none(y IN collect(x.b) + [null] WHERE y = x.a + 1) AS n ORDER BY a, n"))
+        // A key that is a map's null and one that is missing are one null, read by its name in a body too (#500).
+        val z = "UNWIND [{b: 1}, {a: null, b: 2}, {a: 1, b: 1}, {a: 1, b: 3}] AS x RETURN x.a AS a"
+        assertEquals(listOf(listOf(1L, true), listOf(null, null)), query("$z, any(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("$z, size([t IN collect(x.b) WHERE any(u IN [t] WHERE u > coalesce(x.a, 0))]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
         // An order term that aggregates reads the key as an item does.
         assertEquals(listOf(listOf(2L, 1L), listOf(1L, 2L)), query("$x, count(*) AS n ORDER BY size([y IN collect(x.b) WHERE y > x.a])"))
         assertEquals(

@@ -2756,7 +2756,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             // Neo4j reads `any(y IN list WHERE y = e)` as `e IN list`, and `none(…)` as `NOT e IN list`, where `e` reads no `y`;
-            // `y IN [e]` is `y = e` to it.
+            // `y IN [e]` and `e IN [y]` are `y = e` to it. Not `all(…)` or `single(…)`, a WHERE that is more than the one
+            // comparison (`AND`, `OR`), `y.p = e`, or `y IN [e1, e2]`: those group by each variable `e` reads.
             fun readAsIn(part: Expression.Quantifier): Boolean {
                 val where = part.where as? Expression.Binary ?: return false
                 fun compared(left: Expression, right: Expression) = when (Expression.Variable(part.variable)) {
