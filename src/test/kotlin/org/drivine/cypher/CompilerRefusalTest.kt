@@ -401,7 +401,6 @@ class CompilerRefusalTest {
             "RETURN localtime({hour: 12, week: 2})" to "localtime() takes no field week.",
             "RETURN time({hour: 12, ordinalDay: 2})" to "time() takes no field ordinalDay.",
             "RETURN date({ordinalDay: 2})" to "date() of an ordinal day without a year is Cypher, and is not compiled to SQL yet.",
-            "RETURN date({date: date('2024-03-15'), week: 2})" to "date() of a map with date is Cypher, and is not compiled to SQL yet.",
             "RETURN datetime({year: 1984, week: 10, timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
@@ -413,6 +412,65 @@ class CompilerRefusalTest {
                 "RETURN date({year: 2019, week: 53}), date({year: 2023, quarter: 1, dayOfQuarter: 92}), date({year: 2024, ordinalDay: 366})",
                 "WITH 54 AS w RETURN date({year: 2020, week: w}), datetime({year: \$y, ordinalDay: 366, timezone: '+01:00'})",
             ).forEach { compiler.compile(it, mapOf("y" to 2023)) }
+        }
+    }
+
+    @Test
+    fun `a temporal map from another temporal value that Neo4j fails on is refused`() {
+        // #508: such maps were refused as not compiled before. Until the spec holds these (liberation-data/drivine-cypher-spec#44), held here.
+        val refused = listOf(
+            "RETURN date({date: date('2024-03-15'), hour: 3})" to "date() takes no field hour.",
+            "RETURN date({date: date('2024-03-15'), timezone: '+01:00'})" to "date() takes no field timezone.",
+            "RETURN date({datetime: datetime('2024-03-15T10:00Z')})" to "date() takes no field datetime.",
+            "RETURN localtime({date: date('2024-03-15')})" to "localtime() takes no field date.",
+            "RETURN time({datetime: datetime('2024-03-15T10:00Z')})" to "time() takes no field datetime.",
+            "RETURN localtime({time: localtime('10:00'), timezone: '+01:00'})" to "localtime() takes no field timezone.",
+            "RETURN time({time: time('10:00Z'), day: 2})" to "time() takes no field day.",
+            "RETURN localdatetime({datetime: localdatetime('2024-03-15T10:00'), timezone: '+01:00'})" to "localdatetime() takes no field timezone.",
+            "RETURN datetime({date: date('2024-03-15'), foo: 1})" to "datetime() takes no field foo.",
+            "RETURN datetime({date: date('2024-03-15'), datetime: datetime('2020-01-01T10:00Z')})" to "datetime() takes a datetime, or a date and a time, not both.",
+            "RETURN localdatetime({time: localtime('11:00'), datetime: localdatetime('2020-01-01T10:00')})" to "localdatetime() takes a datetime, or a date and a time, not both.",
+            "RETURN date({date: localtime('10:00')})" to "date() takes a date, a localdatetime or a datetime for date, not a localtime.",
+            "RETURN localtime({time: date('2024-03-15')})" to "localtime() takes a localtime, a time, a localdatetime or a datetime for time, not a date.",
+            "RETURN datetime({datetime: date('2024-03-15')})" to "datetime() takes a localdatetime or a datetime for datetime, not a date.",
+            "RETURN date({date: null})" to "date() takes a date, a localdatetime or a datetime for date, not null.",
+            "RETURN date({date: '2024-03-15'})" to "date() takes a date, a localdatetime or a datetime for date, not '2024-03-15'.",
+            "WITH 5 AS x RETURN localtime({time: x})" to "localtime() takes a localtime, a time, a localdatetime or a datetime for time, not an integer.",
+            "RETURN date({date: date('2024-03-15'), month: 2, week: 3})" to "date() takes a month or a week, not both.",
+            "RETURN date({date: date('2024-03-15'), dayOfWeek: 2, day: 3})" to "date() takes a month or a week, not both.",
+            "RETURN localdatetime({year: 2024, month: 3, time: localtime('10:00')})" to "localdatetime() takes a date beside a time: a date, or a year with a month and a day, a week and a day of the week, an ordinal day, or a quarter and a day of the quarter.",
+            "RETURN datetime({year: 2024, week: 3, time: localtime('10:00')})" to "datetime() takes a date beside a time: a date, or a year with a month and a day, a week and a day of the week, an ordinal day, or a quarter and a day of the quarter.",
+            "RETURN datetime({time: localtime('10:00')})" to "datetime() takes a date beside a time: a date, or a year with a month and a day, a week and a day of the week, an ordinal day, or a quarter and a day of the quarter.",
+            "RETURN localdatetime({date: date('2024-03-15'), second: 3})" to "localdatetime() takes a second beside a minute.",
+            "RETURN localdatetime({date: date('2024-03-15'), minute: 3})" to "localdatetime() takes a minute beside an hour.",
+            "RETURN datetime({date: date('2024-03-15'), hour: 5, minute: 3, microsecond: 1})" to "datetime() takes a microsecond beside a second.",
+            "RETURN date({date: date('2024-03-15'), day: 32})" to "date() takes a day from 1 to 31, not 32.",
+            "RETURN date({date: date('2024-03-15'), month: 13})" to "date() takes a month from 1 to 12, not 13.",
+            "RETURN date({date: date('2024-03-15'), week: 54})" to "date() takes a week from 1 to 53, not 54.",
+            "RETURN date({date: date('2024-03-15'), dayOfWeek: 8})" to "date() takes a day of the week from 1 to 7, not 8.",
+            "RETURN date({date: date('2024-03-15'), quarter: 5})" to "date() takes a quarter from 1 to 4, not 5.",
+            "RETURN date({date: date('2024-03-15'), dayOfQuarter: 93})" to "date() takes a day of the quarter from 1 to 92, not 93.",
+            "RETURN localtime({time: localtime('10:00'), hour: 24})" to "localtime() takes an hour from 0 to 23, not 24.",
+            "RETURN localtime({time: localtime('10:00'), second: 60})" to "localtime() takes a second from 0 to 59, not 60.",
+            "RETURN localtime({time: localtime('10:00'), millisecond: 1000})" to "localtime() takes a millisecond from 0 to 999, not 1000.",
+            "RETURN localtime({time: localtime('10:00'), millisecond: 5, microsecond: 1000})" to "localtime() takes a microsecond from 0 to 999 beside a millisecond, not 1000.",
+            "RETURN localtime({time: localtime('10:00'), nanosecond: 1000000000})" to "localtime() takes a nanosecond from 0 to 999999999, not 1000000000.",
+            "RETURN date({date: date('2024-03-15'), year: 2024.5})" to "date() takes a whole number for year, not 2024.5.",
+            "RETURN date({date: date('2024-03-15'), day: '3'})" to "date() takes a whole number for day, not '3'.",
+            "RETURN time({time: time('10:00+01:00'), timezone: null})" to "time() takes a time zone, not null.",
+            "RETURN datetime({date: date('2024-03-15'), time: localtime('10:00'), timezone: 5})" to "datetime() takes a time zone, not 5.",
+            "RETURN time({time: time('10:00+01:00'), timezone: '+0500'})" to "'+0500' is no time zone.",
+            "RETURN datetime({datetime: localdatetime('2024-03-15T10:00'), timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, cypher)
+            }
+            // A day of the week or of the quarter alone, beside a value that gives the date, and a number an expression gives, are the store's to check.
+            listOf(
+                "RETURN date({date: date('2024-03-15'), dayOfWeek: 2}), date({date: date('2024-03-15'), dayOfQuarter: 92}), date({date: date('2024-03-15'), ordinalDay: 366})",
+                "WITH 13 AS m RETURN date({date: date('2024-03-15'), month: m}), localtime({time: \$t, hour: 3}), datetime({datetime: \$t, timezone: \$z})",
+            ).forEach { compiler.compile(it, mapOf("t" to java.time.LocalDateTime.of(2024, 3, 15, 10, 0), "z" to "+01:00")) }
         }
     }
 
