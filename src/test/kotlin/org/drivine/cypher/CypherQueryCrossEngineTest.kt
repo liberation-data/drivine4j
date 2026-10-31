@@ -2776,9 +2776,23 @@ abstract class CypherQueryContract {
                 rows(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
             "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE EXISTS { MATCH (p)-[:KNOWS]->(q) WITH q, count(*) AS k WHERE count(*) > 0 RETURN q } " +
                 "RETURN p.name ORDER BY p.name" to rows("Keanu", "Laurence"),
-        )
+            // A key's property, read through the item it is renamed to, of a map and of a node.
+            "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x WITH x AS y, count(*) AS c WHERE x.a > 1 AND count(*) = 1 RETURN y.a, c" to rows(listOf(2L, 1L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p AS q, count(*) AS c WHERE p.born > 1965 RETURN q.name, c ORDER BY q.name" to rows(listOf("Carrie", 2L)),
+            // A key and an aggregate compared as grouping compares them, a function's name in any case; count(DISTINCT i) is not count(i).
+            "UNWIND ['a', 'A', 'b'] AS x WITH toUpper(x) AS u, count(*) AS c WHERE TOUPPER(x) = 'A' RETURN u, c" to rows(listOf("A", 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, Sum(i) AS s WHERE SUM(i) > 1 RETURN i, s ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(i) AS c WHERE count(DISTINCT i) = 1 AND count(i) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            // A property's name keeps its case: sum(x.A) is not sum(x.a).
+            "UNWIND [{a: 1, A: 10}, {a: 2, A: 20}] AS x WITH count(*) AS c, sum(x.a) AS s WHERE sum(x.A) > 25 RETURN c, s" to rows(listOf(2L, 3L)),
+        ) +(1..6).map { n ->
+            // An item quoted as a made item would be named is the statement's own.
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS `#having$n` WHERE sum(i) > 1 RETURN i, `#having$n` ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L))
+        }
         ordered.forEach { (cypher, expected) -> assertEquals(expected, query(cypher), cypher) }
         val unordered = listOf(
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 WITH * RETURN *" to rows(listOf(2L, 1L), listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i UNION UNWIND [5] AS `#having2` RETURN `#having2` AS i" to rows(1L, 2L, 5L),
             "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i" to rows(1L, 2L),
             "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(DISTINCT i) = 1 RETURN i, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),
             "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE sum(i) > 1 RETURN j, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),

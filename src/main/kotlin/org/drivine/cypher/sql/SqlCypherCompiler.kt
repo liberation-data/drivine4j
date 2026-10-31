@@ -956,22 +956,23 @@ abstract class SqlCypherCompiler(graph: String) {
             val items = with.projection.items
             if (!with.projection.distinct && items.none { contains(it.expression, ::isAggregate) }) return with to emptyList()
             val names = items.map { it.name }.toSet()
-            val keys = items.filter { !contains(it.expression, ::isAggregate) && variablesIn(it.expression).isNotEmpty() }.associate { it.expression to it.name }
+            // Keys and aggregates compared as grouping compares them ([keyOf]): `TOUPPER(x)` is the key `toUpper(x)`.
+            val keys = items.filter { !contains(it.expression, ::isAggregate) && variablesIn(it.expression).isNotEmpty() }.associate { keyOf(it.expression) to it.name }
             // An aggregate an item is already is read by that item's name.
-            val aggregates = items.filter { isAggregate(it.expression) }.associate { it.expression to it.name }
-            val lifted = linkedMapOf<Expression, String>()
+            val aggregates = items.filter { isAggregate(it.expression) }.associate { keyOf(it.expression) to it.name }
+            val lifted = linkedMapOf<Expression, Projection.Item>()
             val read = replaced(where) { part ->
                 when {
-                    // Named as no variable is, unless quoted so.
-                    isAggregate(part) -> Expression.Variable(aggregates[part] ?: lifted.getOrPut(part) { "#having${++counter}" })
+                    // Named as no text of the statement's is, so an item quoted alike, `` `#having1` ``, stays the statement's (#479).
+                    isAggregate(part) -> Expression.Variable(aggregates[keyOf(part)] ?: lifted.getOrPut(keyOf(part)) { Projection.Item(part, hidden("#having")) }.name)
                     // `WITH i + 10 AS i … WHERE i + 10 > 20` reads the item i, as Neo4j does: no key is read where an item is named.
                     variablesIn(part).any { it in names } -> if (part is Expression.Variable) part else null
-                    else -> keys[part]?.let(Expression::Variable)
+                    else -> keys[keyOf(part)]?.let(Expression::Variable)
                 }
             }
             if (read == where) return with to emptyList()
-            val kept = with.projection.copy(items = items + lifted.map { (aggregate, name) -> Projection.Item(aggregate, name) })
-            return with.copy(projection = kept, where = read) to lifted.values.toList()
+            val kept = with.projection.copy(items = items + lifted.values)
+            return with.copy(projection = kept, where = read) to lifted.values.map { it.name }
         }
 
         /** A `WITH` [having] has read: see [with]. */
