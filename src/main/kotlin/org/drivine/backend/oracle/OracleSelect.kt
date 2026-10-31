@@ -70,7 +70,7 @@ internal class OracleSelect(
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
     private val rows = OracleRowSources(graph, scope)
-    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled)
+    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled, depthOverrides)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----
@@ -625,7 +625,7 @@ internal class OracleSelect(
                 "$row.nid NOT IN (\n    ${reachedFromRoots(within, predicates).under()})",
                 "$row.nid NOT IN (\n    ${parents.under()})",
             )
-            recursion to Query("COUNT(DISTINCT $row.nid)", rows.reached(root, beyond, row), left).text()
+            recursion to Query("COUNT(DISTINCT $row.nid)", rows.reached(root, beyond, row, trail = false), left).text()
         }
     }
 
@@ -639,7 +639,7 @@ internal class OracleSelect(
     /** The ids of the nodes [steps] reach from the roots that meet [predicates]. */
     private fun reachedFromRoots(steps: List<Step>, predicates: List<String>): String {
         val row = scope.row("cascaded")
-        return Query("$row.nid", rows.reached(root, steps, row), listOf("$row.src IN (\n    ${roots(predicates).under()})")).text()
+        return Query("$row.nid", rows.reached(root, steps, row, trail = false), listOf("$row.src IN (\n    ${roots(predicates).under()})")).text()
     }
 
     /**
