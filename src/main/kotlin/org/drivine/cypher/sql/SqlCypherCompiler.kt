@@ -2854,7 +2854,19 @@ abstract class SqlCypherCompiler(graph: String) {
                 patterns(inner, listOf(expression.pattern))
                 expression.where?.let { inner.where += condition(it, inner.scope) }
                 val projected = expression(expression.projection, inner.scope)
-                fun gathered(value: String) = "(" + (listOf("SELECT ${aggregateList(value)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ") + ")"
+                // A body that reads no variable of the pattern's own, `[(p)-->() | p.name]`, is worked out for each of the pattern's
+                // rows in a derived table, and gathered from there: an aggregate that reads only the row's columns is an aggregate of
+                // the row's query, which Postgres refuses and SQLite works out over every row, all of them in one (#467). One that
+                // reads nothing of any row, a literal or a parameter, is the comprehension's aggregate as it is.
+                val own = variablesIn(expression.pattern) + listOfNotNull(expression.pattern.variable) - scope.keys
+                val read = variablesIn(expression.projection)
+                val apart = read.none { it in own } && (read.isNotEmpty() || holdsSubquery(expression.projection))
+                fun gathered(value: String): String {
+                    fun rows(select: String) = (listOf(select) + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")
+                    if (!apart) return "(${rows("SELECT ${aggregateList(value)}")})"
+                    val each = alias("pc")
+                    return "(SELECT ${aggregateList("$each.v")} FROM (${rows("SELECT $value AS v")}) $each)"
+                }
                 // A comprehension of nodes or relationships is a list of them, so a write to an item of it reaches them.
                 when (projected) {
                     is Value.Node -> Value.Entities(comparable(Value.Json(gathered(scalar(projected.nid)), ordered = true)), false, gathered(json(projected).sql))
