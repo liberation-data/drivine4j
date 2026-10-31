@@ -12,7 +12,8 @@ import org.drivine.cypher.ast.SetItem
  * Where a statement aggregates, as Neo4j refuses it when it plans the statement: an aggregate in a `WHERE` (its
  * InvalidAggregation), of a `MATCH`, a `WITH`, a comprehension, a quantifier, a pattern's or `EXISTS { … }`'s, in a
  * `CALL { … }` or a subquery too. Read from the statement alone, before it is compiled, so a statement that compiles is
- * compiled as it was. A subquery's own query, `COUNT { MATCH … RETURN count(*) }`, aggregates in its own projections.
+ * compiled as it was. A subquery's own query, `COUNT { MATCH … RETURN count(*) }`, aggregates in its own projections. The
+ * `WHERE` of a `WITH` that aggregates, or is `DISTINCT`, filters its groups, and holds an aggregate as Neo4j has it (#497).
  *
  * [isAggregate] and [children] are the compiler's, passed in so that its companion, part of what a subclass outside
  * Drivine sees, stays as it is.
@@ -31,7 +32,12 @@ internal class Aggregates(
         when (clause) {
             is Clause.Match -> { clause.patterns.forEach(::pattern); where(clause.where) }
             is Clause.Unwind -> expression(clause.list)
-            is Clause.With -> { projection(clause.projection); where(clause.where) }
+            is Clause.With -> {
+                projection(clause.projection)
+                // One that is DISTINCT groups its rows by its items, as one that aggregates does by those that do not.
+                val groups = clause.projection.distinct || clause.projection.items.any { grouped(it.expression) != null }
+                if (groups) having(clause.where) else where(clause.where)
+            }
             is Clause.Create -> clause.patterns.forEach(::pattern)
             is Clause.Merge -> { pattern(clause.pattern); (clause.onCreate + clause.onMatch).forEach(::setItem) }
             is Clause.Set -> clause.items.forEach(::setItem)
@@ -70,13 +76,37 @@ internal class Aggregates(
     /** Refuses a `WHERE`, [where], that aggregates outside a subquery's own query; then reads it as any expression. */
     private fun where(where: Expression?) {
         if (where == null) return
-        aggregateIn(where)?.let { aggregate ->
-            throw DrivineException(
-                "${named(aggregate)} aggregates, and a WHERE holds no aggregate, as in Neo4j: aggregate in a WITH first, " +
-                    "and filter what it gives in that WITH's WHERE, as in WITH x, count(*) AS c WHERE c > 1."
-            )
-        }
+        aggregateIn(where)?.let(::refuse)
         expression(where)
+    }
+
+    /**
+     * The `WHERE`, [where], of a `WITH` that aggregates: it filters the groups, as SQL's HAVING does, so an aggregate is
+     * read in it as Neo4j reads it (#497), but not in a comprehension's, a quantifier's, a reduce's or a pattern's own expressions.
+     */
+    private fun having(where: Expression?) {
+        if (where == null) return
+        beyondGroups(where)?.let(::refuse)
+        expression(where)
+    }
+
+    private fun refuse(aggregate: Expression): Nothing = throw DrivineException(
+        "${named(aggregate)} aggregates, and a WHERE holds no aggregate unless its WITH aggregates, as in Neo4j: aggregate in a WITH first, " +
+            "and filter what it gives in that WITH's WHERE, as in WITH x, count(*) AS c WHERE c > 1."
+    )
+
+    /**
+     * The first aggregate [expression] holds outside a comprehension's, a quantifier's, a reduce's and a pattern's own
+     * expressions and a subquery's own query, where [children] finds its parts: one the compiler reads over a WITH's groups.
+     */
+    private fun grouped(expression: Expression): Expression? =
+        if (isAggregate(expression)) expression else children(expression).firstNotNullOfOrNull(::grouped)
+
+    /** The first aggregate [expression] holds that [grouped] does not find, but [aggregateIn] does. */
+    private fun beyondGroups(expression: Expression): Expression? {
+        if (isAggregate(expression)) return null
+        val near = children(expression)
+        return near.firstNotNullOfOrNull(::beyondGroups) ?: (parts(expression) - near.toSet()).firstNotNullOfOrNull(::aggregateIn)
     }
 
     /** An aggregate's name as a message gives it. */
