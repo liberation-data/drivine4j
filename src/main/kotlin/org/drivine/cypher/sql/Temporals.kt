@@ -136,12 +136,128 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     private fun calendarDate(date: String, time: Map<String, String>, timezone: String?, kind: Temporal, valid: (String) -> String): String =
         shared(listOf(date)) { (day) ->
             val dayOfMonth = "CASE WHEN NOT (${valid(day)}) THEN 0 ELSE ${sql.extract("DAY", day)} END"
-            val fields = mapOf("year" to sql.extract("YEAR", day), "month" to sql.extract("MONTH", day), "day" to dayOfMonth)
-            if (kind == Temporal.DATE) of(fields, null, kind)
-            else shared(listOf(sql.local(of(fields, null, Temporal.DATE), Temporal.DATE))) { (checked) ->
-                of(time + mapOf("year" to sql.extract("YEAR", checked), "month" to sql.extract("MONTH", checked), "day" to sql.extract("DAY", checked)), timezone, kind)
+            dated(mapOf("year" to sql.extract("YEAR", day), "month" to sql.extract("MONTH", day), "day" to dayOfMonth), time, timezone, kind)
+        }
+
+    /**
+     * [of] the date of the fields [date] (`year`, `month`, `day`) and the fields of the time [time], the date read as a date
+     * first where [kind] has a time too, so a store fails on a day its month has none of: see [calendarDate].
+     */
+    private fun dated(date: Map<String, String>, time: Map<String, String>, timezone: String?, kind: Temporal): String =
+        if (kind == Temporal.DATE) of(date, null, kind)
+        else shared(listOf(sql.local(of(date, null, Temporal.DATE), Temporal.DATE))) { (checked) -> of(time + dateOf(checked), timezone, kind) }
+
+    /** The year, the month and the day of the month of the timestamp [timestamp], as [of] takes them. */
+    private fun dateOf(timestamp: String) = mapOf("year" to sql.extract("YEAR", timestamp), "month" to sql.extract("MONTH", timestamp), "day" to sql.extract("DAY", timestamp))
+
+    // ----- Values made from another -----
+
+    /**
+     * A temporal value that a map's `date`, `time` or `datetime` gives [over]: its [text], and the [kinds] it may be, one
+     * where the statement tells its kind, else those of the kind that give what it is to give (a date, a time of day, both),
+     * its text telling which, as a value read from the store does.
+     */
+    class Base(val text: String, val kinds: List<Temporal>)
+
+    /**
+     * The text of [kind] made of the value [date] gives its date and the value [time] gives its time of day (one value where a
+     * map's `datetime` gives both), with the fields [fields] laid over theirs, SQL numbers each by Cypher's names, and the
+     * offset's text [timezone], as Neo4j lays them:
+     * - A `week` is of the base's week-based year or the `year` given, and keeps its day of the week unless one is given; an
+     *   `ordinalDay` is of its year or the one given; a `dayOfQuarter` of its quarter or the one given. Each is worked out as
+     *   [ofCalendar] works it out.
+     * - Else a `year`, a `month` and a `day` given make a date with the base's others, which fails where it is none (February
+     *   29th of another year); then a `quarter` alone moves it so many quarters, to the month's last day where it has fewer,
+     *   and a `dayOfWeek` alone to that day of its week. Beside a `dayOfWeek` the `year` moves the date so many years, to the
+     *   month's last day where it has fewer, and doesn't fail.
+     * - A millisecond, a microsecond or a nanosecond given makes the whole fraction of the second.
+     * - A time of day or a moment that gives the time keeps its offset, else UTC's; with a [timezone] it is moved there, the same
+     *   moment, where it has an offset, and given that offset where it has none.
+     *
+     * Without [date], the fields give the date as a map's fields do; without [time], the time. Fails as the statement runs where a value
+     * given is null, or of a kind that hasn't what it is to give, or the [timezone] is null or no offset, as Neo4j fails.
+     */
+    fun over(date: Base?, time: Base?, fields: Map<String, String>, timezone: String?, kind: Temporal): String {
+        val bases = listOfNotNull(date, time).distinct()
+        return shared(bases.map { it.text }) { texts ->
+            fun text(base: Base) = texts[bases.indexOf(base)]
+            val clocks = bases.map { clock(text(it), it.kinds) }
+            shared(clocks) { bound ->
+                val day = date?.let { bound[bases.indexOf(it)] }
+                val clock = time?.let { bound[bases.indexOf(it)] }
+                // The offset of what gives the time, where it has one; null where it is local, or a moment is made without one.
+                val own = time?.takeIf { kind.zoned }?.let { base ->
+                    val zoned = base.kinds.filter { it.zoned }
+                    when {
+                        zoned.isEmpty() -> null
+                        zoned.size == base.kinds.size -> offset(text(base))
+                        else -> "CASE WHEN ${zoned.joinToString(" OR ") { isKind(text(base), it) }} THEN ${offset(text(base))} END"
+                    }
+                }
+                val open = own != null && time.kinds.any { !it.zoned }
+                val made = when {
+                    !kind.zoned -> overFields(day, clock, fields, null, kind)
+                    timezone == null -> overFields(day, clock, fields, own?.let { if (open) "COALESCE($it, 'Z')" else it }, kind)
+                    own == null -> overFields(day, clock, fields, timezone, kind)
+                    else -> moved(overFields(day, clock, fields, if (open) "COALESCE($own, $timezone)" else own, kind), kind, timezone)
+                }
+                // A value given that is null, or of a kind that hasn't what it is to give, or a time zone an expression gives that
+                // is null or none, fails as on Neo4j: its date is the day 0, which every store fails on, written of the condition
+                // so that a store can't fail on it where it isn't reached.
+                shared(listOf(made)) { (value) ->
+                    // The time zone too, which Oracle's `||` would drop where it is null, not make the text null.
+                    val given = (bound + listOfNotNull(timezone) + value).joinToString(" AND ") { "$it IS NOT NULL" }
+                    "CASE WHEN $given THEN $value ELSE ${of(mapOf("day" to "CASE WHEN $given THEN 1 ELSE 0 END"), null, Temporal.DATE)} END"
+                }
             }
         }
+    }
+
+    /** The wall clock the text [text] reads, of the one of [kinds] it is: null where it is none. */
+    private fun clock(text: String, kinds: List<Temporal>): String =
+        kinds.singleOrNull()?.let { sql.local(text, it) }
+            ?: "CASE ${Temporal.instants.filter { it in kinds }.joinToString(" ") { "WHEN ${isKind(text, it)} THEN ${sql.local(text, it)}" }} END"
+
+    /** [over]'s value of the wall clocks [day] and [clock] (null where none is given), laid over by [fields], with the offset [offset]. */
+    private fun overFields(day: String?, clock: String?, fields: Map<String, String>, offset: String?, kind: Temporal): String {
+        val time = buildMap {
+            listOf("hour" to "HOUR", "minute" to "MINUTE").forEach { (name, part) -> (fields[name] ?: clock?.let { sql.extract(part, it) })?.let { put(name, it) } }
+            (fields["second"] ?: clock?.let { "${sql.trunc}(${sql.extract("SECOND", it)})" })?.let { put("second", it) }
+            if (FRACTION.any { it in fields }) putAll(fields.filterKeys { it in FRACTION })
+            else if (clock != null) put("microsecond", sql.number(sql.micros(clock)))
+        }
+        if (kind == Temporal.LOCAL_TIME || kind == Temporal.TIME) return of(time, offset, kind)
+        val calendar = fields.filterKeys { it == "year" || it in CALENDAR_FIELDS }
+        if (day == null) return if (calendar.keys.any { it in CALENDAR_FIELDS }) ofCalendar(calendar + time, offset, kind) else of(fields.filterKeys { it in DAY } + time, offset, kind)
+        fun own(name: String) = fields[name] ?: clockField(day, name)
+        return when {
+            "week" in fields -> ofCalendar(mapOf("year" to (fields["year"] ?: clockField(day, "weekYear")), "week" to own("week"), "dayOfWeek" to own("dayOfWeek")) + time, offset, kind)
+            "ordinalDay" in fields -> ofCalendar(mapOf("year" to own("year"), "ordinalDay" to own("ordinalDay")) + time, offset, kind)
+            "dayOfQuarter" in fields -> ofCalendar(mapOf("year" to own("year"), "quarter" to own("quarter"), "dayOfQuarter" to own("dayOfQuarter")) + time, offset, kind)
+            DAY.none { it in fields } -> moveDay(day, fields, time, offset, kind)
+            // Beside a day of the week (no month or day can be), a year moves the date so many years, to February 28th from the
+            // 29th of a common year, as Neo4j moves it, where alone it fails there.
+            "dayOfWeek" in fields -> moveDay(sql.addMonths(day, "(${own("year")} - ${clockField(day, "year")}) * 12"), fields, time, offset, kind)
+            else -> shared(listOf(sql.local(of(DAY.associateWith { own(it) }, null, Temporal.DATE), Temporal.DATE))) { (checked) -> moveDay(checked, fields, time, offset, kind) }
+        }
+    }
+
+    /** [over]'s value of the date [day], moved by a `quarter` or a `dayOfWeek` among [fields] where one is. */
+    private fun moveDay(day: String, fields: Map<String, String>, time: Map<String, String>, offset: String?, kind: Temporal): String {
+        fun whole(value: String, last: Int) = "$value = ${sql.trunc}($value) AND $value BETWEEN 1 AND $last"
+        val quarter = fields["quarter"]
+        val dayOfWeek = fields["dayOfWeek"]
+        return when {
+            quarter != null -> shared(listOf(quarter)) { (q) -> calendarDate(sql.addMonths(day, "($q - ${clockField(day, "quarter")}) * 3"), time, offset, kind) { whole(q, 4) } }
+            dayOfWeek != null -> shared(listOf(dayOfWeek)) { (d) -> calendarDate(sql.addTime(day, "$d - ${sql.dayOfWeek(day)}", "0"), time, offset, kind) { whole(d, 7) } }
+            else -> of(dateOf(day) + time, offset, kind)
+        }
+    }
+
+    /** The text of [kind], zoned, the same moment as the text [text] of it at the offset's text [timezone]. */
+    private fun moved(text: String, kind: Temporal, timezone: String): String = shared(listOf(text, timezone)) { (t, z) ->
+        format(sql.addTime(sql.utc(t, kind), "0", zoneField(z, "offsetSeconds").sql), kind, offset(z))
+    }
 
     /**
      * A field of the text [text] of [kind], by Cypher's name for it: a number, or for `timezone` and `offset` a
@@ -159,27 +275,29 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             "epochMillis" -> return Field("${sql.trunc}(${sql.secondsBetween(epoch, sql.utc(text, kind))} * 1000)", text = false)
         }
         if (name !in INSTANT_FIELDS) return null
-        val number = shared(listOf(sql.local(text, kind))) { (t) ->
-            val second = sql.extract("SECOND", t)
-            when (name) {
-                "year" -> sql.extract("YEAR", t)
-                "quarter" -> "${sql.trunc}((${sql.extract("MONTH", t)} + 2) / 3)"
-                "month" -> sql.extract("MONTH", t)
-                "week" -> sql.number("${sql.toChar}($t, 'IW')")
-                "weekYear" -> sql.number("${sql.toChar}($t, 'IYYY')")
-                "day" -> sql.extract("DAY", t)
-                "ordinalDay" -> sql.number("${sql.toChar}($t, 'DDD')")
-                "dayOfQuarter" -> "(${sql.number("${sql.toChar}($t, 'DDD')")} - ${sql.number("${sql.toChar}(${sql.truncate("quarter", t)!!}, 'DDD')")} + 1)"
-                "dayOfWeek", "weekDay" -> sql.dayOfWeek(t)
-                "hour" -> sql.extract("HOUR", t)
-                "minute" -> sql.extract("MINUTE", t)
-                "second" -> "${sql.trunc}($second)"
-                "millisecond" -> "(${sql.trunc}($second * 1000) - ${sql.trunc}($second) * 1000)"
-                "microsecond" -> "(${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000)"
-                else -> "((${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000) * 1000)"
-            }
+        return Field(shared(listOf(sql.local(text, kind))) { (t) -> clockField(t, name) }, text = false)
+    }
+
+    /** The field [name], one of [INSTANT_FIELDS], of the wall clock [t], a number. */
+    private fun clockField(t: String, name: String): String {
+        val second = sql.extract("SECOND", t)
+        return when (name) {
+            "year" -> sql.extract("YEAR", t)
+            "quarter" -> "${sql.trunc}((${sql.extract("MONTH", t)} + 2) / 3)"
+            "month" -> sql.extract("MONTH", t)
+            "week" -> sql.number("${sql.toChar}($t, 'IW')")
+            "weekYear" -> sql.number("${sql.toChar}($t, 'IYYY')")
+            "day" -> sql.extract("DAY", t)
+            "ordinalDay" -> sql.number("${sql.toChar}($t, 'DDD')")
+            "dayOfQuarter" -> "(${sql.number("${sql.toChar}($t, 'DDD')")} - ${sql.number("${sql.toChar}(${sql.truncate("quarter", t)!!}, 'DDD')")} + 1)"
+            "dayOfWeek", "weekDay" -> sql.dayOfWeek(t)
+            "hour" -> sql.extract("HOUR", t)
+            "minute" -> sql.extract("MINUTE", t)
+            "second" -> "${sql.trunc}($second)"
+            "millisecond" -> "(${sql.trunc}($second * 1000) - ${sql.trunc}($second) * 1000)"
+            "microsecond" -> "(${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000)"
+            else -> "((${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000) * 1000)"
         }
-        return Field(number, text = false)
     }
 
     /** A field of a value: its SQL, and whether it is a text, where it is not a number. */
@@ -489,5 +607,14 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
         /** The fields that give a date by the calendar's other fields, beside the year, in place of a month and a day: see [ofCalendar]. */
         val CALENDAR_FIELDS = setOf("week", "dayOfWeek", "ordinalDay", "quarter", "dayOfQuarter")
+
+        /** The fields of a map that give another temporal value to make one of: see [over]. */
+        val SELECTORS = setOf("date", "time", "datetime")
+
+        /** The fields of a date by its month: see [over]. */
+        private val DAY = listOf("year", "month", "day")
+
+        /** The fields of a fraction of a second, which make the whole fraction where any is given: see [over]. */
+        private val FRACTION = setOf("millisecond", "microsecond", "nanosecond")
     }
 }

@@ -3483,6 +3483,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 return Value.Json(literalJson(canonical), temporal = kind)
             }
             if (written is Expression.MapLiteral) {
+                if (kind != Temporal.DURATION && written.entries.any { it.first in Temporals.SELECTORS }) return of(fromTemporal(kind, function, written, scope))
                 val fields = written.entries.associate { (key, value) -> key to expression(value, scope) }
                 val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
                 val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else if (dated) INSTANT_MAP_FIELDS + Temporals.CALENDAR_FIELDS else INSTANT_MAP_FIELDS
@@ -3492,10 +3493,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
                 if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
                 val timezone = fields["timezone"]?.let { text(comparable(json(it))) }
+                // A zone by name, which no store's text holds yet, is refused rather than given as null, or on SQLite failing as
+                // the statement runs: so a value made from such a moment, `time({time: other})`, is refused too (#508).
+                val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
+                if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
                 if (fields.keys.any { it in Temporals.CALENDAR_FIELDS }) {
-                    // A zone by name, which no store's text holds yet, is refused rather than given as null.
-                    val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
-                    if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
                     val date = calendarDate(function, written)
                     if (date != null) {
                         val day = mapOf("year" to "${date.year}", "month" to "${date.monthValue}", "day" to "${date.dayOfMonth}")
@@ -3526,11 +3528,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun calendarDate(function: Expression.Function, written: Expression.MapLiteral): java.time.LocalDate? {
             val name = function.name
             val keys = written.entries.map { it.first }.toSet()
-            val calendars = listOf(
-                "a month" to setOf("month", "day"), "a week" to setOf("week", "dayOfWeek"), "an ordinal day" to setOf("ordinalDay"),
-                "a quarter" to setOf("quarter", "dayOfQuarter"),
-            ).filter { (_, fields) -> fields.any { it in keys } }
-            if (calendars.size > 1) throw DrivineException("$name() takes ${calendars[0].first} or ${calendars[1].first}, not both.")
+            val calendars = calendars(name, keys)
             if ("dayOfWeek" in keys && "week" !in keys) throw DrivineException("$name() takes a day of the week beside a week.")
             if ("dayOfQuarter" in keys && "quarter" !in keys) throw DrivineException("$name() takes a day of the quarter beside a quarter.")
             if ("year" !in keys) {
@@ -3573,6 +3571,116 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * The calendars a temporal map with the fields [keys] gives a date by, each named and with its fields: a month, a week,
+         * an ordinal day or a quarter. Fails where it is more than one, as Neo4j does.
+         */
+        private fun calendars(name: String, keys: Set<String>): List<Pair<String, Set<String>>> {
+            val calendars = listOf(
+                "a month" to setOf("month", "day"), "a week" to setOf("week", "dayOfWeek"), "an ordinal day" to setOf("ordinalDay"),
+                "a quarter" to setOf("quarter", "dayOfQuarter"),
+            ).filter { (_, fields) -> fields.any { it in keys } }
+            if (calendars.size > 1) throw DrivineException("$name() takes ${calendars[0].first} or ${calendars[1].first}, not both.")
+            return calendars
+        }
+
+        /**
+         * The SQL of a temporal value of [kind] that [function] makes of the map [written] with a `date`, a `time` or a
+         * `datetime`, another temporal value whose fields it takes, with the map's others laid over them: see [Temporals.over].
+         * Fails as Neo4j fails: on a field [kind] has none of, a `datetime` beside a `date` or a `time`, a value written that is
+         * no temporal value or is of a kind that hasn't what it is to give, fields of two calendars, a date of its fields that
+         * is not whole (a year, a month and a day; a week and a day of the week; an ordinal day; a quarter and a day of the
+         * quarter) beside a value that gives the time, a field of the time without the one above it where no value gives the
+         * time, and a number written that is not whole or past its field's range. A zone by name is refused.
+         */
+        private fun fromTemporal(kind: Temporal, function: Expression.Function, written: Expression.MapLiteral, scope: Map<String, Value>): String {
+            val name = function.name
+            val entries = written.entries.toMap()
+            val keys = entries.keys
+            val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
+            val timed = kind != Temporal.DATE
+            val takes = (if (kind == Temporal.DATE) setOf("date") else if (!dated) setOf("time") else Temporals.SELECTORS) +
+                (if (dated) setOf("year", "month", "day") + Temporals.CALENDAR_FIELDS else emptySet()) +
+                (if (timed) TRUNCATION_TIME_FIELDS else emptySet()) + (if (kind.zoned) setOf("timezone") else emptySet())
+            keys.firstOrNull { it !in takes }?.let { throw DrivineException("$name() takes no field $it.") }
+            if ("datetime" in keys && ("date" in keys || "time" in keys)) throw DrivineException("$name() takes a datetime, or a date and a time, not both.")
+            val calendar = calendars(name, keys).singleOrNull()
+            if (dated && "date" !in keys && "datetime" !in keys) {
+                val whole = mapOf("a month" to setOf("year", "month", "day"), "a week" to setOf("year", "week", "dayOfWeek"),
+                    "an ordinal day" to setOf("year", "ordinalDay"), "a quarter" to setOf("year", "quarter", "dayOfQuarter"))
+                if (calendar == null || !keys.containsAll(whole.getValue(calendar.first))) {
+                    throw DrivineException("$name() takes a date beside a time: a date, or a year with a month and a day, a week and a day of the week, an ordinal day, or a quarter and a day of the quarter.")
+                }
+            }
+            if (timed && "time" !in keys && "datetime" !in keys) {
+                listOf("minute" to "hour", "second" to "minute", "millisecond" to "second", "microsecond" to "second", "nanosecond" to "second").forEach { (field, above) ->
+                    if (field in keys && above !in keys) throw DrivineException("$name() takes a $field beside ${FIELD_NOUNS[above] ?: "a $above"}.")
+                }
+            }
+            fun base(key: String, kinds: List<Temporal>): Temporals.Base? {
+                val value = entries[key] ?: return null
+                val nouns = kinds.reversed().map { "a ${it.function}" }
+                fun refused(given: String): Nothing =
+                    throw DrivineException("$name() takes ${nouns.dropLast(1).joinToString(", ")} or ${nouns.last()} for $key, not $given.")
+                if (value is Expression.Literal) refused(when (val v = value.value) { null -> "null"; is String -> "'$v'"; else -> "$v" })
+                val given = expression(value, scope)
+                if (given !is Value.Json) refused(if (given is Value.Bool) "a truth value" else "a node, a relationship or a path")
+                given.known?.let { refused(it.noun) }
+                given.temporal?.let { if (it !in kinds) refused("a ${it.function}") }
+                return Temporals.Base(text(comparable(given)), given.temporal?.let { listOf(it) } ?: kinds)
+            }
+            val datetime = base("datetime", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME))
+            val date = datetime ?: base("date", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME, Temporal.DATE))
+            val time = datetime ?: base("time", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME, Temporal.TIME, Temporal.LOCAL_TIME))
+            var fields = entries.filterKeys { it !in Temporals.SELECTORS && it != "timezone" }.mapValues { (key, value) ->
+                when (val literal = writtenLiteral(value)?.value) {
+                    null -> if (value is Expression.Literal) "${OVER_LEAST[key] ?: 0}" else "COALESCE(${number(comparable(json(expression(value, scope))))}, ${OVER_LEAST[key] ?: 0})"
+                    is Long, is Int -> {
+                        // Beside a millisecond or a microsecond given, a microsecond or a nanosecond runs to the next one's.
+                        val beside = when {
+                            key == "nanosecond" && "microsecond" in keys -> "microsecond"
+                            (key == "microsecond" || key == "nanosecond") && "millisecond" in keys -> "millisecond"
+                            else -> null
+                        }
+                        val range = if (beside == null) OVER_RANGES[key] else if (key == "nanosecond" && beside == "millisecond") 0L..999_999L else 0L..999L
+                        if (range != null && (literal as Number).toLong() !in range) {
+                            val besides = beside?.let { " beside a $it" } ?: ""
+                            throw DrivineException("$name() takes ${FIELD_NOUNS[key] ?: "a $key"} from ${range.first} to ${range.last}$besides, not $literal.")
+                        }
+                        "$literal"
+                    }
+                    else -> throw DrivineException("$name() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+            }
+            val timezone = entries["timezone"]?.let { value ->
+                when {
+                    value == Expression.Literal(null) -> throw DrivineException("$name() takes a time zone, not null.")
+                    value is Expression.Literal -> (value.value as? String)?.let { zone(it) } ?: throw DrivineException("$name() takes a time zone, not ${value.value}.")
+                    else -> text(comparable(json(expression(value, scope))))
+                }
+            }
+            // A date of fields written as numbers alone is worked out here, as a map of them is (see calendarDate).
+            if (date == null && calendar != null && calendar.first != "a month") {
+                calendarDate(function, Expression.MapLiteral(written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }))?.let { day ->
+                    fields = fields - Temporals.CALENDAR_FIELDS + mapOf("year" to "${day.year}", "month" to "${day.monthValue}", "day" to "${day.dayOfMonth}")
+                }
+            }
+            return temporals.over(date, time, fields, timezone, kind)
+        }
+
+        /**
+         * The offset's text the time zone [zone] written gives a value, as Neo4j takes one: `Z`, or an offset written `+01:00`.
+         * A zone by name, which no store's text holds yet, is refused; any other text fails.
+         */
+        private fun zone(zone: String): String {
+            val id = runCatching { java.time.ZoneId.of(zone) }.getOrNull()
+            return when {
+                id is java.time.ZoneOffset && Regex("Z|[+-][0-9]{2}:[0-9]{2}").matches(zone) -> "'${id.id}'"
+                id != null && id !is java.time.ZoneOffset -> unsupported("The time zone '$zone'")
+                else -> throw DrivineException("'$zone' is no time zone.")
+            }
+        }
+
+        /**
          * The literal [value] writes as a temporal map's field, `-1`, a negated whole number, as much as `1`: null where an
          * expression gives it, for the store to work out.
          */
@@ -3606,14 +3714,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val millis = "millisecond" in keys || unit == "millisecond"
             val timezone = entries.firstOrNull { it.first == "timezone" }?.let { (_, value) ->
                 if (value == Expression.Literal(null)) throw DrivineException("${function.name}() takes a time zone, not null.")
-                val zone = (value as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a time zone an expression gives")
-                // Neo4j takes an offset written as `Z` or `+01:00` alone, and a zone by name, which no store's text holds yet.
-                val id = runCatching { java.time.ZoneId.of(zone) }.getOrNull()
-                when {
-                    id is java.time.ZoneOffset && Regex("Z|[+-][0-9]{2}:[0-9]{2}").matches(zone) -> "'${id.id}'"
-                    id != null && id !is java.time.ZoneOffset -> unsupported("The time zone '$zone'")
-                    else -> throw DrivineException("'$zone' is no time zone.")
-                }
+                zone((value as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a time zone an expression gives"))
             }
             val numbers = entries.filter { it.first != "timezone" }.associate { (key, value) ->
                 val least = TRUNCATION_LEAST[key] ?: 0
@@ -4857,6 +4958,19 @@ abstract class SqlCypherCompiler(graph: String) {
         val TRUNCATION_RANGES = mapOf(
             "month" to 1L..12L, "day" to 1L..31L, "dayOfWeek" to 1L..7L, "hour" to 0L..23L, "minute" to 0L..59L, "second" to 0L..59L,
             "millisecond" to 0L..999L, "microsecond" to 0L..999_999L,
+        )
+
+        /** The values each field a map laid over another temporal value gives may take, as Neo4j takes them, but for the year: see [fromTemporal]. */
+        val OVER_RANGES = TRUNCATION_RANGES + mapOf(
+            "week" to 1L..53L, "ordinalDay" to 1L..366L, "quarter" to 1L..4L, "dayOfQuarter" to 1L..92L, "nanosecond" to 0L..999_999_999L,
+        )
+
+        /** The least of each field a map laid over another temporal value gives that is not 0, which a field given as null is. */
+        val OVER_LEAST = mapOf("month" to 1, "day" to 1, "week" to 1, "dayOfWeek" to 1, "ordinalDay" to 1, "quarter" to 1, "dayOfQuarter" to 1)
+
+        /** How a message names a field of a temporal value, where not as `a` and its name. */
+        val FIELD_NOUNS = mapOf(
+            "dayOfWeek" to "a day of the week", "hour" to "an hour", "ordinalDay" to "an ordinal day", "dayOfQuarter" to "a day of the quarter",
         )
 
         /** The least of the year and each field of a date by the calendar's other fields, which a field given as null is. */

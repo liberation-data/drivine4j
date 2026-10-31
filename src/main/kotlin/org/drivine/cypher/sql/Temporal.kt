@@ -25,6 +25,9 @@ enum class Temporal(val pattern: String, val zoned: Boolean = false) {
     /** `P1Y2M3W4DT5H6M7.5S`, each part optional and signed, or the whole negated: its parts are read by [DURATION_PARTS]. */
     DURATION("^(-?)P((-?[0-9.]+)Y)?((-?[0-9.]+)M)?((-?[0-9.]+)W)?((-?[0-9.]+)D)?(T((-?[0-9.]+)H)?((-?[0-9.]+)M)?((-?[0-9.]+)S)?)?$");
 
+    /** The name of the function that makes a value of this kind: `date`, `localdatetime`… */
+    val function: String get() = name.lowercase().replace("_", "")
+
     /** Whether a value of this kind is a moment or a time of day, which a duration is added to. */
     val instant: Boolean get() = this != DURATION
 
