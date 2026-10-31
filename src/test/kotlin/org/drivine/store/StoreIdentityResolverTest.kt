@@ -3,21 +3,27 @@ package org.drivine.store
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.connection.DatabaseType
+import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.FalkorDbSchemaGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.store.StoreIdentityResolver.Stamp
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.driver.exceptions.TransientException
+import redis.clients.jedis.exceptions.JedisDataException
 import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -245,6 +251,71 @@ class StoreIdentityResolverTest {
 
         assertSame(refused, assertFailsWith<ClientException> { StoreIdentityResolver(store).resolve() })
         assertEquals(1, store.executed.size)
+    }
+
+    /**
+     * A FalkorDB store where another manager is making the key's constraint: its backing index is already there, so
+     * each `CREATE INDEX` is refused as "already indexed", and its constraint is listed from the [listedFrom]th look
+     * on; never, if null. The first stamp written conflicts with another write, which is written again only under a
+     * constraint confirmed, so [Race.merges] says whether the resolver went on under one.
+     */
+    private class Race(listedFrom: Int?) {
+        var looks = 0
+        var indexCreates = 0
+        var merges = 0
+        private val stamp = CypherStoreStamp("DrivineStore", "key")
+        private val constraint = mapOf("type" to "unique", "label" to "DrivineStore", "properties" to listOf("key"), "entitytype" to "NODE", "status" to "OPERATIONAL")
+        val store = RecordingStore(DatabaseType.FALKORDB, FalkorDbSchemaGrammar()) { ran ->
+            when {
+                "db.constraints()" in ran.statement -> if (++looks >= (listedFrom ?: Int.MAX_VALUE)) listOf(constraint) else emptyList<Any?>()
+                ran.statement.startsWith("CREATE INDEX") -> JedisDataException("Attribute 'key' is already indexed").also { indexCreates++ }
+                ran.statement == stamp.assignIfAbsent ->
+                    if (merges++ == 0) IllegalStateException("Cannot resolve conflicting transactions") else emptyList<Any?>()
+                ran.statement == stamp.readStamps -> listOf(Stamp("store-11", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a constraint refused for what another manager made meanwhile is ensured again, and found, so the stamp is written under it`() {
+        // liberation-data/drivine#489: the loser looks for the winner's constraint before the winner has made it,
+        // having made only its index. It must look again, rather than go on without the constraint, best effort.
+        val race = Race(listedFrom = 3)
+
+        assertEquals("store-11", StoreIdentityResolver(race.store).resolve().id)
+        assertEquals(2, race.indexCreates, "the constraint is ensured again after the refusal: ${race.store.schema}")
+        assertEquals(2, race.merges, "the stamp is written under the constraint, so a conflict is written again")
+    }
+
+    @Test
+    fun `a constraint refused each time for what another manager made is ensured three times at most, then best effort`() {
+        val race = Race(listedFrom = null)
+
+        assertFailsWith<IllegalStateException> { StoreIdentityResolver(race.store).resolve() }
+        assertEquals(3, race.indexCreates, "ensured three times, and no more: ${race.store.schema}")
+        assertEquals(1, race.merges, "without the constraint confirmed, a conflict is not taken for a lost race")
+    }
+
+    @Test
+    fun `only a refusal for what another session made is taken as made meanwhile`() {
+        val falkor = FalkorDbSchemaGrammar()
+        val neo4j = CypherDialect.NEO4J_5.schemaGrammar()
+        val postgres = PostgresSchemaGrammar(PostgresGraph("g"))
+        val oracle = OracleSchemaGrammar(OracleGraph("g"))
+        fun made(e: Throwable, grammar: SchemaGrammar) = StoreIdentityResolver.madeMeanwhile(e, grammar)
+
+        assertTrue(made(RuntimeException(JedisDataException("Attribute 'key' is already indexed")), falkor))
+        assertTrue(made(JedisDataException("Constraint already exists."), falkor))
+        assertTrue(made(SQLException("ERROR: duplicate key value violates unique constraint \"pg_class_relname_nsp_index\"", "23505"), postgres))
+        assertTrue(made(SQLException("ORA-00955: name is already used by an existing object", "42000", 955), oracle))
+
+        // A key that repeats in a graph's rows is a violation, though its detail says "already exists".
+        assertFalse(made(SQLException("ERROR: duplicate key value violates unique constraint \"g_uq_drivinestorekey\"\n  Detail: Key (singleton) already exists.", "23505"), postgres))
+        // An index in the way of the constraint, which ensure replaces itself.
+        assertFalse(made(ClientException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:DrivineStore {key})."), neo4j))
+        assertFalse(made(TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle."), neo4j))
+        assertFalse(made(IllegalStateException("no privilege to manage the schema"), falkor))
     }
 
     @Test

@@ -120,13 +120,15 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersiste
  * [verifyConcurrentFirstBootsAgree] on a store that has never had the key's constraint, so that the
  * managers race to make it too, several rounds over. On Neo4j most of them deadlock making it, and a
  * loser may not see the winner's constraint yet when it looks; its stamp, refused by that constraint,
- * must then be written again rather than fail the boot (#473).
+ * must then be written again rather than fail the boot (#473). On FalkorDB a loser's statement is
+ * instead refused for what the winner made meanwhile ("already indexed"); it must still end up under
+ * the winner's constraint, so no manager may warn that identity is best-effort (liberation-data/drivine#489).
  */
 private fun verifyConcurrentFirstBootsWithoutTheConstraintAgree(
     open: () -> NonTransactionalPersistenceManager,
     wipe: () -> Unit,
     rounds: Int = 5,
-) {
+) = assertNoBestEffortWarning {
     repeat(rounds) {
         open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
         wipe()
