@@ -128,11 +128,19 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         }
     }
 
-    /** [of] the date the timestamp [date] reads where [valid] holds of it, else of the day 0, and the fields of the time [time]. */
+    /**
+     * [of] the date the timestamp [date] reads where [valid] holds of it, else of the day 0, and the fields of the time
+     * [time]. A moment's date is read as a date first: every store fails on a date's day 0, where Oracle reads a moment's
+     * text as a JSON value's, null where it is no moment.
+     */
     private fun calendarDate(date: String, time: Map<String, String>, timezone: String?, kind: Temporal, valid: (String) -> String): String =
         shared(listOf(date)) { (day) ->
             val dayOfMonth = "CASE WHEN NOT (${valid(day)}) THEN 0 ELSE ${sql.extract("DAY", day)} END"
-            of(time + mapOf("year" to sql.extract("YEAR", day), "month" to sql.extract("MONTH", day), "day" to dayOfMonth), timezone, kind)
+            val fields = mapOf("year" to sql.extract("YEAR", day), "month" to sql.extract("MONTH", day), "day" to dayOfMonth)
+            if (kind == Temporal.DATE) of(fields, null, kind)
+            else shared(listOf(sql.local(of(fields, null, Temporal.DATE), Temporal.DATE))) { (checked) ->
+                of(time + mapOf("year" to sql.extract("YEAR", checked), "month" to sql.extract("MONTH", checked), "day" to sql.extract("DAY", checked)), timezone, kind)
+            }
         }
 
     /**

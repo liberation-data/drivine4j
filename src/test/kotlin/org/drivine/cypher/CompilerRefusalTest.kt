@@ -395,6 +395,8 @@ class CompilerRefusalTest {
             "RETURN date({year: 2023, quarter: 5})" to "date() takes a quarter from 1 to 4, not 5.",
             "RETURN date({year: 2024, quarter: 4, dayOfQuarter: 93})" to "date() takes a day of the quarter from 1 to 92, not 93.",
             "RETURN date({year: 2023, week: 2.5})" to "date() takes a whole number for week, not 2.5.",
+            // A year past an Int's, which would wrap round to 2023.
+            "RETURN date({year: 4294969319, week: 1})" to "date() takes no year 4294969319: Invalid value for Year (valid values -999999999 - 999999999): 4294969319",
             "RETURN date({year: '2023', quarter: 2})" to "date() takes a whole number for year, not '2023'.",
             "RETURN localtime({hour: 12, week: 2})" to "localtime() takes no field week.",
             "RETURN time({hour: 12, ordinalDay: 2})" to "time() takes no field ordinalDay.",

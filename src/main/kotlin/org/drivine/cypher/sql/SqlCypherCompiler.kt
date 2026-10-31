@@ -3396,10 +3396,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 throw DrivineException("$name() takes a year beside ${calendars.single().first}.")
             }
             val numbers = written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }.associate { (key, value) ->
-                // `-1` is a negated number, written as much as `1` is.
-                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
-                if (negated == null && value !is Expression.Literal) return null
-                key to when (val literal = negated?.unaryMinus() ?: (value as Expression.Literal).value) {
+                key to when (val literal = (writtenLiteral(value) ?: return null).value) {
                     null -> CALENDAR_LEAST.getValue(key)
                     is Long -> literal
                     is Int -> literal.toLong()
@@ -3411,24 +3408,34 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (it !in 1L..last) throw DrivineException("$name() takes $label from 1 to $last$of, not $it.")
             }
             return try {
+                // A year past java.time's, as Neo4j's, fails here, where toInt() would wrap it into range.
+                val y = java.time.temporal.ChronoField.YEAR.checkValidIntValue(year)
                 when {
                     "week" in keys -> {
-                        val monday = java.time.LocalDate.of(year.toInt(), 1, 4).with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1)
+                        val monday = java.time.LocalDate.of(y, 1, 4).with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1)
                         monday.plusDays((field("week", "a week", 53) - 1) * 7 + field("dayOfWeek", "a day of the week", 7) - 1)
                     }
                     "ordinalDay" in keys -> {
-                        val first = java.time.LocalDate.of(year.toInt(), 1, 1)
+                        val first = java.time.LocalDate.of(y, 1, 1)
                         first.plusDays(field("ordinalDay", "an ordinal day", first.lengthOfYear().toLong(), " in $year") - 1)
                     }
                     else -> {
                         val quarter = field("quarter", "a quarter", 4)
-                        java.time.LocalDate.of(year.toInt(), ((quarter - 1) * 3 + 1).toInt(), 1).plusDays(field("dayOfQuarter", "a day of the quarter", 92) - 1)
+                        java.time.LocalDate.of(y, ((quarter - 1) * 3 + 1).toInt(), 1).plusDays(field("dayOfQuarter", "a day of the quarter", 92) - 1)
                     }
                 }
             } catch (e: java.time.DateTimeException) {
                 throw DrivineException("$name() takes no year $year: ${e.message}", e)
             }
         }
+
+        /**
+         * The literal [value] writes as a temporal map's field, `-1`, a negated whole number, as much as `1`: null where an
+         * expression gives it, for the store to work out.
+         */
+        private fun writtenLiteral(value: Expression): Expression.Literal? =
+            (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }
+                ?.let { (it.operand as? Expression.Literal)?.value as? Long }?.let { Expression.Literal(-it) } ?: value as? Expression.Literal
 
         /**
          * The fields the map [written], the third argument of [function], gives the value of [kind] it truncates, in place
@@ -3467,9 +3474,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             val numbers = entries.filter { it.first != "timezone" }.associate { (key, value) ->
                 val least = TRUNCATION_LEAST[key] ?: 0
-                // `-1` is a negated number, written as much as `1` is.
-                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
-                val number = when (val literal = negated?.unaryMinus() ?: (value as? Expression.Literal)?.value) {
+                val number = when (val literal = writtenLiteral(value)?.value) {
                     null -> if (value is Expression.Literal) "$least" else "COALESCE(${number(comparable(json(expression(value, scope))))}, $least)"
                     is Long, is Int -> {
                         val range = if (key == "microsecond" && millis) 0L..999L else TRUNCATION_RANGES[key]

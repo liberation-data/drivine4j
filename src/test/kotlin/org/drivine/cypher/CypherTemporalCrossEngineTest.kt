@@ -335,6 +335,10 @@ abstract class CypherTemporalContract {
             "UNWIND [[2020, 54]] AS p RETURN date({year: p[0], week: p[1]})",
             "UNWIND [[2023, 2, 0]] AS p RETURN date({year: p[0], week: p[1], dayOfWeek: p[2]})",
             "UNWIND [[2024, 4, 93]] AS p RETURN date({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
+            // A moment's too, which Oracle reads as a JSON value's, null where it is no moment.
+            "UNWIND [[2023, 366]] AS p RETURN localdatetime({year: p[0], ordinalDay: p[1], hour: 3})",
+            "UNWIND [[2020, 54]] AS p RETURN datetime({year: p[0], week: p[1], timezone: '+01:00'})",
+            "UNWIND [[2024, 4, 93]] AS p RETURN localdatetime({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
         ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
     }
 
