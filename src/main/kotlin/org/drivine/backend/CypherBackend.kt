@@ -324,13 +324,20 @@ internal class CypherBackend(
         require(supportsSeek || query.seekValues.isEmpty()) {
             "seek is only supported by loadAll; this operation would ignore the cursor"
         }
-        return queryContext(graphClass, query.conditions)
+        return queryContext(graphClass, query.conditions, query.depthOverrides)
     }
 
-    /** [conditions] as a where clause of a statement over [graphClass]. */
-    private fun queryContext(graphClass: Class<*>, conditions: List<WhereCondition>): QueryContext {
+    /**
+     * [conditions] as a where clause of a statement over [graphClass]. A condition on a relationship field
+     * walks as deep as the load reads it, to the depth [depthOverrides] give for it where they do.
+     */
+    private fun queryContext(graphClass: Class<*>, conditions: List<WhereCondition>, depthOverrides: Map<String, Int> = emptyMap()): QueryContext {
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
-        val whereResult = if (conditions.isNotEmpty()) CypherGenerator.buildWhereClause(conditions, viewModel, grammar) else null
+        val whereResult = if (conditions.isNotEmpty()) {
+            CypherGenerator.buildWhereClause(conditions, viewModel, grammar, projectedCollectionMode = false, startIndex = 0, depthOverrides = depthOverrides)
+        } else {
+            null
+        }
         val bindings = CypherGenerator.extractBindings(conditions, viewModel)
         return QueryContext(
             viewModel, whereResult?.whereClause, bindings,
