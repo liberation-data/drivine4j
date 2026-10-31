@@ -206,6 +206,8 @@ abstract class SqlCypherCompiler(graph: String) {
         val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
         // Every query's names, before any is compiled: a name made in one is no variable of a later one's.
         writer.give(query)
+        // Its rows are compared, as a UNION without ALL compares them: see [Writer.distinctParts].
+        writer.distinctParts = !query.unions.first().all
         val rows = parts.mapIndexed { i, clauses ->
             "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
         }.joinToString("\nUNION ALL\n")
@@ -444,6 +446,25 @@ abstract class SqlCypherCompiler(graph: String) {
      * comes, then the value. A value the statement makes of one kind sorts by [sortKey] alone.
      */
     protected open fun openSortKey(json: String): List<String> = listOf(sortKey(json))
+
+    /**
+     * [openSortKey] of a value that may be JSON's null ([Value.Json.jsonNull]): JSON's null ties with SQL's, as Cypher has one
+     * null, so a term after it decides their order (#500). Where a store's [openSortKey] does not tie them already, it says so.
+     */
+    protected open fun jsonNullSortKey(json: String): List<String> = openSortKey(json)
+
+    /**
+     * The JSON value [json], JSON's null read as SQL's, where rows are given by it to a `UNION` that compares them, and by default
+     * where they are grouped or kept distinct ([groupedNull]): as [nullIfJsonNull],
+     * but where a store binds a long value in a subquery there, which no store groups by, written out where it is read.
+     */
+    protected open fun comparedNull(json: String): String = nullIfJsonNull(json)
+
+    /**
+     * The JSON value [json] as rows are grouped or kept distinct by it, JSON's null and SQL's one: as [comparedNull], but where a
+     * store makes them one more cheaply in a value that each row reads alike, as SQL's null read as JSON's, it says so (#500).
+     */
+    protected open fun groupedNull(json: String): String = comparedNull(json)
 
     /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
@@ -841,6 +862,12 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The variables made here for a randomUUID() made first, for each row: no variable of the statement's, though one may be quoted as named alike. */
         private val madeAnew = mutableSetOf<String>()
 
+        /**
+         * Whether the query compiled is a part of a `UNION` without ALL, whose rows are compared as a whole: there a value that may
+         * be JSON's null ([Value.Json.jsonNull]) is given as SQL's, as Cypher has one null (#500).
+         */
+        var distinctParts = false
+
         /** The queries given to compile, [query] and [procedure], whose names [hidden] keeps clear of, not yet in [queryTexts]. */
         private val queries = mutableListOf<Query>()
 
@@ -1039,12 +1066,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 val distinct = !query.unions.first().all
                 val order = rowOrder
                 try {
-                    return (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
-                        var select = Select(scope)
-                        clauses.dropLast(1).forEach { select = read(select, it, scope) }
-                        val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
-                        val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
-                        "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                    return comparingParts(distinct) {
+                        (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
+                            var select = Select(scope)
+                            clauses.dropLast(1).forEach { select = read(select, it, scope) }
+                            val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
+                            val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
+                            "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                        }
                     }
                 } finally {
                     rowOrder = order
@@ -1162,6 +1191,17 @@ abstract class SqlCypherCompiler(graph: String) {
             return "(${boundSelect(columns.joinToString(", "))}) $name" to named.associate { (variable, value, column) -> variable to value.columnsOf(name, column) }
         }
 
+        /** [work], its parts of a `UNION` compared as a whole where [distinct] ([distinctParts]), as it was after. */
+        private fun <T> comparingParts(distinct: Boolean, work: () -> T): T {
+            val was = distinctParts
+            distinctParts = distinct
+            try {
+                return work()
+            } finally {
+                distinctParts = was
+            }
+        }
+
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
         private fun calledUnion(select: Select, call: Clause.Call): Projected {
             val query = call.query
@@ -1172,7 +1212,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val names = returns.first().projection.items.map { it.name }
             if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
             val distinct = !query.unions.first().all
-            var projected = parts.map { calledPart(select, call, it, names, distinct) }
+            var projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
             if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
             // A map or a list that holds a node carries a column more, of its identity. Where one query's value has it and
             // another's has none, as `collect([r])` beside `[]`, the queries are compiled again without identities, so their
@@ -1181,7 +1221,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val was = identities
                 identities = false
                 try {
-                    projected = parts.map { calledPart(select, call, it, names, distinct) }
+                    projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
                 } finally {
                     identities = was
                 }
@@ -1227,12 +1267,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elementsOf(list, items, name))
-            // An item of a list that holds no null holds none; of a list of texts, or of a text, is a text.
+            // An item of a list that holds no null holds none, nor is JSON's null; of a list of texts, or of a text, is a text.
             select.bind(
                 unwind.variable,
                 Value.Json(
                     item(name), temporal = itemsOf(list), items = itemItemsOf(list), temporals = itemTemporalsOf(list), list = holdsLists(list), flat = isFlat(list),
-                    text = holdsTexts(list) || isText(list), fromList = true,
+                    text = holdsTexts(list) || isText(list), fromList = true, jsonNull = !isFlat(list),
                 ),
             )
             select.order += itemNo(name) to false
@@ -2206,9 +2246,9 @@ abstract class SqlCypherCompiler(graph: String) {
             rowOrder = orderOf(select)
             val compiled = items.map { item -> item.name to aggregating(item.expression) { item(item.expression, select) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
-            // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
+            // Where rows are compared (DISTINCT, GROUP BY), each item is compared as [compared] has it.
             val compared = projection.distinct || aggregating
-            val columns = compiled.mapIndexed { i, (_, value) -> "c${i + 1}" to (if (compared && value is Value.Json && value.ordered) value.copy(sql = comparable(value), ordered = false) else value) }
+            val columns = compiled.mapIndexed { i, (_, value) -> "c${i + 1}" to (if (compared) compared(value) else value) }
             val selectList = columns.flatMap { (column, value) -> value.columns(column) }.toMutableList()
             // An order is written over the items' names, and where nothing is grouped or kept distinct, the variables too.
             val name = alias("p")
@@ -2241,7 +2281,8 @@ abstract class SqlCypherCompiler(graph: String) {
                         after[column] = sortable(expression(sort.expression, itemColumns))
                         sortsAnew = true
                     }
-                    item >= 0 -> carried(column, { compiled[item].second }, sort.expression)
+                    // One that may be JSON's null, where rows are compared, as its column is grouped by: see [compared].
+                    item >= 0 -> carried(column, { compiled[item].second.let { if (compared && mayBeJsonNull(it)) columns[item].second else it } }, sort.expression)
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
                     // Where rows are grouped, so is one whose every aggregate and key is an item, each such part read by its item's
@@ -2296,7 +2337,10 @@ abstract class SqlCypherCompiler(graph: String) {
             val order = sorts.flatMap { (column, descending) -> sortedBy(column).map { (named, _) -> named to descending } }
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
-                val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
+                // A value that may be JSON's null is given as SQL's where a UNION compares rows by it; in a row of several, a list's item,
+                // SQL's null is JSON's (#500).
+                val result = if (values.size == 1) values.single().let { if (distinctParts && it.jsonNull) comparedNull(it.sql) else it.sql }
+                else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
@@ -2314,6 +2358,19 @@ abstract class SqlCypherCompiler(graph: String) {
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
             val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
             return Projected(outer, scope, order, kinds)
+        }
+
+        /**
+         * [value] as rows are compared by it, where they are grouped or kept distinct: JSON as what compares, and JSON's null,
+         * which a value read out of a map or a list may be ([Value.Json.jsonNull]), and SQL's as one, as Cypher has one null (#500).
+         * It may still be JSON's null, as Oracle's [groupedNull] gives it, so it is still read as one that may be. In a part of a
+         * `UNION` that compares rows ([distinctParts]) it is SQL's, as another part's value that is never JSON's null gives it.
+         */
+        private fun compared(value: Value): Value = when {
+            value !is Value.Json -> value
+            value.jsonNull -> comparable(value).let { value.copy(sql = if (distinctParts) comparedNull(it) else groupedNull(it), ordered = false) }
+            value.ordered -> value.copy(sql = comparable(value), ordered = false)
+            else -> value
         }
 
         /**
@@ -2613,7 +2670,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val held = items.filter { item ->
                 !contains(item.expression, ::isAggregate) && (
                     contains(item.expression) { it is Expression.Parameter } ||
-                        expression(item.expression, select.scope).groupKeys().any { it.contains("SELECT", ignoreCase = true) }
+                        compared(expression(item.expression, select.scope)).groupKeys().any { it.contains("SELECT", ignoreCase = true) }
                     )
             }
             if (held.isEmpty()) return null
@@ -2904,11 +2961,12 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun evaluate(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
-            is Expression.Literal -> Value.Json(literalJson(expression.value), text = expression.value is String)
+            // A null written is JSON's null, as a map's is: see [Value.Json.jsonNull].
+            is Expression.Literal -> Value.Json(literalJson(expression.value), text = expression.value is String, jsonNull = expression.value == null)
             is Expression.Parameter ->
                 givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
-            is Expression.Property -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), expression.key)
+            is Expression.Property -> inParameter(expression)?.let { Value.Json(it, jsonNull = true) } ?: property(expression(expression.subject, scope), expression.key)
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
                 is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
@@ -2963,7 +3021,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 val at = comparable(json(expression(index, scope)))
                 val known = known(index)
                 when {
-                    known is String -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), known)
+                    known is String -> inParameter(expression)?.let { Value.Json(it, jsonNull = true) }
+                        ?: property(expression(expression.subject, scope), known)
                     // An item of a list of nodes or relationships is the node or the relationship, so it is compared by its id;
                     // of one collect gathers in this query, its properties, for a store reads no aggregate from a subquery. A
                     // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
@@ -2972,7 +3031,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     known is Number -> element(subject(), at).let { item ->
                         Value.Json(
                             item, temporal = itemsOf(listed), items = itemItemsOf(listed), identity = identityOf(listed, item, true) { element(it, at) },
-                            list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed),
+                            list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed), jsonNull = !isFlat(listed),
                         )
                     }
                     else -> {
@@ -2984,7 +3043,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         item(subject()).let { taken ->
                             Value.Json(
                                 taken, temporal = itemsOf(listed), items = itemItemsOf(listed), identity = identityOf(listed, taken, true, ::item),
-                                list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed),
+                                list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed), jsonNull = !isFlat(listed),
                             )
                         }
                     }
@@ -3035,6 +3094,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     ),
                     // It may hold what its start, its list or a value of the row its step reads holds (#347).
                     temporals = hasTemporals(start) || hasTemporals(listed) || read.any { hasTemporals(scope.getValue(it)) },
+                    // Its step may give JSON's null, as a null written or read from a map does.
+                    jsonNull = true,
                 )
             }
             is Expression.PatternComprehension -> {
@@ -3247,7 +3308,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     // One of a kind known other than a map is left to property(), which refuses it.
                     is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames &&
                         (subject.known == null || subject.known == Value.Known.MAP))
-                        return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals)
+                        return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals, jsonNull = !subject.flat)
                     else -> {}
                 }
             }
@@ -3260,9 +3321,9 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
             // A value the statement writes as one of a kind other than a map has none, as Neo4j says when it plans the statement.
             is Value.Json -> subject.known?.takeIf { it != Value.Known.MAP }?.let { throw DrivineException("${it.noun.replaceFirstChar(Char::uppercase)} has no properties.") }
-                ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
+                ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key, jsonNull = !subject.flat) }
                 ?: propertyOf(comparable(subject), key).let { taken ->
-                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals)
+                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals, jsonNull = !subject.flat)
                 }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
@@ -4197,9 +4258,12 @@ abstract class SqlCypherCompiler(graph: String) {
             return Value.Json(
                 sql, temporal = kindOf(results), items = itemKindOf(results), identity = identity, temporals = results.any { hasTemporals(it.second) },
                 list = results.all { isList(it.second) }, itemLists = results.all { holdsLists(it.second) },
-                text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) },
+                text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) }, jsonNull = results.any { mayBeJsonNull(it.second) },
             )
         }
+
+        /** Whether [value] may be JSON's null: see [Value.Json.jsonNull]. */
+        private fun mayBeJsonNull(value: Value) = (value as? Value.Json)?.jsonNull == true
 
         private fun function(function: Expression.Function, scope: Map<String, Value>): Value {
             val arguments = function.arguments.map { expression(it, scope) }
@@ -4401,7 +4465,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         items = if (taken) itemItemsOf(one()) else null,
                         identity = if (taken) identityOf(one(), result, true) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
                         list = taken && holdsLists(one()), temporals = taken && itemTemporalsOf(one()),
-                        text = if (taken) holdsTexts(one()) else name in TEXT_FUNCTIONS,
+                        text = if (taken) holdsTexts(one()) else name in TEXT_FUNCTIONS, jsonNull = taken && !isFlat(one()),
                     )
                 }
             }
@@ -4605,6 +4669,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
             isList(value) -> comparable(json(value)) to { listOf(listSortKey(it)) }
             value !is Value.Json || value.temporal != null || isText(value) -> comparable(json(value)) to { listOf(sortKey(it)) }
+            mayBeJsonNull(value) -> comparable(json(value)) to { jsonNullSortKey(it) }
             else -> comparable(json(value)) to { openSortKey(it) }
         }
     }
