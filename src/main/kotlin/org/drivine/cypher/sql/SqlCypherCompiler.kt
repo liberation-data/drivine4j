@@ -2678,22 +2678,72 @@ abstract class SqlCypherCompiler(graph: String) {
             fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
                 if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
             }
-            // A list comprehension's WHERE reads a key by its name too, where it binds no variable the key reads. In its projection,
-            // a quantifier's WHERE or a reduce's step, Neo4j groups by each variable the key reads as well, so the body is kept as it
-            // is, and those variables beside: `[t IN collect(m.title) | r.role]` beside `r.role` gives a row for each `r`.
-            fun rekeyed(term: Expression, bound: Set<String> = emptySet()): Expression = replaced(term) { part ->
+            // [term] with each key in it read as [key] reads it, in a comprehension's, a quantifier's or a reduce's body too, where
+            // the body binds no variable the key reads.
+            fun readingKeys(term: Expression, bound: Set<String>, key: (Expression) -> Expression?): Expression = replaced(term) { part ->
+                fun inBody(body: Expression?, vararg names: String) = body?.let { readingKeys(it, bound + names, key) }
                 when {
-                    (bound.isEmpty() || part in keys) && variablesIn(part).none { it in bound } && kept(part) != null -> kept(part)
-                    part is Expression.ListComprehension && part.where != null ->
-                        part.copy(list = rekeyed(part.list, bound), where = rekeyed(part.where, bound + part.variable))
+                    variablesIn(part).none { it in bound } && key(part) != null -> key(part)
+                    part is Expression.ListComprehension -> part.copy(
+                        list = readingKeys(part.list, bound, key),
+                        where = inBody(part.where, part.variable),
+                        projection = inBody(part.projection, part.variable),
+                    )
+                    part is Expression.Quantifier -> part.copy(list = readingKeys(part.list, bound, key), where = inBody(part.where, part.variable))
+                    part is Expression.Reduce -> part.copy(
+                        initial = readingKeys(part.initial, bound, key),
+                        list = readingKeys(part.list, bound, key),
+                        expression = inBody(part.expression, part.accumulator, part.variable)!!,
+                    )
                     else -> null
                 }
             }
-            val rekeyedItems = items.map { it.copy(expression = rekeyed(it.expression)) }
-            // An order term that aggregates may name a key too, by the variable the projection groups by.
-            val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
+            // Neo4j reads `any(y IN list WHERE y = e)` as `e IN list`, and `none(…)` as `NOT e IN list`, where `e` reads no `y`;
+            // `y IN [e]` is `y = e` to it.
+            fun readAsIn(part: Expression.Quantifier): Boolean {
+                val where = part.where as? Expression.Binary ?: return false
+                fun compared(left: Expression, right: Expression) = when (Expression.Variable(part.variable)) {
+                    left -> right
+                    right -> left
+                    else -> null
+                }
+                val compared = when (where.operator) {
+                    Expression.Binary.Operator.EQUALS -> compared(where.left, where.right)
+                    Expression.Binary.Operator.IN -> (where.right as? Expression.ListLiteral)?.items?.singleOrNull()?.let { compared(where.left, it) }
+                    else -> null
+                }
+                return part.kind in setOf(Expression.Quantifier.Kind.ANY, Expression.Quantifier.Kind.NONE) && compared != null && part.variable !in variablesIn(compared)
+            }
+            // As Neo4j reads a key in an item that aggregates: by its name in a part that holds no aggregate, and in a list
+            // comprehension's WHERE, all through. In the projection of a comprehension over an aggregate, or the WHERE of a
+            // quantifier or the step of a reduce over one, Neo4j groups by each variable the key reads as well, so the body is kept
+            // as it is, and those variables beside: `[t IN collect(m.title) | r.role]` beside `r.role` gives a row for each `r`,
+            // where `[t IN collect(m.title) WHERE t STARTS WITH r.role]` and `count(*) + [y IN [1] | r.role][0]` give one for each
+            // role, and so does `any(t IN collect(m.title) WHERE t = r.role)`, which Neo4j reads as `r.role IN collect(m.title)`.
+            // [read] reads a key or an aggregate, and [key] a key in a body.
+            fun rekeyed(term: Expression, read: (Expression) -> Expression?, key: (Expression) -> Expression?): Expression = replaced(term) { part ->
+                read(part) ?: when {
+                    !contains(part, ::isAggregate) -> readingKeys(part, emptySet(), key)
+                    part is Expression.ListComprehension && part.where != null ->
+                        part.copy(list = rekeyed(part.list, read, key), where = readingKeys(part.where, setOf(part.variable), key))
+                    part is Expression.Quantifier && readAsIn(part) ->
+                        part.copy(list = rekeyed(part.list, read, key), where = readingKeys(part.where!!, setOf(part.variable), key))
+                    else -> null
+                }
+            }
+            val keyOf = { part: Expression -> if (part in keys) kept(part) else null }
+            val rekeyedItems = items.map { it.copy(expression = rekeyed(it.expression, ::kept, keyOf)) }
+            // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
+            // a variable an item is named after is that item, not the variable of that name before it. In a body, as an item reads it.
+            val itemNames = items.associate { it.expression to it.name }
+            val asItem = { term: Expression -> if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) }
+            val rekeyedOrder = projection.orderBy.map { sort -> sort.copy(expression = rekeyed(sort.expression, { asItem(it) ?: kept(it) }, { asItem(it) ?: keyOf(it) })) }
+            // An order term that aggregates may name a key too, by the variable the projection groups by; or, as an item does, the
+            // variable of a key that is a property, in a body that groups by it.
+            val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name } + properties.flatMap(::variablesIn)
             val beside = (items.zip(rekeyedItems).filter { (item, _) -> contains(item.expression, ::isAggregate) }.flatMap { (_, item) -> named(item.expression) } +
-                projection.orderBy.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) }.filter { it in keyed })
+                projection.orderBy.zip(rekeyedOrder).filter { (sort, _) -> contains(sort.expression, ::isAggregate) }.flatMap { (_, sort) -> named(sort.expression) }
+                    .filter { it in keyed })
                 .distinct().filter { it in select.scope }
             val grouped = Projection(
                 distinct = false,
@@ -2704,20 +2754,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 skip = null,
                 limit = null,
             )
-            // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
-            // a variable an item is named after is that item, not the variable of that name before it.
-            val itemNames = items.associate { it.expression to it.name }
-            val kept = projection.copy(
-                star = false,
-                items = rekeyedItems,
-                orderBy = projection.orderBy.map { sort ->
-                    sort.copy(
-                        expression = replaced(sort.expression) { term ->
-                            if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
-                        },
-                    )
-                },
-            )
+            val kept = projection.copy(star = false, items = rekeyedItems, orderBy = rekeyedOrder)
             return with(select, Clause.With(grouped, null)) to kept
         }
 
