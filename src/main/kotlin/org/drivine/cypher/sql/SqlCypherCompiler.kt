@@ -885,13 +885,16 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * A reading clause over the rows [select] reads, and the rows the clauses after it read: a `WITH` is a query
-         * of its own. [outer] is what a subquery reads from the row it is in.
+         * of its own. [outer] is what a subquery reads from the row it is in. A `WITH *` alone where nothing is bound passes
+         * on nothing, as Neo4j has it, and is left out: SQL has no query of no column (#472).
          */
         private fun read(select: Select, clause: Clause, outer: Map<String, Value> = emptyMap()): Select = when (clause) {
             is Clause.Match -> match(select, clause)
             is Clause.Unwind -> anewBefore(select, listOf(clause.list), whole = true)
                 ?.let { (made, read) -> made.also { unwind(it, clause.copy(list = read.single())) } } ?: select.also { unwind(it, clause) }
-            is Clause.With -> with(select, clause, outer)
+            is Clause.With ->
+                if (clause.where == null && clause.projection == Projection(false, true, emptyList(), emptyList(), null, null) && select.bound.keys.all { it in madeAnew }) select
+                else with(select, clause, outer)
             is Clause.Call -> anewCall(select, clause)
             else -> error("${clause::class.simpleName} reads nothing")
         }
@@ -1039,7 +1042,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * them, where a `UNION` names them so, and kept distinct with [distinct]. It sees only the variables of the row it
          * imports ([VariableKinds.imports]): any other name in it is a new variable, as in Cypher (#410). What its brackets
          * import it sees throughout, after a `WITH` that does not pass it on too, as Neo4j has it; what a leading `WITH`
-         * imports is gone after one.
+         * imports is gone after one. A leading `WITH *` passes on what it imports ([starredImports]).
          */
         private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
             val imported = calledScope(call, clauses, select.scope)
@@ -1048,11 +1051,30 @@ abstract class SqlCypherCompiler(graph: String) {
                 inner.source(source)
                 imports.forEach(inner::bind)
             }
-            val outer = if (call.imports != null || call.importsAll) imported else emptyMap()
-            clauses.dropLast(1).forEach { inner = read(inner, it, outer) }
+            val bracketed = call.imports != null || call.importsAll
+            val outer = if (bracketed) imported else emptyMap()
+            val reading = if (bracketed) clauses.dropLast(1) else starredImports(clauses.dropLast(1), imported.keys)
+            reading.forEach { inner = read(inner, it, outer) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * The reading [clauses] of a `CALL { … }` without brackets, its leading `WITH *` naming each variable it [imports] in
+         * place of its star (#472): those are no variables its query binds, so the star gave none of them, and was refused
+         * where nothing else was bound. Not one the compiler made (see `anewCall`), which the statement never named. Where it
+         * imports none, the `WITH` is as it was, and passes on nothing ([read]). With brackets, Neo4j's star gives none of what
+         * they import, which the query sees throughout anyway, so their clauses are as they were.
+         */
+        private fun starredImports(clauses: List<Clause>, imports: Set<String>): List<Clause> {
+            val leading = clauses.indexOfFirst { !(it is Clause.Unwind && it.variable in madeAnew) }
+            val with = clauses.getOrNull(leading) as? Clause.With ?: return clauses
+            val named = imports.filterNot { it in madeAnew }.sorted()
+            if (!with.projection.star || named.isEmpty()) return clauses
+            val items = named.filter { name -> with.projection.items.none { it.name == name } }.map { Projection.Item(Expression.Variable(it), it) }
+            val replaced = with.copy(projection = with.projection.copy(star = false, items = items + with.projection.items))
+            return clauses.subList(0, leading) + replaced + clauses.subList(leading + 1, clauses.size)
         }
 
         /**
