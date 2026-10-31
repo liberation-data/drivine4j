@@ -52,13 +52,8 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
-    fun `a write's rows group a map's null and a missing key as one null, and keep it once`() {
-        // #500: until the spec holds these, held here. The rows are Neo4j's (2026.10).
-        assertEquals(
-            listOf(listOf(null, 2L)),
-            query("UNWIND \$rows AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c", mapOf("rows" to listOf(mapOf("a" to null), mapOf("b" to 1L)))),
-        )
-        assertEquals(listOf(null), query("UNWIND [{a: null}, {b: 1}] AS r CREATE (:CyWrite {b: 9}) WITH r RETURN DISTINCT r.a AS a"))
+    fun `a write's rows group a key's value that is no null as before`() {
+        // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
     }
 

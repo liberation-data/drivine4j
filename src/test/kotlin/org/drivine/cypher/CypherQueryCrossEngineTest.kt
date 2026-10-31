@@ -2655,37 +2655,13 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a WITH star at the start of a CALL passes on what the CALL imports, and nothing where nothing is bound`() {
-        // #472: until the spec holds these (drivine-cypher-spec#35), held here. The star expanded to the variables the CALL's
-        // first query bound, not those it imported, so it was refused with "A projection has at least one item" unless an
-        // aggregate had bound them; and a WITH * where nothing was bound was refused so. The rows are Neo4j's (2026.10).
+        // #472: the star expanded to the variables the CALL's first query bound, not those it imported, so it was refused with
+        // "A projection has at least one item" unless an aggregate had bound them; and a WITH * where nothing was bound was
+        // refused so. The spec holds the rest. The rows are Neo4j's (2026.10).
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
-        assertEquals(listOf(1L, 2L), query("UNWIND [1, 2] AS i CALL { WITH * RETURN i AS x } RETURN x"))
-        assertEquals(listOf(1L, 2L), query("UNWIND [1, 2] AS i CALL (*) { WITH * RETURN i AS x } RETURN x"))
-        assertEquals(listOf(1L, 2L), query("UNWIND [1, 2] AS i CALL (i) { WITH * RETURN i AS x } RETURN x"))
-        assertEquals(listOf(10L, 20L), query("UNWIND [1, 2] AS i CALL (i) { WITH * WITH * RETURN i * 10 AS x } RETURN x"))
-        assertEquals(listOf(3L), query("UNWIND [1] AS i WITH i, 2 AS j CALL { WITH * RETURN i + j AS x } RETURN x"))
-        assertEquals(listOf(6L), query("UNWIND [1] AS i CALL { WITH * UNWIND [5] AS k WITH * RETURN i + k AS x } RETURN x"))
-        assertEquals(listOf("Carrie", "Hugo", "Keanu", "Laurence"), query("MATCH (p:Person) CALL { WITH * RETURN p.name AS n } RETURN n ORDER BY n"))
-        assertEquals(listOf(1L, 2L, 10L, 20L), query("UNWIND [1, 2] AS i CALL { WITH * RETURN i AS x UNION WITH * RETURN i * 10 AS x } RETURN x ORDER BY x"))
-        assertEquals(listOf(1L), query("UNWIND [1] AS i CALL { WITH * CALL { WITH * RETURN i AS y } RETURN y AS x } RETURN x"))
-        assertEquals(listOf(listOf(1L, null), listOf(2L, 2L)), query("UNWIND [1, 2] AS i OPTIONAL CALL { WITH * WITH * WHERE i > 1 RETURN i AS x } RETURN i, x"))
-        // A star gives none of what brackets import, which the CALL sees throughout anyway.
-        assertEquals(listOf(listOf(1L, 1L), listOf(2L, 1L)), query("UNWIND [1, 2] AS i CALL (i) { WITH 1 AS one WITH * RETURN * } RETURN *"))
-        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 2L)), query("UNWIND [1, 2] AS i CALL (i) { WITH *, 2 AS y RETURN * } RETURN *"))
-        // Where nothing is bound, a WITH * passes on nothing.
-        assertEquals(listOf(1L), query("CALL { WITH * RETURN 1 AS x } RETURN x"))
-        assertEquals(listOf(1L), query("CALL (*) { WITH * RETURN 1 AS x } RETURN x"))
-        assertEquals(listOf(listOf(1L, 1L)), query("UNWIND [1] AS i CALL () { WITH * RETURN 1 AS x } RETURN i, x"))
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("UNWIND [1, 2] AS i CALL () { WITH * WITH * RETURN 3 AS x } RETURN i, x"))
-        assertEquals(listOf(1L), query("WITH * RETURN 1 AS x"))
-        assertThrows<Exception> { query("UNWIND [1] AS i CALL () { WITH * RETURN i AS x } RETURN x") }
         // Its WHERE is met still, on the rows it reads; with DISTINCT, an order, SKIP or LIMIT it is refused, not left out.
-        assertEquals(emptyList<Any?>(), query("WITH * WHERE false RETURN 1 AS x"))
         assertEquals(listOf(1L), query("WITH * WHERE true RETURN 1 AS x"))
-        assertEquals(listOf(1L), query("RETURN 1 AS x UNION ALL WITH * WHERE false RETURN 2 AS x"))
-        assertEquals(emptyList<Any?>(), query("UNWIND [1, 2] AS i CALL () { WITH * WHERE false RETURN 1 AS x } RETURN i, x"))
-        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL (i) { WITH * WHERE i > 1 RETURN i AS x } RETURN x"))
         // Neo4j gives [], [], [] and [1, 2] for these.
         if (pm.type != DatabaseType.NEO4J) {
             assertThrows<Exception> { query("WITH * LIMIT 0 RETURN 1 AS x") }
@@ -2693,8 +2669,6 @@ abstract class CypherQueryContract {
             assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH * LIMIT 0 RETURN i AS x } RETURN x") }
             assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH DISTINCT * RETURN i AS x } RETURN x") }
         }
-        // A RETURN * of the CALL returns what it imports, which the row holds already.
-        assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL { WITH * RETURN * } RETURN i") }
         // Made for each row, beside a randomUUID(): not the compiler's own variables (#412), which no star shows.
         assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL { WITH * RETURN toString(i) + randomUUID() AS u } RETURN count(DISTINCT u) AS n"))
         assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL () { WITH * RETURN toUpper(randomUUID()) AS u } RETURN count(DISTINCT u) AS n"))
@@ -2714,68 +2688,13 @@ abstract class CypherQueryContract {
 
     @Test
     fun `an aggregate in the WHERE of a WITH that aggregates or is DISTINCT filters its groups, as Neo4j does`() {
-        // #497: refused since #490, as an aggregate in any WHERE is, though Neo4j runs it. Until the spec holds these
-        // (drivine-cypher-spec#41, "Aggregate in the WHERE of a WITH that groups"), held here. The rows are Neo4j's (2026.10.1);
-        // where it gives them in no order of the statement's, they are compared in any order.
+        // #497: refused since #490, as an aggregate in any WHERE is, though Neo4j runs it. The spec holds the rest ("Aggregate in
+        // the WHERE of a WITH that groups"). The rows are Neo4j's (2026.10.1); where it gives them in no order of the statement's,
+        // they are compared in any order.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         fun rows(vararg rows: Any?) = rows.toList()
         val ordered = listOf(
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 RETURN i" to rows(1L),
-            "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE j > count(*) RETURN j" to rows(2L),
-            // An aggregate no item is, over each group's rows; one an item is, by the item's name or written again.
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE max(i) > 1 RETURN i, c" to rows(listOf(2L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE avg(i) >= 1.5 RETURN i, c" to rows(listOf(2L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size(collect(i)) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size(collect(DISTINCT i)) = 1 AND count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE max(i) + count(*) > 2 RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE max(m.released) > p.born + 37 RETURN p.name, c ORDER BY p.name" to
-                rows(listOf("Keanu", 3L), listOf("Laurence", 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE c = count(*) RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, collect(m.title) AS ts WHERE size(collect(m.title)) > 1 RETURN p.name ORDER BY p.name" to
-                rows("Carrie", "Keanu"),
-            // Beside a condition on a key, in a CASE, and as the list a quantifier reads.
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE i > 1 OR count(*) > 1 RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE i > 1 AND count(*) > 1 RETURN i, c" to rows(),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE CASE WHEN count(*) > 1 THEN true ELSE false END RETURN i, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN collect(i) WHERE x > 1) RETURN i, c" to rows(listOf(2L, 1L)),
-            // With no key, the rows are one group, an empty one where there are none.
-            "UNWIND [1, 2, 3] AS i WITH count(*) AS c WHERE sum(i) > 2 RETURN c" to rows(3L),
-            "UNWIND [1, 2, 3] AS i WITH count(*) AS c WHERE count(*) > 5 RETURN c" to rows(),
-            "UNWIND [] AS i WITH count(*) AS c WHERE count(*) = 0 RETURN c" to rows(0L),
-            // A key, written as its item is before its name; a name an item has is that item, in a larger expression too.
-            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j, c" to rows(listOf(2L, 1L)),
-            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE i % 2 = 1 RETURN k, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE sum(i) > 2 RETURN k, c" to rows(listOf(1L, 2L)),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p.name AS n, count(*) AS c WHERE p.name STARTS WITH 'K' AND count(*) > 1 RETURN n, c" to
-                rows(listOf("Keanu", 3L)),
-            "UNWIND [1, 1, 2] AS i WITH i + 10 AS i, count(*) AS c WHERE i + 10 > 20 RETURN i, c ORDER BY i" to rows(listOf(11L, 2L), listOf(12L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i AS j, i + 1 AS i, count(*) AS c WHERE i > 2 RETURN j, i, c" to rows(listOf(2L, 3L, 1L)),
-            // A DISTINCT WITH groups by its items.
-            "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE count(*) > 1 RETURN i" to rows(1L),
-            "UNWIND [1, 1, 2] AS i WITH DISTINCT i, count(*) AS c WHERE count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 1, 2] AS i WITH DISTINCT * WHERE count(*) > 1 RETURN i" to rows(1L),
-            "UNWIND [1, 1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j" to rows(2L),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH DISTINCT p WHERE count(m) > 1 RETURN p.name ORDER BY p.name" to rows("Carrie", "Keanu"),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH DISTINCT p.name AS n WHERE p.name STARTS WITH 'K' OR count(*) = 1 RETURN n ORDER BY n" to
-                rows("Keanu", "Laurence"),
-            // Met after the WITH's ORDER BY, SKIP and LIMIT, in their order.
-            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY i LIMIT 2 WHERE count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
-            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY i SKIP 1 WHERE count(*) > 1 RETURN i, c" to rows(listOf(3L, 3L)),
-            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY count(*) DESC WHERE count(*) > 1 RETURN i, c" to rows(listOf(3L, 3L), listOf(1L, 2L)),
-            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY sum(i) DESC LIMIT 2 WHERE sum(i) > 2 RETURN i, c" to rows(listOf(3L, 3L)),
-            "UNWIND [1, 1, 2] AS i WITH DISTINCT i ORDER BY i DESC LIMIT 1 WHERE count(*) > 1 RETURN i" to rows(),
-            // An aggregate no item is, is no variable after the WITH.
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 WITH i, c, count(*) AS d WHERE count(*) = 1 RETURN i, c, d" to rows(listOf(1L, 2L, 1L)),
-            // In a subquery's and a CALL's own query; one that imports the row, and reads a WITH, reads its WHERE after the WITH.
-            "MATCH (p:Person) CALL (p) { MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS k WHERE count(m) > 1 RETURN k } RETURN p.name, k ORDER BY p.name" to
-                rows(listOf("Carrie", 2L), listOf("Keanu", 3L)),
-            "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i, 3] AS x WITH x, count(*) AS c WHERE count(*) > 1 AND x = i RETURN c } RETURN i, c" to
-                rows(listOf(1L, 2L), listOf(2L, 2L)),
-            "MATCH (p:Person) RETURN p.name, COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH m, count(*) AS k WHERE count(*) > 0 RETURN m } AS n ORDER BY p.name" to
-                rows(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
-            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE EXISTS { MATCH (p)-[:KNOWS]->(q) WITH q, count(*) AS k WHERE count(*) > 0 RETURN q } " +
-                "RETURN p.name ORDER BY p.name" to rows("Keanu", "Laurence"),
             // A key's property, read through the item it is renamed to, of a map and of a node.
             "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x WITH x AS y, count(*) AS c WHERE x.a > 1 AND count(*) = 1 RETURN y.a, c" to rows(listOf(2L, 1L)),
             "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p AS q, count(*) AS c WHERE p.born > 1965 RETURN q.name, c ORDER BY q.name" to rows(listOf("Carrie", 2L)),
@@ -2793,114 +2712,29 @@ abstract class CypherQueryContract {
         val unordered = listOf(
             "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 WITH * RETURN *" to rows(listOf(2L, 1L), listOf(1L, 2L)),
             "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i UNION UNWIND [5] AS `#having2` RETURN `#having2` AS i" to rows(1L, 2L, 5L),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i" to rows(1L, 2L),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(DISTINCT i) = 1 RETURN i, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE sum(i) > 1 RETURN j, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),
-            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN *" to rows(listOf(2L, 1L), listOf(1L, 2L)),
         )
         unordered.forEach { (cypher, expected) -> assertEquals(expected.map(Any?::toString).sorted(), query(cypher).map(Any?::toString).sorted(), cypher) }
     }
 
     @Test
-    fun `an aggregate beside a WHERE, a grouping key's body or an order term that Neo4j takes gives Neo4j's rows`() {
-        // #489, #482: beside the aggregates now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#38),
-        // held here. The rows are Neo4j's (2026.10).
-        clear()
-        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
-        // A WHERE over what an aggregate gave, and one in a subquery's or a CALL's own query, which aggregates in its projection.
-        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i WITH count(*) AS c WHERE c > 1 RETURN c"))
-        assertEquals(
-            listOf("Carrie", "Keanu"),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, collect(m.title) AS ts WHERE size(ts) > 1 RETURN p.name ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf(listOf("Carrie", 1L), listOf("Hugo", 0L), listOf("Keanu", 1L), listOf("Laurence", 0L)),
-            query("MATCH (p:Person) RETURN p.name, COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } AS k ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf("Carrie", "Keanu"),
-            query("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } RETURN p.name ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L)),
-            query("MATCH (p:Person) CALL (p) { MATCH (p)-[:ACTED_IN]->(m) WITH count(m) AS c WHERE c > 1 RETURN c } RETURN p.name, c ORDER BY p.name"),
-        )
-        // An aggregate beside its grouping keys, and a body that names only them, or a variable of its own.
-        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(2L))), query("UNWIND [1, 2] AS x RETURN x, collect(x) AS c ORDER BY x"))
-        assertEquals(
-            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, count(*) ORDER BY p.name"),
-        )
-        assertEquals(listOf(listOf(1L, listOf(2L)), listOf(2L, listOf(4L))), query("UNWIND [1, 2] AS x RETURN x, [y IN collect(x) | y + x] AS l ORDER BY x"))
-        assertEquals(
-            listOf(listOf(1L, listOf(4L)), listOf(2L, listOf(5L))),
-            query("UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, [y IN collect(z) | y + x] AS l ORDER BY x"),
-        )
-        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 4L)), query("UNWIND [1, 2] AS x RETURN x, reduce(s = 0, y IN collect(x) | s + y + x) AS l ORDER BY x"))
-        assertEquals(
-            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, size([x IN collect(m.title) WHERE x <> p.name | x + p.name]) ORDER BY p.name"),
-        )
-        // An order term that names an item's name, or what an item that does not aggregate is.
-        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [{a: 1}, {a: 2}] AS x RETURN x.a AS a, count(*) AS c ORDER BY x.a + count(*) DESC"))
-        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY x + count(*) DESC"))
-        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 1L)), query("UNWIND [1, 2] AS x RETURN x AS y, count(*) AS c ORDER BY y + count(*) DESC"))
-        assertEquals(
-            listOf(listOf(2L, 1L), listOf(1L, 1L)),
-            query("UNWIND [1, 2] AS x UNWIND [3] AS z RETURN x, count(*) AS c ORDER BY [w IN collect(z) | w + x][0] DESC"),
-        )
-    }
-
-    @Test
     fun `a null in a map or a list and a missing key are one null, grouped, kept distinct and sorted as one`() {
-        // #500: on the SQL stores a map's null is JSON's null and a missing key SQL's. Until the spec holds these, held here.
-        // The rows are Neo4j's (2026.10).
-        val one = listOf(listOf(null, 2L))
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN x.a, count(*)"))
-        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [{a: null}, {b: 1}, {a: 1}] AS x RETURN x.a AS a, count(*) AS c ORDER BY a"))
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH x.a AS a, count(*) AS c RETURN a, c"))
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH x.a AS a RETURN a, count(*) AS c"))
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN x['a'] AS a, count(*) AS c"))
-        assertEquals(one, query("UNWIND [{a: {b: null}}, {a: {}}] AS x RETURN x.a.b AS v, count(*) AS c"))
-        assertEquals(one, query("UNWIND [[null], []] AS l RETURN l[0] AS v, count(*) AS c"))
-        assertEquals(listOf(listOf(null, 3L)), query("UNWIND [{a: null}, {b: 1}, {c: 2}] AS x RETURN CASE WHEN x.c IS NULL THEN x.a ELSE null END AS v, count(*) AS c"))
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x WITH collect(x) AS xs UNWIND xs AS y RETURN y.a AS a, count(*) AS c"))
-        assertEquals(one, query("UNWIND \$p AS x RETURN x.a AS a, count(*) AS c", mapOf("p" to listOf(mapOf("a" to null), mapOf("b" to 1L)))))
-        assertEquals(one, query("UNWIND [{b: 1}, \$p] AS x RETURN x.a AS a, count(*) AS c", mapOf("p" to mapOf("a" to null))))
-        // DISTINCT and UNION keep it once.
-        assertEquals(listOf(null), query("UNWIND [{a: null}, {b: 1}] AS x RETURN DISTINCT x.a"))
-        assertEquals(listOf(1L), query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a RETURN count(*)"))
-        assertEquals(listOf(null), query("UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"))
+        // #500: on the SQL stores a map's null is JSON's null and a missing key SQL's. The spec holds the rest ("A null in a map
+        // and a missing key are one null"). The rows are Neo4j's (2026.10).
         // A UNION in a CALL, and a part beside a CALL's UNION ALL, which leaves the part's rows compared.
         assertEquals(listOf(listOf(null, 1L)), query("CALL { UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v } RETURN v, count(*) AS c"))
         assertEquals(
             listOf(null),
             query("UNWIND [{a: null}] AS x CALL { RETURN 1 AS z UNION ALL RETURN 2 AS z } RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"),
         )
-        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p.a AS v", mapOf("p" to mapOf("a" to null))))
-        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p[0] AS v", mapOf("p" to listOf(null, 1L))))
-        // An order ties them, so the next term decides.
-        assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a, x.i DESC"))
-        assertEquals(listOf(2L, 1L, 3L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a DESC, x.i DESC"))
-        assertEquals(listOf(listOf(3L, 2L, 1L)), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH x ORDER BY x.a, x.i DESC RETURN collect(x.i) AS l"))
-        // So does one of a value kept distinct, which on Oracle may be JSON's null still.
+        // An order ties them, so the next term decides, for a value kept distinct too, which on Oracle may be JSON's null still.
         assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH DISTINCT x.a AS a, x.i AS i RETURN i ORDER BY a, i DESC"))
-        // A null written, an unwound null and a reduce()'s are the same null as a property a node has not.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
-        assertEquals(listOf(listOf(null, 4L)), query("MATCH (p:Person) RETURN CASE WHEN p.born > 1960 THEN p.nickname ELSE null END AS v, count(*) AS c"))
-        assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN null AS v"))
-        assertEquals(listOf(null), query("UNWIND [null] AS v RETURN v UNION MATCH (p:Person {name: 'Keanu'}) RETURN p.nickname AS v"))
         // A value kept distinct, on Oracle JSON's null, is still the same null as a property a node has not.
         assertEquals(listOf(null), query("UNWIND [{a: null}] AS x WITH DISTINCT x.a AS a RETURN a AS v UNION MATCH (p:Person {name: 'Hugo'}) RETURN p.nickname AS v"))
         assertEquals(
             listOf(listOf(null, 4L)),
             query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a MATCH (p:Person) RETURN CASE WHEN p.born IS NULL THEN p.nickname ELSE a END AS v, count(*) AS c"),
-        )
-        assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN reduce(s = null, t IN [1] | x.a) AS v, count(*) AS c"))
-        assertEquals(
-            listOf(listOf("Laurence", "Keanu", "Hugo", "Carrie")),
-            query("MATCH (p:Person) WITH p ORDER BY CASE WHEN p.born > 1964 THEN null ELSE p.nickname END, p.name DESC RETURN collect(p.name) AS l"),
         )
         // Grouped by a value of an unwound list that holds a null, and sorted by it.
         assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [null, 1, null] AS v RETURN v, count(*) AS c ORDER BY v"))
@@ -2908,65 +2742,11 @@ abstract class CypherQueryContract {
 
     @Test
     fun `an aggregating item over a key that is a property groups by the property, as Neo4j does`() {
-        // #491: beside the shapes now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#39), held here.
-        // The rows are Neo4j's (2026.10).
+        // #491: beside the shapes now refused, those Neo4j takes. The spec holds the rest ("Implicit grouping key"). The rows are
+        // Neo4j's (2026.10).
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         val roles = listOf("Johnny", "Morpheus", "Neo", "Trinity")
-        // Grouped by the property, not by its variable: one row for "Neo", which two relationships have.
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x RETURN x.a AS a, x.a + count(*) AS b ORDER BY a"))
-        assertEquals(
-            listOf(listOf(1L, 3L), listOf(2L, 3L)),
-            query("UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x WITH x.a AS a, x.a + count(*) AS b RETURN a, b ORDER BY a"),
-        )
-        assertEquals(
-            roles.zip(listOf("Johnny1", "Morpheus1", "Neo2", "Trinity2")).map { (role, n) -> listOf(role, n) },
-            query("MATCH (:Person)-[r:ACTED_IN]->() RETURN r.role AS role, r.role + count(*) AS n ORDER BY role"),
-        )
-        assertEquals(
-            roles.zip(listOf(1L, 1L, 2L, 2L)).map { (role, n) -> listOf(role, mapOf("role" to role, "n" to n)) },
-            query("MATCH (:Person)-[r:ACTED_IN]->() RETURN r.role AS role, {role: r.role, n: count(*)} AS n ORDER BY role"),
-        )
-        assertEquals(
-            listOf(listOf("Carrie", 35L), listOf("Keanu", 49L), listOf("Laurence", 18L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, size(reduce(s = p.name, t IN collect(m.title) | s + t)) AS r ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf(listOf("Carrie", false), listOf("Keanu", false), listOf("Laurence", false)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, p.name IN collect(m.title) AS r ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf(listOf(mapOf("b" to 1L), 3L), listOf(mapOf("b" to 2L), 3L)),
-            query("UNWIND [{a: {b: 1}}, {a: {b: 1}}, {a: {b: 2}}] AS x RETURN x.a AS k, x.a.b + count(*) AS c ORDER BY k.b"),
-        )
-        // In a list comprehension's WHERE, the key; in its projection or a quantifier's WHERE, Neo4j groups by its variable too.
-        assertEquals(
-            roles.zip(listOf(1L, 0L, 0L, 0L)).map { (role, n) -> listOf(role, n) },
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE t STARTS WITH r.role | t]) AS n ORDER BY role"),
-        )
-        val each = listOf("Johnny", "Morpheus", "Neo", "Neo", "Trinity", "Trinity")
-        assertEquals(each.map { listOf(it, listOf(it)) }, query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, [t IN collect(m.title) | r.role] AS n ORDER BY role"))
-        assertEquals(
-            each.map { listOf(it, it == "Johnny") },
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, any(t IN collect(m.title) WHERE t CONTAINS r.role) AS n ORDER BY role"),
-        )
-        // Unnamed, a map projection is the item p, which an order term reads.
-        assertEquals(
-            listOf(listOf(mapOf("name" to "Carrie"), 2L), listOf(mapOf("name" to "Keanu"), 3L), listOf(mapOf("name" to "Laurence"), 1L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name}, count(*) AS c ORDER BY p.name"),
-        )
-        assertEquals(
-            listOf(
-                listOf(mapOf("name" to "Laurence", "born" to 1961L), 1L),
-                listOf(mapOf("name" to "Keanu", "born" to 1964L), 3L),
-                listOf(mapOf("name" to "Carrie", "born" to 1967L), 2L),
-            ),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name, .born}, count(*) AS c ORDER BY p.born"),
-        )
-        assertEquals(
-            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p {.name}, count(*) AS c RETURN p.name, c ORDER BY p.name"),
-        )
         // A null key is one group; two keys of one variable group by both, not by the variable (two rows have a = 1, b = 1).
         assertEquals(
             listOf(listOf("Welcome to the Real World", mapOf("t" to "Welcome to the Real World", "n" to 1L)), listOf(null, mapOf("t" to null, "n" to 2L))),
@@ -2988,62 +2768,22 @@ abstract class CypherQueryContract {
             listOf(listOf(1L, 2L), listOf(2L, 3L)),
             query("UNWIND [{a: 1}, {a: 2}, {a: 2}] AS x RETURN x.a AS a, size([x IN [{a: 5}] WHERE x.a > 1]) + count(*) AS n ORDER BY a"),
         )
-        // A function named in another case is the same function.
-        assertEquals(
-            listOf(listOf("LAURENCE", 1L), listOf("KEANU", 3L), listOf("CARRIE", 2L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, count(*) AS c ORDER BY TOUPPER(p.name) + count(*) DESC"),
-        )
-        assertEquals(
-            listOf(listOf("CARRIE", 2L), listOf("KEANU", 3L), listOf("LAURENCE", 1L)),
-            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN TOUPPER(p.name) AS u, count(*) AS c ORDER BY toupper(p.name)"),
-        )
-        assertEquals(
-            listOf(listOf("X", 2L), listOf("Y", 1L)),
-            query("UNWIND [{a: 'x'}, {a: 'x'}, {a: 'y'}] AS x RETURN toUpper(x.a), count(*) ORDER BY TOUPPER(x.a) + count(*)"),
-        )
     }
 
     @Test
     fun `a key read in a body nested in a list comprehension's WHERE, in a body over no aggregate, in any(y IN … WHERE y = e) or in an order term groups by the property`() {
-        // #505: until the spec holds these (drivine-cypher-spec#43), held here. The rows are Neo4j's (2026.10). Two x share
-        // a = 1, so grouping by x gives a = 1 twice.
+        // #505: the spec holds the rest (drivine-cypher-spec#43, in "Implicit grouping key"). The rows are Neo4j's
+        // (2026.10). Two x share a = 1, so grouping by x gives a = 1 twice.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         val x = "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a"
-        val byProperty = listOf(listOf(1L, 1L), listOf(2L, 0L))
-        // Inside a list comprehension's WHERE, the key all through; not in a comprehension's WHERE inside a quantifier's.
-        assertEquals(
-            listOf(listOf("Johnny", 1L), listOf("Morpheus", 0L), listOf("Neo", 0L), listOf("Trinity", 0L)),
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE any(u IN [t] WHERE u CONTAINS r.role)]) AS n ORDER BY role"),
-        )
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE reduce(s = false, u IN [t] | s OR u > x.a)]) AS n ORDER BY a"))
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE [u IN [t] | u > x.a][0]]) AS n ORDER BY a"))
-        assertEquals(byProperty, query("$x, size([t IN collect(x.b) WHERE any(u IN [t] WHERE all(v IN [u] WHERE v > x.a))]) AS n ORDER BY a"))
-        assertEquals(
-            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
-            query("$x, any(t IN collect(x.b) WHERE size([u IN [t] WHERE u > x.a]) > 0) AS n ORDER BY a, n"),
-        )
-        // A comprehension, a quantifier or a reduce over no aggregate reads the key in each body; one over an aggregate, in its
-        // projection, is grouped by x, whatever the projection holds.
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("$x, count(*) + [y IN [1] | x.a][0] AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 3L), listOf(2L, 3L)), query("$x, count(*) + reduce(s = 0, y IN [1] | s + x.a) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, listOf(2L, false)), listOf(2L, listOf(1L, false))), query("$x, [count(*), any(y IN [0, 1] WHERE y > x.a)] AS n ORDER BY a"))
-        assertEquals(
-            listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 0L)),
-            query("$x, size([t IN collect(x.b) WHERE t >= x.a | [y IN [1] | x.a][0]]) AS n ORDER BY a, n"),
-        )
-        // Neo4j reads any(y IN list WHERE y = e) as e IN list, and none(…) as NOT e IN list; not all(…).
-        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a"))
+        // Inside a list comprehension's WHERE, the key all through.
+        assertEquals(listOf(listOf(1L, 1L), listOf(2L, 0L)), query("$x, size([t IN collect(x.b) WHERE any(u IN [t] WHERE all(v IN [u] WHERE v > x.a))]) AS n ORDER BY a"))
+        // Neo4j reads any(y IN list WHERE y = e) as e IN list; not all(…) or an OR.
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + 0) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, false), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE x.a = y) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y IN [x.a]) AS n ORDER BY a"))
         assertEquals(
             listOf(listOf(1L, true), listOf(2L, false)),
             query("UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x WITH x.a AS a, any(y IN collect(x.b) WHERE y = x.a) AS n RETURN a, n ORDER BY a"),
-        )
-        assertEquals(
-            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
-            query("$x, all(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"),
         )
         assertEquals(
             listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
@@ -3063,12 +2803,6 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("$z, size([t IN collect(x.b) WHERE any(u IN [t] WHERE u > coalesce(x.a, 0))]) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
         // An order term that aggregates reads the key as an item does.
-        assertEquals(listOf(listOf(2L, 1L), listOf(1L, 2L)), query("$x, count(*) AS n ORDER BY size([y IN collect(x.b) WHERE y > x.a])"))
-        assertEquals(
-            listOf(listOf("Johnny", 1L), listOf("Morpheus", 1L), listOf("Neo", 2L), listOf("Trinity", 2L)),
-            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, count(*) AS n ORDER BY size([t IN collect(m.title) WHERE t CONTAINS r.role]) DESC, role"),
-        )
-        assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY size([y IN collect(x.b) | x.a]), a"))
         assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY reduce(s = 0, y IN collect(x.b) | s + x.a), a"))
     }
 
