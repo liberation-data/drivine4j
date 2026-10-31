@@ -4,19 +4,30 @@ package org.drivine.cypher.sql
 class PostgresTemporalSql(shared: (List<String>, (List<String>) -> String) -> String) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE -> "CAST(CAST($text AS date) AS timestamp)"
-        Temporal.LOCAL_DATE_TIME -> "CAST($text AS timestamp)"
-        Temporal.DATE_TIME -> "CAST(${unzoned(text)} AS timestamp)"
+        Temporal.DATE -> "CAST(CAST(${era(text)} AS date) AS timestamp)"
+        Temporal.LOCAL_DATE_TIME -> "CAST(${era(text)} AS timestamp)"
+        Temporal.DATE_TIME -> "CAST(${era(unzoned(text))} AS timestamp)"
         Temporal.LOCAL_TIME -> "CAST('1970-01-01 ' || $text AS timestamp)"
         Temporal.TIME -> "CAST('1970-01-01 ' || ${unzoned(text)} AS timestamp)"
         Temporal.DURATION -> error("a duration is no moment")
     }
 
     override fun utc(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE_TIME -> "(CAST($text AS timestamptz) AT TIME ZONE 'UTC')"
+        Temporal.DATE_TIME -> "(CAST(${era(text)} AS timestamptz) AT TIME ZONE 'UTC')"
         Temporal.TIME -> "(CAST('1970-01-01 ' || $text AS timestamptz) AT TIME ZONE 'UTC')"
         else -> local(text, kind)
     }
+
+    /**
+     * Postgres reads no year before 1 in ISO text, but reads one BC after it: so 1 BC, the year `0000`, is `0001 … BC`,
+     * and 45 BC, the year `-0044`, is `0045 … BC`.
+     */
+    override fun era(text: String) =
+        "regexp_replace($text, '^(-[0-9]{4}|0000)(.*)$', to_char(1 - CAST(substring($text from '^-?[0-9]{4}') AS int), 'FM0000') || '\\2 BC')"
+
+    /** `to_char` writes a year BC unsigned, and says it is BC. */
+    override fun date(timestamp: String, then: String) =
+        "regexp_replace(regexp_replace(to_char($timestamp, 'YYYY-MM-DD$then BC'), '^[0-9]{4}(.*) BC$', to_char(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000') || '\\1'), ' AD$', '')"
 
     override val now = "(statement_timestamp() AT TIME ZONE 'UTC')"
 
@@ -52,7 +63,7 @@ class PostgresTemporalSql(shared: (List<String>, (List<String>) -> String) -> St
         in setOf("year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond") -> "date_trunc('$unit', $timestamp)"
         "microsecond" -> "date_trunc('microseconds', $timestamp)"
         in YEARS_OF -> shared(listOf(timestamp)) { (t) ->
-            "(date_trunc('year', $t) - make_interval(years => MOD(CAST(EXTRACT(YEAR FROM $t) AS int), ${YEARS_OF.getValue(unit)})))"
+            "(date_trunc('year', $t) - make_interval(years => MOD(CAST(${year(t)} AS int), ${YEARS_OF.getValue(unit)})))"
         }
         "weekYear" -> shared(listOf(timestamp)) { (t) -> "(date_trunc('week', $t) - make_interval(weeks => CAST(EXTRACT(WEEK FROM $t) AS int) - 1))" }
         else -> null

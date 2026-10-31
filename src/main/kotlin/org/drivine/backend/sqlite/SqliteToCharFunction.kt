@@ -13,7 +13,8 @@ import java.util.Locale
  * Postgres's and Oracle's `to_char`, those compiled Cypher writes temporal values with. Null where the value is.
  *
  * - A timestamp's pattern is made of `YYYY`, `MM`, `DD`, `HH24`, `MI`, `SS`, `IYYY` (the ISO week's year), `IW` (its
- *   week) and `DDD` (the day of the year), and text in double quotes, written as it is; anything else is itself.
+ *   week) and `DDD` (the day of the year), and text in double quotes, written as it is; anything else is itself. A year
+ *   is numbered as `java.time` and Cypher number it, and written with its sign where it is before 0: `0000`, `-0044`.
  * - A number's opens with `FM`: `0`s for its digits, a whole number padded to as many, and after a point as many
  *   `9`s as the fraction may have digits, rounded, its trailing zeros left out (`2.5`, `2.`).
  */
@@ -58,8 +59,8 @@ internal class SqliteToCharFunction : Function() {
             written.append(
                 when (token) {
                     "HH24" -> "%02d".format(Locale.ROOT, clock.hour)
-                    "IYYY" -> "%04d".format(Locale.ROOT, clock.get(IsoFields.WEEK_BASED_YEAR))
-                    "YYYY" -> "%04d".format(Locale.ROOT, clock.year)
+                    "IYYY" -> year(clock.get(IsoFields.WEEK_BASED_YEAR))
+                    "YYYY" -> year(clock.year)
                     "DDD" -> "%03d".format(Locale.ROOT, clock.get(ChronoField.DAY_OF_YEAR))
                     "IW" -> "%02d".format(Locale.ROOT, clock.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR))
                     "MM" -> "%02d".format(Locale.ROOT, clock.monthValue)
@@ -72,6 +73,9 @@ internal class SqliteToCharFunction : Function() {
         }
         return written.toString()
     }
+
+    /** A year as ISO 8601 writes it, four digits after its sign: `0000` for 1 BC, `-0044` for 45 BC. */
+    private fun year(year: Int) = (if (year < 0) "-" else "") + "%04d".format(Locale.ROOT, Math.abs(year))
 
     private companion object {
         /** The parts of a timestamp's pattern, the longer of two that start alike first. */

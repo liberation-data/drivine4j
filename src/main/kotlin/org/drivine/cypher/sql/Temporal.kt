@@ -13,14 +13,15 @@ import java.util.Date
 /**
  * A kind of temporal value, as openCypher has them. On a SQL store a temporal value is the ISO 8601 text a
  * store keeps a moment as, and [pattern] tells the kind from the text: a regular expression both stores
- * read, written with capturing groups alone, for Oracle's take no other kind.
+ * read, written with capturing groups alone, for Oracle's take no other kind. A year is numbered as Neo4j
+ * and ISO 8601 number it, astronomically: `0000` is 1 BC and `-0044` is 45 BC.
  */
 enum class Temporal(val pattern: String, val zoned: Boolean = false) {
-    DATE("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"),
+    DATE("^-?[0-9]{4}-[0-9]{2}-[0-9]{2}$"),
     LOCAL_TIME("^[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?$"),
     TIME("^[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})$", zoned = true),
-    LOCAL_DATE_TIME("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?$"),
-    DATE_TIME("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})$", zoned = true),
+    LOCAL_DATE_TIME("^-?[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?$"),
+    DATE_TIME("^-?[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})$", zoned = true),
 
     /** `P1Y2M3W4DT5H6M7.5S`, each part optional and signed, or the whole negated: its parts are read by [DURATION_PARTS]. */
     DURATION("^(-?)P((-?[0-9.]+)Y)?((-?[0-9.]+)M)?((-?[0-9.]+)W)?((-?[0-9.]+)D)?(T((-?[0-9.]+)H)?((-?[0-9.]+)M)?((-?[0-9.]+)S)?)?$");
