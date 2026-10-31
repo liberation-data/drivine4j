@@ -20,15 +20,15 @@ class CompilerRefusalTest {
 
     /**
      * The spec's refusals, but for the steps of [COMPILED], which the spec at the tag drivine4j runs refuses and the
-     * compiler now compiles: drivine-cypher-spec#33 drops them. Remove this when drivine4j moves to the tag that has it.
+     * compiler now compiles: drivine-cypher-spec#33 and #40 drop them. Remove this when drivine4j moves to the tag that has them.
      */
     private val spec = CypherSpec.load("refusals.yaml").let { spec ->
         spec.copy(cases = spec.cases.map { case -> case.copy(steps = case.steps.filterNot { it.cypher in COMPILED }) })
     }
 
     private companion object {
-        /** #422: a truncation to the decade. */
-        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))")
+        /** #422: a truncation to the decade; #495: a date of a week. */
+        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))", "RETURN date({year: 2024, week: 10, dayOfWeek: 3})")
     }
 
     @TestFactory
@@ -372,6 +372,45 @@ class CompilerRefusalTest {
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("RETURN date('2024-02-30')") }.message!!
             assertTrue(refused.startsWith("'2024-02-30' is no date"), refused)
+        }
+    }
+
+    @Test
+    fun `a temporal map of the calendar's fields Neo4j fails on, or of an ordinal day of no year, is refused`() {
+        // #495: these fields were refused as not compiled before. Until the spec holds these (drivine-cypher-spec#40), held here.
+        val refused = listOf(
+            "RETURN date({year: 2023, month: 2, week: 3})" to "date() takes a month or a week, not both.",
+            "RETURN date({year: 2023, quarter: 2, day: 5})" to "date() takes a month or a quarter, not both.",
+            "RETURN datetime({year: 2023, week: 2, ordinalDay: 5})" to "datetime() takes a week or an ordinal day, not both.",
+            "RETURN date({year: 2023, ordinalDay: 5, quarter: 1})" to "date() takes an ordinal day or a quarter, not both.",
+            "RETURN date({year: 2023, dayOfWeek: 3})" to "date() takes a day of the week beside a week.",
+            "RETURN localdatetime({year: 2023, dayOfQuarter: 3})" to "localdatetime() takes a day of the quarter beside a quarter.",
+            "RETURN date({week: 2})" to "date() takes a year beside a week.",
+            "RETURN date({quarter: 2})" to "date() takes a year beside a quarter.",
+            "RETURN date({year: 2020, week: 54})" to "date() takes a week from 1 to 53, not 54.",
+            "RETURN date({year: 2020, week: 0})" to "date() takes a week from 1 to 53, not 0.",
+            "RETURN date({year: 2023, week: 2, dayOfWeek: 8})" to "date() takes a day of the week from 1 to 7, not 8.",
+            "RETURN date({year: 2023, ordinalDay: 366})" to "date() takes an ordinal day from 1 to 365 in 2023, not 366.",
+            "RETURN date({year: 2023, ordinalDay: -1})" to "date() takes an ordinal day from 1 to 365 in 2023, not -1.",
+            "RETURN date({year: 2023, quarter: 5})" to "date() takes a quarter from 1 to 4, not 5.",
+            "RETURN date({year: 2024, quarter: 4, dayOfQuarter: 93})" to "date() takes a day of the quarter from 1 to 92, not 93.",
+            "RETURN date({year: 2023, week: 2.5})" to "date() takes a whole number for week, not 2.5.",
+            "RETURN date({year: '2023', quarter: 2})" to "date() takes a whole number for year, not '2023'.",
+            "RETURN localtime({hour: 12, week: 2})" to "localtime() takes no field week.",
+            "RETURN time({hour: 12, ordinalDay: 2})" to "time() takes no field ordinalDay.",
+            "RETURN date({ordinalDay: 2})" to "date() of an ordinal day without a year is Cypher, and is not compiled to SQL yet.",
+            "RETURN date({date: date('2024-03-15'), week: 2})" to "date() of a map with date is Cypher, and is not compiled to SQL yet.",
+            "RETURN datetime({year: 1984, week: 10, timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, cypher)
+            }
+            // Week 53 of a year of 52 weeks and a day of the quarter past its last run on, and what an expression gives is the store's to check.
+            listOf(
+                "RETURN date({year: 2019, week: 53}), date({year: 2023, quarter: 1, dayOfQuarter: 92}), date({year: 2024, ordinalDay: 366})",
+                "WITH 54 AS w RETURN date({year: 2020, week: w}), datetime({year: \$y, ordinalDay: 366, timezone: '+01:00'})",
+            ).forEach { compiler.compile(it, mapOf("y" to 2023)) }
         }
     }
 

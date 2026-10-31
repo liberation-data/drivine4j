@@ -24,6 +24,7 @@ import org.testcontainers.containers.Neo4jContainer
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 
 /**
  * openCypher's temporal values give the same fields, arithmetic and comparisons on a SQL store, compiled, as on
@@ -267,6 +268,95 @@ abstract class CypherTemporalContract {
                 "MATCH (n:CyTrunc) WITH n, datetime.truncate('decade', n.at, {day: 2, hour: 3}) AS d " +
                     "RETURN n.id AS id, d.year AS year, d.day AS day, d.hour AS hour, d.timezone AS zone ORDER BY id",
             ),
+        )
+    }
+
+    @Test
+    fun `a date or a moment is made from a week, an ordinal day or a quarter, as on Neo4j`() {
+        // #495: refused on the SQL stores before. The year is the week-based year; week 53 of a year of 52 weeks and a day
+        // of the quarter past its last run on into the next, and a field that is null is its least. Until the spec holds
+        // these, held here.
+        assertEquals(
+            mapOf(
+                "week" to listOf(1984L, 3L, 5L), "weekDay" to listOf(1984L, 3L, 7L), "ordinal" to listOf(1984L, 7L, 20L),
+                "quarter" to listOf(1984L, 7L, 1L), "quarterDay" to listOf(1984L, 8L, 14L),
+                "long" to listOf(2020L, 12L, 28L), "sunday" to listOf(2021L, 1L, 3L), "before" to listOf(2018L, 12L, 31L), "friday" to listOf(2016L, 1L, 1L),
+                "rolled" to listOf(2019L, 12L, 30L), "q1" to listOf(2023L, 4L, 1L), "leap" to listOf(2024L, 12L, 31L), "q4" to listOf(2024L, 12L, 31L),
+                "nulls" to listOf(listOf(1L, 2L), listOf(1L, 9L), listOf(1L, 1L), listOf(4L, 1L)),
+            ),
+            one(
+                """
+                WITH date({year: 1984, week: 10}) AS w, date({year: 1984, week: 10, dayOfWeek: 3}) AS wd, date({year: 1984, ordinalDay: 202}) AS o,
+                     date({year: 1984, quarter: 3}) AS q, date({year: 1984, quarter: 3, dayOfQuarter: 45}) AS qd,
+                     date({year: 2020, week: 53}) AS long, date({year: 2020, week: 53, dayOfWeek: 7}) AS sunday, date({year: 2019, week: 1}) AS before,
+                     date({year: 2015, week: 53, dayOfWeek: 5}) AS friday, date({year: 2019, week: 53}) AS rolled, date({year: 2023, quarter: 1, dayOfQuarter: 91}) AS q1,
+                     date({year: 2024, ordinalDay: 366}) AS leap, date({year: 2024, quarter: 4, dayOfQuarter: 92}) AS q4,
+                     [date({year: 2023, week: null}), date({year: 2023, week: 2, dayOfWeek: null}), date({year: 2023, ordinalDay: null}),
+                      date({year: 2023, quarter: 2, dayOfQuarter: null})] AS nulls
+                RETURN {week: [w.year, w.month, w.day], weekDay: [wd.year, wd.month, wd.day], ordinal: [o.year, o.month, o.day], quarter: [q.year, q.month, q.day],
+                        quarterDay: [qd.year, qd.month, qd.day], long: [long.year, long.month, long.day], sunday: [sunday.year, sunday.month, sunday.day],
+                        before: [before.year, before.month, before.day], friday: [friday.year, friday.month, friday.day], rolled: [rolled.year, rolled.month, rolled.day],
+                        q1: [q1.year, q1.month, q1.day], leap: [leap.year, leap.month, leap.day], q4: [q4.year, q4.month, q4.day],
+                        nulls: [d IN nulls | [d.month, d.day]]}
+                """,
+            ),
+        )
+        assertEquals(
+            listOf(listOf(7L, 12L, 645L), listOf(2021L, 3L, 23L, "-05:00"), listOf(7L, 20L, 12L, "+01:00"), listOf(12L, 31L, 59L)),
+            query(
+                """
+                WITH localdatetime({year: 1984, week: 10, dayOfWeek: 3, hour: 12, minute: 31, second: 14, millisecond: 645}) AS l,
+                     datetime({year: 2020, week: 53, dayOfWeek: 7, hour: 23, timezone: '-05:00'}) AS w,
+                     datetime({year: 1984, ordinalDay: 202, hour: 12, timezone: '+01:00'}) AS o,
+                     localdatetime({year: 2024, quarter: 4, dayOfQuarter: 92, hour: 23, minute: 59}) AS q
+                RETURN [[l.day, l.hour, l.millisecond], [w.year, w.day, w.hour, w.timezone], [o.month, o.day, o.hour, o.timezone], [q.month, q.day, q.minute]]
+                """,
+            ).single(),
+        )
+    }
+
+    @Test
+    fun `a date is made from a week, an ordinal day or a quarter an expression gives, and fails past their range as the statement runs`() {
+        // #495: worked out by the store, which fails on a field past its range as Neo4j does. Until the spec holds these, held here.
+        assertEquals(
+            listOf(listOf(2021L, 1L, 3L), listOf(2019L, 12L, 30L), listOf(1984L, 3L, 5L), listOf(2024L, 1L, 1L)),
+            query("UNWIND [[2020, 53, 7], [2019, 53, 1], [1984, 10, null], [2024, null, null]] AS p WITH date({year: p[0], week: p[1], dayOfWeek: p[2]}) AS d RETURN [d.year, d.month, d.day]"),
+        )
+        assertEquals(
+            listOf(listOf(12L, 31L, 2024L, 12L, 31L), listOf(1L, 1L, 2023L, 4L, 1L), listOf(1L, 1L, 2023L, 1L, 1L)),
+            query(
+                "UNWIND [[2024, 366, 4, 92], [2023, 1, 1, 91], [2023, null, null, null]] AS p " +
+                    "WITH date({year: p[0], ordinalDay: p[1]}) AS o, date({year: p[0], quarter: p[2], dayOfQuarter: p[3]}) AS q RETURN [o.month, o.day, q.year, q.month, q.day]",
+            ),
+        )
+        listOf(
+            "UNWIND [[2023, 366]] AS p RETURN date({year: p[0], ordinalDay: p[1]})",
+            "UNWIND [[2024, 5]] AS p RETURN date({year: p[0], quarter: p[1]})",
+            "UNWIND [[2020, 54]] AS p RETURN date({year: p[0], week: p[1]})",
+            "UNWIND [[2023, 2, 0]] AS p RETURN date({year: p[0], week: p[1], dayOfWeek: p[2]})",
+            "UNWIND [[2024, 4, 93]] AS p RETURN date({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
+        ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
+    }
+
+    @Test
+    fun `a date or a moment gives the day of its quarter, and the fields of its week at the year's turn, as on Neo4j`() {
+        // #427 item 4: dayOfQuarter was null on the SQL stores. Until the spec holds these, held here.
+        assertEquals(
+            listOf(11L, 92L, 90L, 91L, 1L, 50L, 32L, 53L, 2020L, 7L, 1L, 2019L, 53L, 366L, 1L),
+            query(
+                """
+                RETURN [date('1984-10-11').dayOfQuarter, date('2024-12-31').dayOfQuarter, date('2023-03-31').dayOfQuarter, date('2024-03-31').dayOfQuarter,
+                        date('2024-01-01').dayOfQuarter, datetime('2024-05-20T10:00+02:00').dayOfQuarter, localdatetime('2024-08-01T23:00').dayOfQuarter,
+                        date('2021-01-03').week, date('2021-01-03').weekYear, date('2021-01-03').dayOfWeek, date('2018-12-31').week, date('2018-12-31').weekYear,
+                        date('2020-12-31').week, date('2024-12-31').ordinalDay, date('2021-01-03').quarter]
+                """,
+            ).single(),
+        )
+        // A value read from the store, its kind told by its text.
+        query("CREATE (:CyTemporal {at: date('1984-10-11')}), (:CyTemporal {at: localdatetime('1984-11-11T12:31:14')})")
+        assertEquals(
+            listOf(listOf(4L, 11L, 41L, 1984L, 285L, 4L), listOf(4L, 42L, 45L, 1984L, 316L, 7L)),
+            query("MATCH (n:CyTemporal) RETURN [n.at.quarter, n.at.dayOfQuarter, n.at.week, n.at.weekYear, n.at.ordinalDay, n.at.weekDay] ORDER BY n.at.month"),
         )
     }
 

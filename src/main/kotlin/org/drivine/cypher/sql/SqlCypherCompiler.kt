@@ -3328,11 +3328,26 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             if (written is Expression.MapLiteral) {
                 val fields = written.entries.associate { (key, value) -> key to expression(value, scope) }
-                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else INSTANT_MAP_FIELDS
+                val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
+                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else if (dated) INSTANT_MAP_FIELDS + Temporals.CALENDAR_FIELDS else INSTANT_MAP_FIELDS
+                // A time of day has no date to give, as Neo4j has it.
+                if (kind.instant && !dated) fields.keys.firstOrNull { it in Temporals.CALENDAR_FIELDS }?.let { throw DrivineException("${function.name}() takes no field $it.") }
                 fields.keys.firstOrNull { it !in known }?.let { unsupported("${function.name}() of a map with $it") }
                 val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
                 if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
-                return of(temporals.of(numbers, fields["timezone"]?.let { text(comparable(json(it))) }, kind))
+                val timezone = fields["timezone"]?.let { text(comparable(json(it))) }
+                if (fields.keys.any { it in Temporals.CALENDAR_FIELDS }) {
+                    // A zone by name, which no store's text holds yet, is refused rather than given as null.
+                    val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
+                    if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
+                    val date = calendarDate(function, written)
+                    if (date != null) {
+                        val day = mapOf("year" to "${date.year}", "month" to "${date.monthValue}", "day" to "${date.dayOfMonth}")
+                        return of(temporals.of(numbers - Temporals.CALENDAR_FIELDS + day, timezone, kind))
+                    }
+                    return of(temporals.ofCalendar(numbers, timezone, kind))
+                }
+                return of(temporals.of(numbers, timezone, kind))
             }
             val given = arguments.single() as? Value.Json ?: throw DrivineException("${function.name}() takes a text or a map of its fields.")
             val text = text(comparable(given))
@@ -3340,6 +3355,65 @@ abstract class SqlCypherCompiler(graph: String) {
                 kind == Temporal.DURATION -> of(temporals.duration(text))
                 given.temporal?.instant == true -> of(temporals.convert(text, given.temporal, kind))
                 else -> of(temporals.convert(text, kind))
+            }
+        }
+
+        /**
+         * The date the map [written], the argument of [function], gives by the calendar's other fields beside the year (see
+         * [Temporals.ofCalendar]), where it writes the year and each of them as a whole number or null: null where an
+         * expression gives any of them, for the store to work out. As Neo4j has them, a field that is null is given as its
+         * least (the year 0, the first week, day or quarter), a week runs to 53 and a day of the quarter to 92 in any year,
+         * carried into the next where it has fewer, and an ordinal day runs to the year's last. Fails, as Neo4j does, on
+         * fields of two calendars (a month beside a week), a day of the week or of the quarter without its week or quarter,
+         * a week or a quarter without a year, and a number written that is not whole or is past its field's range.
+         */
+        private fun calendarDate(function: Expression.Function, written: Expression.MapLiteral): java.time.LocalDate? {
+            val name = function.name
+            val keys = written.entries.map { it.first }.toSet()
+            val calendars = listOf(
+                "a month" to setOf("month", "day"), "a week" to setOf("week", "dayOfWeek"), "an ordinal day" to setOf("ordinalDay"),
+                "a quarter" to setOf("quarter", "dayOfQuarter"),
+            ).filter { (_, fields) -> fields.any { it in keys } }
+            if (calendars.size > 1) throw DrivineException("$name() takes ${calendars[0].first} or ${calendars[1].first}, not both.")
+            if ("dayOfWeek" in keys && "week" !in keys) throw DrivineException("$name() takes a day of the week beside a week.")
+            if ("dayOfQuarter" in keys && "quarter" !in keys) throw DrivineException("$name() takes a day of the quarter beside a quarter.")
+            if ("year" !in keys) {
+                // Neo4j makes an ordinal day of no year one of the year 0, which no store's date reaches.
+                if ("ordinalDay" in keys) unsupported("$name() of an ordinal day without a year")
+                throw DrivineException("$name() takes a year beside ${calendars.single().first}.")
+            }
+            val numbers = written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }.associate { (key, value) ->
+                // `-1` is a negated number, written as much as `1` is.
+                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
+                if (negated == null && value !is Expression.Literal) return null
+                key to when (val literal = negated?.unaryMinus() ?: (value as Expression.Literal).value) {
+                    null -> CALENDAR_LEAST.getValue(key)
+                    is Long -> literal
+                    is Int -> literal.toLong()
+                    else -> throw DrivineException("$name() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+            }
+            val year = numbers.getValue("year")
+            fun field(key: String, label: String, last: Long, of: String = "") = (numbers[key] ?: 1L).also {
+                if (it !in 1L..last) throw DrivineException("$name() takes $label from 1 to $last$of, not $it.")
+            }
+            return try {
+                when {
+                    "week" in keys -> {
+                        val monday = java.time.LocalDate.of(year.toInt(), 1, 4).with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1)
+                        monday.plusDays((field("week", "a week", 53) - 1) * 7 + field("dayOfWeek", "a day of the week", 7) - 1)
+                    }
+                    "ordinalDay" in keys -> {
+                        val first = java.time.LocalDate.of(year.toInt(), 1, 1)
+                        first.plusDays(field("ordinalDay", "an ordinal day", first.lengthOfYear().toLong(), " in $year") - 1)
+                    }
+                    else -> {
+                        val quarter = field("quarter", "a quarter", 4)
+                        java.time.LocalDate.of(year.toInt(), ((quarter - 1) * 3 + 1).toInt(), 1).plusDays(field("dayOfQuarter", "a day of the quarter", 92) - 1)
+                    }
+                }
+            } catch (e: java.time.DateTimeException) {
+                throw DrivineException("$name() takes no year $year: ${e.message}", e)
             }
         }
 
@@ -4619,6 +4693,9 @@ abstract class SqlCypherCompiler(graph: String) {
             "month" to 1L..12L, "day" to 1L..31L, "dayOfWeek" to 1L..7L, "hour" to 0L..23L, "minute" to 0L..59L, "second" to 0L..59L,
             "millisecond" to 0L..999L, "microsecond" to 0L..999_999L,
         )
+
+        /** The least of the year and each field of a date by the calendar's other fields, which a field given as null is. */
+        val CALENDAR_LEAST = mapOf("year" to 0L, "week" to 1L, "dayOfWeek" to 1L, "ordinalDay" to 1L, "quarter" to 1L, "dayOfQuarter" to 1L)
 
         /** The least of each field a truncation's map gives that is not 0, which a field given as null is. */
         val TRUNCATION_LEAST = mapOf("month" to 1, "day" to 1, "dayOfWeek" to 1)
