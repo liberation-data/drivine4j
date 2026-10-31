@@ -2942,7 +2942,19 @@ abstract class SqlCypherCompiler(graph: String) {
                 patterns(inner, listOf(expression.pattern))
                 expression.where?.let { inner.where += condition(it, inner.scope) }
                 val projected = expression(expression.projection, inner.scope)
-                fun gathered(value: String) = "(" + (listOf("SELECT ${aggregateList(value)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ") + ")"
+                // A body that reads no variable of the pattern's own, `[(p)-->() | p.name]`, is worked out for each of the pattern's
+                // rows in a derived table, and gathered from there: an aggregate that reads only the row's columns is an aggregate of
+                // the row's query, which Postgres refuses and SQLite works out over every row, all of them in one (#467). One that
+                // reads nothing of any row, a literal or a parameter, is the comprehension's aggregate as it is.
+                val own = variablesIn(expression.pattern) + listOfNotNull(expression.pattern.variable) - scope.keys
+                val read = variablesReadIn(expression.projection)
+                val apart = read.none { it in own } && (read.isNotEmpty() || holdsSubquery(expression.projection))
+                fun gathered(value: String): String {
+                    fun rows(select: String) = (listOf(select) + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")
+                    if (!apart) return "(${rows("SELECT ${aggregateList(value)}")})"
+                    val each = alias("pc")
+                    return "(SELECT ${aggregateList("$each.v")} FROM (${rows("SELECT $value AS v")}) $each)"
+                }
                 // A comprehension of nodes or relationships is a list of them, so a write to an item of it reaches them.
                 when (projected) {
                     is Value.Node -> Value.Entities(comparable(Value.Json(gathered(scalar(projected.nid)), ordered = true)), false, gathered(json(projected).sql))
@@ -4787,6 +4799,25 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.PatternPredicate -> variablesIn(expression.pattern)
             is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + (expression.where?.let(::variablesIn) ?: emptySet())
             else -> children(expression).flatMap(::variablesIn).toSet()
+        }
+
+        /**
+         * The variables [expression] reads of the scope it is in: those [variablesIn] gives, but for a name that a comprehension,
+         * a quantifier or a reduce binds of its own and reads only inside, so `[m IN [p.name] | m]` reads `p` alone. A pattern's
+         * new variables can't be named so in Cypher, nor a subquery's, so a pattern's are as [variablesIn] gives them.
+         */
+        fun variablesReadIn(expression: Expression): Set<String> = when (expression) {
+            is Expression.Variable -> setOf(expression.name)
+            is Expression.MapProjection -> setOf(expression.variable) +
+                expression.elements.filterIsInstance<Expression.MapProjection.Element.Variable>().map { it.name } + children(expression).flatMap(::variablesReadIn)
+            is Expression.ListComprehension -> variablesReadIn(expression.list) + (listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn) - expression.variable)
+            is Expression.Quantifier -> variablesReadIn(expression.list) + (expression.where?.let(::variablesReadIn).orEmpty() - expression.variable)
+            is Expression.Reduce -> variablesReadIn(expression.initial) + variablesReadIn(expression.list) +
+                (variablesReadIn(expression.expression) - expression.accumulator - expression.variable)
+            is Expression.PatternComprehension -> variablesIn(expression.pattern) + listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn)
+            is Expression.PatternPredicate -> variablesIn(expression.pattern)
+            is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + expression.where?.let(::variablesReadIn).orEmpty()
+            else -> children(expression).flatMap(::variablesReadIn).toSet()
         }
 
         /** Every parameter [expression] names, in any expression it holds. */
