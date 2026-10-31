@@ -3203,6 +3203,63 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
+        /**
+         * The fields the map [written], the third argument of [function], gives the value of [kind] it truncates, in place
+         * of its own, as Neo4j takes them. A field of no such value, a day or a month beside a day of the week, a number
+         * that is not whole, or a number written past its field's range (see [TRUNCATION_RANGES]; a microsecond beside a
+         * millisecond given or kept by a cut to [unit] runs to 999), fails, where a store would carry it into the next
+         * field or fail on it at its own time. A field that is null is given as its least, as a map that leaves
+         * it out makes a value: the year 0, the first month, day or day of the week, and no time; a time zone that is null
+         * fails. Fields the stores have no SQL for yet (nanoseconds, the fields of a week or a quarter, a time zone by
+         * name) are refused.
+         */
+        private fun truncationFields(function: Expression.Function, unit: String, kind: Temporal, written: Expression, scope: Map<String, Value>): Temporals.Overrides {
+            // Null gives no fields, as Neo4j has it.
+            if (written == Expression.Literal(null)) return Temporals.Overrides(emptyMap(), null)
+            val entries = (written as? Expression.MapLiteral ?: unsupported("A truncation's fields that an expression gives")).entries
+            val takes = (if (kind != Temporal.LOCAL_TIME && kind != Temporal.TIME) TRUNCATION_DATE_FIELDS else emptySet()) +
+                (if (kind != Temporal.DATE) TRUNCATION_TIME_FIELDS else emptySet()) + (if (kind.zoned) setOf("timezone") else emptySet())
+            entries.forEach { (key, _) ->
+                if (key !in takes) throw DrivineException("${function.name}() takes no field $key.")
+                if (key in TRUNCATION_FIELDS_NOT_COMPILED) unsupported("${function.name}() of a map with $key")
+            }
+            val keys = entries.map { it.first }.toSet()
+            if ("day" in keys && "dayOfWeek" in keys) throw DrivineException("${function.name}() takes a day or a day of the week, not both.")
+            if ("month" in keys && "dayOfWeek" in keys) throw DrivineException("${function.name}() takes a month or a day of the week, not both.")
+            val millis = "millisecond" in keys || unit == "millisecond"
+            val timezone = entries.firstOrNull { it.first == "timezone" }?.let { (_, value) ->
+                if (value == Expression.Literal(null)) throw DrivineException("${function.name}() takes a time zone, not null.")
+                val zone = (value as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a time zone an expression gives")
+                // Neo4j takes an offset written as `Z` or `+01:00` alone, and a zone by name, which no store's text holds yet.
+                val id = runCatching { java.time.ZoneId.of(zone) }.getOrNull()
+                when {
+                    id is java.time.ZoneOffset && Regex("Z|[+-][0-9]{2}:[0-9]{2}").matches(zone) -> "'${id.id}'"
+                    id != null && id !is java.time.ZoneOffset -> unsupported("The time zone '$zone'")
+                    else -> throw DrivineException("'$zone' is no time zone.")
+                }
+            }
+            val numbers = entries.filter { it.first != "timezone" }.associate { (key, value) ->
+                val least = TRUNCATION_LEAST[key] ?: 0
+                // `-1` is a negated number, written as much as `1` is.
+                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
+                val number = when (val literal = negated?.unaryMinus() ?: (value as? Expression.Literal)?.value) {
+                    null -> if (value is Expression.Literal) "$least" else "COALESCE(${number(comparable(json(expression(value, scope))))}, $least)"
+                    is Long, is Int -> {
+                        val range = if (key == "microsecond" && millis) 0L..999L else TRUNCATION_RANGES[key]
+                        if (range != null && (literal as Number).toLong() !in range) {
+                            val name = mapOf("dayOfWeek" to "a day of the week", "hour" to "an hour")[key] ?: "a $key"
+                            val beside = if (key == "microsecond" && millis) " beside a millisecond" else ""
+                            throw DrivineException("${function.name}() takes $name from ${range.first} to ${range.last}$beside, not $literal.")
+                        }
+                        "$literal"
+                    }
+                    else -> throw DrivineException("${function.name}() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+                key to number
+            }
+            return Temporals.Overrides(numbers, timezone)
+        }
+
         private fun mapProjection(projection: Expression.MapProjection, scope: Map<String, Value>): Value {
             val subject = scope[projection.variable] ?: throw DrivineException("${projection.variable} is not defined.")
             val values = projection.elements.filterNot { it is Expression.MapProjection.Element.All }.map { element ->
@@ -3995,11 +4052,13 @@ abstract class SqlCypherCompiler(graph: String) {
                 in TEMPORAL_NOW -> Value.Json(scalar(temporals.now(Temporal.ofFunction(name.substringBefore('.'))!!)), temporal = Temporal.ofFunction(name.substringBefore('.')))
                 in TEMPORAL_TRUNCATE -> {
                     val to = Temporal.ofFunction(name.substringBefore('.'))!!
-                    if (arguments.size != 2) throw DrivineException("${function.name}() takes a unit and a value.")
+                    if (arguments.size < 2) throw DrivineException("${function.name}() takes a unit and a value.")
+                    if (arguments.size > 3) throw DrivineException("${function.name}() takes a unit, a value and a map of fields.")
                     val unit = (function.arguments[0] as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a unit an expression gives")
                     val given = arguments[1] as? Value.Json ?: throw DrivineException("${function.name}() takes a unit and a value.")
-                    fun cut(text: String, from: Temporal) = temporals.truncate(unit, text, from, to)
-                        ?: throw DrivineException("${function.name}() truncates to year, quarter, month, week, day, hour, minute, second or millisecond, not $unit.")
+                    val fields = function.arguments.getOrNull(2)?.let { truncationFields(function, unit, to, it, scope) }
+                    fun cut(text: String, from: Temporal) = temporals.truncate(unit, text, from, to, fields)
+                        ?: throw DrivineException("${function.name}() truncates to ${TemporalSql.UNITS.dropLast(1).joinToString(", ")} or ${TemporalSql.UNITS.last()}, not $unit.")
                     val text = text(comparable(given))
                     Value.Json(scalar(given.temporal?.takeIf { it.instant }?.let { cut(text, it) } ?: temporals.byKind(text) { from, t -> cut(t, from) }), temporal = to)
                 }
@@ -4405,6 +4464,24 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The functions of a temporal kind that truncate a value to a unit. */
         val TEMPORAL_TRUNCATE = listOf("date", "localtime", "time", "localdatetime", "datetime").map { "$it.truncate" }
+
+        /** The fields of a date a truncation's map may give, as Neo4j takes them. */
+        val TRUNCATION_DATE_FIELDS = setOf("year", "month", "day", "dayOfWeek", "week", "weekYear", "quarter", "dayOfQuarter", "ordinalDay")
+
+        /** The fields of a time of day a truncation's map may give, as Neo4j takes them. */
+        val TRUNCATION_TIME_FIELDS = setOf("hour", "minute", "second", "millisecond", "microsecond", "nanosecond")
+
+        /** The fields a truncation's map may give that the stores have no SQL for yet: nanoseconds, and the fields of a week or a quarter. */
+        val TRUNCATION_FIELDS_NOT_COMPILED = setOf("nanosecond", "week", "weekYear", "quarter", "dayOfQuarter", "ordinalDay")
+
+        /** The values each field a truncation's map gives may take, as Neo4j takes them, but for the year, which runs past what a store's text holds. */
+        val TRUNCATION_RANGES = mapOf(
+            "month" to 1L..12L, "day" to 1L..31L, "dayOfWeek" to 1L..7L, "hour" to 0L..23L, "minute" to 0L..59L, "second" to 0L..59L,
+            "millisecond" to 0L..999L, "microsecond" to 0L..999_999L,
+        )
+
+        /** The least of each field a truncation's map gives that is not 0, which a field given as null is. */
+        val TRUNCATION_LEAST = mapOf("month" to 1, "day" to 1, "dayOfWeek" to 1)
 
         val AGGREGATES = setOf("count", "collect", "sum", "avg", "min", "max")
 

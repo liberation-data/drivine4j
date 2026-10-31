@@ -183,10 +183,54 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         return sql.addTime(sql.addMonths(timestamp, "$s(${parts.months})"), "$s(${parts.days})", "$s($seconds)")
     }
 
-    /** The text of [to] the text [text] of [from] is, cut short to [unit]: null where the store truncates to no such unit. */
-    fun truncate(unit: String, text: String, from: Temporal, to: Temporal): String? {
+    /**
+     * The fields the third argument of a truncation gives the value cut short, in place of its own: SQL numbers by
+     * Cypher's names (`year`, `month`, `day`, `hour`, `minute`, `second`, `millisecond`, `microsecond`), `dayOfWeek`,
+     * and [timezone], an offset's text.
+     */
+    class Overrides(val fields: Map<String, String>, val timezone: String?)
+
+    /**
+     * The text of [to] the text [text] of [from] is, cut short to [unit], with [overrides] in place of its fields where
+     * it has any: null where the store truncates to no such unit.
+     */
+    fun truncate(unit: String, text: String, from: Temporal, to: Temporal, overrides: Overrides? = null): String? {
         if (sql.truncate(unit, "NULL") == null) return null
-        return shared(listOf(text)) { (t) -> format(sql.truncate(unit, sql.local(t, from))!!, to, offset(t, from, to)) }
+        if (overrides == null || (overrides.fields.isEmpty() && overrides.timezone == null)) {
+            return shared(listOf(text)) { (t) -> format(sql.truncate(unit, sql.local(t, from))!!, to, offset(t, from, to)) }
+        }
+        return shared(listOf(text)) { (t) ->
+            shared(listOf(sql.truncate(unit, sql.local(t, from))!!)) { (cut) -> overridden(cut, unit, to, overrides, overrides.timezone ?: offset(t, from, to)) }
+        }
+    }
+
+    /**
+     * The text of [kind] of the timestamp [cut], cut short to [unit], with the fields [overrides] gives in place of its own,
+     * and the offset [offset], as Neo4j lays a truncation's fields over the value: the year, month and day, then the time,
+     * then the day of the week, which moves the value within its ISO week. A millisecond or a microsecond given makes the
+     * whole fraction of the second, but a microsecond given a value cut to the millisecond is added to the millisecond kept.
+     */
+    private fun overridden(cut: String, unit: String, kind: Temporal, overrides: Overrides, offset: String?): String {
+        val given = overrides.fields
+        val own = mapOf(
+            "year" to sql.extract("YEAR", cut), "month" to sql.extract("MONTH", cut), "day" to sql.extract("DAY", cut),
+            "hour" to sql.extract("HOUR", cut), "minute" to sql.extract("MINUTE", cut), "second" to "${sql.trunc}(${sql.extract("SECOND", cut)})",
+        )
+        val micros = sql.number(sql.micros(cut))
+        val carried = unit == "millisecond" && "microsecond" in given
+        val kept = if (carried) "($micros + ${given["microsecond"]})" else micros
+        val fraction = when {
+            "millisecond" in given -> "${given["millisecond"]} * 1000" + if (carried || "microsecond" !in given) "" else " + ${given["microsecond"]}"
+            "microsecond" in given && !carried -> given.getValue("microsecond")
+            else -> kept
+        }
+        val made = of(own.mapValues { (name, value) -> given[name] ?: value } + ("microsecond" to fraction), offset, kind)
+        val day = given["dayOfWeek"] ?: return made
+        return shared(listOf(made)) { (m) ->
+            shared(listOf(sql.local(m, kind))) { (clock) ->
+                format(sql.addTime(clock, "$day - ${sql.dayOfWeek(clock)}", "0"), kind, if (kind.zoned) offset(m) else null)
+            }
+        }
     }
 
     /** What the text [text] of [kind] sorts by: the moment it is, whatever its offset, as a timestamp. */

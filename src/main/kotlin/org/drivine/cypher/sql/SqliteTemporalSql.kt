@@ -61,8 +61,4 @@ class SqliteTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
 
     /** The temporal function's [operation] of [arguments]. */
     private fun temporal(operation: String, vararg arguments: String) = "${SqliteFunctions.TEMPORAL}('$operation', ${arguments.joinToString(", ")})"
-
-    private companion object {
-        val UNITS = setOf("year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond")
-    }
 }
