@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.driver.exceptions.TransientException
+import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertContains
@@ -209,6 +210,25 @@ class StoreIdentityResolverTest {
         assertEquals("store-9", StoreIdentityResolver(store).resolve().id)
         assertEquals(2, creates, "the constraint is made again after the deadlock: ${store.schema}")
         assertEquals(2, merges, "the stamp is written under the constraint, so a conflict is written again")
+    }
+
+    @Test
+    fun `on Oracle a constraint whose making another session's DDL deadlocks is made again`() {
+        // ORA-04020 is a SQL store's DDL deadlock (DdlContention), though not a save's (OracleBackend.contended).
+        val grammar = OracleSchemaGrammar(OracleGraph("g"))
+        val statements = grammar.storeStamp("DrivineStore", "key")
+        val deadlock = SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.G_NODE", "61000", 4020)
+        var creates = 0
+        val store = RecordingStore(DatabaseType.ORACLE, ddl = grammar, graphName = "g") { ran ->
+            when {
+                ran.statement.startsWith("CREATE UNIQUE INDEX") -> if (creates++ == 0) deadlock else emptyList<Any?>()
+                ran.statement == statements.readStamps -> listOf(Stamp("store-10", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-10", StoreIdentityResolver(store).resolve().id)
+        assertEquals(2, creates, "the constraint is made again after the deadlock: ${store.schema}")
     }
 
     @Test
