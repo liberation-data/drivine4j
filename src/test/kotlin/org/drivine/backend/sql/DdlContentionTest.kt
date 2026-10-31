@@ -108,6 +108,28 @@ class DdlContentionTest {
         assertEquals(1, outerRuns)
     }
 
+    /** As the store identity's constraint is on a graph engine, whose deadlock is not a SQL store's (#473). */
+    @Test
+    fun `a statement is run again on the failures it is told are turned away, and not on a failure given up on`() {
+        val engineDeadlock = IllegalStateException("Deadlock wait cycle.")
+        val turnedAway: (Throwable) -> Boolean = { generateSequence(it) { c -> c.cause }.any { c -> c === engineDeadlock } }
+        val failing = Failing(engineDeadlock, engineDeadlock)
+        assertEquals("done", DdlContention.whenNotContended(noPause, turnedAway) { failing.run() })
+        assertEquals(3, failing.runs)
+
+        val sqlDeadlock = Failing(rowDeadlock)
+        assertSame(rowDeadlock, assertFailsWith<SQLException> { DdlContention.whenNotContended(noPause, turnedAway) { sqlDeadlock.run() } })
+        assertEquals(1, sqlDeadlock.runs, "only what the predicate says is turned away is run again")
+
+        val gaveUp = assertFailsWith<IllegalStateException> {
+            DdlContention.whenNotContended(noPause, turnedAway) { throw IllegalStateException("x", engineDeadlock) }
+        }
+        assertTrue(DdlContention.gaveUp(gaveUp))
+        var outerRuns = 0
+        assertSame(gaveUp, assertFailsWith<IllegalStateException> { DdlContention.whenNotContended(noPause, turnedAway) { outerRuns++; throw gaveUp } })
+        assertEquals(1, outerRuns, "a failure given up on is not run again, whatever the predicate says")
+    }
+
     /** As the provider's first connection is, asked for by an object manager making the tables itself. */
     @Test
     fun `a run within another on the same thread is run once, and the run outside retries`() {
