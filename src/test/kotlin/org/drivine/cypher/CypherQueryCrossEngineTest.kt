@@ -2823,6 +2823,27 @@ abstract class CypherQueryContract {
             listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
             query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p {.name}, count(*) AS c RETURN p.name, c ORDER BY p.name"),
         )
+        // A null key is one group; two keys of one variable group by both, not by the variable (two rows have a = 1, b = 1).
+        assertEquals(
+            listOf(listOf("Welcome to the Real World", mapOf("t" to "Welcome to the Real World", "n" to 1L)), listOf(null, mapOf("t" to null, "n" to 2L))),
+            query("MATCH (m:Movie) RETURN m.tagline AS t, {t: m.tagline, n: count(*)} AS n ORDER BY t"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 1L, 13L), listOf(1L, 2L, 13L), listOf(2L, 2L, 23L)),
+            query(
+                "UNWIND [{a: 1, b: 1, c: 1}, {a: 1, b: 1, c: 2}, {a: 1, b: 2, c: 1}, {a: 2, b: 2, c: 1}] AS x " +
+                    "RETURN x.a AS a, x.b AS b, x.a * 10 + x.b + count(*) AS n ORDER BY a, b",
+            ),
+        )
+        // In a comprehension's WHERE inside another's WHERE, the key too; but not where a comprehension binds the key's variable.
+        assertEquals(
+            roles.zip(listOf(1L, 0L, 0L, 0L)).map { (role, n) -> listOf(role, n) },
+            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE size([u IN [t] WHERE u CONTAINS r.role]) > 0]) AS n ORDER BY role"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(2L, 3L)),
+            query("UNWIND [{a: 1}, {a: 2}, {a: 2}] AS x RETURN x.a AS a, size([x IN [{a: 5}] WHERE x.a > 1]) + count(*) AS n ORDER BY a"),
+        )
         // A function named in another case is the same function.
         assertEquals(
             listOf(listOf("LAURENCE", 1L), listOf("KEANU", 3L), listOf("CARRIE", 2L)),

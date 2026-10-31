@@ -2598,8 +2598,10 @@ abstract class SqlCypherCompiler(graph: String) {
          * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
          * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
          * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
-         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
-         * does none of these.
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. So too where an item that
+         * aggregates reads a key that is a property ([readsOutsideAggregates]), as `r.role + count(*)` beside `r.role`:
+         * grouped in place, it would be grouped by the variable `r` it names, a row for each relationship, where Neo4j gives
+         * one for each role (#491); over the keys' columns, it reads the key's. Null where the projection does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
