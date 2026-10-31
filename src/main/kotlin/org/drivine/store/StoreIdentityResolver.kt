@@ -1,6 +1,10 @@
 package org.drivine.store
 
+import org.drivine.backend.GraphBackend
+import org.drivine.backend.GraphBackends
+import org.drivine.backend.sql.DdlContention
 import org.drivine.manager.PersistenceManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 import org.drivine.schema.EnsureResult
@@ -76,13 +80,20 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
     /**
      * Ensures the uniqueness constraint on the merge key. Returns whether it is in force; false degrades
      * [resolve] to best-effort convergence rather than failing boot over an identity that can still be read.
+     *
+     * Managers making the constraint at once can deadlock (Neo4j does, on the label's lock), so one turned
+     * away so makes it again, and then finds the winner's. Going on to write the stamp without it would let
+     * two stamps be written before the winner's constraint is in force, and it then fails on them (#473).
      */
     private fun ensureUniqueKey(): Boolean {
         if (!persistenceManager.supportsSchemaManagement) return false
         val constraints = persistenceManager.constraints
         return try {
             // The label is Drivine's, so a plain index on the key (Neo4j) is replaced by the constraint.
-            when (val result = constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)) {
+            val result = DdlContention.whenNotContended(turnedAway = ::contended) {
+                constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)
+            }
+            when (result) {
                 is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
                 is EnsureResult.Violation -> {
                     logger.warn(
@@ -130,6 +141,11 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
     /**
      * `MERGE`s the stamp. Under the constraint, a concurrent first writer can make this one fail with a
      * violation or a write conflict rather than block; retrying then matches the winner's node.
+     *
+     * A violation is retried even when [ensureUniqueKey] could not confirm the constraint, for the violation
+     * itself proves one is in force: on Neo4j, managers making it at once deadlock, and a loser may not see
+     * the winner's constraint yet when it looks, though it is enforced by the time the stamp is written (#473).
+     * A conflict proves nothing, so it is retried only under a constraint confirmed.
      */
     private fun assignIfAbsent(guarded: Boolean) {
         var attempt = 1
@@ -147,7 +163,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                 )
                 return
             } catch (e: Exception) {
-                if (!guarded || attempt >= MAX_MERGE_ATTEMPTS || !lostTheRace(e)) throw e
+                if (attempt >= MAX_MERGE_ATTEMPTS || !(if (guarded) lostTheRace(e) else violatedTheKey(e))) throw e
                 logger.debug("[store-identity] Concurrent stamp won on attempt {}; merging again", attempt)
                 // Back off so the winner can commit; otherwise the retry just conflicts with it again.
                 Thread.sleep(MERGE_BACKOFF_MILLIS shl (attempt - 1))
@@ -156,8 +172,23 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         }
     }
 
+    /** The store's backend, which knows its engine's deadlocks: see [GraphBackend.contended]. */
+    private val backend: GraphBackend by lazy { GraphBackends.of(persistenceManager, Neo4jObjectMapper.instance) }
+
+    /**
+     * Whether [e], or a cause under it, is the engine turning a statement away for another session's. On the SQL
+     * stores this includes the DDL deadlocks [DdlContention] retries on its own, for the store's DDL run within
+     * this run of it is run once.
+     */
+    private fun contended(e: Throwable): Boolean =
+        DdlContention.contended(e) || generateSequence(e) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
+
+    /** Whether [e] is a constraint refusing the stamp. Only a manager with schema management has a grammar to ask. */
+    private fun violatedTheKey(e: Throwable): Boolean =
+        persistenceManager.supportsSchemaManagement && persistenceManager.constraints.grammar.isConstraintViolation(e)
+
     private fun lostTheRace(e: Throwable): Boolean =
-        persistenceManager.constraints.grammar.isConstraintViolation(e) ||
+        violatedTheKey(e) ||
             // Memgraph's optimistic concurrency: "Cannot resolve conflicting transactions. You can retry…"
             SchemaGrammar.messagesOf(e).contains("conflicting transactions", ignoreCase = true)
 
@@ -195,6 +226,9 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         /** Lost-race MERGE retries, backing off 50, 100, 200, 400 ms — enough for a peer's boot write to commit. */
         private const val MAX_MERGE_ATTEMPTS = 5
         private const val MERGE_BACKOFF_MILLIS = 50L
+
+        /** How far down a failure's causes the engine's own error is looked for. */
+        private const val MAX_CAUSE_DEPTH = 10
 
         /** The MERGE key. Fixed, so a second boot matches the node the first one wrote. */
         internal const val SINGLETON_KEY = "singleton"

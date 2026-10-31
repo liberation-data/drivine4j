@@ -10,6 +10,7 @@ import org.drivine.query.SpecCompiler
 import org.drivine.query.QuerySpecification
 import org.neo4j.driver.Session
 import org.neo4j.driver.Transaction
+import org.neo4j.driver.exceptions.TransientException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -68,8 +69,18 @@ class Neo4jConnection(
         transaction = null
     }
 
+    /**
+     * Closes the session. A failure is logged, at debug when the engine turned the statement away for another
+     * session's (a deadlock or conflict): its caller runs it again, as a save is (`SaveExecutor`) and the store
+     * identity's constraint is (#473), and one that still fails is thrown or warned of there. Otherwise each manager
+     * of several starting at once would warn of each deadlock it got past.
+     */
     override fun release(err: Throwable?) {
-        err?.let { logger.warn("Closing session with error: $it") }
+        when (err) {
+            null -> Unit
+            is TransientException -> logger.debug("Closing session with error: {}", err.toString())
+            else -> logger.warn("Closing session with error: $err")
+        }
         session.close()
     }
 
