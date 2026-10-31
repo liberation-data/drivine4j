@@ -2713,6 +2713,81 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an aggregate in the WHERE of a WITH that aggregates or is DISTINCT filters its groups, as Neo4j does`() {
+        // #497: refused since #490, as an aggregate in any WHERE is, though Neo4j runs it. Until the spec holds these
+        // (drivine-cypher-spec#41, "Aggregate in the WHERE of a WITH that groups"), held here. The rows are Neo4j's (2026.10.1);
+        // where it gives them in no order of the statement's, they are compared in any order.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        fun rows(vararg rows: Any?) = rows.toList()
+        val ordered = listOf(
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 RETURN i" to rows(1L),
+            "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE j > count(*) RETURN j" to rows(2L),
+            // An aggregate no item is, over each group's rows; one an item is, by the item's name or written again.
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE max(i) > 1 RETURN i, c" to rows(listOf(2L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE avg(i) >= 1.5 RETURN i, c" to rows(listOf(2L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size(collect(i)) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size(collect(DISTINCT i)) = 1 AND count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE max(i) + count(*) > 2 RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE max(m.released) > p.born + 37 RETURN p.name, c ORDER BY p.name" to
+                rows(listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE c = count(*) RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, collect(m.title) AS ts WHERE size(collect(m.title)) > 1 RETURN p.name ORDER BY p.name" to
+                rows("Carrie", "Keanu"),
+            // Beside a condition on a key, in a CASE, and as the list a quantifier reads.
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE i > 1 OR count(*) > 1 RETURN i, c ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE i > 1 AND count(*) > 1 RETURN i, c" to rows(),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE CASE WHEN count(*) > 1 THEN true ELSE false END RETURN i, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN collect(i) WHERE x > 1) RETURN i, c" to rows(listOf(2L, 1L)),
+            // With no key, the rows are one group, an empty one where there are none.
+            "UNWIND [1, 2, 3] AS i WITH count(*) AS c WHERE sum(i) > 2 RETURN c" to rows(3L),
+            "UNWIND [1, 2, 3] AS i WITH count(*) AS c WHERE count(*) > 5 RETURN c" to rows(),
+            "UNWIND [] AS i WITH count(*) AS c WHERE count(*) = 0 RETURN c" to rows(0L),
+            // A key, written as its item is before its name; a name an item has is that item, in a larger expression too.
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j, c" to rows(listOf(2L, 1L)),
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE i % 2 = 1 RETURN k, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE sum(i) > 2 RETURN k, c" to rows(listOf(1L, 2L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p.name AS n, count(*) AS c WHERE p.name STARTS WITH 'K' AND count(*) > 1 RETURN n, c" to
+                rows(listOf("Keanu", 3L)),
+            "UNWIND [1, 1, 2] AS i WITH i + 10 AS i, count(*) AS c WHERE i + 10 > 20 RETURN i, c ORDER BY i" to rows(listOf(11L, 2L), listOf(12L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, i + 1 AS i, count(*) AS c WHERE i > 2 RETURN j, i, c" to rows(listOf(2L, 3L, 1L)),
+            // A DISTINCT WITH groups by its items.
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE count(*) > 1 RETURN i" to rows(1L),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i, count(*) AS c WHERE count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT * WHERE count(*) > 1 RETURN i" to rows(1L),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j" to rows(2L),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH DISTINCT p WHERE count(m) > 1 RETURN p.name ORDER BY p.name" to rows("Carrie", "Keanu"),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH DISTINCT p.name AS n WHERE p.name STARTS WITH 'K' OR count(*) = 1 RETURN n ORDER BY n" to
+                rows("Keanu", "Laurence"),
+            // Met after the WITH's ORDER BY, SKIP and LIMIT, in their order.
+            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY i LIMIT 2 WHERE count(*) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY i SKIP 1 WHERE count(*) > 1 RETURN i, c" to rows(listOf(3L, 3L)),
+            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY count(*) DESC WHERE count(*) > 1 RETURN i, c" to rows(listOf(3L, 3L), listOf(1L, 2L)),
+            "UNWIND [1, 1, 2, 3, 3, 3] AS i WITH i, count(*) AS c ORDER BY sum(i) DESC LIMIT 2 WHERE sum(i) > 2 RETURN i, c" to rows(listOf(3L, 3L)),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i ORDER BY i DESC LIMIT 1 WHERE count(*) > 1 RETURN i" to rows(),
+            // An aggregate no item is, is no variable after the WITH.
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 WITH i, c, count(*) AS d WHERE count(*) = 1 RETURN i, c, d" to rows(listOf(1L, 2L, 1L)),
+            // In a subquery's and a CALL's own query; one that imports the row, and reads a WITH, reads its WHERE after the WITH.
+            "MATCH (p:Person) CALL (p) { MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS k WHERE count(m) > 1 RETURN k } RETURN p.name, k ORDER BY p.name" to
+                rows(listOf("Carrie", 2L), listOf("Keanu", 3L)),
+            "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i, 3] AS x WITH x, count(*) AS c WHERE count(*) > 1 AND x = i RETURN c } RETURN i, c" to
+                rows(listOf(1L, 2L), listOf(2L, 2L)),
+            "MATCH (p:Person) RETURN p.name, COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH m, count(*) AS k WHERE count(*) > 0 RETURN m } AS n ORDER BY p.name" to
+                rows(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE EXISTS { MATCH (p)-[:KNOWS]->(q) WITH q, count(*) AS k WHERE count(*) > 0 RETURN q } " +
+                "RETURN p.name ORDER BY p.name" to rows("Keanu", "Laurence"),
+        )
+        ordered.forEach { (cypher, expected) -> assertEquals(expected, query(cypher), cypher) }
+        val unordered = listOf(
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i" to rows(1L, 2L),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(DISTINCT i) = 1 RETURN i, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE sum(i) > 1 RETURN j, c" to rows(listOf(1L, 2L), listOf(2L, 1L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN *" to rows(listOf(2L, 1L), listOf(1L, 2L)),
+        )
+        unordered.forEach { (cypher, expected) -> assertEquals(expected.map(Any?::toString).sorted(), query(cypher).map(Any?::toString).sorted(), cypher) }
+    }
+
+    @Test
     fun `an aggregate beside a WHERE, a grouping key's body or an order term that Neo4j takes gives Neo4j's rows`() {
         // #489, #482: beside the aggregates now refused, those Neo4j takes. Until the spec holds these (drivine-cypher-spec#38),
         // held here. The rows are Neo4j's (2026.10).

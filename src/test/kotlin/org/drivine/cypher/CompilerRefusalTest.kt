@@ -434,8 +434,9 @@ class CompilerRefusalTest {
     fun `an aggregate in a WHERE is refused, as Neo4j refuses it`() {
         // #489: Neo4j's 42I24, "invalid use of aggregate function". Before, SQLite and Postgres failed with an error of their own, and
         // Oracle gave rows. Until the spec holds these (drivine-cypher-spec#38), held here.
-        fun where(aggregate: String) = "$aggregate aggregates, and a WHERE holds no aggregate, as in Neo4j: aggregate in a WITH first, " +
+        fun where(aggregate: String) = "$aggregate aggregates, and a WHERE holds no aggregate unless its WITH aggregates, as in Neo4j: aggregate in a WITH first, " +
             "and filter what it gives in that WITH's WHERE, as in WITH x, count(*) AS c WHERE c > 1."
+        fun undefined(variable: String) = "$variable is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used."
         val refused = listOf(
             "UNWIND [1, 2] AS i WITH i WHERE sum(i) > 1 RETURN i" to where("sum()"),
             "UNWIND [1, 2] AS i WITH i WHERE i > 1 AND count(*) > 0 RETURN i" to where("count(*)"),
@@ -458,6 +459,27 @@ class CompilerRefusalTest {
             "MERGE (n:N) ON CREATE SET n.v = [x IN [1, 2] WHERE min(x) > 0 | x]" to where("min()"),
             "CREATE (n:N {v: [x IN [1, 2] WHERE avg(x) > 0 | x]})" to where("avg()"),
             "FOREACH (i IN [1] | CREATE (:N {v: [x IN [1, 2] WHERE max(x) > 0 | x]}))" to where("max()"),
+            // #497: a WITH whose only aggregate is in its WHERE groups nothing; in the WHERE of one that groups, a comprehension's,
+            // a quantifier's or a pattern's own WHERE or body holds no aggregate either. Until the spec holds these (drivine-cypher-spec#41),
+            // held here.
+            "UNWIND [1, 1, 2] AS i WITH i WHERE count(*) > 1 RETURN i" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH * WHERE count(*) > 1 RETURN i" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN [1] WHERE count(*) > x) RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size([x IN [1] WHERE count(*) > x | x]) > 0 RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE [x IN [1] | x + count(*)][0] > 2 RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE reduce(s = 0, x IN [1] | s + count(*)) > 0 RETURN i" to where("count(*)"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE size([(p)-[:ACTED_IN]->(x) WHERE count(x) > 1 | x]) > 0 RETURN p.name" to where("count()"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE EXISTS { (p)-[:KNOWS]->(q) WHERE count(q) > 0 } RETURN p.name" to where("count()"),
+            "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i] AS x WITH x WHERE count(*) > 1 RETURN x } RETURN x" to where("count(*)"),
+            // #497: there a variable from before the WITH is read only inside an aggregate, or where it is a key, written as its item is.
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE i > 0 RETURN k, c" to undefined("i"),
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE sum(i) > 2 AND i > 0 RETURN k, c" to undefined("i"),
+            "UNWIND [1, 2, 3] AS i WITH DISTINCT i % 2 AS k WHERE i > 0 RETURN k" to undefined("i"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p.name AS n, count(*) AS c WHERE p.born > 1965 RETURN n, c" to undefined("p"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE m.released > 1996 RETURN p.name" to undefined("m"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(c) > 1 RETURN i, c" to undefined("c"),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE sum(j) > 1 RETURN j, c" to undefined("j"),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE any(x IN [1] WHERE x = i) RETURN j, c" to undefined("i"),
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             refused.forEach { (cypher, message) ->
@@ -472,6 +494,15 @@ class CompilerRefusalTest {
                 "MATCH (n) WHERE EXISTS { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x",
                 "MATCH (n) CALL (n) { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x, c",
                 "MATCH (n) WITH n, count { (n)-->() } AS c WHERE c > 0 RETURN n.x",
+                // #497: the WHERE of a WITH that aggregates, or is DISTINCT, filters its groups, an aggregate in it among them.
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 RETURN i",
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i",
+                "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE j > count(*) RETURN j",
+                "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE count(*) > 1 RETURN i",
+                "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j, c",
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN collect(i) WHERE x > 1) RETURN i, c",
+                "MATCH (n) WITH n, count(*) AS c WHERE EXISTS { MATCH (n)-->(m) WITH m, count(*) AS k WHERE count(*) > 0 RETURN m } RETURN n.x",
+                "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i] AS x WITH x, count(*) AS c WHERE count(*) > 1 RETURN c } RETURN i, c",
             ).forEach { compiler.compile(it) }
         }
     }

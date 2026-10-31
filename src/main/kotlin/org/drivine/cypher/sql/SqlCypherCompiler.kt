@@ -936,7 +936,46 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** A `WITH`: a query of its own, which the rest of the statement reads from, as it reads [outer]. */
-        private fun with(select: Select, with: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+        private fun with(select: Select, clause: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+            val (with, hidden) = having(clause)
+            return withHaving(select, with, outer, apart).also { next -> hidden.forEach { next.bound.remove(it) } }
+        }
+
+        /**
+         * A `WITH` that groups its rows, [with], as one that aggregates or is `DISTINCT` does, read as Neo4j reads its `WHERE`,
+         * which filters the groups, as SQL's HAVING does (#497). Each aggregate the `WHERE` holds, outside a comprehension's or a
+         * quantifier's own expressions, is made an item of the `WITH`, of its own where no item is that aggregate, named as no
+         * variable is, and the `WHERE` reads that item. A key the `WITH` groups by, written there as the item is, before its name,
+         * is read as that item, as in `WITH i AS j, count(*) AS c WHERE i > 1`; a variable an item is named after is that item,
+         * in a larger expression too.
+         * The items made are no variables of the statement's: the `WITH` is read, then they are left out of what it binds.
+         * [with] as it is where it groups nothing, or has no `WHERE`.
+         */
+        private fun having(with: Clause.With): Pair<Clause.With, List<String>> {
+            val where = with.where ?: return with to emptyList()
+            val items = with.projection.items
+            if (!with.projection.distinct && items.none { contains(it.expression, ::isAggregate) }) return with to emptyList()
+            val names = items.map { it.name }.toSet()
+            val keys = items.filter { !contains(it.expression, ::isAggregate) && variablesIn(it.expression).isNotEmpty() }.associate { it.expression to it.name }
+            // An aggregate an item is already is read by that item's name.
+            val aggregates = items.filter { isAggregate(it.expression) }.associate { it.expression to it.name }
+            val lifted = linkedMapOf<Expression, String>()
+            val read = replaced(where) { part ->
+                when {
+                    // Named as no variable is, unless quoted so.
+                    isAggregate(part) -> Expression.Variable(aggregates[part] ?: lifted.getOrPut(part) { "#having${++counter}" })
+                    // `WITH i + 10 AS i … WHERE i + 10 > 20` reads the item i, as Neo4j does: no key is read where an item is named.
+                    variablesIn(part).any { it in names } -> if (part is Expression.Variable) part else null
+                    else -> keys[part]?.let(Expression::Variable)
+                }
+            }
+            if (read == where) return with to emptyList()
+            val kept = with.projection.copy(items = items + lifted.map { (aggregate, name) -> Projection.Item(aggregate, name) })
+            return with.copy(projection = kept, where = read) to lifted.values.toList()
+        }
+
+        /** A `WITH` [having] has read: see [with]. */
+        private fun withHaving(select: Select, with: Clause.With, outer: Map<String, Value>, apart: Boolean): Select {
             val projected = project(select, with.projection, final = false)
             val name = alias("w")
             val next = Select(outer)
@@ -1828,10 +1867,14 @@ abstract class SqlCypherCompiler(graph: String) {
                         clause is Clause.Return -> with(select, Clause.With(clause.projection, null))
                         // What brackets import is seen throughout the call, as Neo4j has it, after a WITH that does not pass it on too:
                         // read again from the row the call is written for, so `CALL (a) { WITH 1 AS one CREATE (a)-[:R]->() }` joins
-                        // the row's a, not a new node. Its WHERE reads them too, so it is met after.
-                        clause is Clause.With && rebound -> with(select, clause.copy(where = null)).also { w ->
-                            bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
-                            clause.where?.let { w.where += condition(it, w.scope) }
+                        // the row's a, not a new node. Its WHERE reads them too, so it is met after; one that filters groups reads
+                        // the aggregates [having] made items of the WITH.
+                        clause is Clause.With && rebound -> having(clause).let { (with, hidden) ->
+                            withHaving(select, with.copy(where = null), emptyMap(), apart = false).also { w ->
+                                bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
+                                with.where?.let { w.where += condition(it, w.scope) }
+                                hidden.forEach { w.bound.remove(it) }
+                            }
                         }
                         else -> next(select, clause)
                     }
