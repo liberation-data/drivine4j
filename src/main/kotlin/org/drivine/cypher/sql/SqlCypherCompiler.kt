@@ -202,6 +202,8 @@ abstract class SqlCypherCompiler(graph: String) {
             throw DrivineException("Each query of a UNION returns the same names, as in Cypher: ${names.joinToString(" and ") { it.joinToString(prefix = "(", postfix = ")") }}.")
         }
         val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
+        // Every query's names, before any is compiled: a name made in one is no variable of a later one's.
+        writer.give(query)
         val rows = parts.mapIndexed { i, clauses ->
             "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
         }.joinToString("\nUNION ALL\n")
@@ -837,10 +839,40 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The variables made here for a randomUUID() made first, for each row: no variable of the statement's, though one may be quoted as named alike. */
         private val madeAnew = mutableSetOf<String>()
 
-        /** A variable of [madeAnew]'s, new. */
-        private fun anewVariable() = alias(ANEW).also { madeAnew += it }
+        /** The queries given to compile, [query] and [procedure], whose names [hidden] keeps clear of, not yet in [queryTexts]. */
+        private val queries = mutableListOf<Query>()
+
+        /** Each text of the queries given to compile, as far as its first space ([textsIn]), gathered when [hidden] needs it. */
+        private val queryTexts = mutableSetOf<String>()
+
+        /**
+         * Holds [query] among the [queries]: as [query] and [procedure] do, or first, for the queries of a `UNION` compiled one
+         * by one, so a name made in one is named as no later one's variable is.
+         */
+        fun give(query: Query) {
+            queries += query
+        }
+
+        /**
+         * A variable named [prefix] and a number, new: named as no text of the statement's is, nor begins, so a variable quoted
+         * alike, `` `#anew2` `` or `` `#anew2 row` ``, is not taken for it (#479). The counter moves past such a name only:
+         * where none is quoted alike, the name is [alias]'s.
+         */
+        private fun hidden(prefix: String): String {
+            if (queries.isNotEmpty()) {
+                queries.forEach { textsIn(it, queryTexts) }
+                queries.clear()
+            }
+            var name = alias(prefix)
+            while (name in queryTexts) name = alias(prefix)
+            return name
+        }
+
+        /** A variable of [madeAnew]'s, new, and no variable of the statement's: see [hidden]. */
+        private fun anewVariable() = hidden(ANEW).also { madeAnew += it }
 
         fun query(query: Query): String {
+            give(query)
             var select = Select(emptyMap())
             for (clause in query.clauses) {
                 if (clause is Clause.Return) return project(select, clause.projection, final = true).sql
@@ -927,7 +959,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val where = match.where.takeIf { shortestWhere == null }
             val seededFirst = match.where?.let(::holdsAnew) == true && (match.optional || shortestWhere != null)
             val (row, seed) = if (seededFirst) seededRows(select) else select to null
-            val metByPaths = shortestWhere?.let { if (seed == null) it else seeded(it, seed, inBody = true) }
+            val metByPaths = shortestWhere?.let { if (seed == null) it else seeded(it, seed, madeAnew, inBody = true) }
             if (!match.optional) {
                 patterns(row, match.patterns, metByPaths)
                 return where?.let { filtered(row, it) } ?: row
@@ -935,7 +967,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
             var inner = Select(row.scope)
             patterns(inner, match.patterns, metByPaths)
-            where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, inBody = true), ::isSeeded) }
+            where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, madeAnew, inBody = true)) { e -> isSeeded(e, madeAnew) } }
             val found = inner.bound.filterKeys { it !in row.scope && it !in madeAnew }
             if (found.isEmpty() && inner.sources.isEmpty()) return row
             val name = alias("o")
@@ -1536,6 +1568,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The steps of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
         fun procedure(query: Query): List<ProcedureStep> {
+            give(query)
             var select = Select(emptyMap())
             for (clause in creates(query.clauses)) {
                 if (clause is Clause.Return) step(ProcedureStep.Return(project(select, clause.projection, final = true).sql)) else select = next(select, clause)
@@ -2253,18 +2286,19 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun anewBefore(select: Select, terms: List<Expression>, whole: Boolean, anew: (Expression) -> Boolean = ::isAnew): Pair<Select, List<Expression>>? {
             // A call read beside a row's UUID already ([isSeeded]) reads the row: left as it is, as a call alone is.
-            fun alone(term: Expression) = anew(term) || isSeeded(term)
-            fun holds(e: Expression): Boolean = anew(e) || (!isSeeded(e) && children(e).any(::holds))
-            val inBodies = terms.any { seeded(it, ANEW) != it }
+            fun seededHere(e: Expression) = isSeeded(e, madeAnew)
+            fun alone(term: Expression) = anew(term) || seededHere(term)
+            fun holds(e: Expression): Boolean = anew(e) || (!seededHere(e) && children(e).any(::holds))
+            val inBodies = terms.any { seeded(it, ANEW, madeAnew) != it }
             if (!inBodies && terms.none { (whole || !alone(it)) && holds(it) }) return null
             val made = mutableListOf<Projection.Item>()
             val seed = if (!inBodies) null else anewVariable().also { made += Projection.Item(Expression.Function("randomUUID", false, emptyList()), it) }
             val reads = terms.map { term ->
                 if (!whole && alone(term)) term
                 else replaced(term) { e ->
-                    if (anew(e)) Expression.Variable(anewVariable()).also { made += Projection.Item(e, it.name) } else e.takeIf(::isSeeded)
+                    if (anew(e)) Expression.Variable(anewVariable()).also { made += Projection.Item(e, it.name) } else e.takeIf(::seededHere)
                 }
-                    .let { read -> if (seed == null) read else seeded(read, seed) }
+                    .let { read -> if (seed == null) read else seeded(read, seed, madeAnew) }
             }
             val with = Projection(false, true, made, emptyList(), null, null)
             // Kept apart, as sortsFirst keeps its own, so no store merges it back into the query that reads it.
@@ -4553,17 +4587,17 @@ abstract class SqlCypherCompiler(graph: String) {
          * expressions read beside the variable [seed], made anew for each row: `CASE WHEN seed IS NULL THEN null ELSE randomUUID() END`,
          * which is randomUUID() still, as [seed] is never null. So the subquery that works the body out reads the row, and a
          * store works it out again for each row, as it does not for a subquery that reads nothing of it (#412). One so read
-         * already is left as it is ([isSeeded]). Each item's variable is read beside [seed] too ([own]), the path's of a pattern
+         * already, beside one of the variables the compiler [made], is left as it is ([isSeeded]). Each item's variable is read beside [seed] too ([own]), the path's of a pattern
          * comprehension, named here where it has none: read beside the row's alone, a value bound in a subquery ([shared]) reads
          * nothing of the item, and Postgres and Oracle worked it out once for all of them, so `[x IN range(1, 20) WHERE left(randomUUID(), 1) < '8' | x]`
          * kept every item or none; and an aggregate of a pattern comprehension's body that reads only the row's columns is an
          * aggregate of the row's query, which Postgres refuses and SQLite works out over every row.
          */
-        fun seeded(expression: Expression, seed: String, inBody: Boolean = false, own: List<String> = emptyList()): Expression = replaced(expression) { e ->
-            fun body(part: Expression, variable: String) = seeded(part, seed, inBody = true, own = own + variable)
-            fun same(part: Expression) = seeded(part, seed, inBody, own)
+        fun seeded(expression: Expression, seed: String, made: Set<String>, inBody: Boolean = false, own: List<String> = emptyList()): Expression = replaced(expression) { e ->
+            fun body(part: Expression, variable: String) = seeded(part, seed, made, inBody = true, own = own + variable)
+            fun same(part: Expression) = seeded(part, seed, made, inBody, own)
             when {
-                isSeeded(e) -> e
+                isSeeded(e, made) -> e
                 inBody && isAnew(e) -> {
                     val condition = (listOf(seed) + own).map<String, Expression> { Expression.Unary(Expression.Unary.Operator.IS_NULL, Expression.Variable(it)) }
                         .reduce { a, b -> Expression.Binary(Expression.Binary.Operator.AND, a, b) }
@@ -4582,13 +4616,17 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** Whether [expression] is a randomUUID() read beside a variable made first for the row, as [seeded] reads one. */
-        fun isSeeded(expression: Expression): Boolean {
+        /**
+         * Whether [expression] is a randomUUID() read beside a variable made first for the row, as [seeded] reads one: one of
+         * those the compiler [made], never a variable of the statement's named alike, `` CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END ``,
+         * which was taken for one and not read beside each item (#479).
+         */
+        fun isSeeded(expression: Expression, made: Set<String>): Boolean {
             if (expression !is Expression.Case) return false
             var condition = expression.alternatives.singleOrNull()?.first
             while (condition is Expression.Binary && condition.operator == Expression.Binary.Operator.AND) condition = condition.left
             return condition is Expression.Unary && condition.operator == Expression.Unary.Operator.IS_NULL &&
-                (condition.operand as? Expression.Variable)?.name?.startsWith(ANEW) == true
+                (condition.operand as? Expression.Variable)?.name in made
         }
 
         fun isAggregate(expression: Expression): Boolean =
@@ -4726,6 +4764,121 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Reduce -> listOf(expression.initial, expression.list)
             is Expression.Quantifier -> listOf(expression.list)
             else -> emptyList()
+        }
+
+        /**
+         * Each text [query] holds anywhere, as far as its first space, added to [texts]: each of its variables' names, and
+         * more (an alias, a label, a key, a parameter's or a function's name, a text it gives), which is as much as a name made
+         * for it, with no space, needs to keep clear of: see `Writer.hidden`.
+         */
+        fun textsIn(query: Query, texts: MutableSet<String>) = Texts(texts).query(query)
+
+        /** What [textsIn] adds each text to, [texts], as it reads a statement through. */
+        private class Texts(val texts: MutableSet<String>) {
+            fun text(text: String?) {
+                if (text != null) texts += text.substringBefore(' ')
+            }
+
+            fun value(value: Any?) {
+                when (value) {
+                    is String -> text(value)
+                    is Iterable<*> -> value.forEach(::value)
+                    is Map<*, *> -> value.forEach { (key, item) -> value(key); value(item) }
+                    is Array<*> -> value.forEach(::value)
+                }
+            }
+
+            fun query(query: Query) {
+                clauses(query.clauses)
+                query.unions.forEach { clauses(it.clauses) }
+            }
+
+            fun clauses(clauses: List<Clause>): Unit = clauses.forEach { clause ->
+                when (clause) {
+                    is Clause.Match -> { clause.patterns.forEach(::pattern); expression(clause.where) }
+                    is Clause.Unwind -> { expression(clause.list); text(clause.variable) }
+                    is Clause.With -> { projection(clause.projection); expression(clause.where) }
+                    is Clause.Create -> clause.patterns.forEach(::pattern)
+                    is Clause.Merge -> { pattern(clause.pattern); (clause.onCreate + clause.onMatch).forEach(::setItem) }
+                    is Clause.Set -> clause.items.forEach(::setItem)
+                    is Clause.Remove -> clause.items.forEach { item ->
+                        when (item) {
+                            is RemoveItem.Property -> { text(item.variable); text(item.key) }
+                            is RemoveItem.Labels -> { text(item.variable); item.labels.forEach(::text) }
+                        }
+                    }
+                    is Clause.Delete -> clause.expressions.forEach(::expression)
+                    is Clause.Call -> { query(clause.query); clause.imports?.forEach(::text) }
+                    is Clause.Foreach -> { text(clause.variable); expression(clause.list); clauses(clause.clauses) }
+                    is Clause.Return -> projection(clause.projection)
+                }
+            }
+
+            fun setItem(item: SetItem) {
+                when (item) {
+                    is SetItem.Property -> { text(item.variable); text(item.key); expression(item.value) }
+                    is SetItem.Replace -> { text(item.variable); expression(item.value) }
+                    is SetItem.Add -> { text(item.variable); expression(item.value) }
+                    is SetItem.Labels -> { text(item.variable); item.labels.forEach(::text) }
+                }
+            }
+
+            fun projection(projection: Projection) {
+                projection.items.forEach { expression(it.expression); text(it.name) }
+                projection.orderBy.forEach { expression(it.expression) }
+                expression(projection.skip)
+                expression(projection.limit)
+            }
+
+            fun pattern(pattern: Pattern) {
+                text(pattern.variable)
+                pattern.nodes.forEach { node -> text(node.variable); node.labels.forEach(::text); expression(node.properties) }
+                pattern.relationships.forEach { relationship ->
+                    text(relationship.variable)
+                    relationship.types.forEach(::text)
+                    expression(relationship.properties)
+                    relationship.group?.let { pattern(it.pattern); expression(it.where) }
+                }
+            }
+
+            fun expression(expression: Expression?) {
+                when (expression) {
+                    null, Expression.CountStar -> {}
+                    is Expression.Literal -> value(expression.value)
+                    is Expression.Parameter -> text(expression.name)
+                    is Expression.Variable -> text(expression.name)
+                    is Expression.Property -> { expression(expression.subject); text(expression.key) }
+                    is Expression.HasLabels -> { expression(expression.subject); expression.labels.forEach(::text) }
+                    is Expression.MapLiteral -> expression.entries.forEach { (key, value) -> text(key); expression(value) }
+                    is Expression.MapProjection -> {
+                        text(expression.variable)
+                        expression.elements.forEach { element ->
+                            when (element) {
+                                is Expression.MapProjection.Element.Selected -> text(element.key)
+                                is Expression.MapProjection.Element.Entry -> { text(element.key); expression(element.value) }
+                                is Expression.MapProjection.Element.Variable -> text(element.name)
+                                Expression.MapProjection.Element.All -> {}
+                            }
+                        }
+                    }
+                    is Expression.Function -> { text(expression.name); expression.arguments.forEach(::expression) }
+                    is Expression.ListComprehension -> {
+                        text(expression.variable); expression(expression.list); expression(expression.where); expression(expression.projection)
+                    }
+                    is Expression.Quantifier -> { text(expression.variable); expression(expression.list); expression(expression.where) }
+                    is Expression.Reduce -> {
+                        text(expression.accumulator); text(expression.variable)
+                        expression(expression.initial); expression(expression.list); expression(expression.expression)
+                    }
+                    is Expression.PatternComprehension -> { pattern(expression.pattern); expression(expression.where); expression(expression.projection) }
+                    is Expression.PatternPredicate -> pattern(expression.pattern)
+                    is Expression.Exists -> { expression.patterns.forEach(::pattern); expression(expression.where) }
+                    is Expression.Subquery -> query(expression.query)
+                    // No else: a kind of expression added later is not compiled until it is read here too.
+                    is Expression.ListLiteral, is Expression.Binary, is Expression.Unary, is Expression.Index, is Expression.Slice, is Expression.Case ->
+                        children(expression).forEach(::expression)
+                }
+            }
         }
     }
 

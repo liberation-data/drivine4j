@@ -310,6 +310,9 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) AS u UNION RETURN 'x' AS u } RETURN u" to 101,
             // A variable quoted as the compiler names its own is the statement's: imported as named, and a UUID made still.
             "UNWIND range(1, 100) AS `#anewi` CALL (`#anewi`) { RETURN toString(`#anewi`) + randomUUID() AS u } RETURN u" to 100,
+            // And a CASE that reads one is not taken for a randomUUID() the compiler read beside the row's UUID, so left as it is (#479).
+            "UNWIND range(1, 100) AS i WITH i, 1 AS `#anew1` RETURN [x IN [1] | CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END][0]" to 100,
+            "UNWIND range(1, 100) AS i WITH i, 1 AS `#anew1` RETURN [x IN range(1, 3) | CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END]" to 300,
             // A CALL that writes makes one for each row it writes, as it did.
             "UNWIND range(1, 100) AS i CALL (i) { CREATE (n:CyUuidCall {id: toUpper(randomUUID())}) RETURN n.id AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
@@ -356,6 +359,25 @@ abstract class CypherQueryContract {
             val made = rows.flatMap { it[1] as List<*> }
             "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 }
         }
+        // A variable quoted as the compiler names its own is the statement's (#479): it was taken for the UUID's, so read as the
+        // UUID, left out of a star, or hidden by a pattern comprehension's path. Each row is given without its last column, u.
+        fun read(cypher: String) = runCatching { query(cypher).map { (it as List<*>).dropLast(1) } }.getOrElse { listOf(it.message) }
+        val quoted = listOf(
+            "UNWIND [1, 2] AS `#anew2` RETURN `#anew2` AS a, toUpper(randomUUID()) AS u ORDER BY a" to listOf(listOf(1L), listOf(2L)),
+            "UNWIND [1, 2] AS i WITH i, 1 AS `#anew1`, 2 AS `#anew2`, 3 AS `#anew3`, 4 AS `#anew4`, 5 AS `#anew5`, 6 AS `#anew6` " +
+                "CALL { RETURN toUpper(randomUUID()) AS u } RETURN * ORDER BY i" to listOf(listOf(1L, 2L, 3L, 4L, 5L, 6L, 1L), listOf(1L, 2L, 3L, 4L, 5L, 6L, 2L)),
+            // Nor is it the variable a CALL's query unwinds the row's UUID to.
+            "UNWIND [1, 2] AS i WITH i, 4 AS `#anew4 row` CALL { RETURN toUpper(randomUUID()) AS u } RETURN * ORDER BY i" to listOf(listOf(4L, 1L), listOf(4L, 2L)),
+            // A UNION's queries are compiled one by one: the name made in the first was a later one's variable.
+            "UNWIND [1] AS i CALL (i) { RETURN toString(i) + randomUUID() AS u } RETURN 0 AS x, u " +
+                "UNION ALL WITH 2 AS `#anew2` WITH * RETURN `#anew2` AS x, 0 AS u" to listOf(listOf(0L), listOf(2L)),
+        ).mapNotNull { (cypher, expected) -> read(cypher).takeIf { it != expected }?.let { "$cypher: $it" } } +
+            // Nor is it the path a pattern comprehension's body is read beside, named where the pattern names none.
+            listOf("MATCH (p:Person) WITH p, 4 AS `#anew4 path0` RETURN p.name, [(p)-->() | toString(`#anew4 path0`) + randomUUID()]").mapNotNull { cypher ->
+                val rows = runCatching { query(cypher).map { it as List<*> } }.getOrElse { return@mapNotNull "$cypher: ${it.message}" }
+                val made = rows.flatMap { it[1] as List<*> }
+                "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 || made.any { !(it as String).startsWith("4") } }
+            }
         // The UUID made first for the row is no variable of the statement's.
         val starred = listOf(
             "UNWIND range(1, 2) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < 'z' RETURN *",
@@ -371,7 +393,7 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '0' RETURN i, p",
             "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' OPTIONAL MATCH (p)-->(m) WHERE toUpper(randomUUID()) < 'Z' RETURN i, p, m",
         ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 3 || rows.any { (it as List<*>).drop(1).any { v -> v != null } } }?.let { "$cypher: $it" } }
-        val wrong = failed + kept + found + starred + nulls
+        val wrong = failed + kept + found + quoted + starred + nulls
         assertEquals(emptyList(), wrong, wrong.joinToString("\n"))
     }
 
