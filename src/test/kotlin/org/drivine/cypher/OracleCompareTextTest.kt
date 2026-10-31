@@ -63,17 +63,19 @@ class OracleCompareTextTest {
         assertTrue(number.contains("<> 'string' THEN JSON_QUERY(n1.props, '\$.t' RETURNING JSON) = JSON('5') ELSE FALSE END"), number)
         val empty = sql("MATCH (n:Doc) WHERE n.t = '' RETURN n")
         assertTrue(empty.contains("THEN ${clobs(property("n1", clob = true), "JSON_VALUE(JSON('\"\"'), '\$' RETURNING CLOB)", "=")}") && !empty.contains("ELSE FALSE END"), empty)
-        // Items each read as a VARCHAR2, written or given, are compared as JSON with the property, null where it is a longer text.
-        val item = Regex("i\\d+\\.item = CASE WHEN ${Regex.escape(property("n1"))} IS NOT NULL OR NVL\\(JSON_VALUE\\(n1\\.props, '\\\$\\.t\\.type\\(\\)'\\), 'null'\\) <> 'string' THEN JSON_QUERY\\(n1\\.props, '\\\$\\.t' RETURNING JSON\\) END")
+        // Items each read as a VARCHAR2, written or given, are compared as JSON with the property, a plain equality, where it is
+        // read as one too or is no text: tested once, beside the items, and not in each item's comparison (#475).
+        val tested = "(${property("n1")} IS NOT NULL OR NVL(JSON_VALUE(n1.props, '\$.t.type()'), 'null') <> 'string') AND EXISTS (SELECT 1 FROM "
+        val item = Regex("WHERE i\\d+\\.item = JSON_QUERY\\(n1\\.props, '\\\$\\.t' RETURNING JSON\\)\\)")
         for (cypher in listOf("MATCH (n:Doc) WHERE n.t IN \$xs RETURN n", "MATCH (n:Doc) RETURN n.t IN \$xs", "MATCH (n:Doc) RETURN n.t IN ['a', 5, null, \$x]")) {
             val listed = sql(cypher, mapOf("xs" to listOf("a", "b"), "x" to "abc"))
-            assertTrue(item.containsMatchIn(listed) && !listed.contains("DBMS_LOB"), listed)
+            assertTrue(listed.contains(tested) && item.containsMatchIn(listed) && !listed.contains("DBMS_LOB"), listed)
         }
         // An empty item, or one past 4,000 bytes, isn't, and both sides are compared as texts.
         val clobItem = Regex("DBMS_LOB\\.COMPARE\\(TO_CLOB\\(JSON_VALUE\\(i\\d+\\.item, '\\$' RETURNING CLOB\\)\\), TO_CLOB\\(JSON_VALUE\\(n1\\.props, '\\$\\.t' RETURNING CLOB\\)\\)\\)")
         for (xs in listOf(listOf("a", ""), listOf("a", "€".repeat(1_334)))) {
             val listed = sql("MATCH (n:Doc) WHERE n.t IN \$xs RETURN n", mapOf("xs" to xs))
-            assertTrue(clobItem.containsMatchIn(listed) && !item.containsMatchIn(listed), listed)
+            assertTrue(clobItem.containsMatchIn(listed) && !listed.contains(tested), listed)
         }
         // The issue's: beside a value too long to write twice, which is bound, the property is bound by its own path, its JSON
         // only where it is no text past 32,767 characters, and its kind and CLOB from columns of their own.
@@ -83,6 +85,45 @@ class OracleCompareTextTest {
         assertTrue(beside.contains("THEN CASE WHEN $alias.v2 = 'string' THEN ${texts("JSON_VALUE($alias.v1, '\$')", "JSON_VALUE($alias.v4, '\$')", "$alias.v3", "JSON_VALUE($alias.v4, '\$' RETURNING CLOB)", ">")} ELSE $alias.v1 > $alias.v4 END"), beside)
         val inBeside = sql("MATCH (n:Doc), (m:Doc) RETURN n.t IN [toLower(trim(coalesce(\$p.q, m.name)))]", mapOf("p" to mapOf("q" to null)))
         assertTrue(inBeside.contains("JSON_VALUE(n1.props, '\$.t' RETURNING CLOB) AS v3") && inBeside.contains("DBMS_LOB.COMPARE("), inBeside)
+    }
+
+    @Test
+    fun `beside given items, none a list or a map, an IN is null or false as the items say, and doesn't read the value for its nulls`() {
+        // Where no item was equal, the value was read for its nulls and compared with each item again, a stored text past
+        // 32 KB taken out as JSON over two rows, which closed the session (ORA-03113, #475). Such items are equal to no value
+        // that holds a null, and a comparison with one is null only where the item is null: so null where they hold a null.
+        // Items that hold none are searched as before, the value null in them only where it is null. An empty item, or one
+        // past 4,000 bytes, is compared with the value as a text.
+        val lists = listOf(listOf("abc", 5L, null), listOf(null), listOf("abc", null), listOf("abc", 5L), listOf("", null), listOf("x".repeat(5_000), null), listOf("", "abc"))
+        for (items in lists) {
+            val listed = sql("MATCH (n:Doc) RETURN n.t IN \$l", mapOf("l" to items))
+            assertTrue(listed.contains(if (null in items) " THEN TRUE ELSE NULL END" else " THEN FALSE END)"), listed)
+            assertTrue(listed.contains("DBMS_LOB.COMPARE(") == items.any { it is String && it.length !in 1..4_000 }, listed)
+            assertTrue(!listed.contains("JSON_SERIALIZE") && !listed.contains("g_nulls_equal") && !listed.contains("JSON_VALUE(JSON_QUERY("), listed)
+        }
+        // A value that may hold a null, beside items that hold none, is in none where none is equal, and not read for its nulls.
+        val holding = sql("RETURN \$v IN \$l", mapOf("v" to listOf(1L, null), "l" to listOf("a", 5L)))
+        assertTrue(holding.contains(" THEN TRUE ELSE FALSE END") && !holding.contains("JSON_SERIALIZE") && !holding.contains("g_nulls_equal"), holding)
+    }
+
+    @Test
+    fun `beside a value the statement writes, only the other side is tested, and two such values are compared as JSON`() {
+        // Tested on both sides, a list literal of a few hundred items compared with another item by item was about four times
+        // the SQL it had been (#476).
+        val written = sql("RETURN [[1, null] = [2, null], 1.5 = 2, ['a'] = {k: 'b'}]")
+        assertTrue(written.contains("THEN JSON('1') = JSON('2') END") && !written.contains("JSON_VALUE(JSON('1'), '\$') IS NOT NULL"), written)
+        assertTrue(written.contains("JSON_SCALAR(TO_BINARY_DOUBLE('1.5')) = JSON('2')") && !written.contains("DBMS_LOB"), written)
+        // Beside a stored value, as beside a given one: equal as JSON where it is read as a VARCHAR2 or is no text, else not.
+        val stored = sql("MATCH (n:Doc) RETURN n.t = [1, null]")
+        assertTrue(stored.contains("CASE WHEN ${property("n1")} IS NOT NULL OR NVL(JSON_VALUE(n1.props, '\$.t.type()'), 'null') <> 'string' THEN JSON_QUERY(n1.props, '\$.t' RETURNING JSON) = JSON_ARRAY(JSON('1'), JSON('null') NULL ON NULL RETURNING JSON) ELSE FALSE END"), stored)
+        // Beside a written value of one kind, a list or a map is not equal, and isn't compared as JSON.
+        val tags = sql("MATCH (n:Doc) WHERE 'a' IN n.tags RETURN n")
+        assertTrue(Regex("NOT IN \\('string', 'array', 'object'\\) THEN i\\d+\\.item = JSON\\('\"a\"'\\) ELSE FALSE END").containsMatchIn(tags), tags)
+        // An empty text and one past 4,000 bytes, which a VARCHAR2 doesn't hold, are compared as texts.
+        for (text in listOf("''", "'${"x".repeat(4_001)}'")) {
+            val compared = sql("MATCH (n:Doc) RETURN [$text] = [n.t]")
+            assertTrue(compared.contains("DBMS_LOB.COMPARE("), compared)
+        }
     }
 
     @Test

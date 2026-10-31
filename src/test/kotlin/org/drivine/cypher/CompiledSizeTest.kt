@@ -48,6 +48,17 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `two list literals of a hundred items, a null among them, compared item by item, compile to a few hundred characters an item`() {
+        // On Oracle, each pair of literal items tested on both sides for a text past 4,000 bytes made 80,907 characters (#476),
+        // about four times the 20,879 before.
+        val items = (0 until 100).joinToString(", ", "[", "]") { i -> listOf("$i", "'s$i'", "null", "$i.5", "true", "[$i, 'n']", "{k: $i}")[i % 7] }
+        compilers.forEach { compiler ->
+            val sql = compiler.compile("RETURN $items = $items").sql
+            assertTrue(sql.length < 25_000, "${compiler::class.simpleName}: ${sql.length} characters")
+        }
+    }
+
+    @Test
     fun `a sum of twice the terms compiles to about twice the statement`() {
         fun sum(terms: Int) = "MATCH (c:Claim) RETURN " + (1..terms).joinToString(" + ") { "c.p$it" }
         compilers.forEach { compiler ->
@@ -173,9 +184,10 @@ class CompiledSizeTest {
             val sql = compiler.compile("MATCH (c:Claim) WHERE c.a IN \$l AND (c.b IN [1, 2] OR c.c > 1) RETURN c.id", mapOf("l" to listOf(1, 2))).sql
             assertTrue(!sql.contains("ELSE FALSE") && !sql.contains("THEN FALSE"), "${compiler::class.simpleName}: $sql")
             // Nor of the list being null or holding a null, beside a value that holds none.
-            // On Oracle an item is compared with 'a' as a text, where a text and a value of another kind are not equal (#389).
+            // On Oracle an item is compared with 'a' as JSON where it is read as a VARCHAR2 or is no text, nor a list or a map;
+            // else it is not equal (#389, #476).
             val nullable = compiler.compile("MATCH (c:Claim) WHERE 'a' IN c.tags AND c.a IN \$l RETURN c.id", mapOf("l" to listOf(1, null))).sql
-                .replace("= 'string' THEN FALSE", "")
+                .replace(" = JSON('\"a\"') ELSE FALSE END", "")
             assertTrue(!nullable.contains("ELSE FALSE") && !nullable.contains("THEN FALSE"), "${compiler::class.simpleName}: $nullable")
             // Nor in a quantified path pattern's WHERE, which keeps a step where it is true.
             val stepped = compiler.compile("MATCH (a:Claim) ((x)-[:R]->(y) WHERE y.a IN [1, 2]){1,3} (b) RETURN b.id").sql
