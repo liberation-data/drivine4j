@@ -52,6 +52,14 @@ data class RrShelfView(
     val marks: List<RrTag> = emptyList(),
 )
 
+/** A book with the shelf that holds it, which it must have: a load leaves out a book on no shelf. */
+@GraphView
+data class RrShelvedBook(
+    @Root val book: RrBook,
+    @GraphRelationship(type = "HOLDS", direction = Direction.INCOMING)
+    val shelf: RrShelf,
+)
+
 // Hand-written query DSL, mirroring what `drivine4j-codegen` emits.
 
 class RrNamed(override val nodeAlias: String) : NodeReference {

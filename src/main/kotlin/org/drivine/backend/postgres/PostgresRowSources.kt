@@ -175,7 +175,8 @@ internal class PostgresRowSources(private val graph: PostgresGraph, private val 
      * Steps of one hop each are joined in the `EXISTS` itself, not read through the derived table [reached] gives: Postgres
      * makes an `EXISTS` a semi-join, or a `NOT EXISTS` an anti-join, only when the test that ties it to [parent] is in its own
      * `WHERE`. Within a derived table it is a subplan run once for each row of [parent], and the reached node can't be found
-     * first, by its label's index. A step taken to a depth is still the recursive query [reached] gives.
+     * first, by its label's index. A step taken to a depth is still the recursive query [reached] gives, though a condition
+     * of the query DSL spells such a step as paths of single hops first ([Step.anyPath]), each of which is joined here.
      */
     fun exists(parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList()): String {
         val query = if (steps.all { it.maxDepth == 1 }) {
