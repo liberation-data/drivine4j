@@ -2,11 +2,11 @@
   "store": "oracle",
   "tck": "openCypher TCK 2024.2, tck-api 1.0.0-M23",
   "scenarios": 3896,
-  "passing": 2887,
+  "passing": 2889,
   "features": {
     "clauses/create/Create1.feature": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"],
     "clauses/create/Create2.feature": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "23", "24"],
-    "clauses/create/Create3.feature": ["1", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"],
+    "clauses/create/Create3.feature": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"],
     "clauses/create/Create4.feature": ["1", "2"],
     "clauses/create/Create5.feature": ["1", "2", "3", "4", "5"],
     "clauses/create/Create6.feature": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"],
