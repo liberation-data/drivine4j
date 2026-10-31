@@ -96,6 +96,54 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     }
 
     /**
+     * [of] for [fields] that give the date by the calendar's other fields beside the `year`, SQL numbers each: a `week`
+     * of the ISO week-based year and its `dayOfWeek`, an `ordinalDay`, or a `quarter` and its `dayOfQuarter`. The date
+     * is so many days after the first of the year, of the quarter, or of the year's first ISO week, the week of January
+     * 4th. As Neo4j has them, a field that is null is given as its least (the year 0, the first week, day or quarter),
+     * and a week runs to 53 and a day of the quarter to 92 in any year, carried into the next where it has fewer. A
+     * field that is not whole or is past its range gives the day 0, which the store fails on as it fails on `{day: 0}`.
+     */
+    fun ofCalendar(fields: Map<String, String>, timezone: String?, kind: Temporal): String {
+        val time = fields - CALENDAR_FIELDS - "year"
+        fun given(name: String, least: Int) = fields[name]?.let { "COALESCE($it, $least)" } ?: "$least"
+        fun january(y: String, day: Int) = sql.local("${sql.toChar}($y, 'FM0000') || '-01-0$day'", Temporal.DATE)
+        fun whole(vararg values: String) = values.joinToString(" AND ") { "$it = ${sql.trunc}($it)" }
+        val year = given("year", 0)
+        return when {
+            "week" in fields -> shared(listOf(year, given("week", 1), given("dayOfWeek", 1))) { (y, w, d) ->
+                shared(listOf(january(y, 4))) { (january4) ->
+                    calendarDate(sql.addTime(january4, "($w - 1) * 7 + $d - ${sql.dayOfWeek(january4)}", "0"), time, timezone, kind) {
+                        "${whole(y, w, d)} AND $w BETWEEN 1 AND 53 AND $d BETWEEN 1 AND 7"
+                    }
+                }
+            }
+            "ordinalDay" in fields -> shared(listOf(year, given("ordinalDay", 1))) { (y, n) ->
+                calendarDate(sql.addTime(january(y, 1), "$n - 1", "0"), time, timezone, kind) { day -> "${whole(y, n)} AND $n >= 1 AND ${sql.extract("YEAR", day)} = $y" }
+            }
+            else -> shared(listOf(year, given("quarter", 1), given("dayOfQuarter", 1))) { (y, q, n) ->
+                calendarDate(sql.addTime(sql.addMonths(january(y, 1), "($q - 1) * 3"), "$n - 1", "0"), time, timezone, kind) {
+                    "${whole(y, q, n)} AND $q BETWEEN 1 AND 4 AND $n BETWEEN 1 AND 92"
+                }
+            }
+        }
+    }
+
+    /**
+     * [of] the date the timestamp [date] reads where [valid] holds of it, else of the day 0, and the fields of the time
+     * [time]. A moment's date is read as a date first: every store fails on a date's day 0, where Oracle reads a moment's
+     * text as a JSON value's, null where it is no moment.
+     */
+    private fun calendarDate(date: String, time: Map<String, String>, timezone: String?, kind: Temporal, valid: (String) -> String): String =
+        shared(listOf(date)) { (day) ->
+            val dayOfMonth = "CASE WHEN NOT (${valid(day)}) THEN 0 ELSE ${sql.extract("DAY", day)} END"
+            val fields = mapOf("year" to sql.extract("YEAR", day), "month" to sql.extract("MONTH", day), "day" to dayOfMonth)
+            if (kind == Temporal.DATE) of(fields, null, kind)
+            else shared(listOf(sql.local(of(fields, null, Temporal.DATE), Temporal.DATE))) { (checked) ->
+                of(time + mapOf("year" to sql.extract("YEAR", checked), "month" to sql.extract("MONTH", checked), "day" to sql.extract("DAY", checked)), timezone, kind)
+            }
+        }
+
+    /**
      * A field of the text [text] of [kind], by Cypher's name for it: a number, or for `timezone` and `offset` a
      * text; null for a name the kind has no field of. A zoned value's fields are those of its wall clock.
      */
@@ -121,6 +169,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
                 "weekYear" -> sql.number("${sql.toChar}($t, 'IYYY')")
                 "day" -> sql.extract("DAY", t)
                 "ordinalDay" -> sql.number("${sql.toChar}($t, 'DDD')")
+                "dayOfQuarter" -> "(${sql.number("${sql.toChar}($t, 'DDD')")} - ${sql.number("${sql.toChar}(${sql.truncate("quarter", t)!!}, 'DDD')")} + 1)"
                 "dayOfWeek", "weekDay" -> sql.dayOfWeek(t)
                 "hour" -> sql.extract("HOUR", t)
                 "minute" -> sql.extract("MINUTE", t)
@@ -148,7 +197,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
     /** The names of the fields a temporal value may have, of a moment's or a duration's. */
     val fieldNames = setOf(
-        "year", "quarter", "month", "week", "weekYear", "day", "ordinalDay", "dayOfWeek", "weekDay", "hour", "minute", "second",
+        "year", "quarter", "month", "week", "weekYear", "day", "ordinalDay", "dayOfQuarter", "dayOfWeek", "weekDay", "hour", "minute", "second",
         "millisecond", "microsecond", "nanosecond", "epochSeconds", "epochMillis", "timezone", "offset", "offsetMinutes", "offsetSeconds",
         "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds",
         "quartersOfYear", "monthsOfQuarter", "monthsOfYear", "daysOfWeek", "minutesOfHour", "secondsOfMinute", "millisecondsOfSecond",
@@ -434,8 +483,11 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
         /** The fields of a moment or a time of day read off its wall clock. */
         val INSTANT_FIELDS = setOf(
-            "year", "quarter", "month", "week", "weekYear", "day", "ordinalDay", "dayOfWeek", "weekDay",
+            "year", "quarter", "month", "week", "weekYear", "day", "ordinalDay", "dayOfQuarter", "dayOfWeek", "weekDay",
             "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
         )
+
+        /** The fields that give a date by the calendar's other fields, beside the year, in place of a month and a day: see [ofCalendar]. */
+        val CALENDAR_FIELDS = setOf("week", "dayOfWeek", "ordinalDay", "quarter", "dayOfQuarter")
     }
 }
