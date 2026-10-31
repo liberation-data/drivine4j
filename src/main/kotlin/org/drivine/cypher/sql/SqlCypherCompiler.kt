@@ -956,7 +956,47 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** A `WITH`: a query of its own, which the rest of the statement reads from, as it reads [outer]. */
-        private fun with(select: Select, with: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+        private fun with(select: Select, clause: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+            val (with, hidden) = having(clause)
+            return withHaving(select, with, outer, apart).also { next -> hidden.forEach { next.bound.remove(it) } }
+        }
+
+        /**
+         * A `WITH` that groups its rows, [with], as one that aggregates or is `DISTINCT` does, read as Neo4j reads its `WHERE`,
+         * which filters the groups, as SQL's HAVING does (#497). Each aggregate the `WHERE` holds, outside a comprehension's or a
+         * quantifier's own expressions, is made an item of the `WITH`, of its own where no item is that aggregate, named as no
+         * variable is, and the `WHERE` reads that item. A key the `WITH` groups by, written there as the item is, before its name,
+         * is read as that item, as in `WITH i AS j, count(*) AS c WHERE i > 1`; a variable an item is named after is that item,
+         * in a larger expression too.
+         * The items made are no variables of the statement's: the `WITH` is read, then they are left out of what it binds.
+         * [with] as it is where it groups nothing, or has no `WHERE`.
+         */
+        private fun having(with: Clause.With): Pair<Clause.With, List<String>> {
+            val where = with.where ?: return with to emptyList()
+            val items = with.projection.items
+            if (!with.projection.distinct && items.none { contains(it.expression, ::isAggregate) }) return with to emptyList()
+            val names = items.map { it.name }.toSet()
+            // Keys and aggregates compared as grouping compares them ([keyOf]): `TOUPPER(x)` is the key `toUpper(x)`.
+            val keys = items.filter { !contains(it.expression, ::isAggregate) && variablesIn(it.expression).isNotEmpty() }.associate { keyOf(it.expression) to it.name }
+            // An aggregate an item is already is read by that item's name.
+            val aggregates = items.filter { isAggregate(it.expression) }.associate { keyOf(it.expression) to it.name }
+            val lifted = linkedMapOf<Expression, Projection.Item>()
+            val read = replaced(where) { part ->
+                when {
+                    // Named as no text of the statement's is, so an item quoted alike, `` `#having1` ``, stays the statement's (#479).
+                    isAggregate(part) -> Expression.Variable(aggregates[keyOf(part)] ?: lifted.getOrPut(keyOf(part)) { Projection.Item(part, hidden("#having")) }.name)
+                    // `WITH i + 10 AS i … WHERE i + 10 > 20` reads the item i, as Neo4j does: no key is read where an item is named.
+                    variablesIn(part).any { it in names } -> if (part is Expression.Variable) part else null
+                    else -> keys[keyOf(part)]?.let(Expression::Variable)
+                }
+            }
+            if (read == where) return with to emptyList()
+            val kept = with.projection.copy(items = items + lifted.values)
+            return with.copy(projection = kept, where = read) to lifted.values.map { it.name }
+        }
+
+        /** A `WITH` [having] has read: see [with]. */
+        private fun withHaving(select: Select, with: Clause.With, outer: Map<String, Value>, apart: Boolean): Select {
             val projected = project(select, with.projection, final = false)
             val name = alias("w")
             val next = Select(outer)
@@ -1851,10 +1891,14 @@ abstract class SqlCypherCompiler(graph: String) {
                         clause is Clause.Return -> with(select, Clause.With(clause.projection, null))
                         // What brackets import is seen throughout the call, as Neo4j has it, after a WITH that does not pass it on too:
                         // read again from the row the call is written for, so `CALL (a) { WITH 1 AS one CREATE (a)-[:R]->() }` joins
-                        // the row's a, not a new node. Its WHERE reads them too, so it is met after.
-                        clause is Clause.With && rebound -> with(select, clause.copy(where = null)).also { w ->
-                            bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
-                            clause.where?.let { w.where += condition(it, w.scope) }
+                        // the row's a, not a new node. Its WHERE reads them too, so it is met after; one that filters groups reads
+                        // the aggregates [having] made items of the WITH.
+                        clause is Clause.With && rebound -> having(clause).let { (with, hidden) ->
+                            withHaving(select, with.copy(where = null), emptyMap(), apart = false).also { w ->
+                                bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
+                                with.where?.let { w.where += condition(it, w.scope) }
+                                hidden.forEach { w.bound.remove(it) }
+                            }
                         }
                         else -> next(select, clause)
                     }
@@ -3383,11 +3427,26 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             if (written is Expression.MapLiteral) {
                 val fields = written.entries.associate { (key, value) -> key to expression(value, scope) }
-                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else INSTANT_MAP_FIELDS
+                val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
+                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else if (dated) INSTANT_MAP_FIELDS + Temporals.CALENDAR_FIELDS else INSTANT_MAP_FIELDS
+                // A time of day has no date to give, as Neo4j has it.
+                if (kind.instant && !dated) fields.keys.firstOrNull { it in Temporals.CALENDAR_FIELDS }?.let { throw DrivineException("${function.name}() takes no field $it.") }
                 fields.keys.firstOrNull { it !in known }?.let { unsupported("${function.name}() of a map with $it") }
                 val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
                 if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
-                return of(temporals.of(numbers, fields["timezone"]?.let { text(comparable(json(it))) }, kind))
+                val timezone = fields["timezone"]?.let { text(comparable(json(it))) }
+                if (fields.keys.any { it in Temporals.CALENDAR_FIELDS }) {
+                    // A zone by name, which no store's text holds yet, is refused rather than given as null.
+                    val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
+                    if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
+                    val date = calendarDate(function, written)
+                    if (date != null) {
+                        val day = mapOf("year" to "${date.year}", "month" to "${date.monthValue}", "day" to "${date.dayOfMonth}")
+                        return of(temporals.of(numbers - Temporals.CALENDAR_FIELDS + day, timezone, kind))
+                    }
+                    return of(temporals.ofCalendar(numbers, timezone, kind))
+                }
+                return of(temporals.of(numbers, timezone, kind))
             }
             val given = arguments.single() as? Value.Json ?: throw DrivineException("${function.name}() takes a text or a map of its fields.")
             val text = text(comparable(given))
@@ -3397,6 +3456,72 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> of(temporals.convert(text, kind))
             }
         }
+
+        /**
+         * The date the map [written], the argument of [function], gives by the calendar's other fields beside the year (see
+         * [Temporals.ofCalendar]), where it writes the year and each of them as a whole number or null: null where an
+         * expression gives any of them, for the store to work out. As Neo4j has them, a field that is null is given as its
+         * least (the year 0, the first week, day or quarter), a week runs to 53 and a day of the quarter to 92 in any year,
+         * carried into the next where it has fewer, and an ordinal day runs to the year's last. Fails, as Neo4j does, on
+         * fields of two calendars (a month beside a week), a day of the week or of the quarter without its week or quarter,
+         * a week or a quarter without a year, and a number written that is not whole or is past its field's range.
+         */
+        private fun calendarDate(function: Expression.Function, written: Expression.MapLiteral): java.time.LocalDate? {
+            val name = function.name
+            val keys = written.entries.map { it.first }.toSet()
+            val calendars = listOf(
+                "a month" to setOf("month", "day"), "a week" to setOf("week", "dayOfWeek"), "an ordinal day" to setOf("ordinalDay"),
+                "a quarter" to setOf("quarter", "dayOfQuarter"),
+            ).filter { (_, fields) -> fields.any { it in keys } }
+            if (calendars.size > 1) throw DrivineException("$name() takes ${calendars[0].first} or ${calendars[1].first}, not both.")
+            if ("dayOfWeek" in keys && "week" !in keys) throw DrivineException("$name() takes a day of the week beside a week.")
+            if ("dayOfQuarter" in keys && "quarter" !in keys) throw DrivineException("$name() takes a day of the quarter beside a quarter.")
+            if ("year" !in keys) {
+                // Neo4j makes an ordinal day of no year one of the year 0, which no store's date reaches.
+                if ("ordinalDay" in keys) unsupported("$name() of an ordinal day without a year")
+                throw DrivineException("$name() takes a year beside ${calendars.single().first}.")
+            }
+            val numbers = written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }.associate { (key, value) ->
+                key to when (val literal = (writtenLiteral(value) ?: return null).value) {
+                    null -> CALENDAR_LEAST.getValue(key)
+                    is Long -> literal
+                    is Int -> literal.toLong()
+                    else -> throw DrivineException("$name() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+            }
+            val year = numbers.getValue("year")
+            fun field(key: String, label: String, last: Long, of: String = "") = (numbers[key] ?: 1L).also {
+                if (it !in 1L..last) throw DrivineException("$name() takes $label from 1 to $last$of, not $it.")
+            }
+            return try {
+                // A year past java.time's, as Neo4j's, fails here, where toInt() would wrap it into range.
+                val y = java.time.temporal.ChronoField.YEAR.checkValidIntValue(year)
+                when {
+                    "week" in keys -> {
+                        val monday = java.time.LocalDate.of(y, 1, 4).with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1)
+                        monday.plusDays((field("week", "a week", 53) - 1) * 7 + field("dayOfWeek", "a day of the week", 7) - 1)
+                    }
+                    "ordinalDay" in keys -> {
+                        val first = java.time.LocalDate.of(y, 1, 1)
+                        first.plusDays(field("ordinalDay", "an ordinal day", first.lengthOfYear().toLong(), " in $year") - 1)
+                    }
+                    else -> {
+                        val quarter = field("quarter", "a quarter", 4)
+                        java.time.LocalDate.of(y, ((quarter - 1) * 3 + 1).toInt(), 1).plusDays(field("dayOfQuarter", "a day of the quarter", 92) - 1)
+                    }
+                }
+            } catch (e: java.time.DateTimeException) {
+                throw DrivineException("$name() takes no year $year: ${e.message}", e)
+            }
+        }
+
+        /**
+         * The literal [value] writes as a temporal map's field, `-1`, a negated whole number, as much as `1`: null where an
+         * expression gives it, for the store to work out.
+         */
+        private fun writtenLiteral(value: Expression): Expression.Literal? =
+            (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }
+                ?.let { (it.operand as? Expression.Literal)?.value as? Long }?.let { Expression.Literal(-it) } ?: value as? Expression.Literal
 
         /**
          * The fields the map [written], the third argument of [function], gives the value of [kind] it truncates, in place
@@ -3435,9 +3560,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             val numbers = entries.filter { it.first != "timezone" }.associate { (key, value) ->
                 val least = TRUNCATION_LEAST[key] ?: 0
-                // `-1` is a negated number, written as much as `1` is.
-                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
-                val number = when (val literal = negated?.unaryMinus() ?: (value as? Expression.Literal)?.value) {
+                val number = when (val literal = writtenLiteral(value)?.value) {
                     null -> if (value is Expression.Literal) "$least" else "COALESCE(${number(comparable(json(expression(value, scope))))}, $least)"
                     is Long, is Int -> {
                         val range = if (key == "microsecond" && millis) 0L..999L else TRUNCATION_RANGES[key]
@@ -4678,6 +4801,9 @@ abstract class SqlCypherCompiler(graph: String) {
             "month" to 1L..12L, "day" to 1L..31L, "dayOfWeek" to 1L..7L, "hour" to 0L..23L, "minute" to 0L..59L, "second" to 0L..59L,
             "millisecond" to 0L..999L, "microsecond" to 0L..999_999L,
         )
+
+        /** The least of the year and each field of a date by the calendar's other fields, which a field given as null is. */
+        val CALENDAR_LEAST = mapOf("year" to 0L, "week" to 1L, "dayOfWeek" to 1L, "ordinalDay" to 1L, "quarter" to 1L, "dayOfQuarter" to 1L)
 
         /** The least of each field a truncation's map gives that is not 0, which a field given as null is. */
         val TRUNCATION_LEAST = mapOf("month" to 1, "day" to 1, "dayOfWeek" to 1)

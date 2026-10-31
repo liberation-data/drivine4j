@@ -20,15 +20,15 @@ class CompilerRefusalTest {
 
     /**
      * The spec's refusals, but for the steps of [COMPILED], which the spec at the tag drivine4j runs refuses and the
-     * compiler now compiles: drivine-cypher-spec#33 drops them. Remove this when drivine4j moves to the tag that has it.
+     * compiler now compiles: drivine-cypher-spec#33 and #40 drop them. Remove this when drivine4j moves to the tag that has them.
      */
     private val spec = CypherSpec.load("refusals.yaml").let { spec ->
         spec.copy(cases = spec.cases.map { case -> case.copy(steps = case.steps.filterNot { it.cypher in COMPILED }) })
     }
 
     private companion object {
-        /** #422: a truncation to the decade. */
-        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))")
+        /** #422: a truncation to the decade; #495: a date of a week. */
+        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))", "RETURN date({year: 2024, week: 10, dayOfWeek: 3})")
     }
 
     @TestFactory
@@ -376,6 +376,47 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a temporal map of the calendar's fields Neo4j fails on, or of an ordinal day of no year, is refused`() {
+        // #495: these fields were refused as not compiled before. Until the spec holds these (drivine-cypher-spec#40), held here.
+        val refused = listOf(
+            "RETURN date({year: 2023, month: 2, week: 3})" to "date() takes a month or a week, not both.",
+            "RETURN date({year: 2023, quarter: 2, day: 5})" to "date() takes a month or a quarter, not both.",
+            "RETURN datetime({year: 2023, week: 2, ordinalDay: 5})" to "datetime() takes a week or an ordinal day, not both.",
+            "RETURN date({year: 2023, ordinalDay: 5, quarter: 1})" to "date() takes an ordinal day or a quarter, not both.",
+            "RETURN date({year: 2023, dayOfWeek: 3})" to "date() takes a day of the week beside a week.",
+            "RETURN localdatetime({year: 2023, dayOfQuarter: 3})" to "localdatetime() takes a day of the quarter beside a quarter.",
+            "RETURN date({week: 2})" to "date() takes a year beside a week.",
+            "RETURN date({quarter: 2})" to "date() takes a year beside a quarter.",
+            "RETURN date({year: 2020, week: 54})" to "date() takes a week from 1 to 53, not 54.",
+            "RETURN date({year: 2020, week: 0})" to "date() takes a week from 1 to 53, not 0.",
+            "RETURN date({year: 2023, week: 2, dayOfWeek: 8})" to "date() takes a day of the week from 1 to 7, not 8.",
+            "RETURN date({year: 2023, ordinalDay: 366})" to "date() takes an ordinal day from 1 to 365 in 2023, not 366.",
+            "RETURN date({year: 2023, ordinalDay: -1})" to "date() takes an ordinal day from 1 to 365 in 2023, not -1.",
+            "RETURN date({year: 2023, quarter: 5})" to "date() takes a quarter from 1 to 4, not 5.",
+            "RETURN date({year: 2024, quarter: 4, dayOfQuarter: 93})" to "date() takes a day of the quarter from 1 to 92, not 93.",
+            "RETURN date({year: 2023, week: 2.5})" to "date() takes a whole number for week, not 2.5.",
+            // A year past an Int's, which would wrap round to 2023.
+            "RETURN date({year: 4294969319, week: 1})" to "date() takes no year 4294969319: Invalid value for Year (valid values -999999999 - 999999999): 4294969319",
+            "RETURN date({year: '2023', quarter: 2})" to "date() takes a whole number for year, not '2023'.",
+            "RETURN localtime({hour: 12, week: 2})" to "localtime() takes no field week.",
+            "RETURN time({hour: 12, ordinalDay: 2})" to "time() takes no field ordinalDay.",
+            "RETURN date({ordinalDay: 2})" to "date() of an ordinal day without a year is Cypher, and is not compiled to SQL yet.",
+            "RETURN date({date: date('2024-03-15'), week: 2})" to "date() of a map with date is Cypher, and is not compiled to SQL yet.",
+            "RETURN datetime({year: 1984, week: 10, timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, cypher)
+            }
+            // Week 53 of a year of 52 weeks and a day of the quarter past its last run on, and what an expression gives is the store's to check.
+            listOf(
+                "RETURN date({year: 2019, week: 53}), date({year: 2023, quarter: 1, dayOfQuarter: 92}), date({year: 2024, ordinalDay: 366})",
+                "WITH 54 AS w RETURN date({year: 2020, week: w}), datetime({year: \$y, ordinalDay: 366, timezone: '+01:00'})",
+            ).forEach { compiler.compile(it, mapOf("y" to 2023)) }
+        }
+    }
+
+    @Test
     fun `a truncation's map of fields Neo4j fails on, or that the stores have no SQL for yet, is refused`() {
         // #422: a truncation took no third argument before. Until the spec holds these (drivine-cypher-spec#33), held here.
         val refused = listOf(
@@ -434,8 +475,9 @@ class CompilerRefusalTest {
     fun `an aggregate in a WHERE is refused, as Neo4j refuses it`() {
         // #489: Neo4j's 42I24, "invalid use of aggregate function". Before, SQLite and Postgres failed with an error of their own, and
         // Oracle gave rows. Until the spec holds these (drivine-cypher-spec#38), held here.
-        fun where(aggregate: String) = "$aggregate aggregates, and a WHERE holds no aggregate, as in Neo4j: aggregate in a WITH first, " +
+        fun where(aggregate: String) = "$aggregate aggregates, and a WHERE holds no aggregate unless its WITH aggregates, as in Neo4j: aggregate in a WITH first, " +
             "and filter what it gives in that WITH's WHERE, as in WITH x, count(*) AS c WHERE c > 1."
+        fun undefined(variable: String) = "$variable is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used."
         val refused = listOf(
             "UNWIND [1, 2] AS i WITH i WHERE sum(i) > 1 RETURN i" to where("sum()"),
             "UNWIND [1, 2] AS i WITH i WHERE i > 1 AND count(*) > 0 RETURN i" to where("count(*)"),
@@ -458,6 +500,27 @@ class CompilerRefusalTest {
             "MERGE (n:N) ON CREATE SET n.v = [x IN [1, 2] WHERE min(x) > 0 | x]" to where("min()"),
             "CREATE (n:N {v: [x IN [1, 2] WHERE avg(x) > 0 | x]})" to where("avg()"),
             "FOREACH (i IN [1] | CREATE (:N {v: [x IN [1, 2] WHERE max(x) > 0 | x]}))" to where("max()"),
+            // #497: a WITH whose only aggregate is in its WHERE groups nothing; in the WHERE of one that groups, a comprehension's,
+            // a quantifier's or a pattern's own WHERE or body holds no aggregate either. Until the spec holds these (drivine-cypher-spec#41),
+            // held here.
+            "UNWIND [1, 1, 2] AS i WITH i WHERE count(*) > 1 RETURN i" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH * WHERE count(*) > 1 RETURN i" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN [1] WHERE count(*) > x) RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE size([x IN [1] WHERE count(*) > x | x]) > 0 RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE [x IN [1] | x + count(*)][0] > 2 RETURN i, c" to where("count(*)"),
+            "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE reduce(s = 0, x IN [1] | s + count(*)) > 0 RETURN i" to where("count(*)"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE size([(p)-[:ACTED_IN]->(x) WHERE count(x) > 1 | x]) > 0 RETURN p.name" to where("count()"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE EXISTS { (p)-[:KNOWS]->(q) WHERE count(q) > 0 } RETURN p.name" to where("count()"),
+            "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i] AS x WITH x WHERE count(*) > 1 RETURN x } RETURN x" to where("count(*)"),
+            // #497: there a variable from before the WITH is read only inside an aggregate, or where it is a key, written as its item is.
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE i > 0 RETURN k, c" to undefined("i"),
+            "UNWIND [1, 2, 3] AS i WITH i % 2 AS k, count(*) AS c WHERE sum(i) > 2 AND i > 0 RETURN k, c" to undefined("i"),
+            "UNWIND [1, 2, 3] AS i WITH DISTINCT i % 2 AS k WHERE i > 0 RETURN k" to undefined("i"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p.name AS n, count(*) AS c WHERE p.born > 1965 RETURN n, c" to undefined("p"),
+            "MATCH (p)-[:ACTED_IN]->(m) WITH p, count(*) AS c WHERE m.released > 1996 RETURN p.name" to undefined("m"),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(c) > 1 RETURN i, c" to undefined("c"),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE sum(j) > 1 RETURN j, c" to undefined("j"),
+            "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE any(x IN [1] WHERE x = i) RETURN j, c" to undefined("i"),
         )
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             refused.forEach { (cypher, message) ->
@@ -472,6 +535,15 @@ class CompilerRefusalTest {
                 "MATCH (n) WHERE EXISTS { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x",
                 "MATCH (n) CALL (n) { MATCH (n)-->(m) WITH count(m) AS c WHERE c > 0 RETURN c } RETURN n.x, c",
                 "MATCH (n) WITH n, count { (n)-->() } AS c WHERE c > 0 RETURN n.x",
+                // #497: the WHERE of a WITH that aggregates, or is DISTINCT, filters its groups, an aggregate in it among them.
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE count(*) > 1 RETURN i",
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i",
+                "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE j > count(*) RETURN j",
+                "UNWIND [1, 1, 2] AS i WITH DISTINCT i WHERE count(*) > 1 RETURN i",
+                "UNWIND [1, 1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j, c",
+                "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE all(x IN collect(i) WHERE x > 1) RETURN i, c",
+                "MATCH (n) WITH n, count(*) AS c WHERE EXISTS { MATCH (n)-->(m) WITH m, count(*) AS k WHERE count(*) > 0 RETURN m } RETURN n.x",
+                "UNWIND [1, 2] AS i CALL (i) { UNWIND [i, i] AS x WITH x, count(*) AS c WHERE count(*) > 1 RETURN c } RETURN i, c",
             ).forEach { compiler.compile(it) }
         }
     }
