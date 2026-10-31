@@ -46,6 +46,9 @@ abstract class CypherQueryContract {
     private fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher.trimIndent())).bind(parameters))
 
+    /** Rows as a multiset, a null row included, to compare those of a statement that gives no order. */
+    private fun unordered(rows: List<Any?>) = rows.groupingBy { it }.eachCount()
+
     @TestFactory
     fun spec() = CypherSpec.load("queries.yaml").let { spec ->
         spec.tests(CypherSpec.storeOf(pm.type), before = { clear(); seed(requireNotNull(spec.graph)) }) { step -> query(step.cypher, step.parameters) }
@@ -2738,6 +2741,46 @@ abstract class CypherQueryContract {
         )
         // Grouped by a value of an unwound list that holds a null, and sorted by it.
         assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [null, 1, null] AS v RETURN v, count(*) AS c ORDER BY v"))
+    }
+
+    @Test
+    fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
+        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
+        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
+        assertEquals(
+            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
+            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
+        )
+        // In a part of an outer UNION, which compares rows by it.
+        assertEquals(
+            unordered(listOf(null, 1L, 2L)),
+            unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
+        )
+    }
+
+    @Test
+    fun `a CALL's UNION ALL whose first part gives a list and a later one a number or a map sorts each by its kind`() {
+        // The column is a list only where every part's value is, so a number or a map a later part gives sorts by its kind, not
+        // as a list would. The rows are Neo4j's (2026.10). Postgres takes jsonb's order of kinds, a number before a list (#307),
+        // and refuses a written list's json beside a number's jsonb in one UNION ALL.
+        if (pm.type == DatabaseType.POSTGRES) return
+        assertEquals(listOf(listOf(10L), 10L), query("CALL { RETURN [10] AS v UNION ALL RETURN 10 AS v } RETURN v ORDER BY v"))
+        assertEquals(listOf(listOf(1L, 2L), 10L), query("CALL { RETURN [1, 2] AS v UNION ALL RETURN 10 AS v } RETURN v ORDER BY v"))
+        assertEquals(listOf(mapOf("a" to 1L), listOf(10L)), query("CALL { RETURN [10] AS v UNION ALL RETURN {a: 1} AS v } RETURN v ORDER BY v"))
+        assertEquals(
+            listOf(listOf(2L), listOf(9L), listOf(10L), 10L),
+            query("CALL { RETURN [10] AS v UNION ALL RETURN 10 AS v UNION ALL RETURN [9] AS v UNION ALL RETURN [2] AS v } RETURN v ORDER BY v"),
+        )
+        // A later part's number compares as a number; a later part's null in a list makes `=` and IN null, not false; and a later
+        // part's list of numbers unwinds to numbers, which sort after the first part's list. The first three give no order.
+        assertEquals(unordered(listOf(null, true)), unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN 1 AS v } RETURN v < 2 AS r")))
+        assertEquals(unordered(listOf(true, null)), unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN [null] AS v } RETURN v = [1] AS r")))
+        assertEquals(
+            unordered(listOf(true, null)),
+            unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN [null] AS v } RETURN v IN [[1], 1] AS r")),
+        )
+        assertEquals(listOf(listOf(1L), 1L), query("CALL { RETURN [[1]] AS v UNION ALL RETURN [1] AS v } UNWIND v AS x RETURN x AS r ORDER BY r"))
     }
 
     @Test

@@ -1230,7 +1230,10 @@ abstract class SqlCypherCompiler(graph: String) {
             // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
             // only where each query takes it from those: a property of it is read from the row there, which would read the first
             // query's value for every query's rows (#336). It is read from an unwound item ([Value.Json.fromList]) only where each
-            // query reads it from one. Its kind is known only where each query writes it as a value of that one.
+            // query reads it from one. Its kind is known only where each query writes it as a value of that one. It may be JSON's null
+            // ([Value.Json.jsonNull]) where any query's may be, so that what reads it after compares that null and SQL's as one (#512).
+            // It is a list ([Value.Json.list]) only where each query makes it one, so that an order sorts the others' numbers and
+            // maps by their kinds, not as lists; and it holds no null ([Value.Json.flat]) only where each query's holds none.
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
@@ -1239,7 +1242,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(), fromList = all.all { it?.fromList == true },
                     itemItems = all.map { it?.itemItems }.distinct().singleOrNull(), temporals = all.any { it?.temporals == true },
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
-                    known = all.map { it?.known }.distinct().singleOrNull(),
+                    known = all.map { it?.known }.distinct().singleOrNull(), jsonNull = all.any { it?.jsonNull == true },
+                    list = all.all { it?.list == true }, itemLists = all.all { it?.itemLists == true }, flat = all.all { it?.flat == true },
                 )
             }
             return Projected(sql, scope, emptyList(), projected.first().columns)
