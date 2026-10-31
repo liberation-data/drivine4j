@@ -161,71 +161,8 @@ abstract class CypherTemporalContract {
     }
 
     @Test
-    fun `a value truncates to a millennium, a century, a decade, a week-based year or a microsecond, as on Neo4j`() {
-        // #422: refused on the SQL stores before. Neo4j's millennium starts in 2000 and its century in 1900, where Postgres's
-        // date_trunc starts them in 2001 and 1901. Until the spec holds these, held here.
-        assertEquals(
-            mapOf(
-                "millennium" to 2000L, "lastMillennium" to 1000L, "century" to 2000L, "decade" to 2010L,
-                "decadeStart" to listOf(1980L, 1L, 1L, 0L, "+01:00"), "weekYear" to listOf(1983L, 1L, 3L), "weekYearBefore" to listOf(2019L, 12L, 30L),
-                "weekYearZone" to "+02:00", "localMicros" to 645876L, "micros" to 645876L,
-            ),
-            one(
-                """
-                WITH date.truncate('weekYear', date('1984-01-01')) AS w, date.truncate('weekYear', date('2020-12-31')) AS w2,
-                     datetime.truncate('decade', datetime('1984-10-11T12:31:14+01:00')) AS d
-                RETURN {millennium: date.truncate('millennium', date('2017-10-11')).year, lastMillennium: date.truncate('millennium', date('1999-12-31')).year,
-                        century: date.truncate('century', date('2017-05-05')).year, decade: date.truncate('decade', date('2019-05-05')).year,
-                        decadeStart: [d.year, d.month, d.day, d.hour, d.timezone],
-                        weekYear: [w.year, w.month, w.day], weekYearBefore: [w2.year, w2.month, w2.day],
-                        weekYearZone: datetime.truncate('weekYear', datetime('2021-01-03T10:00+02:00')).timezone,
-                        localMicros: localtime.truncate('microsecond', localtime('12:31:14.645876')).microsecond,
-                        micros: datetime.truncate('microsecond', datetime('2017-10-11T12:31:14.645876-01:00')).microsecond}
-                """,
-            ),
-        )
-    }
-
-    @Test
     fun `a truncation's map of fields is laid over the value cut short, as Neo4j lays it`() {
-        // #422: the third argument was refused on the SQL stores. Until the spec holds these, held here.
-        assertEquals(
-            mapOf(
-                "day" to 2L, "dayOfWeek" to 2L, "sunday" to 14L, "month" to 3L, "moved" to listOf(2000L, 9L, 27L),
-                "weekYear" to listOf(1983L, 1L, 5L), "none" to 2000L, "noMap" to 1L,
-            ),
-            one(
-                """
-                WITH date.truncate('month', date('1984-10-11'), {year: 2000, dayOfWeek: 3}) AS moved, date.truncate('weekYear', date('1984-01-01'), {day: 5}) AS w
-                RETURN {day: date.truncate('month', date('1984-10-11'), {day: 2}).day,
-                        dayOfWeek: date.truncate('month', date('1984-10-11'), {dayOfWeek: 2}).day,
-                        sunday: date.truncate('week', date('1984-10-11'), {dayOfWeek: 7}).day,
-                        month: date.truncate('year', date('1984-10-11'), {month: 3}).month,
-                        moved: [moved.year, moved.month, moved.day], weekYear: [w.year, w.month, w.day],
-                        none: date.truncate('millennium', date('2017-10-11'), {}).year,
-                        noMap: date.truncate('month', date('2017-10-11'), null).day}
-                """,
-            ),
-        )
-        // A millisecond or a microsecond makes the whole fraction, but a microsecond given a value cut to the millisecond is added to it.
-        assertEquals(
-            mapOf(
-                "second" to listOf(3L, 645000L), "hour" to listOf(12L, 6L), "millisecond" to 5000L, "carried" to 645007L,
-                "microsecond" to 7L, "both" to 7000L, "bothFromSecond" to 7008L,
-            ),
-            one(
-                """
-                WITH datetime('2017-10-11T12:31:14.645876+01:00') AS t
-                WITH t, datetime.truncate('millisecond', t, {second: 3}) AS second, localtime.truncate('hour', t, {minute: 6}) AS hour
-                RETURN {second: [second.second, second.microsecond], hour: [hour.hour, hour.minute],
-                        millisecond: datetime.truncate('microsecond', t, {millisecond: 5}).microsecond,
-                        carried: datetime.truncate('millisecond', t, {microsecond: 7}).microsecond,
-                        microsecond: datetime.truncate('second', t, {microsecond: 7}).microsecond,
-                        both: datetime.truncate('millisecond', t, {millisecond: 7, microsecond: 8}).microsecond,
-                        bothFromSecond: datetime.truncate('second', t, {millisecond: 7, microsecond: 8}).microsecond}
-                """,
-            ),
-        )
+        // #422: the third argument was refused on the SQL stores. The spec holds the rest; this adds a field that is null as read.
         // A field that is null is given as its least, written or read: no hour, the first month, Monday, no fraction.
         assertEquals(
             mapOf("hour" to 0L, "month" to 1L, "monday" to 8L, "fraction" to 0L, "read" to listOf(0L, 7L)),
@@ -238,20 +175,6 @@ abstract class CypherTemporalContract {
                         monday: date.truncate('day', date('1984-10-11'), {dayOfWeek: null}).day,
                         fraction: datetime.truncate('millisecond', datetime('2017-10-11T12:31:14.645876+01:00'), {millisecond: null, microsecond: 8}).microsecond,
                         read: [read.hour, read.second]}
-                """,
-            ),
-        )
-        // A time zone keeps the wall clock, and a value of none is at UTC.
-        assertEquals(
-            mapOf("zoned" to listOf(11L, 0L, "+05:00"), "time" to listOf(12L, "+05:00"), "fromLocal" to "+05:00", "utc" to "Z", "fromDate" to "Z"),
-            one(
-                """
-                WITH datetime.truncate('day', datetime('2017-10-11T12:31:14+01:00'), {timezone: '+05:00'}) AS zoned,
-                     time.truncate('hour', time('12:31:14-01:00'), {timezone: '+05:00'}) AS time
-                RETURN {zoned: [zoned.day, zoned.hour, zoned.timezone], time: [time.hour, time.timezone],
-                        fromLocal: datetime.truncate('day', localdatetime('2017-10-11T12:31:14'), {timezone: '+05:00'}).timezone,
-                        utc: datetime.truncate('day', datetime('2017-10-11T12:31:14+01:00'), {timezone: '+00:00'}).timezone,
-                        fromDate: datetime.truncate('day', date('2017-10-11'), {}).timezone}
                 """,
             ),
         )
@@ -274,8 +197,8 @@ abstract class CypherTemporalContract {
     @Test
     fun `a date or a moment is made from a week, an ordinal day or a quarter, as on Neo4j`() {
         // #495: refused on the SQL stores before. The year is the week-based year; week 53 of a year of 52 weeks and a day
-        // of the quarter past its last run on into the next, and a field that is null is its least. Until the spec holds
-        // these, held here.
+        // of the quarter past its last run on into the next, and a field that is null is its least. The spec holds these
+        // in statements of its own, and the moments.
         assertEquals(
             mapOf(
                 "week" to listOf(1984L, 3L, 5L), "weekDay" to listOf(1984L, 3L, 7L), "ordinal" to listOf(1984L, 7L, 20L),
@@ -301,38 +224,13 @@ abstract class CypherTemporalContract {
                 """,
             ),
         )
-        assertEquals(
-            listOf(listOf(7L, 12L, 645L), listOf(2021L, 3L, 23L, "-05:00"), listOf(7L, 20L, 12L, "+01:00"), listOf(12L, 31L, 59L)),
-            query(
-                """
-                WITH localdatetime({year: 1984, week: 10, dayOfWeek: 3, hour: 12, minute: 31, second: 14, millisecond: 645}) AS l,
-                     datetime({year: 2020, week: 53, dayOfWeek: 7, hour: 23, timezone: '-05:00'}) AS w,
-                     datetime({year: 1984, ordinalDay: 202, hour: 12, timezone: '+01:00'}) AS o,
-                     localdatetime({year: 2024, quarter: 4, dayOfQuarter: 92, hour: 23, minute: 59}) AS q
-                RETURN [[l.day, l.hour, l.millisecond], [w.year, w.day, w.hour, w.timezone], [o.month, o.day, o.hour, o.timezone], [q.month, q.day, q.minute]]
-                """,
-            ).single(),
-        )
     }
 
     @Test
     fun `a date is made from a week, an ordinal day or a quarter an expression gives, and fails past their range as the statement runs`() {
-        // #495: worked out by the store, which fails on a field past its range as Neo4j does. Until the spec holds these, held here.
-        assertEquals(
-            listOf(listOf(2021L, 1L, 3L), listOf(2019L, 12L, 30L), listOf(1984L, 3L, 5L), listOf(2024L, 1L, 1L)),
-            query("UNWIND [[2020, 53, 7], [2019, 53, 1], [1984, 10, null], [2024, null, null]] AS p WITH date({year: p[0], week: p[1], dayOfWeek: p[2]}) AS d RETURN [d.year, d.month, d.day]"),
-        )
-        assertEquals(
-            listOf(listOf(12L, 31L, 2024L, 12L, 31L), listOf(1L, 1L, 2023L, 4L, 1L), listOf(1L, 1L, 2023L, 1L, 1L)),
-            query(
-                "UNWIND [[2024, 366, 4, 92], [2023, 1, 1, 91], [2023, null, null, null]] AS p " +
-                    "WITH date({year: p[0], ordinalDay: p[1]}) AS o, date({year: p[0], quarter: p[2], dayOfQuarter: p[3]}) AS q RETURN [o.month, o.day, q.year, q.month, q.day]",
-            ),
-        )
+        // #495: worked out by the store, which fails on a field past its range as Neo4j does. The spec holds the rows, and these
+        // fields past their range but for a week's day, a quarter's day and a moment's.
         listOf(
-            "UNWIND [[2023, 366]] AS p RETURN date({year: p[0], ordinalDay: p[1]})",
-            "UNWIND [[2024, 5]] AS p RETURN date({year: p[0], quarter: p[1]})",
-            "UNWIND [[2020, 54]] AS p RETURN date({year: p[0], week: p[1]})",
             "UNWIND [[2023, 2, 0]] AS p RETURN date({year: p[0], week: p[1], dayOfWeek: p[2]})",
             "UNWIND [[2024, 4, 93]] AS p RETURN date({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
             // A moment's too, which Oracle reads as a JSON value's, null where it is no moment.
@@ -344,7 +242,7 @@ abstract class CypherTemporalContract {
 
     @Test
     fun `a date or a moment gives the day of its quarter, and the fields of its week at the year's turn, as on Neo4j`() {
-        // #427 item 4: dayOfQuarter was null on the SQL stores. Until the spec holds these, held here.
+        // #427 item 4: dayOfQuarter was null on the SQL stores. The spec holds these in two statements, and a value read from the store.
         assertEquals(
             listOf(11L, 92L, 90L, 91L, 1L, 50L, 32L, 53L, 2020L, 7L, 1L, 2019L, 53L, 366L, 1L),
             query(
@@ -355,12 +253,6 @@ abstract class CypherTemporalContract {
                         date('2020-12-31').week, date('2024-12-31').ordinalDay, date('2021-01-03').quarter]
                 """,
             ).single(),
-        )
-        // A value read from the store, its kind told by its text.
-        query("CREATE (:CyTemporal {at: date('1984-10-11')}), (:CyTemporal {at: localdatetime('1984-11-11T12:31:14')})")
-        assertEquals(
-            listOf(listOf(4L, 11L, 41L, 1984L, 285L, 4L), listOf(4L, 42L, 45L, 1984L, 316L, 7L)),
-            query("MATCH (n:CyTemporal) RETURN [n.at.quarter, n.at.dayOfQuarter, n.at.week, n.at.weekYear, n.at.ordinalDay, n.at.weekDay] ORDER BY n.at.month"),
         )
     }
 
