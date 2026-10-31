@@ -2871,18 +2871,32 @@ abstract class CypherQueryContract {
         assertEquals(listOf(null), query("UNWIND [{a: null}, {b: 1}] AS x RETURN DISTINCT x.a"))
         assertEquals(listOf(1L), query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a RETURN count(*)"))
         assertEquals(listOf(null), query("UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"))
+        // A UNION in a CALL, and a part beside a CALL's UNION ALL, which leaves the part's rows compared.
+        assertEquals(listOf(listOf(null, 1L)), query("CALL { UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v } RETURN v, count(*) AS c"))
+        assertEquals(
+            listOf(null),
+            query("UNWIND [{a: null}] AS x CALL { RETURN 1 AS z UNION ALL RETURN 2 AS z } RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"),
+        )
         assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p.a AS v", mapOf("p" to mapOf("a" to null))))
         assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN \$p[0] AS v", mapOf("p" to listOf(null, 1L))))
         // An order ties them, so the next term decides.
         assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a, x.i DESC"))
         assertEquals(listOf(2L, 1L, 3L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x RETURN x.i AS i ORDER BY x.a DESC, x.i DESC"))
         assertEquals(listOf(listOf(3L, 2L, 1L)), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH x ORDER BY x.a, x.i DESC RETURN collect(x.i) AS l"))
+        // So does one of a value kept distinct, which on Oracle may be JSON's null still.
+        assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH DISTINCT x.a AS a, x.i AS i RETURN i ORDER BY a, i DESC"))
         // A null written, an unwound null and a reduce()'s are the same null as a property a node has not.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(listOf(listOf(null, 4L)), query("MATCH (p:Person) RETURN CASE WHEN p.born > 1960 THEN p.nickname ELSE null END AS v, count(*) AS c"))
         assertEquals(listOf(null), query("UNWIND [{b: 1}] AS x RETURN x.a AS v UNION RETURN null AS v"))
         assertEquals(listOf(null), query("UNWIND [null] AS v RETURN v UNION MATCH (p:Person {name: 'Keanu'}) RETURN p.nickname AS v"))
+        // A value kept distinct, on Oracle JSON's null, is still the same null as a property a node has not.
+        assertEquals(listOf(null), query("UNWIND [{a: null}] AS x WITH DISTINCT x.a AS a RETURN a AS v UNION MATCH (p:Person {name: 'Hugo'}) RETURN p.nickname AS v"))
+        assertEquals(
+            listOf(listOf(null, 4L)),
+            query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a MATCH (p:Person) RETURN CASE WHEN p.born IS NULL THEN p.nickname ELSE a END AS v, count(*) AS c"),
+        )
         assertEquals(one, query("UNWIND [{a: null}, {b: 1}] AS x RETURN reduce(s = null, t IN [1] | x.a) AS v, count(*) AS c"))
         assertEquals(
             listOf(listOf("Laurence", "Keanu", "Hugo", "Carrie")),

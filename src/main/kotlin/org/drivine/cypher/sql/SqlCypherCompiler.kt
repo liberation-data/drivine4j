@@ -454,10 +454,17 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun jsonNullSortKey(json: String): List<String> = openSortKey(json)
 
     /**
-     * The JSON value [json], JSON's null read as SQL's, where rows are grouped, kept distinct or given by it: as [nullIfJsonNull],
+     * The JSON value [json], JSON's null read as SQL's, where rows are given by it to a `UNION` that compares them, and by default
+     * where they are grouped or kept distinct ([groupedNull]): as [nullIfJsonNull],
      * but where a store binds a long value in a subquery there, which no store groups by, written out where it is read.
      */
     protected open fun comparedNull(json: String): String = nullIfJsonNull(json)
+
+    /**
+     * The JSON value [json] as rows are grouped or kept distinct by it, JSON's null and SQL's one: as [comparedNull], but where a
+     * store makes them one more cheaply in a value that each row reads alike, as SQL's null read as JSON's, it says so (#500).
+     */
+    protected open fun groupedNull(json: String): String = comparedNull(json)
 
     /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
@@ -1058,19 +1065,18 @@ abstract class SqlCypherCompiler(graph: String) {
                 // Each query's rows as one value each, as a statement's are; without ALL, each once.
                 val distinct = !query.unions.first().all
                 val order = rowOrder
-                val parts = distinctParts
-                distinctParts = distinct
                 try {
-                    return (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
-                        var select = Select(scope)
-                        clauses.dropLast(1).forEach { select = read(select, it, scope) }
-                        val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
-                        val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
-                        "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                    return comparingParts(distinct) {
+                        (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
+                            var select = Select(scope)
+                            clauses.dropLast(1).forEach { select = read(select, it, scope) }
+                            val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
+                            val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
+                            "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                        }
                     }
                 } finally {
                     rowOrder = order
-                    distinctParts = parts
                 }
             }
             val order = rowOrder
@@ -1185,6 +1191,17 @@ abstract class SqlCypherCompiler(graph: String) {
             return "(${boundSelect(columns.joinToString(", "))}) $name" to named.associate { (variable, value, column) -> variable to value.columnsOf(name, column) }
         }
 
+        /** [work], its parts of a `UNION` compared as a whole where [distinct] ([distinctParts]), as it was after. */
+        private fun <T> comparingParts(distinct: Boolean, work: () -> T): T {
+            val was = distinctParts
+            distinctParts = distinct
+            try {
+                return work()
+            } finally {
+                distinctParts = was
+            }
+        }
+
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
         private fun calledUnion(select: Select, call: Clause.Call): Projected {
             val query = call.query
@@ -1195,7 +1212,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val names = returns.first().projection.items.map { it.name }
             if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
             val distinct = !query.unions.first().all
-            var projected = parts.map { calledPart(select, call, it, names, distinct) }
+            var projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
             if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
             // A map or a list that holds a node carries a column more, of its identity. Where one query's value has it and
             // another's has none, as `collect([r])` beside `[]`, the queries are compiled again without identities, so their
@@ -1204,7 +1221,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val was = identities
                 identities = false
                 try {
-                    projected = parts.map { calledPart(select, call, it, names, distinct) }
+                    projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
                 } finally {
                     identities = was
                 }
@@ -2345,11 +2362,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * [value] as rows are compared by it, where they are grouped or kept distinct: JSON as what compares, and JSON's null,
-         * which a value read out of a map or a list may be ([Value.Json.jsonNull]), as SQL's, as Cypher has one null (#500).
+         * which a value read out of a map or a list may be ([Value.Json.jsonNull]), and SQL's as one, as Cypher has one null (#500).
+         * It may still be JSON's null, as Oracle's [groupedNull] gives it, so it is still read as one that may be. In a part of a
+         * `UNION` that compares rows ([distinctParts]) it is SQL's, as another part's value that is never JSON's null gives it.
          */
         private fun compared(value: Value): Value = when {
             value !is Value.Json -> value
-            value.jsonNull -> value.copy(sql = comparedNull(comparable(value)), ordered = false, jsonNull = false)
+            value.jsonNull -> comparable(value).let { value.copy(sql = if (distinctParts) comparedNull(it) else groupedNull(it), ordered = false) }
             value.ordered -> value.copy(sql = comparable(value), ordered = false)
             else -> value
         }
