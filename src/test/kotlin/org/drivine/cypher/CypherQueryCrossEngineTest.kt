@@ -302,6 +302,16 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS u ORDER BY u" to 100,
             "UNWIND range(1, 100) AS i CALL { RETURN randomUUID() AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) + '-' AS u } RETURN u" to 100,
+            // However the CALL imports, it reads the UUID made for its row, which it never names (#410).
+            "UNWIND range(1, 100) AS i CALL () { RETURN toUpper(randomUUID()) AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL (i) { RETURN toString(i) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { WITH i RETURN toString(i) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { WITH i WITH i AS j RETURN toString(j) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) AS u UNION RETURN 'x' AS u } RETURN u" to 101,
+            // A variable quoted as the compiler names its own is the statement's: imported as named, and a UUID made still.
+            "UNWIND range(1, 100) AS `#anewi` CALL (`#anewi`) { RETURN toString(`#anewi`) + randomUUID() AS u } RETURN u" to 100,
+            // A CALL that writes makes one for each row it writes, as it did.
+            "UNWIND range(1, 100) AS i CALL (i) { CREATE (n:CyUuidCall {id: toUpper(randomUUID())}) RETURN n.id AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
             // Two items written alike are a UUID each, as in Neo4j.
             "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b" to 200,
@@ -323,6 +333,8 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(p)",
             // Made for each of the 4 people a row finds, not once for the row: some of them kept, not all or none.
             "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person) WHERE left(randomUUID(), 1) < '8' WITH i, count(p) AS c WHERE c > 0 AND c < 4 RETURN count(*)",
+            // One in a CALL that imports nothing, made for each row the CALL is joined to.
+            "UNWIND range(1, 1000) AS i CALL () { OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN p } RETURN count(p)",
             // Two OPTIONAL MATCHes, each a UUID of its own: one kept and not the other in about half the rows.
             "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' " +
                 "OPTIONAL MATCH (q:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' WITH p, q WHERE (p IS NULL) <> (q IS NULL) RETURN count(*)",
@@ -349,7 +361,10 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 2) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < 'z' RETURN *",
             "UNWIND range(1, 2) AS i CALL { RETURN toUpper(randomUUID()) AS u } RETURN *",
             "UNWIND range(1, 2) AS i WITH * WHERE left(randomUUID(), 1) < 'z' RETURN *, 1 AS one",
-        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 2 || rows.any { (it as List<*>).size != 2 } }?.let { "$cypher: $it" } }
+        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 2 || rows.any { (it as List<*>).size != 2 } }?.let { "$cypher: $it" } } +
+            // Nor is the variable a CALL's query unwinds that UUID to: a star in the query gives j alone, before u.
+            listOf("UNWIND range(1, 2) AS i CALL { UNWIND [1] AS j RETURN *, toUpper(randomUUID()) AS u } RETURN *")
+                .mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 2 || rows.any { (it as List<*>).size != 3 } }?.let { "$cypher: $it" } }
         // An OPTIONAL MATCH that finds nothing, or keeps nothing it finds, keeps the row, with nulls.
         val nulls = listOf(
             "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' RETURN i, p",
@@ -2502,6 +2517,76 @@ abstract class CypherQueryContract {
         assertEquals(
             listOf(listOf(2L, listOf(1L, 1L))),
             query("MATCH path = (p:Person {name: 'Laurence'})-[:ACTED_IN]->() CALL (path) { UNWIND [1, 2] AS i RETURN count(path) AS n, collect(length(path)) AS ls } RETURN n, ls"),
+        )
+    }
+
+    @Test
+    fun `a CALL sees only the variables it imports, and a name it does not import is a new variable in it`() {
+        // Not in the spec yet (#410). A CALL saw every variable of its row, so an inner MATCH that reused a name it did not
+        // import joined to the row's variable, and gave no rows, or was refused where it bound a relationship of a node's
+        // name. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val titles = listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded")
+        // A CALL with no brackets and no leading WITH imports nothing.
+        assertEquals(listOf(listOf(12L, 3L)), query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN p.title AS t } RETURN count(*) AS n, count(DISTINCT t) AS d"))
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN count(p) AS n } RETURN p.name, n ORDER BY p.name"),
+        )
+        // CALL () imports nothing.
+        assertEquals(
+            titles.map { listOf("Keanu", it) },
+            query("MATCH (p:Person {name: 'Keanu'}) CALL () { MATCH (p:Movie) RETURN p.title AS t } RETURN p.name, t ORDER BY t"),
+        )
+        // CALL (a) imports a alone, and a leading WITH a alone: b in it is new.
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        // A node's name, not imported, is a relationship's in the CALL.
+        assertEquals(listOf(listOf("Keanu", 2L)), query("MATCH (a:Person {name: 'Keanu'}) CALL { MATCH ()-[a:KNOWS]->() RETURN count(a) AS n } RETURN a.name, n"))
+        assertEquals(
+            listOf(listOf("Laurence", "Carrie"), listOf("Laurence", "Keanu")),
+            query("MATCH (a:Person {name: 'Laurence'}) CALL () { MATCH ()-[a:KNOWS]->(b) RETURN b.name AS k } RETURN a.name, k ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf("The Matrix", 4L)),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Movie {title: 'The Matrix'}) CALL (a) { MATCH (a)-[b]->() RETURN count(b) AS n } RETURN b.title, n"),
+        )
+        // What a leading WITH imports is gone after a WITH that does not pass it on.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH a WITH 1 AS one MATCH (a:Movie) RETURN count(a) AS n } RETURN n"))
+        // What brackets import is seen throughout the CALL, after a WITH that does not pass it on too, as Neo4j has it.
+        assertEquals(
+            listOf("Carrie"),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a, b) { WITH 1 AS one RETURN b.name AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (a:Person) CALL (a) { UNWIND [1, 2] AS i WITH i RETURN a.name AS n, sum(i) AS s } RETURN n, s ORDER BY n"),
+        )
+        // CALL (*), and a leading WITH *, import every variable.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH * MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        // In a UNION, each query imports what its own leading WITH names.
+        assertEquals(
+            listOf(listOf("Keanu", 3L), listOf("Keanu", 3L)),
+            query(
+                "MATCH (a:Person {name: 'Keanu'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n " +
+                    "UNION ALL MATCH (a:Movie) RETURN count(a) AS n } RETURN a.name, n"
+            ),
         )
     }
 

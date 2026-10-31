@@ -18,7 +18,18 @@ import kotlin.test.assertTrue
  */
 class CompilerRefusalTest {
 
-    private val spec = CypherSpec.load("refusals.yaml")
+    /**
+     * The spec's refusals, but for the steps of [COMPILED], which the spec at the tag drivine4j runs refuses and the
+     * compiler now compiles: drivine-cypher-spec#33 drops them. Remove this when drivine4j moves to the tag that has it.
+     */
+    private val spec = CypherSpec.load("refusals.yaml").let { spec ->
+        spec.copy(cases = spec.cases.map { case -> case.copy(steps = case.steps.filterNot { it.cypher in COMPILED }) })
+    }
+
+    private companion object {
+        /** #422: a truncation to the decade. */
+        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))")
+    }
 
     @TestFactory
     fun postgres() = spec.tests("postgres", before = {}) { step -> PostgresCypherCompiler("g").compile(step.cypher, step.parameters); emptyList() }
@@ -211,6 +222,9 @@ class CompilerRefusalTest {
             "MATCH (a) CALL (a) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
             "MATCH (a) CALL (a) { MATCH ()-[a]->() RETURN 1 AS x } RETURN x" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
             "MATCH (a) CALL (*) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            // What brackets import is in scope after a WITH that does not name it, as Neo4j has it (#410).
+            "MATCH (a) CALL (a) { WITH 1 AS one CREATE (a) RETURN one } RETURN one" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) CALL (*) { WITH 1 AS one MATCH ()-[a]->() RETURN one } RETURN one" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
             "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE (r)-[:T]->())" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
             "MATCH p = (a)-[*]->(b) RETURN size(p)" to "size() takes a list or a text, not a path, as in Neo4j: length() takes a path.",
         )
@@ -257,6 +271,14 @@ class CompilerRefusalTest {
                 "MATCH (a) CALL { WITH a MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
                 "MATCH (a) CALL (a) { MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
                 "MATCH (a) CALL (a) { CREATE (a)-[:R]->(b) RETURN b } RETURN b",
+                // A name a CALL does not import is a new variable in it, of any kind (#410).
+                "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x",
+                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x",
+                "MATCH (a), (b) CALL (a) { MATCH ()-[b]->() RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WITH 1 AS one MATCH ()-[a]->() RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL () { CREATE (a) RETURN 1 AS x } RETURN x",
+                // A procedure's call imports each variable of the row, so its WHERE reads them.
+                "MATCH (a) CALL db.labels() YIELD label WHERE label = a.kind RETURN label",
                 "MATCH ()-[n]->(m) FOREACH (n IN [m] | CREATE (n)-[:R]->())",
                 "MATCH (a) WITH a, 1 AS b ORDER BY size([(a)-->(x) | x]) RETURN b",
                 "MATCH (a) MATCH p = (a)-->() RETURN nodes(p)",
@@ -270,16 +292,61 @@ class CompilerRefusalTest {
                 "MATCH ()-[r]->() WITH r MATCH ()-[r]->() RETURN r" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a)-[r]->() RETURN EXISTS { (a)-[r]->() } AS e" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a)-[r]->(b) MERGE (a)-[r]->(b)" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
-                "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
-                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE ()-[r:T]->())" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a) CALL { WITH a RETURN a AS b UNION WITH a MATCH ()-[b]->() RETURN b } RETURN b" to
                     "A UNION in CALL { … } whose queries return values of different kinds is Cypher, and is not compiled to SQL yet.",
                 "MATCH p = ()-->() RETURN [p = ()-->() | p] AS x" to "A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).",
+                // A CALL's brackets import only variables of its row, as Neo4j has it (#410).
+                "MATCH (a) CALL (x) { RETURN 1 AS n } RETURN n" to "x is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "MATCH (a) WITH 1 AS x CALL db.labels() YIELD label WHERE label = a.kind RETURN label" to
+                    "a is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "MATCH (a), (b) CALL (a) { CALL (b) { MATCH (b)-->(d) RETURN d } RETURN d.x AS x } RETURN x" to
+                    "b is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                // A CALL holding a randomUUID() reads the UUID made for its row, and still imports only what it names.
+                "UNWIND [1] AS i CALL { RETURN toString(i) + randomUUID() AS u } RETURN u" to
+                    "i is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "UNWIND [1] AS i CALL (x) { RETURN randomUUID() AS u } RETURN u" to
+                    "x is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                // A variable quoted as the compiler names its own is imported as any other is.
+                "UNWIND [1] AS `#anew9` CALL () { RETURN `#anew9` AS x } RETURN x" to
+                    "#anew9 is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
             ).forEach { (cypher, message) ->
                 val store = compiler()::class.simpleName
                 assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
             }
+        }
+    }
+
+    @Test
+    fun `a CALL's leading WITH that imports names variables of the row alone, as Neo4j has it`() {
+        // Not in the spec yet (#410): Neo4j refuses an importing WITH with anything more (its 42I28), which was compiled as any WITH.
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            val store = compiler::class.simpleName
+            listOf(
+                "MATCH (a), (b) CALL { WITH a, b AS c MATCH (a)-->(c) RETURN c.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a AS c MATCH (c)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WHERE a.x > 1 RETURN count(*) AS n } RETURN a, n",
+                "MATCH (a) CALL { WITH a ORDER BY a.x LIMIT 1 MATCH (a)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a SKIP 0 RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH DISTINCT a MATCH (a)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a, 1 AS one MATCH (a)-->(d) RETURN d.x + one AS x } RETURN x",
+                "MATCH (a) CALL { WITH * WHERE true RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { UNWIND [1] AS x RETURN x UNION WITH a WHERE true RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WHERE a.x > 1 SET a.y = 1 } RETURN a",
+                // One holding a randomUUID() too, whose query reads a UUID made for the row before its WITH.
+                "MATCH (a) CALL { WITH a AS c RETURN c.x + randomUUID() AS x } RETURN x",
+            ).forEach { cypher ->
+                val refused = assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message!!
+                assertTrue(refused.startsWith("The importing WITH of a CALL { … } names variables of the row alone, as in Cypher"), "$store: $cypher: $refused")
+            }
+            // A leading WITH that names no variable of the row as it is imports nothing, and is any WITH; so is one of a CALL with brackets.
+            listOf(
+                "MATCH (a) CALL { WITH 1 AS one WHERE one > 0 RETURN one } RETURN one",
+                "MATCH (a) CALL { WITH DISTINCT 1 AS one RETURN one } RETURN one",
+                "MATCH (a) CALL { WITH a AS a RETURN 1 AS one } RETURN one",
+                "MATCH (a) CALL (a) { WITH a WHERE a.x > 1 RETURN a.x AS x } RETURN x",
+                "MATCH (a) CALL (a) { WITH DISTINCT a, 1 AS one ORDER BY a.x LIMIT 1 RETURN one } RETURN one",
+            ).forEach { compiler.compile(it) }
         }
     }
 
@@ -305,6 +372,61 @@ class CompilerRefusalTest {
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("RETURN date('2024-02-30')") }.message!!
             assertTrue(refused.startsWith("'2024-02-30' is no date"), refused)
+        }
+    }
+
+    @Test
+    fun `a truncation's map of fields Neo4j fails on, or that the stores have no SQL for yet, is refused`() {
+        // #422: a truncation took no third argument before. Until the spec holds these (drivine-cypher-spec#33), held here.
+        val refused = listOf(
+            "RETURN date.truncate('month', date('2024-03-15'), {}, {})" to "date.truncate() takes a unit, a value and a map of fields.",
+            "RETURN date.truncate('fortnight', date('2024-03-15'))" to
+                "date.truncate() truncates to millennium, century, decade, year, weekYear, quarter, month, week, day, hour, minute, second, millisecond or microsecond, not fortnight.",
+            "RETURN date.truncate('day', date('2024-03-15'), {hour: 5})" to "date.truncate() takes no field hour.",
+            "RETURN localdatetime.truncate('day', localdatetime('2024-03-15T10:00'), {timezone: '+05:00'})" to "localdatetime.truncate() takes no field timezone.",
+            "RETURN localtime.truncate('hour', localtime('10:30'), {day: 2})" to "localtime.truncate() takes no field day.",
+            "RETURN date.truncate('day', date('2024-03-15'), {foo: 1})" to "date.truncate() takes no field foo.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: 2, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: null, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
+            // Neo4j takes a day of the week with a year alone, not with a month, though it is null.
+            "RETURN date.truncate('month', date('2024-03-15'), {month: 2, dayOfWeek: 3})" to "date.truncate() takes a month or a day of the week, not both.",
+            "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000, month: null})" to "date.truncate() takes a month or a day of the week, not both.",
+            "RETURN date.truncate('week', date('2024-03-15'), {dayOfWeek: 9})" to "date.truncate() takes a day of the week from 1 to 7, not 9.",
+            // A number past its field's range, which a store would carry into the next field, as Neo4j fails it.
+            "RETURN date.truncate('year', date('2017-02-11'), {month: -1})" to "date.truncate() takes a month from 1 to 12, not -1.",
+            "RETURN localtime.truncate('hour', localtime('12:00'), {hour: 24})" to "localtime.truncate() takes an hour from 0 to 23, not 24.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {millisecond: 1000})" to "localtime.truncate() takes a millisecond from 0 to 999, not 1000.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {microsecond: 1000000})" to "localtime.truncate() takes a microsecond from 0 to 999999, not 1000000.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {millisecond: 5, microsecond: 1000})" to
+                "localtime.truncate() takes a microsecond from 0 to 999 beside a millisecond, not 1000.",
+            "RETURN localtime.truncate('millisecond', localtime('12:00'), {microsecond: 1000})" to
+                "localtime.truncate() takes a microsecond from 0 to 999 beside a millisecond, not 1000.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: 2.7})" to "date.truncate() takes a whole number for day, not 2.7.",
+            "RETURN date.truncate('month', date('2024-03-15'), {year: '2000'})" to "date.truncate() takes a whole number for year, not '2000'.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: '+0500'})" to "'+0500' is no time zone.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: 'bogus'})" to "'bogus' is no time zone.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: null})" to "datetime.truncate() takes a time zone, not null.",
+            // Not compiled yet: sub-microsecond digits, the fields of a week or a quarter, a zone by name, and what an expression gives.
+            "RETURN datetime.truncate('day', date('2024-03-15'), {nanosecond: 2})" to "datetime.truncate() of a map with nanosecond is Cypher, and is not compiled to SQL yet.",
+            "RETURN date.truncate('month', date('2024-03-15'), {week: 2})" to "date.truncate() of a map with week is Cypher, and is not compiled to SQL yet.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+            "WITH {day: 2} AS fields RETURN date.truncate('month', date('2024-03-15'), fields)" to
+                "A truncation's fields that an expression gives is Cypher, and is not compiled to SQL yet.",
+            "WITH '+01:00' AS zone RETURN datetime.truncate('day', date('2024-03-15'), {timezone: zone})" to
+                "A truncation to a time zone an expression gives is Cypher, and is not compiled to SQL yet.",
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, cypher)
+            }
+            // The units the spec's tag refuses, and fields of every kind the stores have SQL for, compile.
+            listOf(
+                "RETURN date.truncate('decade', date('2024-03-15'))",
+                "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000})",
+                "RETURN localtime.truncate('second', localtime('12:00'), {microsecond: 999999})",
+                "RETURN datetime.truncate('microsecond', datetime('2024-03-15T10:00Z'), {hour: 1, minute: 2, second: 3, millisecond: 4, microsecond: 5, timezone: 'Z'})",
+                "WITH 3 AS d RETURN localdatetime.truncate('millennium', \$at, {day: d})",
+            ).forEach { compiler.compile(it, mapOf("at" to "2024-03-15T10:00")) }
         }
     }
 }

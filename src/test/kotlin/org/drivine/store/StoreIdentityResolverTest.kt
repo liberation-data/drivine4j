@@ -9,7 +9,10 @@ import org.drivine.schema.FalkorDbSchemaGrammar
 import org.drivine.store.StoreIdentityResolver.Stamp
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
+import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.exceptions.Neo4jException
+import org.neo4j.driver.exceptions.TransientException
+import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertContains
@@ -158,6 +161,90 @@ class StoreIdentityResolverTest {
 
         assertSame(conflict, assertFailsWith<IllegalStateException> { StoreIdentityResolver(store).resolve() })
         assertEquals(1, merges)
+    }
+
+    @Test
+    fun `a stamp a constraint refuses is written again though the constraint was not seen made, for the refusal proves it is in force`() {
+        // #473: on Neo4j, managers making the constraint at once deadlock, and a loser looking for the winner's
+        // constraint may not see it yet. By the time it writes the stamp the constraint is in force, and refuses it.
+        val deadlock = TransientException(
+            "Neo.TransientError.Transaction.DeadlockDetected",
+            "ForsetiClient can't acquire EXCLUSIVE LABEL because holders of that lock are waiting for ForsetiClient. Deadlock wait cycle.",
+        )
+        val refused = ClientException(
+            "Neo.ClientError.Schema.ConstraintValidationFailed",
+            "Node(0) already exists with label `DrivineStore` and property `key` = 'singleton'",
+        )
+        var merges = 0
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> deadlock
+                ran.statement == cypherStamp.assignIfAbsent -> if (merges++ == 0) refused else emptyList<Any?>()
+                ran.statement == cypherStamp.readStamps -> listOf(Stamp("store-8", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-8", StoreIdentityResolver(store).resolve().id)
+        assertEquals(2, merges, "the refused stamp is written again, and then matches the winner's")
+        assertTrue(store.schema.any { it.startsWith("CREATE CONSTRAINT") }, "the constraint was tried: ${store.schema}")
+    }
+
+    @Test
+    fun `a constraint whose making deadlocks with another manager's is made again, and is then in force`() {
+        // #473: a manager that went on without the constraint could write a second stamp before the winner's was made.
+        val deadlock = TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle.")
+        val conflict = IllegalStateException("Cannot resolve conflicting transactions")
+        var creates = 0
+        var merges = 0
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> if (creates++ == 0) deadlock else emptyList<Any?>()
+                // Only under a constraint in force is a conflict taken as a lost race, and written again.
+                ran.statement == cypherStamp.assignIfAbsent -> if (merges++ == 0) conflict else emptyList<Any?>()
+                ran.statement == cypherStamp.readStamps -> listOf(Stamp("store-9", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-9", StoreIdentityResolver(store).resolve().id)
+        assertEquals(2, creates, "the constraint is made again after the deadlock: ${store.schema}")
+        assertEquals(2, merges, "the stamp is written under the constraint, so a conflict is written again")
+    }
+
+    @Test
+    fun `on Oracle a constraint whose making another session's DDL deadlocks is made again`() {
+        // ORA-04020 is a SQL store's DDL deadlock (DdlContention), though not a save's (OracleBackend.contended).
+        val grammar = OracleSchemaGrammar(OracleGraph("g"))
+        val statements = grammar.storeStamp("DrivineStore", "key")
+        val deadlock = SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.G_NODE", "61000", 4020)
+        var creates = 0
+        val store = RecordingStore(DatabaseType.ORACLE, ddl = grammar, graphName = "g") { ran ->
+            when {
+                ran.statement.startsWith("CREATE UNIQUE INDEX") -> if (creates++ == 0) deadlock else emptyList<Any?>()
+                ran.statement == statements.readStamps -> listOf(Stamp("store-10", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-10", StoreIdentityResolver(store).resolve().id)
+        assertEquals(2, creates, "the constraint is made again after the deadlock: ${store.schema}")
+    }
+
+    @Test
+    fun `a stamp refused for a reason that is not the constraint is not written again`() {
+        val deadlock = TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle.")
+        val refused = ClientException("Neo.ClientError.Statement.SyntaxError", "Invalid input")
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> deadlock
+                ran.statement == cypherStamp.assignIfAbsent -> refused
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertSame(refused, assertFailsWith<ClientException> { StoreIdentityResolver(store).resolve() })
+        assertEquals(1, store.executed.size)
     }
 
     @Test
