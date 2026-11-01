@@ -96,6 +96,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** How many times [shared] has bound its values, which an aggregate's argument it would bind in is worked out first for: see `sharedFirst`. */
     private var sharedBindings = 0
 
+    /**
+     * Whether SQL is written only to be searched for a subquery of the statement's own, not run: [sharedBound] then writes
+     * its values beside its body, read there by names of no subquery, so neither adds a `SELECT` (see `casesFirst`).
+     */
+    private var probing = false
+
     /** The statement [cypher], with its parameters' values [parameters], as SQL. */
     fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher =
         compile(CypherReader.read(cypher), parameters)
@@ -139,6 +145,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** [body] over [values] [bound] as [shared] binds them, and counted so: see [sharedBindings]. */
     protected fun sharedBound(vararg values: String, body: (List<String>) -> String): String {
+        if (probing) return (values.toList() + body(values.indices.map { "probed.v${it + 1}" })).joinToString(" ")
         sharedBindings++
         return bound(*values, body = body)
     }
@@ -801,7 +808,7 @@ abstract class SqlCypherCompiler(graph: String) {
     protected abstract val temporalSql: TemporalSql
 
     /** openCypher's temporal values: see [Temporals]. */
-    private val temporals by lazy { Temporals(temporalSql, sharedList) }
+    private val temporals by lazy { Temporals(temporalSql, sharedList) { sharing } }
 
     // ----- A store's procedure, for a statement that writes -----
 
@@ -2459,7 +2466,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 contains(term) { e ->
                     if (e is Expression.Function && e.name.lowercase() == "size") sized += e.arguments
                     if (isAggregate(e) && e is Expression.Function) e.arguments.filter { argument ->
-                        contains(argument) { it is Expression.Case } && unshared { json(expression(argument, select.scope)).sql }.contains("SELECT", ignoreCase = true)
+                        // Every subquery is written `SELECT`, so the argument's SQL is searched for one as it is, case and all. Its long
+                        // values are written once, as bound ones are ([probing]): written out wherever each was read, as an aggregate's
+                        // argument writes them, a temporal CASE's SQL ran to 165 million characters, and one nested again past the JVM's
+                        // longest string.
+                        contains(argument) { it is Expression.Case } && probed { json(expression(argument, select.scope)).sql }.contains("SELECT")
                     }.forEach {
                         arguments += it
                         if (e.name.lowercase() == "collect" && sized.none { s -> s === e }) gathered += it
@@ -2841,6 +2852,22 @@ abstract class SqlCypherCompiler(graph: String) {
                 return work()
             } finally {
                 sharing = was
+            }
+        }
+
+        /**
+         * [work], its SQL only searched for a subquery of the statement's own: see [probing]. The functions it declares are given
+         * back, as [binds] gives them back: a `reduce`'s step written so would declare a function that reads no value it names.
+         */
+        private fun <T> probed(work: () -> T): T {
+            val was = probing
+            val wasFunctions = functions.size
+            probing = true
+            try {
+                return work()
+            } finally {
+                probing = was
+                functions.subList(wasFunctions, functions.size).clear()
             }
         }
 

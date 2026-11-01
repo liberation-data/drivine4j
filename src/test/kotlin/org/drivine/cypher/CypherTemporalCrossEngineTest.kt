@@ -62,6 +62,81 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a year before 1 is numbered as Neo4j numbers it, made, worked out, written and read`() {
+        // #469: Postgres and Oracle number a year BC from -1, with no year 0, and wrote 1 BC back as 0001; none read a year before 0.
+        assertEquals(
+            listOf(listOf("0000-12-31", "-0044-03-15", "-0001-01-01", "0000-01-01", "-1000-01-01", "0000-01-01T00:00:00Z", -44L, 0L, "P1Y", true)),
+            query(
+                """
+                RETURN [toString(date('0001-01-01') - duration('P1D')), toString(date({year: -44, month: 3, day: 15})), toString(date({year: -1})),
+                        toString(date.truncate('millennium', date('0999-12-31'))), toString(date.truncate('millennium', date('-1234-06-01'))),
+                        toString(datetime.truncate('century', datetime('0050-06-01T10:00:00Z'))), date('-0044-03-15').year, date('0000-06-01').year,
+                        toString(duration.between(date('0000-01-01'), date('0001-01-01'))), date('-0044-03-15') < date('0001-01-01')]
+                """,
+            ),
+        )
+        // The ISO week's year, a truncation's own year under fields given, and a truncation to the millisecond, which Oracle writes and reads with its sign.
+        assertEquals(
+            listOf(listOf(-44L, "-0044-01-02", "-0044-03-15T12:00:00.123Z", "-0040-02-01T00:00:00")),
+            query(
+                """
+                RETURN [date('-0044-03-15').weekYear, toString(date.truncate('year', date('-0044-03-15'), {day: 2})),
+                        toString(datetime.truncate('millisecond', datetime('-0044-03-15T12:00:00.1234Z'))),
+                        toString(localdatetime.truncate('decade', localdatetime('-0044-03-15T12:00:00'), {month: 2}))]
+                """,
+            ),
+        )
+        // A parameter of java.time's, written and read back, its kind told by its text.
+        query("CREATE (:CyTemporal {id: 'a', day: \$day, at: datetime('-0044-03-15T12:00:00+02:00')})", mapOf("day" to LocalDate.of(-44, 3, 15)))
+        assertEquals(
+            listOf(listOf("-0044-03-16", -44L, "-0043-03-15T12:00:00+02:00", true)),
+            query("MATCH (n:CyTemporal) RETURN [toString(n.day + duration('P1D')), n.day.year, toString(n.at + duration('P1Y')), n.day < date('0001-01-01')]"),
+        )
+    }
+
+    @Test
+    fun `a stored value of any year compares and gives its year as Neo4j does, beside a value written or a parameter`() {
+        // #487: Postgres and Oracle read a text whose year is 1000 or later as it is, with no test of its era, where a test of
+        // its kind has told them so; and read a year off the text. A year after 0 but before 1000, and one BC, take the other way.
+        val years = listOf(9999, 2024, 1000, 999, 1, 0, -1, -44, -4000)
+        query(
+            """
+            UNWIND range(0, size(${'$'}years) - 1) AS i WITH i, ${'$'}years[i] AS y
+            CREATE (:CyTemporal {id: i, day: date({year: y, month: 3, day: 15}), ldt: localdatetime({year: y, month: 3, day: 15, hour: 12}),
+                                 at: datetime({year: y, month: 3, day: 15, hour: 12, timezone: '+02:00'})})
+            """,
+            mapOf("years" to years),
+        )
+        assertEquals(
+            listOf(years.map { listOf(it.toLong(), it.toLong(), it.toLong()) }),
+            query("MATCH (n:CyTemporal) WITH n ORDER BY n.id RETURN collect([n.day.year, n.ldt.year, n.at.year])"),
+        )
+        assertEquals(
+            listOf(years.map { y -> listOf(y <= 0, y >= 0, y == -44, y <= 0, y <= 0, y >= 1000) }),
+            query(
+                """
+                MATCH (n:CyTemporal) WITH n ORDER BY n.id
+                RETURN collect([n.day < date('0001-01-01'), date('0000-03-15') <= n.day, n.day = date('-0044-03-15'), n.day < ${'$'}p,
+                                n.at < datetime('0000-06-01T00:00:00Z'), n.ldt >= localdatetime('1000-01-01T00:00')])
+                """,
+                mapOf("p" to LocalDate.of(0, 6, 1)),
+            ),
+        )
+        // A truncation and a change of kind keep the stored value's year: written as main wrote it from 1000 on, by its era before.
+        fun iso(y: Int) = (if (y < 0) "-" else "") + "%04d".format(kotlin.math.abs(y))
+        assertEquals(
+            listOf(years.map { y -> listOf("${iso(y)}-03-01", "${iso(y)}-03-15T00:00:00+02:00", "${iso(y)}-03-15", "${iso(y)}-03-15T12:00:00") }),
+            query(
+                """
+                MATCH (n:CyTemporal) WITH n ORDER BY n.id
+                RETURN collect([toString(date.truncate('month', n.day)), toString(datetime.truncate('day', n.at)), toString(date(n.at)), toString(localdatetime(n.at))])
+                """,
+            ),
+        )
+        // Two years BC are not compared here: two stored values, and two on SQLite, compare by their text, which orders them backwards (#374).
+    }
+
+    @Test
     fun `a parameter of a time of day, a local or zoned moment, or a Date is a temporal value of its kind`() {
         val offset = java.time.ZoneOffset.ofHours(2)
         assertEquals(
@@ -142,6 +217,8 @@ abstract class CypherTemporalContract {
         assertEquals(listOf(8L), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN sum(($z).minute) AS s } RETURN s + o"))
         // A reduce() in the argument, which Oracle declares a function for.
         assertEquals(listOf(6L), query("UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute - i + x))"))
+        // In a CASE, of a moment added to twice (#469): Oracle searches the CASE for a subquery, and what that search declares is not declared.
+        assertEquals(listOf(5L), query("MATCH (n:CyAgg) RETURN count(CASE WHEN reduce(a = 0, x IN [1, 2] | a + ($t + duration('PT1H')).minute) > 0 THEN 1 END)"))
         // A list of temporal values, kept distinct, read back by its items' fields: Oracle reads no temporal list by JSON_TABLE (#331).
         assertEquals(
             listOf(listOf(listOf(2L, 3L), listOf(3L, 4L))),
