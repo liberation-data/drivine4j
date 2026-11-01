@@ -12,10 +12,17 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 
 A test names an engine's image by its moving tag, such as `neo4j:latest` or `falkordb/falkordb:latest`, and Drivine's suite runs it as the image `gradle/test-images.txt` pins for it. The build hands each pin to the tests, and the Testcontainers image substitutor `PinnedImages` swaps it in. A pull request's run takes the pins, so when it fails, the change broke something and not an engine's new release.
 
-The workflow `nightly-latest.yml` runs CI's jobs each night with no pins, so each moving tag pulls the engine's latest release. One tag doesn't: Docker Hub's `falkordb/falkordb:latest` is whichever release FalkorDB pushed last, and that can be an older line's backport, as `v4.22.3` took it after `6.0.3`. So an unpinned run takes FalkorDB from `ghcr.io/falkordb/falkordb:latest`, its newest release; `build.gradle`'s `testImagesLatest` maps the one to the other. Before it builds, each job pulls its images and says which release each one is, with its digest, the version tags Docker Hub gives that digest, and when it was built; the job's summary shows the same table. A scheduled run that fails opens an issue titled "The nightly run on the latest engine images fails", unless one with that title is open. To run it by hand, start the workflow from the Actions tab. To run unpinned locally, pass `-Ptest.images.unpinned=true` or set `TEST_IMAGES_UNPINNED=true`:
+The workflow `nightly-latest.yml` runs CI's jobs each night with no pins, so each moving tag pulls the engine's latest release. One tag doesn't, so an unpinned run takes FalkorDB from another registry: see below. Before it builds, each job pulls its images and says which release each one is, with its digest, the version tags Docker Hub gives that digest, and when it was built; the job's summary shows the same table. A scheduled run that fails opens an issue titled "The nightly run on the latest engine images fails", unless one with that title is open. To run it by hand, start the workflow from the Actions tab. To run unpinned locally, pass `-Ptest.images.unpinned=true` or set `TEST_IMAGES_UNPINNED=true`:
 
 ```bash
 ./gradlew test -Ptest.images.unpinned=true
+```
+
+Docker Hub's `falkordb/falkordb:latest` isn't always FalkorDB's newest release. FalkorDB's 4.22 branch still publishes with an older `release-image.yml`, which moves Docker Hub's `latest` on every release, so `v4.22.3` took it after `6.0.3`. The newer `release-tag.yml`, on `main` and the later version branches, moves `latest` on both Docker Hub and `ghcr.io` only for the highest release. So an unpinned run takes FalkorDB from `ghcr.io/falkordb/falkordb:latest`: `build.gradle`'s `testImagesLatest` maps the one to the other. Drop the mapping, and the `ghcr.io/` in `nightly-latest.yml`'s report steps, once the 4.22 line no longer releases or its workflow stops moving `latest`. To check, compare the two digests: they are the same when Docker Hub's `latest` is the newest release again.
+
+```bash
+docker buildx imagetools inspect falkordb/falkordb:latest | grep Digest
+docker buildx imagetools inspect ghcr.io/falkordb/falkordb:latest | grep Digest
 ```
 
 When the nightly run fails, open the failed job and read which release the step that pulls its images names. Fix Drivine for that release, or file the engine's bug upstream and work around it. Then move the image's line in `gradle/test-images.txt` to the release, so the pull requests run it too, and close the issue. The Postgres and Oracle images, `pgvector/pgvector:pg17` and `gvenzl/oracle-free:23-faststart`, have no pin, so pull requests and the nightly run take the same image.
