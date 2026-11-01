@@ -24,6 +24,9 @@ class OracleCompareTextTest {
     private fun texts(sx: String, sy: String, cx: String, cy: String, operator: String) =
         "CASE WHEN $sx IS NOT NULL AND $sy IS NOT NULL THEN $sx $operator $sy ELSE ${clobs(cx, cy, operator)} END"
 
+    /** Neither of two numbers is NaN, which Cypher orders with nothing (#409): each by its kind [kx] and [ky], and as a double [dx] and [dy]. */
+    private fun notNaN(kx: String, dx: String, ky: String, dy: String) = "NOT (($kx = 'double' AND $dx IS NAN) OR ($ky = 'double' AND $dy IS NAN))"
+
     private fun property(node: String, clob: Boolean = false) = "JSON_VALUE($node.props, '\$.t'${if (clob) " RETURNING CLOB" else ""})"
 
     @Test
@@ -32,7 +35,11 @@ class OracleCompareTextTest {
         for (operator in listOf("<", ">", "<=", ">=")) {
             val ordered = sql("MATCH (n:Doc), (m:Doc) WHERE n.t $operator m.t RETURN count(*)")
             val text = texts(n[0], n[1], n[2], n[3], operator)
-            assertTrue(ordered.contains("THEN CASE WHEN JSON_VALUE(n1.props, '\$.t.type()') = 'string' THEN $text ELSE JSON_QUERY(n1.props, '\$.t' RETURNING JSON) $operator JSON_QUERY(n2.props, '\$.t' RETURNING JSON) END END"), ordered)
+            val nan = notNaN(
+                "JSON_VALUE(n1.props, '\$.t.type()')", "JSON_VALUE(n1.props, '\$.t' RETURNING BINARY_DOUBLE)",
+                "JSON_VALUE(n2.props, '\$.t.type()')", "JSON_VALUE(n2.props, '\$.t' RETURNING BINARY_DOUBLE)",
+            )
+            assertTrue(ordered.contains("THEN CASE WHEN JSON_VALUE(n1.props, '\$.t.type()') = 'string' THEN $text ELSE ($nan AND JSON_QUERY(n1.props, '\$.t' RETURNING JSON) $operator JSON_QUERY(n2.props, '\$.t' RETURNING JSON)) END END"), ordered)
             assertTrue(!ordered.contains("JSON_VALUE(JSON_QUERY("), ordered)
         }
         // Equal as JSON where both are read as VARCHAR2s, as is quicker than reading their kinds; else as CLOBs where both are
@@ -80,7 +87,7 @@ class OracleCompareTextTest {
         val beside = sql("MATCH (n:Doc), (m:Doc) WHERE n.t > toLower(trim(coalesce(\$p.q, m.name))) RETURN count(*)", mapOf("p" to mapOf("q" to null)))
         assertTrue(beside.contains("CASE WHEN JSON_VALUE(n1.props, '\$.t.length()' RETURNING NUMBER) > 32767 THEN NULL ELSE JSON_QUERY(n1.props, '\$.t' RETURNING JSON) END AS v1, JSON_VALUE(n1.props, '\$.t.type()') AS v2, JSON_VALUE(n1.props, '\$.t' RETURNING CLOB) AS v3"), beside)
         val (alias) = Regex("(sh\\d+)\\.v3").find(beside)!!.destructured
-        assertTrue(beside.contains("THEN CASE WHEN $alias.v2 = 'string' THEN ${texts("JSON_VALUE($alias.v1, '\$')", "JSON_VALUE($alias.v4, '\$')", "$alias.v3", "JSON_VALUE($alias.v4, '\$' RETURNING CLOB)", ">")} ELSE $alias.v1 > $alias.v4 END"), beside)
+        assertTrue(beside.contains("THEN CASE WHEN $alias.v2 = 'string' THEN ${texts("JSON_VALUE($alias.v1, '\$')", "JSON_VALUE($alias.v4, '\$')", "$alias.v3", "JSON_VALUE($alias.v4, '\$' RETURNING CLOB)", ">")} ELSE (${notNaN("$alias.v2", "JSON_VALUE($alias.v1, '\$' RETURNING BINARY_DOUBLE)", "JSON_VALUE($alias.v4, '\$.type()')", "JSON_VALUE($alias.v4, '\$' RETURNING BINARY_DOUBLE)")} AND $alias.v1 > $alias.v4) END"), beside)
         val inBeside = sql("MATCH (n:Doc), (m:Doc) RETURN n.t IN [toLower(trim(coalesce(\$p.q, m.name)))]", mapOf("p" to mapOf("q" to null)))
         assertTrue(inBeside.contains("JSON_VALUE(n1.props, '\$.t' RETURNING CLOB) AS v3") && inBeside.contains("DBMS_LOB.COMPARE("), inBeside)
     }
@@ -127,7 +134,7 @@ class OracleCompareTextTest {
         // There a CLOB read from an unwound row's JSON closed the session, where the JSON is refused (ORA-40180).
         val written = sql("UNWIND \$items AS t MERGE (n:Doc {a: t.a}) WITH n WHERE n.t > \$x AND n.t IN \$xs SET n.y = 1", mapOf("items" to listOf(mapOf("a" to "x")), "x" to "abc", "xs" to listOf("a")))
         assertTrue(!written.contains("DBMS_LOB.COMPARE"), written)
-        assertTrue(written.contains("THEN JSON_QUERY(w7.c1_props, '\$.t' RETURNING JSON) > CASE WHEN"), written)
+        assertTrue(written.contains("IS NAN)) AND JSON_QUERY(w7.c1_props, '\$.t' RETURNING JSON) > CASE WHEN"), written)
         val folded = sql("WITH ['a', 'b'] AS l RETURN reduce(acc = [], s IN l | acc + [s = \$x, s < \$x])")
         assertTrue(!folded.contains("DBMS_LOB.COMPARE"), folded)
     }

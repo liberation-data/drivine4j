@@ -63,6 +63,16 @@ class NonFiniteCompileTest {
     }
 
     @Test
+    fun `x IN a list given with NaN in it finds NaN equal to nothing on Oracle, and a list without compares plainly`() {
+        // Oracle's JSON finds NaN equal to itself; a given list of numbers is compared plainly, as #458 compares it, only without NaN.
+        val cypher = "MATCH (n:A) WHERE n.x IN \$l RETURN n.x"
+        val nan = OracleCypherCompiler("g").compile(cypher, mapOf("l" to listOf(1.0, Double.NaN))).sql
+        assertTrue(nan.contains("IS NAN"), nan)
+        val finite = OracleCypherCompiler("g").compile(cypher, mapOf("l" to listOf(1.0, 2.0))).sql
+        assertFalse(finite.contains("IS NAN"), finite)
+    }
+
+    @Test
     fun `the numbers Postgres writes for NaN and the infinities are read back as them`() {
         assertTrue(PostgresCypherCompiler.read(BigDecimal("2e309").add(BigDecimal("0.5"))).isNaN())
         assertEquals(Double.POSITIVE_INFINITY, PostgresCypherCompiler.read(BigDecimal("1e309").add(BigDecimal("0.5"))))

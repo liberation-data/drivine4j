@@ -273,19 +273,23 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * a text among them, whatever the other is (ORA-40180, #389): `n.bio = 'abc'` failed where one node's bio was so long. Each
      * is read as a `VARCHAR2` first, and its kind only where that is null. A list or a map that holds a long text is compared as
      * JSON, and refused. Each side is read more than once, so a long one is bound, as [sharedCompared] binds it.
+     *
+     * Neither holds NaN, which is equal to nothing (#409): Oracle's JSON finds a `BINARY_DOUBLE` NaN equal to itself.
      */
-    override fun jsonEquals(x: String, y: String) = if (asJson) "$x = $y" else sharedCompared(x, y) { (a, b) ->
-        "CASE WHEN ${short(a)} IS NOT NULL AND ${short(b)} IS NOT NULL THEN $a = $b " +
+    override fun jsonEquals(x: String, y: String) = sharedCompared(x, y) { (a, b) ->
+        val equal = if (asJson) "$a = $b" else "CASE WHEN ${short(a)} IS NOT NULL AND ${short(b)} IS NOT NULL THEN $a = $b " +
             "WHEN ${kind(a)} = 'string' AND ${kind(b)} = 'string' THEN ${clobOrder(a, "=", b)} " +
             "WHEN ${kind(a)} IS NULL OR ${kind(b)} IS NULL THEN NULL WHEN ${kind(a)} = 'string' OR ${kind(b)} = 'string' THEN FALSE ELSE $a = $b END"
+        "($equal AND NOT ${holdsNaN(a)})"
     }
 
     /**
      * [jsonEquals], but where [given] is a number, a truth value, or a text of 1 to 4,000 bytes, which is read as a `VARCHAR2`:
      * then only the other side is tested, and where it is a text that isn't, it is longer, and not equal. A property read from
-     * the store is not null as JSON, and so needs no test of its own.
+     * the store is not null as JSON, and so needs no test of its own. Where [given] is or holds NaN, as [jsonEquals] (#409).
      */
     override fun givenEquals(x: String, y: String, given: Any): String {
+        if (holdsNonFinite(given, Double::isNaN)) return jsonEquals(x, y)
         if (asJson) return "$x = $y"
         if (!readShort(given)) return jsonEquals(x, y)
         return sharedCompared(x, y) { (a, b) -> "CASE WHEN ${short(a)} IS NOT NULL OR NVL(${kind(a)}, 'null') <> 'string' THEN $a = $b ELSE FALSE END" }
@@ -297,7 +301,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * rows took 28 ms, against 14 ms before, where [jsonEquals], which tests both sides in a `CASE`, took 90 ms.
      */
     override fun givenItemEquals(item: String, value: String, items: List<Any?>): String {
-        if (asJson || !items.all { it == null || readShort(it) }) return jsonEquals(item, value)
+        if (asJson || !items.all { it == null || readShort(it) && !holdsNonFinite(it, Double::isNaN) }) return jsonEquals(item, value)
         return sharedCompared(item, value) { (a, b) -> "$a = CASE WHEN ${short(b)} IS NOT NULL OR NVL(${kind(b)}, 'null') <> 'string' THEN $b END" }
     }
 
@@ -308,10 +312,13 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     /**
      * Two texts, as [textOrder] orders them; any other two of one kind as JSON. JSON ordered a text past 32 KB, read from the
      * store on two rows or more, and closed the session on the first run or a later one (ORA-03113, #389). Its sides are
-     * bound, and a property read by its own path, by [sharedCompared].
+     * bound, and a property read by its own path, by [sharedCompared]. NaN, which JSON orders after every number, and which
+     * Cypher orders with nothing, is false (#409).
      */
-    override fun ordered(x: String, operator: String, y: String) =
-        if (asJson) "$x $operator $y" else "CASE WHEN ${kind(x)} = 'string' THEN ${textOrder(x, operator, y)} ELSE $x $operator $y END"
+    override fun ordered(x: String, operator: String, y: String): String {
+        val numbers = shared(x, y) { (a, b) -> "(NOT (${isNaN(a)} OR ${isNaN(b)}) AND $a $operator $b)" }
+        return if (asJson) numbers else "CASE WHEN ${kind(x)} = 'string' THEN ${textOrder(x, operator, y)} ELSE $numbers END"
+    }
 
     /**
      * Whether the JSON texts [x] and [y] stand as [operator] says, `=`, `<`, `>=`…: as `VARCHAR2`s where both are read so, which
@@ -719,21 +726,6 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
     /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
     private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"
-
-    /**
-     * Equal as JSON, and holding no NaN, which is equal to nothing (#409): Oracle's JSON finds a `BINARY_DOUBLE` NaN equal to
-     * itself. Only a value equal to the other is read for NaN.
-     */
-    override fun jsonEquals(x: String, y: String) = shared(x, y) { (a, b) -> "($a = $b AND NOT ${holdsNaN(a)})" }
-
-    /** As [jsonEquals] where the value given is or holds NaN; as JSON compares it otherwise, which finds no other value equal to NaN. */
-    override fun givenEquals(x: String, y: String, given: Any) =
-        if (holdsNonFinite(given, Double::isNaN)) jsonEquals(x, y) else super.givenEquals(x, y, given)
-
-    /** As `JSON` orders them, but NaN, which it orders after every number, and which Cypher orders with nothing: false (#409). */
-    override fun ordered(x: String, operator: String, y: String) = shared(x, y) { (a, b) ->
-        "(NOT (${isNaN(a)} OR ${isNaN(b)}) AND $a $operator $b)"
-    }
 
     /** Whether the JSON [json] is NaN: a `BINARY_DOUBLE` that is. */
     private fun isNaN(json: String) = shared(json) { (x) -> "(${kind(x)} = 'double' AND JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) IS NAN)" }
