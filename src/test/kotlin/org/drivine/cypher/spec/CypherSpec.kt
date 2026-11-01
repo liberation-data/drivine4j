@@ -71,15 +71,7 @@ data class CypherSpec(
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
          * taken out when the fix lands.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            "queries.yaml" to mapOf(
-                // A NaN or infinite parameter is bound as its text.
-                "NaN and the infinities as parameters" to listOf(Hold(295, listOf("sql"))),
-                // Oracle holds NaN equal to NaN, and fails to read back the NaN it works out.
-                "NaN worked out" to listOf(Hold(409, listOf("oracle"))),
-            ),
-            "writes.yaml" to mapOf("NaN and the infinities written" to listOf(Hold(295, listOf("sql")))),
-        )
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()

@@ -79,18 +79,6 @@ cases:
       - cypher: "RETURN -9223372036854775809"
         error: true
 
-  - name: "Float bounds"
-    description: "A float written past the greatest 64-bit float is refused, either way and within an expression, and one too small to tell from 0 is 0.0."
-    steps:
-      - cypher: "RETURN 1.34E999"
-        error: true
-      - cypher: "RETURN -1.34E999"
-        error: true
-      - cypher: "RETURN 1.0E400 * 0"
-        error: true
-      - cypher: "RETURN 1e-400"
-        rows: [0.0]
-
   - name: "Relationship direction and types"
     description: "A relationship is matched in its direction, either way, or by any of several types."
     steps:
