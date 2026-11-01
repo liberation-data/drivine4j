@@ -52,6 +52,12 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
+    fun `a write's rows group a key's value that is no null as before`() {
+        // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
+        assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
+    }
+
+    @Test
     fun `CALLs that write, nested, give each row its own variables with the nodes they return`() {
         // Not in the spec yet: a caller row at each depth, merged with a node returned from below it.
         assertEquals(

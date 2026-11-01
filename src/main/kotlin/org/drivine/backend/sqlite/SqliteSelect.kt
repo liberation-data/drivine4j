@@ -62,7 +62,7 @@ internal class SqliteSelect(
     depthOverrides: Map<String, Int> = emptyMap(),
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = SqliteRowSources(graph, scope)
-    private val predicates = SqlitePredicates(scope, rows, rootAlias, root, rootModel, viewModel)
+    private val predicates = SqlitePredicates(scope, rows, rootAlias, root, rootModel, viewModel, depthOverrides)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----

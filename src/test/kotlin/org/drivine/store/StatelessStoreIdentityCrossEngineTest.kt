@@ -33,6 +33,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.manager.PersistenceManager
 
 /**
@@ -43,7 +45,8 @@ import org.drivine.manager.PersistenceManager
  * [verifyConcurrentFirstBootsAgree] and [verifyExistingDuplicatesStillResolve]; Neo4j and Memgraph add
  * [verifyInFlightPeerStampIsNotDuplicated]; FalkorDB adds
  * [verifyDistinctStoresDiffer], since two graphs on one container are two stores without needing a
- * second container or an enterprise licence.
+ * second container or an enterprise licence. Oracle and Postgres add
+ * [verifyConcurrentFirstBootsWithoutTheConstraintAgree].
  */
 private fun verifyStableAcrossClients(open: () -> PersistenceManager) {
     val first = open().storeIdentity
@@ -117,6 +120,26 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> PersistenceManager) {
         QuerySpecification.withStatement("MATCH (s:DrivineStore) RETURN count(s) AS n").transform<Long>()
     ).single()
     assertEquals(1L, stamps, "the constraint must stop a second stamp from existing")
+}
+
+/**
+ * [verifyConcurrentFirstBootsAgree] on a store that has never had the key's constraint, so that the managers race to
+ * make it too, a few rounds over. A manager that makes it after another's, or is turned away making it, and writes
+ * its stamp once the other's is in force, has the stamp refused; it must write it again rather than fail (#473). One
+ * whose statement is refused for what another made meanwhile (on Postgres a 23505 on `pg_class_relname_nsp_index`)
+ * must still end up under the other's constraint, so no manager may warn that identity is best-effort
+ * (liberation-data/drivine#489).
+ */
+private fun verifyConcurrentFirstBootsWithoutTheConstraintAgree(
+    open: () -> PersistenceManager,
+    wipe: () -> Unit,
+    rounds: Int,
+) = assertNoBestEffortWarning {
+    repeat(rounds) {
+        open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
+        wipe()
+        verifyConcurrentFirstBootsAgree(open)
+    }
 }
 
 /**
@@ -346,9 +369,29 @@ class StatelessStoreIdentityOracleTest {
     @Test fun `concurrent first boots agree on one identity on Oracle`() =
         verifyConcurrentFirstBootsAgree(::open)
 
+    @Test fun `concurrent first boots without the constraint agree on one identity on Oracle`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree(::open, ::wipe, rounds = 2)
+
     @Test fun `existing duplicate stamps still resolve on Oracle`() =
         verifyExistingDuplicatesStillResolve(::open)
 
     @Test fun `two graphs in one Oracle schema are two stores`() =
         verifyDistinctStoresDiffer(::open) { open("identity_other") }
+}
+
+@PostgresTests
+class StatelessStoreIdentityPostgresTest {
+
+    /** A manager of its own each time, as a process of its own would have. */
+    private fun open(): PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("identity"))
+
+    private fun wipe() = PostgresTestDatabase.clear(PostgresTestDatabase.graphManager("identity"))
+
+    @BeforeEach fun clean() = wipe()
+
+    @Test fun `concurrent first boots agree on one identity on Postgres`() =
+        verifyConcurrentFirstBootsAgree(::open)
+
+    @Test fun `concurrent first boots without the constraint agree on one identity on Postgres`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree(::open, ::wipe, rounds = 3)
 }

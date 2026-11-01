@@ -104,6 +104,8 @@ abstract class SqlCypherCompiler(graph: String) {
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
         VariableKinds.check(query)
+        // An aggregate in a WHERE too.
+        Aggregates(::isAggregate, ::children).check(query)
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
@@ -202,6 +204,10 @@ abstract class SqlCypherCompiler(graph: String) {
             throw DrivineException("Each query of a UNION returns the same names, as in Cypher: ${names.joinToString(" and ") { it.joinToString(prefix = "(", postfix = ")") }}.")
         }
         val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
+        // Every query's names, before any is compiled: a name made in one is no variable of a later one's.
+        writer.give(query)
+        // Its rows are compared, as a UNION without ALL compares them: see [Writer.distinctParts].
+        writer.distinctParts = !query.unions.first().all
         val rows = parts.mapIndexed { i, clauses ->
             "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
         }.joinToString("\nUNION ALL\n")
@@ -450,6 +456,25 @@ abstract class SqlCypherCompiler(graph: String) {
      * comes, then the value. A value the statement makes of one kind sorts by [sortKey] alone.
      */
     protected open fun openSortKey(json: String): List<String> = listOf(sortKey(json))
+
+    /**
+     * [openSortKey] of a value that may be JSON's null ([Value.Json.jsonNull]): JSON's null ties with SQL's, as Cypher has one
+     * null, so a term after it decides their order (#500). Where a store's [openSortKey] does not tie them already, it says so.
+     */
+    protected open fun jsonNullSortKey(json: String): List<String> = openSortKey(json)
+
+    /**
+     * The JSON value [json], JSON's null read as SQL's, where rows are given by it to a `UNION` that compares them, and by default
+     * where they are grouped or kept distinct ([groupedNull]): as [nullIfJsonNull],
+     * but where a store binds a long value in a subquery there, which no store groups by, written out where it is read.
+     */
+    protected open fun comparedNull(json: String): String = nullIfJsonNull(json)
+
+    /**
+     * The JSON value [json] as rows are grouped or kept distinct by it, JSON's null and SQL's one: as [comparedNull], but where a
+     * store makes them one more cheaply in a value that each row reads alike, as SQL's null read as JSON's, it says so (#500).
+     */
+    protected open fun groupedNull(json: String): String = comparedNull(json)
 
     /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
@@ -847,10 +872,46 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The variables made here for a randomUUID() made first, for each row: no variable of the statement's, though one may be quoted as named alike. */
         private val madeAnew = mutableSetOf<String>()
 
-        /** A variable of [madeAnew]'s, new. */
-        private fun anewVariable() = alias(ANEW).also { madeAnew += it }
+        /**
+         * Whether the query compiled is a part of a `UNION` without ALL, whose rows are compared as a whole: there a value that may
+         * be JSON's null ([Value.Json.jsonNull]) is given as SQL's, as Cypher has one null (#500).
+         */
+        var distinctParts = false
+
+        /** The queries given to compile, [query] and [procedure], whose names [hidden] keeps clear of, not yet in [queryTexts]. */
+        private val queries = mutableListOf<Query>()
+
+        /** Each text of the queries given to compile, as far as its first space ([textsIn]), gathered when [hidden] needs it. */
+        private val queryTexts = mutableSetOf<String>()
+
+        /**
+         * Holds [query] among the [queries]: as [query] and [procedure] do, or first, for the queries of a `UNION` compiled one
+         * by one, so a name made in one is named as no later one's variable is.
+         */
+        fun give(query: Query) {
+            queries += query
+        }
+
+        /**
+         * A variable named [prefix] and a number, new: named as no text of the statement's is, nor begins, so a variable quoted
+         * alike, `` `#anew2` `` or `` `#anew2 row` ``, is not taken for it (#479). The counter moves past such a name only:
+         * where none is quoted alike, the name is [alias]'s.
+         */
+        private fun hidden(prefix: String): String {
+            if (queries.isNotEmpty()) {
+                queries.forEach { textsIn(it, queryTexts) }
+                queries.clear()
+            }
+            var name = alias(prefix)
+            while (name in queryTexts) name = alias(prefix)
+            return name
+        }
+
+        /** A variable of [madeAnew]'s, new, and no variable of the statement's: see [hidden]. */
+        private fun anewVariable() = hidden(ANEW).also { madeAnew += it }
 
         fun query(query: Query): String {
+            give(query)
             var select = Select(emptyMap())
             for (clause in query.clauses) {
                 if (clause is Clause.Return) return project(select, clause.projection, final = true).sql
@@ -863,13 +924,18 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * A reading clause over the rows [select] reads, and the rows the clauses after it read: a `WITH` is a query
-         * of its own. [outer] is what a subquery reads from the row it is in.
+         * of its own. [outer] is what a subquery reads from the row it is in. A `WITH *` alone where nothing is bound passes
+         * on nothing, as Neo4j has it, and is left out: SQL has no query of no column (#472). Its `WHERE` is met on the rows it
+         * reads, which hold what that reads; with `DISTINCT`, an order, `SKIP` or `LIMIT` it is refused, as it was.
          */
         private fun read(select: Select, clause: Clause, outer: Map<String, Value> = emptyMap()): Select = when (clause) {
             is Clause.Match -> match(select, clause)
             is Clause.Unwind -> anewBefore(select, listOf(clause.list), whole = true)
                 ?.let { (made, read) -> made.also { unwind(it, clause.copy(list = read.single())) } } ?: select.also { unwind(it, clause) }
-            is Clause.With -> with(select, clause, outer)
+            is Clause.With ->
+                if (clause.projection == Projection(false, true, emptyList(), emptyList(), null, null) && select.bound.keys.all { it in madeAnew }) {
+                    clause.where?.let { filtered(select, it) } ?: select
+                } else with(select, clause, outer)
             is Clause.Call -> anewCall(select, clause)
             else -> error("${clause::class.simpleName} reads nothing")
         }
@@ -907,7 +973,47 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** A `WITH`: a query of its own, which the rest of the statement reads from, as it reads [outer]. */
-        private fun with(select: Select, with: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+        private fun with(select: Select, clause: Clause.With, outer: Map<String, Value> = emptyMap(), apart: Boolean = false): Select {
+            val (with, hidden) = having(clause)
+            return withHaving(select, with, outer, apart).also { next -> hidden.forEach { next.bound.remove(it) } }
+        }
+
+        /**
+         * A `WITH` that groups its rows, [with], as one that aggregates or is `DISTINCT` does, read as Neo4j reads its `WHERE`,
+         * which filters the groups, as SQL's HAVING does (#497). Each aggregate the `WHERE` holds, outside a comprehension's or a
+         * quantifier's own expressions, is made an item of the `WITH`, of its own where no item is that aggregate, named as no
+         * variable is, and the `WHERE` reads that item. A key the `WITH` groups by, written there as the item is, before its name,
+         * is read as that item, as in `WITH i AS j, count(*) AS c WHERE i > 1`; a variable an item is named after is that item,
+         * in a larger expression too.
+         * The items made are no variables of the statement's: the `WITH` is read, then they are left out of what it binds.
+         * [with] as it is where it groups nothing, or has no `WHERE`.
+         */
+        private fun having(with: Clause.With): Pair<Clause.With, List<String>> {
+            val where = with.where ?: return with to emptyList()
+            val items = with.projection.items
+            if (!with.projection.distinct && items.none { contains(it.expression, ::isAggregate) }) return with to emptyList()
+            val names = items.map { it.name }.toSet()
+            // Keys and aggregates compared as grouping compares them ([keyOf]): `TOUPPER(x)` is the key `toUpper(x)`.
+            val keys = items.filter { !contains(it.expression, ::isAggregate) && variablesIn(it.expression).isNotEmpty() }.associate { keyOf(it.expression) to it.name }
+            // An aggregate an item is already is read by that item's name.
+            val aggregates = items.filter { isAggregate(it.expression) }.associate { keyOf(it.expression) to it.name }
+            val lifted = linkedMapOf<Expression, Projection.Item>()
+            val read = replaced(where) { part ->
+                when {
+                    // Named as no text of the statement's is, so an item quoted alike, `` `#having1` ``, stays the statement's (#479).
+                    isAggregate(part) -> Expression.Variable(aggregates[keyOf(part)] ?: lifted.getOrPut(keyOf(part)) { Projection.Item(part, hidden("#having")) }.name)
+                    // `WITH i + 10 AS i … WHERE i + 10 > 20` reads the item i, as Neo4j does: no key is read where an item is named.
+                    variablesIn(part).any { it in names } -> if (part is Expression.Variable) part else null
+                    else -> keys[keyOf(part)]?.let(Expression::Variable)
+                }
+            }
+            if (read == where) return with to emptyList()
+            val kept = with.projection.copy(items = items + lifted.values)
+            return with.copy(projection = kept, where = read) to lifted.values.map { it.name }
+        }
+
+        /** A `WITH` [having] has read: see [with]. */
+        private fun withHaving(select: Select, with: Clause.With, outer: Map<String, Value>, apart: Boolean): Select {
             val projected = project(select, with.projection, final = false)
             val name = alias("w")
             val next = Select(outer)
@@ -937,7 +1043,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val where = match.where.takeIf { shortestWhere == null }
             val seededFirst = match.where?.let(::holdsAnew) == true && (match.optional || shortestWhere != null)
             val (row, seed) = if (seededFirst) seededRows(select) else select to null
-            val metByPaths = shortestWhere?.let { if (seed == null) it else seeded(it, seed, inBody = true) }
+            val metByPaths = shortestWhere?.let { if (seed == null) it else seeded(it, seed, madeAnew, inBody = true) }
             if (!match.optional) {
                 patterns(row, match.patterns, metByPaths)
                 return where?.let { filtered(row, it) } ?: row
@@ -945,7 +1051,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
             var inner = Select(row.scope)
             patterns(inner, match.patterns, metByPaths)
-            where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, inBody = true), ::isSeeded) }
+            where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, madeAnew, inBody = true)) { e -> isSeeded(e, madeAnew) } }
             val found = inner.bound.filterKeys { it !in row.scope && it !in madeAnew }
             if (found.isEmpty() && inner.sources.isEmpty()) return row
             val name = alias("o")
@@ -970,12 +1076,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 val distinct = !query.unions.first().all
                 val order = rowOrder
                 try {
-                    return (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
-                        var select = Select(scope)
-                        clauses.dropLast(1).forEach { select = read(select, it, scope) }
-                        val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
-                        val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
-                        "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                    return comparingParts(distinct) {
+                        (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
+                            var select = Select(scope)
+                            clauses.dropLast(1).forEach { select = read(select, it, scope) }
+                            val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
+                            val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
+                            "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                        }
                     }
                 } finally {
                     rowOrder = order
@@ -1017,7 +1125,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * them, where a `UNION` names them so, and kept distinct with [distinct]. It sees only the variables of the row it
          * imports ([VariableKinds.imports]): any other name in it is a new variable, as in Cypher (#410). What its brackets
          * import it sees throughout, after a `WITH` that does not pass it on too, as Neo4j has it; what a leading `WITH`
-         * imports is gone after one.
+         * imports is gone after one. A leading `WITH *` passes on what it imports ([starredImports]).
          */
         private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
             val imported = calledScope(call, clauses, select.scope)
@@ -1026,11 +1134,30 @@ abstract class SqlCypherCompiler(graph: String) {
                 inner.source(source)
                 imports.forEach(inner::bind)
             }
-            val outer = if (call.imports != null || call.importsAll) imported else emptyMap()
-            clauses.dropLast(1).forEach { inner = read(inner, it, outer) }
+            val bracketed = call.imports != null || call.importsAll
+            val outer = if (bracketed) imported else emptyMap()
+            val reading = if (bracketed) clauses.dropLast(1) else starredImports(clauses.dropLast(1), imported.keys)
+            reading.forEach { inner = read(inner, it, outer) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * The reading [clauses] of a `CALL { … }` without brackets, its leading `WITH *` naming each variable it [imports] in
+         * place of its star (#472): those are no variables its query binds, so the star gave none of them, and was refused
+         * where nothing else was bound. Not one the compiler made (see `anewCall`), which the statement never named. Where it
+         * imports none, the `WITH` is as it was, and passes on nothing ([read]). With brackets, Neo4j's star gives none of what
+         * they import, which the query sees throughout anyway, so their clauses are as they were.
+         */
+        private fun starredImports(clauses: List<Clause>, imports: Set<String>): List<Clause> {
+            val leading = clauses.indexOfFirst { !(it is Clause.Unwind && it.variable in madeAnew) }
+            val with = clauses.getOrNull(leading) as? Clause.With ?: return clauses
+            val named = imports.filterNot { it in madeAnew }.sorted()
+            if (!with.projection.star || named.isEmpty()) return clauses
+            val items = named.filter { name -> with.projection.items.none { it.name == name } }.map { Projection.Item(Expression.Variable(it), it) }
+            val replaced = with.copy(projection = with.projection.copy(star = false, items = items + with.projection.items))
+            return clauses.subList(0, leading) + replaced + clauses.subList(leading + 1, clauses.size)
         }
 
         /**
@@ -1074,6 +1201,17 @@ abstract class SqlCypherCompiler(graph: String) {
             return "(${boundSelect(columns.joinToString(", "))}) $name" to named.associate { (variable, value, column) -> variable to value.columnsOf(name, column) }
         }
 
+        /** [work], its parts of a `UNION` compared as a whole where [distinct] ([distinctParts]), as it was after. */
+        private fun <T> comparingParts(distinct: Boolean, work: () -> T): T {
+            val was = distinctParts
+            distinctParts = distinct
+            try {
+                return work()
+            } finally {
+                distinctParts = was
+            }
+        }
+
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
         private fun calledUnion(select: Select, call: Clause.Call): Projected {
             val query = call.query
@@ -1084,7 +1222,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val names = returns.first().projection.items.map { it.name }
             if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
             val distinct = !query.unions.first().all
-            var projected = parts.map { calledPart(select, call, it, names, distinct) }
+            var projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
             if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
             // A map or a list that holds a node carries a column more, of its identity. Where one query's value has it and
             // another's has none, as `collect([r])` beside `[]`, the queries are compiled again without identities, so their
@@ -1093,7 +1231,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val was = identities
                 identities = false
                 try {
-                    projected = parts.map { calledPart(select, call, it, names, distinct) }
+                    projected = comparingParts(distinct) { parts.map { calledPart(select, call, it, names, distinct) } }
                 } finally {
                     identities = was
                 }
@@ -1102,7 +1240,10 @@ abstract class SqlCypherCompiler(graph: String) {
             // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
             // only where each query takes it from those: a property of it is read from the row there, which would read the first
             // query's value for every query's rows (#336). It is read from an unwound item ([Value.Json.fromList]) only where each
-            // query reads it from one. Its kind is known only where each query writes it as a value of that one.
+            // query reads it from one. Its kind is known only where each query writes it as a value of that one. It may be JSON's null
+            // ([Value.Json.jsonNull]) where any query's may be, so that what reads it after compares that null and SQL's as one (#512).
+            // It is a list ([Value.Json.list]) only where each query makes it one, so that an order sorts the others' numbers and
+            // maps by their kinds, not as lists; and it holds no null ([Value.Json.flat]) only where each query's holds none.
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
@@ -1111,7 +1252,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(), fromList = all.all { it?.fromList == true },
                     itemItems = all.map { it?.itemItems }.distinct().singleOrNull(), temporals = all.any { it?.temporals == true },
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
-                    known = all.map { it?.known }.distinct().singleOrNull(),
+                    known = all.map { it?.known }.distinct().singleOrNull(), jsonNull = all.any { it?.jsonNull == true },
+                    list = all.all { it?.list == true }, itemLists = all.all { it?.itemLists == true }, flat = all.all { it?.flat == true },
                 )
             }
             return Projected(sql, scope, emptyList(), projected.first().columns)
@@ -1139,12 +1281,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elementsOf(list, items, name))
-            // An item of a list that holds no null holds none; of a list of texts, or of a text, is a text.
+            // An item of a list that holds no null holds none, nor is JSON's null; of a list of texts, or of a text, is a text.
             select.bind(
                 unwind.variable,
                 Value.Json(
                     item(name), temporal = itemsOf(list), items = itemItemsOf(list), temporals = itemTemporalsOf(list), list = holdsLists(list), flat = isFlat(list),
-                    text = holdsTexts(list) || isText(list), fromList = true,
+                    text = holdsTexts(list) || isText(list), fromList = true, jsonNull = !isFlat(list),
                 ),
             )
             select.order += itemNo(name) to false
@@ -1546,6 +1688,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The steps of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
         fun procedure(query: Query): List<ProcedureStep> {
+            give(query)
             var select = Select(emptyMap())
             for (clause in creates(query.clauses)) {
                 if (clause is Clause.Return) step(ProcedureStep.Return(project(select, clause.projection, final = true).sql)) else select = next(select, clause)
@@ -1779,10 +1922,14 @@ abstract class SqlCypherCompiler(graph: String) {
                         clause is Clause.Return -> with(select, Clause.With(clause.projection, null))
                         // What brackets import is seen throughout the call, as Neo4j has it, after a WITH that does not pass it on too:
                         // read again from the row the call is written for, so `CALL (a) { WITH 1 AS one CREATE (a)-[:R]->() }` joins
-                        // the row's a, not a new node. Its WHERE reads them too, so it is met after.
-                        clause is Clause.With && rebound -> with(select, clause.copy(where = null)).also { w ->
-                            bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
-                            clause.where?.let { w.where += condition(it, w.scope) }
+                        // the row's a, not a new node. Its WHERE reads them too, so it is met after; one that filters groups reads
+                        // the aggregates [having] made items of the WITH.
+                        clause is Clause.With && rebound -> having(clause).let { (with, hidden) ->
+                            withHaving(select, with.copy(where = null), emptyMap(), apart = false).also { w ->
+                                bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
+                                with.where?.let { w.where += condition(it, w.scope) }
+                                hidden.forEach { w.bound.remove(it) }
+                            }
                         }
                         else -> next(select, clause)
                     }
@@ -2081,14 +2228,21 @@ abstract class SqlCypherCompiler(graph: String) {
          * aggregates, then ordered, skipped and limited. Rows it does not order, group or keep distinct
          * stay in the order [select] reads them, as a graph engine keeps them.
          */
-        fun project(select: Select, projection: Projection, final: Boolean): Projected {
+        fun project(select: Select, written: Projection, final: Boolean): Projected {
             // As in Neo4j, a star gives the variables in the order of their names, before the items named after it.
             // Not a randomUUID() made first for a CALL or a condition (see `anewCall`), which the statement never named.
             val starred = select.bound.keys.filterNot { it in madeAnew }.sorted()
-            val items = (if (projection.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
+            val items = (if (written.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + written.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
+            // An order term, or a part of one, written as an item but for its functions' names' case is that item, as Neo4j
+            // names a function in any case: so `ORDER BY TOUPPER(x.a) + count(*)` after `toUpper(x.a)` reads the key.
+            val projection = written.copy(
+                orderBy = written.orderBy.map { sort ->
+                    sort.copy(expression = replaced(sort.expression) { part -> items.firstOrNull { it.expression != part && keyOf(it.expression) == keyOf(part) }?.expression })
+                },
+            )
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
-            requireExplicitGrouping(items)
+            requireExplicitGrouping(items, projection.orderBy, select.scope.keys)
             anewFirst(select, projection, items)?.let { (made, kept) -> return project(made, kept, final) }
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
             // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
@@ -2106,9 +2260,9 @@ abstract class SqlCypherCompiler(graph: String) {
             rowOrder = orderOf(select)
             val compiled = items.map { item -> item.name to aggregating(item.expression) { item(item.expression, select) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
-            // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
+            // Where rows are compared (DISTINCT, GROUP BY), each item is compared as [compared] has it.
             val compared = projection.distinct || aggregating
-            val columns = compiled.mapIndexed { i, (_, value) -> "c${i + 1}" to (if (compared && value is Value.Json && value.ordered) value.copy(sql = comparable(value), ordered = false) else value) }
+            val columns = compiled.mapIndexed { i, (_, value) -> "c${i + 1}" to (if (compared) compared(value) else value) }
             val selectList = columns.flatMap { (column, value) -> value.columns(column) }.toMutableList()
             // An order is written over the items' names, and where nothing is grouped or kept distinct, the variables too.
             val name = alias("p")
@@ -2141,7 +2295,8 @@ abstract class SqlCypherCompiler(graph: String) {
                         after[column] = sortable(expression(sort.expression, itemColumns))
                         sortsAnew = true
                     }
-                    item >= 0 -> carried(column, { compiled[item].second }, sort.expression)
+                    // One that may be JSON's null, where rows are compared, as its column is grouped by: see [compared].
+                    item >= 0 -> carried(column, { compiled[item].second.let { if (compared && mayBeJsonNull(it)) columns[item].second else it } }, sort.expression)
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
                     // Where rows are grouped, so is one whose every aggregate and key is an item, each such part read by its item's
@@ -2196,7 +2351,10 @@ abstract class SqlCypherCompiler(graph: String) {
             val order = sorts.flatMap { (column, descending) -> sortedBy(column).map { (named, _) -> named to descending } }
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
-                val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
+                // A value that may be JSON's null is given as SQL's where a UNION compares rows by it; in a row of several, a list's item,
+                // SQL's null is JSON's (#500).
+                val result = if (values.size == 1) values.single().let { if (distinctParts && it.jsonNull) comparedNull(it.sql) else it.sql }
+                else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
@@ -2214,6 +2372,19 @@ abstract class SqlCypherCompiler(graph: String) {
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
             val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
             return Projected(outer, scope, order, kinds)
+        }
+
+        /**
+         * [value] as rows are compared by it, where they are grouped or kept distinct: JSON as what compares, and JSON's null,
+         * which a value read out of a map or a list may be ([Value.Json.jsonNull]), and SQL's as one, as Cypher has one null (#500).
+         * It may still be JSON's null, as Oracle's [groupedNull] gives it, so it is still read as one that may be. In a part of a
+         * `UNION` that compares rows ([distinctParts]) it is SQL's, as another part's value that is never JSON's null gives it.
+         */
+        private fun compared(value: Value): Value = when {
+            value !is Value.Json -> value
+            value.jsonNull -> comparable(value).let { value.copy(sql = if (distinctParts) comparedNull(it) else groupedNull(it), ordered = false) }
+            value.ordered -> value.copy(sql = comparable(value), ordered = false)
+            else -> value
         }
 
         /**
@@ -2263,18 +2434,19 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun anewBefore(select: Select, terms: List<Expression>, whole: Boolean, anew: (Expression) -> Boolean = ::isAnew): Pair<Select, List<Expression>>? {
             // A call read beside a row's UUID already ([isSeeded]) reads the row: left as it is, as a call alone is.
-            fun alone(term: Expression) = anew(term) || isSeeded(term)
-            fun holds(e: Expression): Boolean = anew(e) || (!isSeeded(e) && children(e).any(::holds))
-            val inBodies = terms.any { seeded(it, ANEW) != it }
+            fun seededHere(e: Expression) = isSeeded(e, madeAnew)
+            fun alone(term: Expression) = anew(term) || seededHere(term)
+            fun holds(e: Expression): Boolean = anew(e) || (!seededHere(e) && children(e).any(::holds))
+            val inBodies = terms.any { seeded(it, ANEW, madeAnew) != it }
             if (!inBodies && terms.none { (whole || !alone(it)) && holds(it) }) return null
             val made = mutableListOf<Projection.Item>()
             val seed = if (!inBodies) null else anewVariable().also { made += Projection.Item(Expression.Function("randomUUID", false, emptyList()), it) }
             val reads = terms.map { term ->
                 if (!whole && alone(term)) term
                 else replaced(term) { e ->
-                    if (anew(e)) Expression.Variable(anewVariable()).also { made += Projection.Item(e, it.name) } else e.takeIf(::isSeeded)
+                    if (anew(e)) Expression.Variable(anewVariable()).also { made += Projection.Item(e, it.name) } else e.takeIf(::seededHere)
                 }
-                    .let { read -> if (seed == null) read else seeded(read, seed) }
+                    .let { read -> if (seed == null) read else seeded(read, seed, madeAnew) }
             }
             val with = Projection(false, true, made, emptyList(), null, null)
             // Kept apart, as sortsFirst keeps its own, so no store merges it back into the query that reads it.
@@ -2512,7 +2684,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val held = items.filter { item ->
                 !contains(item.expression, ::isAggregate) && (
                     contains(item.expression) { it is Expression.Parameter } ||
-                        expression(item.expression, select.scope).groupKeys().any { it.contains("SELECT", ignoreCase = true) }
+                        compared(expression(item.expression, select.scope)).groupKeys().any { it.contains("SELECT", ignoreCase = true) }
                     )
             }
             if (held.isEmpty()) return null
@@ -2541,8 +2713,10 @@ abstract class SqlCypherCompiler(graph: String) {
          * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
          * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
          * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
-         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
-         * does none of these.
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. So too where an item that
+         * aggregates reads a key that is a property ([readsOutsideAggregates]), as `r.role + count(*)` beside `r.role`:
+         * grouped in place, it would be grouped by the variable `r` it names, a row for each relationship, where Neo4j gives
+         * one for each role (#491); over the keys' columns, it reads the key's. Null where the projection does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
@@ -2550,16 +2724,20 @@ abstract class SqlCypherCompiler(graph: String) {
             val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
             // An order term reads an item by its name.
             val byName = items.associate { it.name to it.expression }
+            // A key that is a property, read by an item that aggregates: grouped by as itself, not by its variable.
+            val properties = items.map { it.expression }.filter { it is Expression.Property && !contains(it, ::isAggregate) }.toSet()
             if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) } &&
                 items.none { bindsOverAggregates(it.expression, select) } &&
-                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) }
+                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) } &&
+                items.none { contains(it.expression, ::isAggregate) && readsOutsideAggregates(it.expression, properties) }
             ) return null
             // Named as no variable is, unless quoted so.
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
             terms.forEach { term -> contains(term) { if (isAggregate(it)) aggregates.getOrPut(it) { "#aggregate${++counter}" }; false } }
-            // A comprehension's, a quantifier's or a reduce's body is kept as it is, so a variable it names outside its own is kept too,
-            // and so is a pattern's or a subquery's. A subquery may name any variable: each the projection groups by is kept.
+            // A variable a comprehension's, a quantifier's or a reduce's body names outside its own is kept, but where it is read
+            // only in a key that `rekeyed` reads by its name; so is a pattern's or a subquery's. A subquery may name any variable:
+            // each the projection groups by is kept.
             fun named(expression: Expression): Set<String> = if (isAggregate(expression)) emptySet() else variablesOutsideAggregates(expression) + when (expression) {
                 is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::named) - expression.variable
                 is Expression.Quantifier -> listOfNotNull(expression.where).flatMap(::named) - expression.variable
@@ -2568,10 +2746,76 @@ abstract class SqlCypherCompiler(graph: String) {
                 is Expression.Subquery -> keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
                 else -> emptySet()
             } + children(expression).flatMap(::named)
-            // An order term that aggregates may name a key too, by the variable the projection groups by.
-            val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
-            val beside = (items.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) } +
-                projection.orderBy.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) }.filter { it in keyed })
+            fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
+                if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
+            }
+            // [term] with each key in it read as [key] reads it, in a comprehension's, a quantifier's or a reduce's body too, where
+            // the body binds no variable the key reads.
+            fun readingKeys(term: Expression, bound: Set<String>, key: (Expression) -> Expression?): Expression = replaced(term) { part ->
+                fun inBody(body: Expression?, vararg names: String) = body?.let { readingKeys(it, bound + names, key) }
+                when {
+                    variablesIn(part).none { it in bound } && key(part) != null -> key(part)
+                    part is Expression.ListComprehension -> part.copy(
+                        list = readingKeys(part.list, bound, key),
+                        where = inBody(part.where, part.variable),
+                        projection = inBody(part.projection, part.variable),
+                    )
+                    part is Expression.Quantifier -> part.copy(list = readingKeys(part.list, bound, key), where = inBody(part.where, part.variable))
+                    part is Expression.Reduce -> part.copy(
+                        initial = readingKeys(part.initial, bound, key),
+                        list = readingKeys(part.list, bound, key),
+                        expression = inBody(part.expression, part.accumulator, part.variable)!!,
+                    )
+                    else -> null
+                }
+            }
+            // Neo4j reads `any(y IN list WHERE y = e)` as `e IN list`, and `none(…)` as `NOT e IN list`, where `e` reads no `y`;
+            // `y IN [e]` and `e IN [y]` are `y = e` to it. Not `all(…)` or `single(…)`, a WHERE that is more than the one
+            // comparison (`AND`, `OR`), `y.p = e`, or `y IN [e1, e2]`: those group by each variable `e` reads.
+            fun readAsIn(part: Expression.Quantifier): Boolean {
+                val where = part.where as? Expression.Binary ?: return false
+                fun compared(left: Expression, right: Expression) = when (Expression.Variable(part.variable)) {
+                    left -> right
+                    right -> left
+                    else -> null
+                }
+                val compared = when (where.operator) {
+                    Expression.Binary.Operator.EQUALS -> compared(where.left, where.right)
+                    Expression.Binary.Operator.IN -> (where.right as? Expression.ListLiteral)?.items?.singleOrNull()?.let { compared(where.left, it) }
+                    else -> null
+                }
+                return part.kind in setOf(Expression.Quantifier.Kind.ANY, Expression.Quantifier.Kind.NONE) && compared != null && part.variable !in variablesIn(compared)
+            }
+            // As Neo4j reads a key in an item that aggregates: by its name in a part that holds no aggregate, and in a list
+            // comprehension's WHERE, all through. In the projection of a comprehension over an aggregate, or the WHERE of a
+            // quantifier or the step of a reduce over one, Neo4j groups by each variable the key reads as well, so the body is kept
+            // as it is, and those variables beside: `[t IN collect(m.title) | r.role]` beside `r.role` gives a row for each `r`,
+            // where `[t IN collect(m.title) WHERE t STARTS WITH r.role]` and `count(*) + [y IN [1] | r.role][0]` give one for each
+            // role, and so does `any(t IN collect(m.title) WHERE t = r.role)`, which Neo4j reads as `r.role IN collect(m.title)`.
+            // [read] reads a key or an aggregate, and [key] a key in a body.
+            fun rekeyed(term: Expression, read: (Expression) -> Expression?, key: (Expression) -> Expression?): Expression = replaced(term) { part ->
+                read(part) ?: when {
+                    !contains(part, ::isAggregate) -> readingKeys(part, emptySet(), key)
+                    part is Expression.ListComprehension && part.where != null ->
+                        part.copy(list = rekeyed(part.list, read, key), where = readingKeys(part.where, setOf(part.variable), key))
+                    part is Expression.Quantifier && readAsIn(part) ->
+                        part.copy(list = rekeyed(part.list, read, key), where = readingKeys(part.where!!, setOf(part.variable), key))
+                    else -> null
+                }
+            }
+            val keyOf = { part: Expression -> if (part in keys) kept(part) else null }
+            val rekeyedItems = items.map { it.copy(expression = rekeyed(it.expression, ::kept, keyOf)) }
+            // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
+            // a variable an item is named after is that item, not the variable of that name before it. In a body, as an item reads it.
+            val itemNames = items.associate { it.expression to it.name }
+            val asItem = { term: Expression -> if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) }
+            val rekeyedOrder = projection.orderBy.map { sort -> sort.copy(expression = rekeyed(sort.expression, { asItem(it) ?: kept(it) }, { asItem(it) ?: keyOf(it) })) }
+            // An order term that aggregates may name a key too, by the variable the projection groups by; or, as an item does, the
+            // variable of a key that is a property, in a body that groups by it.
+            val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name } + properties.flatMap(::variablesIn)
+            val beside = (items.zip(rekeyedItems).filter { (item, _) -> contains(item.expression, ::isAggregate) }.flatMap { (_, item) -> named(item.expression) } +
+                projection.orderBy.zip(rekeyedOrder).filter { (sort, _) -> contains(sort.expression, ::isAggregate) }.flatMap { (_, sort) -> named(sort.expression) }
+                    .filter { it in keyed })
                 .distinct().filter { it in select.scope }
             val grouped = Projection(
                 distinct = false,
@@ -2582,23 +2826,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 skip = null,
                 limit = null,
             )
-            fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
-                if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
-            }
-            // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
-            // a variable an item is named after is that item, not the variable of that name before it.
-            val itemNames = items.associate { it.expression to it.name }
-            val kept = projection.copy(
-                star = false,
-                items = items.map { it.copy(expression = replaced(it.expression, ::kept)) },
-                orderBy = projection.orderBy.map { sort ->
-                    sort.copy(
-                        expression = replaced(sort.expression) { term ->
-                            if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
-                        },
-                    )
-                },
-            )
+            val kept = projection.copy(star = false, items = rekeyedItems, orderBy = rekeyedOrder)
             return with(select, Clause.With(grouped, null)) to kept
         }
 
@@ -2624,13 +2852,20 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * Refuses what Cypher refuses: an item that aggregates and names a variable outside its aggregates, where
-         * that variable is not an item of its own, which a graph engine would have to group by without being told.
+         * Refuses what Cypher refuses (Neo4j's 42I18): an item that aggregates and names a variable of [scope] outside its
+         * aggregates and each key it reads, in a comprehension's, a quantifier's, a reduce's or a pattern's body too, which a
+         * graph engine would have to group by without being told. A key is an item that does not aggregate, and Neo4j reads
+         * one there only where it is a variable or a variable's property ([isPlainKey]): `x.a + count(*)` beside `x.a`, but
+         * not `toUpper(p.name) + count(*)` beside `toUpper(p.name)`; in a pattern's parts, only where it is a variable. So too
+         * a term of [orderBy] that aggregates, beside items that aggregate, and names a variable of [scope] outside an item's
+         * name and an item that does not aggregate, whatever that item is, as Neo4j takes them.
          */
-        private fun requireExplicitGrouping(items: List<Projection.Item>) {
-            val keys = items.filterNot { contains(it.expression, ::isAggregate) }.mapNotNull { (it.expression as? Expression.Variable)?.name }.toSet()
+        private fun requireExplicitGrouping(items: List<Projection.Item>, orderBy: List<Projection.SortItem>, scope: Set<String>) {
+            val grouping = items.filterNot { contains(it.expression, ::isAggregate) }
+            val grouped = grouping.map { it.expression }.toSet()
+            val keys = grouped.filter(::isPlainKey).toSet()
             items.filter { contains(it.expression, ::isAggregate) }.forEach { item ->
-                val implicit = variablesOutsideAggregates(item.expression) - keys
+                val implicit = namedOutside(item.expression, emptySet(), scope, keys) - keys.filterIsInstance<Expression.Variable>().map { it.name }.toSet()
                 if (implicit.isNotEmpty()) {
                     throw DrivineException(
                         "${item.name} aggregates, and names ${implicit.joinToString()} outside its aggregates, which no other item is: " +
@@ -2638,6 +2873,55 @@ abstract class SqlCypherCompiler(graph: String) {
                             "as in WITH ${implicit.joinToString()}, collect(…) AS items RETURN { … }."
                     )
                 }
+            }
+            if (grouping.size == items.size) return
+            val names = items.map { it.name }.toSet()
+            orderBy.filter { contains(it.expression, ::isAggregate) }.forEach { sort ->
+                // Not less the variables an item is: one an item renames, named in an order term's pattern, is a new variable of the
+                // pattern's to Neo4j, which matches any node, so it is refused rather than read as the key.
+                val implicit = namedOutside(sort.expression, names, scope, grouped)
+                if (implicit.isNotEmpty()) {
+                    throw DrivineException(
+                        "A term of an ORDER BY aggregates, and names ${implicit.joinToString()} outside its aggregates and the items: " +
+                            "Cypher would group by it without being told. Order by an item's name, or by an expression of the items and aggregates."
+                    )
+                }
+            }
+        }
+
+        /**
+         * The variables of [scope] that [expression] names outside its aggregates, and outside each part of it [keys] holds,
+         * a comprehension's, a quantifier's, a reduce's or a pattern's body among them, but for those it binds or [local]
+         * holds. A pattern binds each of its variables not of [scope], and in its parts, as Neo4j reads them, a key is only one
+         * that is a variable: `q.name = p.name` in a pattern comprehension's WHERE names `p`, though `p.name` is a key.
+         * A subquery's own query is read for none.
+         */
+        private fun namedOutside(expression: Expression, local: Set<String>, scope: Set<String>, keys: Set<Expression>): Set<String> {
+            fun outside(part: Expression, inner: Set<String> = local) = namedOutside(part, inner, scope, keys)
+            fun patterned(pattern: Pattern, parts: List<Expression>): Set<String> {
+                val named = variablesIn(pattern) + listOfNotNull(pattern.variable)
+                val bound = local + (named - scope)
+                val variables = keys.filterIsInstance<Expression.Variable>().toSet<Expression>()
+                return (named intersect scope) - local + parts.flatMap { namedOutside(it, bound, scope, variables) }
+            }
+            return when {
+                isAggregate(expression) || expression in keys -> emptySet()
+                expression is Expression.Variable -> if (expression.name in local || expression.name !in scope) emptySet() else setOf(expression.name)
+                // A map projection of a key reads the key, as Neo4j reads it.
+                expression is Expression.MapProjection -> (
+                    if (expression.variable in local || expression.variable !in scope || Expression.Variable(expression.variable) in keys) emptySet()
+                    else setOf(expression.variable)
+                    ) +
+                    children(expression).flatMap { outside(it) }
+                expression is Expression.ListComprehension -> outside(expression.list) +
+                    listOfNotNull(expression.where, expression.projection).flatMap { outside(it, local + expression.variable) }
+                expression is Expression.Quantifier -> outside(expression.list) + listOfNotNull(expression.where).flatMap { outside(it, local + expression.variable) }
+                expression is Expression.Reduce -> outside(expression.initial) + outside(expression.list) +
+                    outside(expression.expression, local + expression.accumulator + expression.variable)
+                expression is Expression.PatternComprehension -> patterned(expression.pattern, listOfNotNull(expression.where, expression.projection))
+                expression is Expression.PatternPredicate -> patterned(expression.pattern, emptyList())
+                expression is Expression.Exists -> expression.patterns.flatMap { patterned(it, listOfNotNull(expression.where)) }.toSet()
+                else -> children(expression).flatMap { outside(it) }.toSet()
             }
         }
 
@@ -2692,11 +2976,12 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun evaluate(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
-            is Expression.Literal -> Value.Json(literalJson(expression.value), text = expression.value is String)
+            // A null written is JSON's null, as a map's is: see [Value.Json.jsonNull].
+            is Expression.Literal -> Value.Json(literalJson(expression.value), text = expression.value is String, jsonNull = expression.value == null)
             is Expression.Parameter ->
                 givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
-            is Expression.Property -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), expression.key)
+            is Expression.Property -> inParameter(expression)?.let { Value.Json(it, jsonNull = true) } ?: property(expression(expression.subject, scope), expression.key)
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
                 is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
@@ -2751,7 +3036,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 val at = comparable(json(expression(index, scope)))
                 val known = known(index)
                 when {
-                    known is String -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), known)
+                    known is String -> inParameter(expression)?.let { Value.Json(it, jsonNull = true) }
+                        ?: property(expression(expression.subject, scope), known)
                     // An item of a list of nodes or relationships is the node or the relationship, so it is compared by its id;
                     // of one collect gathers in this query, its properties, for a store reads no aggregate from a subquery. A
                     // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
@@ -2760,7 +3046,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     known is Number -> element(subject(), at).let { item ->
                         Value.Json(
                             item, temporal = itemsOf(listed), items = itemItemsOf(listed), identity = identityOf(listed, item, true) { element(it, at) },
-                            list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed),
+                            list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed), jsonNull = !isFlat(listed),
                         )
                     }
                     else -> {
@@ -2772,7 +3058,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         item(subject()).let { taken ->
                             Value.Json(
                                 taken, temporal = itemsOf(listed), items = itemItemsOf(listed), identity = identityOf(listed, taken, true, ::item),
-                                list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed),
+                                list = holdsLists(listed), text = holdsTexts(listed), temporals = itemTemporalsOf(listed), jsonNull = !isFlat(listed),
                             )
                         }
                     }
@@ -2823,6 +3109,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     ),
                     // It may hold what its start, its list or a value of the row its step reads holds (#347).
                     temporals = hasTemporals(start) || hasTemporals(listed) || read.any { hasTemporals(scope.getValue(it)) },
+                    // Its step may give JSON's null, as a null written or read from a map does.
+                    jsonNull = true,
                 )
             }
             is Expression.PatternComprehension -> {
@@ -2830,7 +3118,19 @@ abstract class SqlCypherCompiler(graph: String) {
                 patterns(inner, listOf(expression.pattern))
                 expression.where?.let { inner.where += condition(it, inner.scope) }
                 val projected = expression(expression.projection, inner.scope)
-                fun gathered(value: String) = "(" + (listOf("SELECT ${aggregateList(value)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ") + ")"
+                // A body that reads no variable of the pattern's own, `[(p)-->() | p.name]`, is worked out for each of the pattern's
+                // rows in a derived table, and gathered from there: an aggregate that reads only the row's columns is an aggregate of
+                // the row's query, which Postgres refuses and SQLite works out over every row, all of them in one (#467). One that
+                // reads nothing of any row, a literal or a parameter, is the comprehension's aggregate as it is.
+                val own = variablesIn(expression.pattern) + listOfNotNull(expression.pattern.variable) - scope.keys
+                val read = variablesReadIn(expression.projection)
+                val apart = read.none { it in own } && (read.isNotEmpty() || holdsSubquery(expression.projection))
+                fun gathered(value: String): String {
+                    fun rows(select: String) = (listOf(select) + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")
+                    if (!apart) return "(${rows("SELECT ${aggregateList(value)}")})"
+                    val each = alias("pc")
+                    return "(SELECT ${aggregateList("$each.v")} FROM (${rows("SELECT $value AS v")}) $each)"
+                }
                 // A comprehension of nodes or relationships is a list of them, so a write to an item of it reaches them.
                 when (projected) {
                     is Value.Node -> Value.Entities(comparable(Value.Json(gathered(scalar(projected.nid)), ordered = true)), false, gathered(json(projected).sql))
@@ -3023,7 +3323,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     // One of a kind known other than a map is left to property(), which refuses it.
                     is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames &&
                         (subject.known == null || subject.known == Value.Known.MAP))
-                        return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals)
+                        return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals, jsonNull = !subject.flat)
                     else -> {}
                 }
             }
@@ -3036,9 +3336,9 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
             // A value the statement writes as one of a kind other than a map has none, as Neo4j says when it plans the statement.
             is Value.Json -> subject.known?.takeIf { it != Value.Known.MAP }?.let { throw DrivineException("${it.noun.replaceFirstChar(Char::uppercase)} has no properties.") }
-                ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
+                ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key, jsonNull = !subject.flat) }
                 ?: propertyOf(comparable(subject), key).let { taken ->
-                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals)
+                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals, jsonNull = !subject.flat)
                 }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
@@ -3197,12 +3497,29 @@ abstract class SqlCypherCompiler(graph: String) {
                 return Value.Json(literalJson(canonical), temporal = kind)
             }
             if (written is Expression.MapLiteral) {
+                if (kind != Temporal.DURATION && written.entries.any { it.first in Temporals.SELECTORS }) return of(fromTemporal(kind, function, written, scope))
                 val fields = written.entries.associate { (key, value) -> key to expression(value, scope) }
-                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else INSTANT_MAP_FIELDS
+                val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
+                val known = if (kind == Temporal.DURATION) DURATION_MAP_FIELDS else if (dated) INSTANT_MAP_FIELDS + Temporals.CALENDAR_FIELDS else INSTANT_MAP_FIELDS
+                // A time of day has no date to give, as Neo4j has it.
+                if (kind.instant && !dated) fields.keys.firstOrNull { it in Temporals.CALENDAR_FIELDS }?.let { throw DrivineException("${function.name}() takes no field $it.") }
                 fields.keys.firstOrNull { it !in known }?.let { unsupported("${function.name}() of a map with $it") }
                 val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
                 if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
-                return of(temporals.of(numbers, fields["timezone"]?.let { text(comparable(json(it))) }, kind))
+                val timezone = fields["timezone"]?.let { text(comparable(json(it))) }
+                // A zone by name, which no store's text holds yet, is refused rather than given as null, or on SQLite failing as
+                // the statement runs: so a value made from such a moment, `time({time: other})`, is refused too (#508).
+                val zone = (written.entries.firstOrNull { it.first == "timezone" }?.second as? Expression.Literal)?.value as? String
+                if (zone != null && runCatching { java.time.ZoneId.of(zone) }.getOrNull().let { it != null && it !is java.time.ZoneOffset }) unsupported("The time zone '$zone'")
+                if (fields.keys.any { it in Temporals.CALENDAR_FIELDS }) {
+                    val date = calendarDate(function, written)
+                    if (date != null) {
+                        val day = mapOf("year" to "${date.year}", "month" to "${date.monthValue}", "day" to "${date.dayOfMonth}")
+                        return of(temporals.of(numbers - Temporals.CALENDAR_FIELDS + day, timezone, kind))
+                    }
+                    return of(temporals.ofCalendar(numbers, timezone, kind))
+                }
+                return of(temporals.of(numbers, timezone, kind))
             }
             val given = arguments.single() as? Value.Json ?: throw DrivineException("${function.name}() takes a text or a map of its fields.")
             val text = text(comparable(given))
@@ -3212,6 +3529,178 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> of(temporals.convert(text, kind))
             }
         }
+
+        /**
+         * The date the map [written], the argument of [function], gives by the calendar's other fields beside the year (see
+         * [Temporals.ofCalendar]), where it writes the year and each of them as a whole number or null: null where an
+         * expression gives any of them, for the store to work out. As Neo4j has them, a field that is null is given as its
+         * least (the year 0, the first week, day or quarter), a week runs to 53 and a day of the quarter to 92 in any year,
+         * carried into the next where it has fewer, and an ordinal day runs to the year's last. Fails, as Neo4j does, on
+         * fields of two calendars (a month beside a week), a day of the week or of the quarter without its week or quarter,
+         * a week or a quarter without a year, and a number written that is not whole or is past its field's range.
+         */
+        private fun calendarDate(function: Expression.Function, written: Expression.MapLiteral): java.time.LocalDate? {
+            val name = function.name
+            val keys = written.entries.map { it.first }.toSet()
+            val calendars = calendars(name, keys)
+            if ("dayOfWeek" in keys && "week" !in keys) throw DrivineException("$name() takes a day of the week beside a week.")
+            if ("dayOfQuarter" in keys && "quarter" !in keys) throw DrivineException("$name() takes a day of the quarter beside a quarter.")
+            if ("year" !in keys) {
+                // Neo4j makes an ordinal day of no year one of the year 0, which no store's date reaches.
+                if ("ordinalDay" in keys) unsupported("$name() of an ordinal day without a year")
+                throw DrivineException("$name() takes a year beside ${calendars.single().first}.")
+            }
+            val numbers = written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }.associate { (key, value) ->
+                key to when (val literal = (writtenLiteral(value) ?: return null).value) {
+                    null -> CALENDAR_LEAST.getValue(key)
+                    is Long -> literal
+                    is Int -> literal.toLong()
+                    else -> throw DrivineException("$name() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+            }
+            val year = numbers.getValue("year")
+            fun field(key: String, label: String, last: Long, of: String = "") = (numbers[key] ?: 1L).also {
+                if (it !in 1L..last) throw DrivineException("$name() takes $label from 1 to $last$of, not $it.")
+            }
+            return try {
+                // A year past java.time's, as Neo4j's, fails here, where toInt() would wrap it into range.
+                val y = java.time.temporal.ChronoField.YEAR.checkValidIntValue(year)
+                when {
+                    "week" in keys -> {
+                        val monday = java.time.LocalDate.of(y, 1, 4).with(java.time.temporal.ChronoField.DAY_OF_WEEK, 1)
+                        monday.plusDays((field("week", "a week", 53) - 1) * 7 + field("dayOfWeek", "a day of the week", 7) - 1)
+                    }
+                    "ordinalDay" in keys -> {
+                        val first = java.time.LocalDate.of(y, 1, 1)
+                        first.plusDays(field("ordinalDay", "an ordinal day", first.lengthOfYear().toLong(), " in $year") - 1)
+                    }
+                    else -> {
+                        val quarter = field("quarter", "a quarter", 4)
+                        java.time.LocalDate.of(y, ((quarter - 1) * 3 + 1).toInt(), 1).plusDays(field("dayOfQuarter", "a day of the quarter", 92) - 1)
+                    }
+                }
+            } catch (e: java.time.DateTimeException) {
+                throw DrivineException("$name() takes no year $year: ${e.message}", e)
+            }
+        }
+
+        /**
+         * The calendars a temporal map with the fields [keys] gives a date by, each named and with its fields: a month, a week,
+         * an ordinal day or a quarter. Fails where it is more than one, as Neo4j does.
+         */
+        private fun calendars(name: String, keys: Set<String>): List<Pair<String, Set<String>>> {
+            val calendars = listOf(
+                "a month" to setOf("month", "day"), "a week" to setOf("week", "dayOfWeek"), "an ordinal day" to setOf("ordinalDay"),
+                "a quarter" to setOf("quarter", "dayOfQuarter"),
+            ).filter { (_, fields) -> fields.any { it in keys } }
+            if (calendars.size > 1) throw DrivineException("$name() takes ${calendars[0].first} or ${calendars[1].first}, not both.")
+            return calendars
+        }
+
+        /**
+         * The SQL of a temporal value of [kind] that [function] makes of the map [written] with a `date`, a `time` or a
+         * `datetime`, another temporal value whose fields it takes, with the map's others laid over them: see [Temporals.over].
+         * Fails as Neo4j fails: on a field [kind] has none of, a `datetime` beside a `date` or a `time`, a value written that is
+         * no temporal value or is of a kind that hasn't what it is to give, fields of two calendars, a date of its fields that
+         * is not whole (a year, a month and a day; a week and a day of the week; an ordinal day; a quarter and a day of the
+         * quarter) beside a value that gives the time, a field of the time without the one above it where no value gives the
+         * time, and a number written that is not whole or past its field's range. A zone by name is refused.
+         */
+        private fun fromTemporal(kind: Temporal, function: Expression.Function, written: Expression.MapLiteral, scope: Map<String, Value>): String {
+            val name = function.name
+            val entries = written.entries.toMap()
+            val keys = entries.keys
+            val dated = kind == Temporal.DATE || kind == Temporal.LOCAL_DATE_TIME || kind == Temporal.DATE_TIME
+            val timed = kind != Temporal.DATE
+            val takes = (if (kind == Temporal.DATE) setOf("date") else if (!dated) setOf("time") else Temporals.SELECTORS) +
+                (if (dated) setOf("year", "month", "day") + Temporals.CALENDAR_FIELDS else emptySet()) +
+                (if (timed) TRUNCATION_TIME_FIELDS else emptySet()) + (if (kind.zoned) setOf("timezone") else emptySet())
+            keys.firstOrNull { it !in takes }?.let { throw DrivineException("$name() takes no field $it.") }
+            if ("datetime" in keys && ("date" in keys || "time" in keys)) throw DrivineException("$name() takes a datetime, or a date and a time, not both.")
+            val calendar = calendars(name, keys).singleOrNull()
+            if (dated && "date" !in keys && "datetime" !in keys) {
+                val whole = mapOf("a month" to setOf("year", "month", "day"), "a week" to setOf("year", "week", "dayOfWeek"),
+                    "an ordinal day" to setOf("year", "ordinalDay"), "a quarter" to setOf("year", "quarter", "dayOfQuarter"))
+                if (calendar == null || !keys.containsAll(whole.getValue(calendar.first))) {
+                    throw DrivineException("$name() takes a date beside a time: a date, or a year with a month and a day, a week and a day of the week, an ordinal day, or a quarter and a day of the quarter.")
+                }
+            }
+            if (timed && "time" !in keys && "datetime" !in keys) {
+                listOf("minute" to "hour", "second" to "minute", "millisecond" to "second", "microsecond" to "second", "nanosecond" to "second").forEach { (field, above) ->
+                    if (field in keys && above !in keys) throw DrivineException("$name() takes a $field beside ${FIELD_NOUNS[above] ?: "a $above"}.")
+                }
+            }
+            fun base(key: String, kinds: List<Temporal>): Temporals.Base? {
+                val value = entries[key] ?: return null
+                val nouns = kinds.reversed().map { "a ${it.function}" }
+                fun refused(given: String): Nothing =
+                    throw DrivineException("$name() takes ${nouns.dropLast(1).joinToString(", ")} or ${nouns.last()} for $key, not $given.")
+                if (value is Expression.Literal) refused(when (val v = value.value) { null -> "null"; is String -> "'$v'"; else -> "$v" })
+                val given = expression(value, scope)
+                if (given !is Value.Json) refused(if (given is Value.Bool) "a truth value" else "a node, a relationship or a path")
+                given.known?.let { refused(it.noun) }
+                given.temporal?.let { if (it !in kinds) refused("a ${it.function}") }
+                return Temporals.Base(text(comparable(given)), given.temporal?.let { listOf(it) } ?: kinds)
+            }
+            val datetime = base("datetime", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME))
+            val date = datetime ?: base("date", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME, Temporal.DATE))
+            val time = datetime ?: base("time", listOf(Temporal.DATE_TIME, Temporal.LOCAL_DATE_TIME, Temporal.TIME, Temporal.LOCAL_TIME))
+            var fields = entries.filterKeys { it !in Temporals.SELECTORS && it != "timezone" }.mapValues { (key, value) ->
+                when (val literal = writtenLiteral(value)?.value) {
+                    null -> if (value is Expression.Literal) "${OVER_LEAST[key] ?: 0}" else "COALESCE(${number(comparable(json(expression(value, scope))))}, ${OVER_LEAST[key] ?: 0})"
+                    is Long, is Int -> {
+                        // Beside a millisecond or a microsecond given, a microsecond or a nanosecond runs to the next one's.
+                        val beside = when {
+                            key == "nanosecond" && "microsecond" in keys -> "microsecond"
+                            (key == "microsecond" || key == "nanosecond") && "millisecond" in keys -> "millisecond"
+                            else -> null
+                        }
+                        val range = if (beside == null) OVER_RANGES[key] else if (key == "nanosecond" && beside == "millisecond") 0L..999_999L else 0L..999L
+                        if (range != null && (literal as Number).toLong() !in range) {
+                            val besides = beside?.let { " beside a $it" } ?: ""
+                            throw DrivineException("$name() takes ${FIELD_NOUNS[key] ?: "a $key"} from ${range.first} to ${range.last}$besides, not $literal.")
+                        }
+                        "$literal"
+                    }
+                    else -> throw DrivineException("$name() takes a whole number for $key, not ${if (literal is String) "'$literal'" else literal}.")
+                }
+            }
+            val timezone = entries["timezone"]?.let { value ->
+                when {
+                    value == Expression.Literal(null) -> throw DrivineException("$name() takes a time zone, not null.")
+                    value is Expression.Literal -> (value.value as? String)?.let { zone(it) } ?: throw DrivineException("$name() takes a time zone, not ${value.value}.")
+                    else -> text(comparable(json(expression(value, scope))))
+                }
+            }
+            // A date of fields written as numbers alone is worked out here, as a map of them is (see calendarDate).
+            if (date == null && calendar != null && calendar.first != "a month") {
+                calendarDate(function, Expression.MapLiteral(written.entries.filter { (key, _) -> key == "year" || key in Temporals.CALENDAR_FIELDS }))?.let { day ->
+                    fields = fields - Temporals.CALENDAR_FIELDS + mapOf("year" to "${day.year}", "month" to "${day.monthValue}", "day" to "${day.dayOfMonth}")
+                }
+            }
+            return temporals.over(date, time, fields, timezone, kind)
+        }
+
+        /**
+         * The offset's text the time zone [zone] written gives a value, as Neo4j takes one: `Z`, or an offset written `+01:00`.
+         * A zone by name, which no store's text holds yet, is refused; any other text fails.
+         */
+        private fun zone(zone: String): String {
+            val id = runCatching { java.time.ZoneId.of(zone) }.getOrNull()
+            return when {
+                id is java.time.ZoneOffset && Regex("Z|[+-][0-9]{2}:[0-9]{2}").matches(zone) -> "'${id.id}'"
+                id != null && id !is java.time.ZoneOffset -> unsupported("The time zone '$zone'")
+                else -> throw DrivineException("'$zone' is no time zone.")
+            }
+        }
+
+        /**
+         * The literal [value] writes as a temporal map's field, `-1`, a negated whole number, as much as `1`: null where an
+         * expression gives it, for the store to work out.
+         */
+        private fun writtenLiteral(value: Expression): Expression.Literal? =
+            (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }
+                ?.let { (it.operand as? Expression.Literal)?.value as? Long }?.let { Expression.Literal(-it) } ?: value as? Expression.Literal
 
         /**
          * The fields the map [written], the third argument of [function], gives the value of [kind] it truncates, in place
@@ -3239,20 +3728,11 @@ abstract class SqlCypherCompiler(graph: String) {
             val millis = "millisecond" in keys || unit == "millisecond"
             val timezone = entries.firstOrNull { it.first == "timezone" }?.let { (_, value) ->
                 if (value == Expression.Literal(null)) throw DrivineException("${function.name}() takes a time zone, not null.")
-                val zone = (value as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a time zone an expression gives")
-                // Neo4j takes an offset written as `Z` or `+01:00` alone, and a zone by name, which no store's text holds yet.
-                val id = runCatching { java.time.ZoneId.of(zone) }.getOrNull()
-                when {
-                    id is java.time.ZoneOffset && Regex("Z|[+-][0-9]{2}:[0-9]{2}").matches(zone) -> "'${id.id}'"
-                    id != null && id !is java.time.ZoneOffset -> unsupported("The time zone '$zone'")
-                    else -> throw DrivineException("'$zone' is no time zone.")
-                }
+                zone((value as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a time zone an expression gives"))
             }
             val numbers = entries.filter { it.first != "timezone" }.associate { (key, value) ->
                 val least = TRUNCATION_LEAST[key] ?: 0
-                // `-1` is a negated number, written as much as `1` is.
-                val negated = (value as? Expression.Unary)?.takeIf { it.operator == Expression.Unary.Operator.NEGATE }?.let { (it.operand as? Expression.Literal)?.value as? Long }
-                val number = when (val literal = negated?.unaryMinus() ?: (value as? Expression.Literal)?.value) {
+                val number = when (val literal = writtenLiteral(value)?.value) {
                     null -> if (value is Expression.Literal) "$least" else "COALESCE(${number(comparable(json(expression(value, scope))))}, $least)"
                     is Long, is Int -> {
                         val range = if (key == "microsecond" && millis) 0L..999L else TRUNCATION_RANGES[key]
@@ -3905,9 +4385,12 @@ abstract class SqlCypherCompiler(graph: String) {
             return Value.Json(
                 sql, temporal = kindOf(results), items = itemKindOf(results), identity = identity, temporals = results.any { hasTemporals(it.second) },
                 list = results.all { isList(it.second) }, itemLists = results.all { holdsLists(it.second) },
-                text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) },
+                text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) }, jsonNull = results.any { mayBeJsonNull(it.second) },
             )
         }
+
+        /** Whether [value] may be JSON's null: see [Value.Json.jsonNull]. */
+        private fun mayBeJsonNull(value: Value) = (value as? Value.Json)?.jsonNull == true
 
         private fun function(function: Expression.Function, scope: Map<String, Value>): Value {
             val arguments = function.arguments.map { expression(it, scope) }
@@ -4109,7 +4592,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         items = if (taken) itemItemsOf(one()) else null,
                         identity = if (taken) identityOf(one(), result, true) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
                         list = taken && holdsLists(one()), temporals = taken && itemTemporalsOf(one()),
-                        text = if (taken) holdsTexts(one()) else name in TEXT_FUNCTIONS,
+                        text = if (taken) holdsTexts(one()) else name in TEXT_FUNCTIONS, jsonNull = taken && !isFlat(one()),
                     )
                 }
             }
@@ -4313,6 +4796,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
             isList(value) -> comparable(json(value)) to { listOf(listSortKey(it)) }
             value !is Value.Json || value.temporal != null || isText(value) -> comparable(json(value)) to { listOf(sortKey(it)) }
+            mayBeJsonNull(value) -> comparable(json(value)) to { jsonNullSortKey(it) }
             else -> comparable(json(value)) to { openSortKey(it) }
         }
     }
@@ -4501,6 +4985,22 @@ abstract class SqlCypherCompiler(graph: String) {
             "millisecond" to 0L..999L, "microsecond" to 0L..999_999L,
         )
 
+        /** The values each field a map laid over another temporal value gives may take, as Neo4j takes them, but for the year: see [fromTemporal]. */
+        val OVER_RANGES = TRUNCATION_RANGES + mapOf(
+            "week" to 1L..53L, "ordinalDay" to 1L..366L, "quarter" to 1L..4L, "dayOfQuarter" to 1L..92L, "nanosecond" to 0L..999_999_999L,
+        )
+
+        /** The least of each field a map laid over another temporal value gives that is not 0, which a field given as null is. */
+        val OVER_LEAST = mapOf("month" to 1, "day" to 1, "week" to 1, "dayOfWeek" to 1, "ordinalDay" to 1, "quarter" to 1, "dayOfQuarter" to 1)
+
+        /** How a message names a field of a temporal value, where not as `a` and its name. */
+        val FIELD_NOUNS = mapOf(
+            "dayOfWeek" to "a day of the week", "hour" to "an hour", "ordinalDay" to "an ordinal day", "dayOfQuarter" to "a day of the quarter",
+        )
+
+        /** The least of the year and each field of a date by the calendar's other fields, which a field given as null is. */
+        val CALENDAR_LEAST = mapOf("year" to 0L, "week" to 1L, "dayOfWeek" to 1L, "ordinalDay" to 1L, "quarter" to 1L, "dayOfQuarter" to 1L)
+
         /** The least of each field a truncation's map gives that is not 0, which a field given as null is. */
         val TRUNCATION_LEAST = mapOf("month" to 1, "day" to 1, "dayOfWeek" to 1)
 
@@ -4574,17 +5074,17 @@ abstract class SqlCypherCompiler(graph: String) {
          * expressions read beside the variable [seed], made anew for each row: `CASE WHEN seed IS NULL THEN null ELSE randomUUID() END`,
          * which is randomUUID() still, as [seed] is never null. So the subquery that works the body out reads the row, and a
          * store works it out again for each row, as it does not for a subquery that reads nothing of it (#412). One so read
-         * already is left as it is ([isSeeded]). Each item's variable is read beside [seed] too ([own]), the path's of a pattern
+         * already, beside one of the variables the compiler [made], is left as it is ([isSeeded]). Each item's variable is read beside [seed] too ([own]), the path's of a pattern
          * comprehension, named here where it has none: read beside the row's alone, a value bound in a subquery ([shared]) reads
          * nothing of the item, and Postgres and Oracle worked it out once for all of them, so `[x IN range(1, 20) WHERE left(randomUUID(), 1) < '8' | x]`
          * kept every item or none; and an aggregate of a pattern comprehension's body that reads only the row's columns is an
          * aggregate of the row's query, which Postgres refuses and SQLite works out over every row.
          */
-        fun seeded(expression: Expression, seed: String, inBody: Boolean = false, own: List<String> = emptyList()): Expression = replaced(expression) { e ->
-            fun body(part: Expression, variable: String) = seeded(part, seed, inBody = true, own = own + variable)
-            fun same(part: Expression) = seeded(part, seed, inBody, own)
+        fun seeded(expression: Expression, seed: String, made: Set<String>, inBody: Boolean = false, own: List<String> = emptyList()): Expression = replaced(expression) { e ->
+            fun body(part: Expression, variable: String) = seeded(part, seed, made, inBody = true, own = own + variable)
+            fun same(part: Expression) = seeded(part, seed, made, inBody, own)
             when {
-                isSeeded(e) -> e
+                isSeeded(e, made) -> e
                 inBody && isAnew(e) -> {
                     val condition = (listOf(seed) + own).map<String, Expression> { Expression.Unary(Expression.Unary.Operator.IS_NULL, Expression.Variable(it)) }
                         .reduce { a, b -> Expression.Binary(Expression.Binary.Operator.AND, a, b) }
@@ -4603,17 +5103,28 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** Whether [expression] is a randomUUID() read beside a variable made first for the row, as [seeded] reads one. */
-        fun isSeeded(expression: Expression): Boolean {
+        /**
+         * Whether [expression] is a randomUUID() read beside a variable made first for the row, as [seeded] reads one: one of
+         * those the compiler [made], never a variable of the statement's named alike, `` CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END ``,
+         * which was taken for one and not read beside each item (#479).
+         */
+        fun isSeeded(expression: Expression, made: Set<String>): Boolean {
             if (expression !is Expression.Case) return false
             var condition = expression.alternatives.singleOrNull()?.first
             while (condition is Expression.Binary && condition.operator == Expression.Binary.Operator.AND) condition = condition.left
             return condition is Expression.Unary && condition.operator == Expression.Unary.Operator.IS_NULL &&
-                (condition.operand as? Expression.Variable)?.name?.startsWith(ANEW) == true
+                (condition.operand as? Expression.Variable)?.name in made
         }
 
         fun isAggregate(expression: Expression): Boolean =
             expression == Expression.CountStar || (expression is Expression.Function && expression.name.lowercase() in AGGREGATES)
+
+        /**
+         * Whether [expression], an item that does not aggregate, is a key that an item that aggregates may read, as Neo4j
+         * takes one there: a variable, or a variable's property. Not `x.a.b`, `x['a']` or `toUpper(x.a)`.
+         */
+        fun isPlainKey(expression: Expression): Boolean =
+            expression is Expression.Variable || (expression is Expression.Property && expression.subject is Expression.Variable)
 
         /**
          * The lists [expression] reads item by item, in a subquery of its own: a comprehension's, a quantifier's or a reduce's,
@@ -4658,6 +5169,30 @@ abstract class SqlCypherCompiler(graph: String) {
                         relationship.group?.let { holdsSubquery(it.pattern) || it.where?.let(::holdsSubquery) == true } == true
                 }
 
+        /**
+         * [expression] with each function's name in lower case, in a comprehension's, a quantifier's or a reduce's body too: the
+         * same for two expressions that are the same to Neo4j, which names a function in any case. For comparing only.
+         */
+        fun keyOf(expression: Expression): Expression = replaced(expression) { part ->
+            when (part) {
+                is Expression.Function -> part.copy(name = part.name.lowercase(), arguments = part.arguments.map(::keyOf))
+                is Expression.ListComprehension -> part.copy(list = keyOf(part.list), where = part.where?.let(::keyOf), projection = part.projection?.let(::keyOf))
+                is Expression.Quantifier -> part.copy(list = keyOf(part.list), where = part.where?.let(::keyOf))
+                is Expression.Reduce -> part.copy(initial = keyOf(part.initial), list = keyOf(part.list), expression = keyOf(part.expression))
+                else -> null
+            }
+        }
+
+        /** Whether [expression], outside its aggregates, holds one of [parts], in a comprehension's, a quantifier's or a reduce's body too. */
+        fun readsOutsideAggregates(expression: Expression, parts: Set<Expression>): Boolean = !isAggregate(expression) && (
+            expression in parts || (children(expression) + when (expression) {
+                is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection)
+                is Expression.Quantifier -> listOfNotNull(expression.where)
+                is Expression.Reduce -> listOf(expression.expression)
+                else -> emptyList()
+            }).any { readsOutsideAggregates(it, parts) }
+            )
+
         /** The variables [expression] names outside its aggregates: what an aggregating projection is grouped by. */
         fun variablesOutsideAggregates(expression: Expression): Set<String> = when {
             isAggregate(expression) -> emptySet()
@@ -4682,6 +5217,25 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.PatternPredicate -> variablesIn(expression.pattern)
             is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + (expression.where?.let(::variablesIn) ?: emptySet())
             else -> children(expression).flatMap(::variablesIn).toSet()
+        }
+
+        /**
+         * The variables [expression] reads of the scope it is in: those [variablesIn] gives, but for a name that a comprehension,
+         * a quantifier or a reduce binds of its own and reads only inside, so `[m IN [p.name] | m]` reads `p` alone. A pattern's
+         * new variables can't be named so in Cypher, nor a subquery's, so a pattern's are as [variablesIn] gives them.
+         */
+        fun variablesReadIn(expression: Expression): Set<String> = when (expression) {
+            is Expression.Variable -> setOf(expression.name)
+            is Expression.MapProjection -> setOf(expression.variable) +
+                expression.elements.filterIsInstance<Expression.MapProjection.Element.Variable>().map { it.name } + children(expression).flatMap(::variablesReadIn)
+            is Expression.ListComprehension -> variablesReadIn(expression.list) + (listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn) - expression.variable)
+            is Expression.Quantifier -> variablesReadIn(expression.list) + (expression.where?.let(::variablesReadIn).orEmpty() - expression.variable)
+            is Expression.Reduce -> variablesReadIn(expression.initial) + variablesReadIn(expression.list) +
+                (variablesReadIn(expression.expression) - expression.accumulator - expression.variable)
+            is Expression.PatternComprehension -> variablesIn(expression.pattern) + listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn)
+            is Expression.PatternPredicate -> variablesIn(expression.pattern)
+            is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + expression.where?.let(::variablesReadIn).orEmpty()
+            else -> children(expression).flatMap(::variablesReadIn).toSet()
         }
 
         /** Every parameter [expression] names, in any expression it holds. */
@@ -4747,6 +5301,121 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Reduce -> listOf(expression.initial, expression.list)
             is Expression.Quantifier -> listOf(expression.list)
             else -> emptyList()
+        }
+
+        /**
+         * Each text [query] holds anywhere, as far as its first space, added to [texts]: each of its variables' names, and
+         * more (an alias, a label, a key, a parameter's or a function's name, a text it gives), which is as much as a name made
+         * for it, with no space, needs to keep clear of: see `Writer.hidden`.
+         */
+        fun textsIn(query: Query, texts: MutableSet<String>) = Texts(texts).query(query)
+
+        /** What [textsIn] adds each text to, [texts], as it reads a statement through. */
+        private class Texts(val texts: MutableSet<String>) {
+            fun text(text: String?) {
+                if (text != null) texts += text.substringBefore(' ')
+            }
+
+            fun value(value: Any?) {
+                when (value) {
+                    is String -> text(value)
+                    is Iterable<*> -> value.forEach(::value)
+                    is Map<*, *> -> value.forEach { (key, item) -> value(key); value(item) }
+                    is Array<*> -> value.forEach(::value)
+                }
+            }
+
+            fun query(query: Query) {
+                clauses(query.clauses)
+                query.unions.forEach { clauses(it.clauses) }
+            }
+
+            fun clauses(clauses: List<Clause>): Unit = clauses.forEach { clause ->
+                when (clause) {
+                    is Clause.Match -> { clause.patterns.forEach(::pattern); expression(clause.where) }
+                    is Clause.Unwind -> { expression(clause.list); text(clause.variable) }
+                    is Clause.With -> { projection(clause.projection); expression(clause.where) }
+                    is Clause.Create -> clause.patterns.forEach(::pattern)
+                    is Clause.Merge -> { pattern(clause.pattern); (clause.onCreate + clause.onMatch).forEach(::setItem) }
+                    is Clause.Set -> clause.items.forEach(::setItem)
+                    is Clause.Remove -> clause.items.forEach { item ->
+                        when (item) {
+                            is RemoveItem.Property -> { text(item.variable); text(item.key) }
+                            is RemoveItem.Labels -> { text(item.variable); item.labels.forEach(::text) }
+                        }
+                    }
+                    is Clause.Delete -> clause.expressions.forEach(::expression)
+                    is Clause.Call -> { query(clause.query); clause.imports?.forEach(::text) }
+                    is Clause.Foreach -> { text(clause.variable); expression(clause.list); clauses(clause.clauses) }
+                    is Clause.Return -> projection(clause.projection)
+                }
+            }
+
+            fun setItem(item: SetItem) {
+                when (item) {
+                    is SetItem.Property -> { text(item.variable); text(item.key); expression(item.value) }
+                    is SetItem.Replace -> { text(item.variable); expression(item.value) }
+                    is SetItem.Add -> { text(item.variable); expression(item.value) }
+                    is SetItem.Labels -> { text(item.variable); item.labels.forEach(::text) }
+                }
+            }
+
+            fun projection(projection: Projection) {
+                projection.items.forEach { expression(it.expression); text(it.name) }
+                projection.orderBy.forEach { expression(it.expression) }
+                expression(projection.skip)
+                expression(projection.limit)
+            }
+
+            fun pattern(pattern: Pattern) {
+                text(pattern.variable)
+                pattern.nodes.forEach { node -> text(node.variable); node.labels.forEach(::text); expression(node.properties) }
+                pattern.relationships.forEach { relationship ->
+                    text(relationship.variable)
+                    relationship.types.forEach(::text)
+                    expression(relationship.properties)
+                    relationship.group?.let { pattern(it.pattern); expression(it.where) }
+                }
+            }
+
+            fun expression(expression: Expression?) {
+                when (expression) {
+                    null, Expression.CountStar -> {}
+                    is Expression.Literal -> value(expression.value)
+                    is Expression.Parameter -> text(expression.name)
+                    is Expression.Variable -> text(expression.name)
+                    is Expression.Property -> { expression(expression.subject); text(expression.key) }
+                    is Expression.HasLabels -> { expression(expression.subject); expression.labels.forEach(::text) }
+                    is Expression.MapLiteral -> expression.entries.forEach { (key, value) -> text(key); expression(value) }
+                    is Expression.MapProjection -> {
+                        text(expression.variable)
+                        expression.elements.forEach { element ->
+                            when (element) {
+                                is Expression.MapProjection.Element.Selected -> text(element.key)
+                                is Expression.MapProjection.Element.Entry -> { text(element.key); expression(element.value) }
+                                is Expression.MapProjection.Element.Variable -> text(element.name)
+                                Expression.MapProjection.Element.All -> {}
+                            }
+                        }
+                    }
+                    is Expression.Function -> { text(expression.name); expression.arguments.forEach(::expression) }
+                    is Expression.ListComprehension -> {
+                        text(expression.variable); expression(expression.list); expression(expression.where); expression(expression.projection)
+                    }
+                    is Expression.Quantifier -> { text(expression.variable); expression(expression.list); expression(expression.where) }
+                    is Expression.Reduce -> {
+                        text(expression.accumulator); text(expression.variable)
+                        expression(expression.initial); expression(expression.list); expression(expression.expression)
+                    }
+                    is Expression.PatternComprehension -> { pattern(expression.pattern); expression(expression.where); expression(expression.projection) }
+                    is Expression.PatternPredicate -> pattern(expression.pattern)
+                    is Expression.Exists -> { expression.patterns.forEach(::pattern); expression(expression.where) }
+                    is Expression.Subquery -> query(expression.query)
+                    // No else: a kind of expression added later is not compiled until it is read here too.
+                    is Expression.ListLiteral, is Expression.Binary, is Expression.Unary, is Expression.Index, is Expression.Slice, is Expression.Case ->
+                        children(expression).forEach(::expression)
+                }
+            }
         }
     }
 

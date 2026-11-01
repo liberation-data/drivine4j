@@ -3,7 +3,6 @@ package org.drivine.backend.oracle
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.Step
 import org.drivine.backend.oracle.OracleSql.hasLabels
-import org.drivine.model.RelationshipModel
 
 /**
  * The row sources a statement over an [OracleGraph] reads from: the nodes of some labels, and the
@@ -28,26 +27,42 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
      * The nodes reached by [steps] from the node [from], as rows named [alias]: `src` is the node the
      * path starts from, which the pattern calls what the statement calls that node's row. A single
      * step also gives the relationship, as `eid` and `eprops`. A step with a depth above one is taken
-     * from its least depth to that many times, and a node may then be reached more than once. The nodes reached
+     * from its least depth to that many times, and a node may then be reached more than once. A path
+     * takes a relationship once, as Cypher's does and as the other SQL stores walk it: Oracle's pattern
+     * walks one again, so u — v alone reaches u back over the relationship to v. A cascading delete
+     * asks with [trail] false: its statement fails with the count that keeps a step to a depth to a
+     * path (`ORA-01427`), and the nodes it reaches are the same but for the one it starts from. The nodes reached
      * are those that meet [where], which the pattern tests them for beside the last step's labels.
      * [extra] are further columns, which may read any node of the pattern: the last as [alias], one
      * before it as [stepNode] names it.
      */
     fun reached(
         from: String, steps: List<Step>, alias: String, where: List<String> = emptyList(), extra: List<GraphTable.Column> = emptyList(),
+        trail: Boolean = true,
     ): GraphTable {
         val single = steps.size == 1 && steps.single().maxDepth == 1
         // A path of several steps is a line to a step, so each is read as the hop it is.
         val hop = if (steps.size == 1) " " else "\n        "
+        val edge = { i: Int -> if (steps.size == 1) "e" else "e${i + 1}" }
+        // Each relationship once in the path: a step to a depth counts its relationships, and two hops of
+        // one type are two relationships. Only a step alone is counted, and not for a cascading delete, whose
+        // statement fails with the count (`ORA-01427`).
+        val once = steps.indices.flatMap { i ->
+            val walked = if (trail && steps.size == 1 && steps[i].maxDepth > 1) listOf("COUNT(DISTINCT ${edge(i)}.eid) = COUNT(${edge(i)}.eid)") else emptyList()
+            walked + (i + 1..steps.lastIndex)
+                .filter { j -> steps[j].type == steps[i].type && steps[i].maxDepth == 1 && steps[j].maxDepth == 1 }
+                .map { j -> "${edge(i)}.eid <> ${edge(j)}.eid" }
+        }
         val pattern = buildString {
             append(OracleSql.node(from))
             steps.forEachIndexed { i, step ->
-                append(hop).append(OracleSql.arrow(if (steps.size == 1) "e" else "e${i + 1}", step.type, step.direction))
+                append(hop).append(OracleSql.arrow(edge(i), step.type, step.direction))
                 if (step.maxDepth > 1) append("{${step.minDepth},${step.maxDepth}}")
                 val node = stepNode(steps, i, alias)
                 val met = listOfNotNull(hasLabels(node, step.labels)) + if (i == steps.lastIndex) where else emptyList()
                 append(" ").append(OracleSql.node(node, met.takeIf { it.isNotEmpty() }?.joinToString(" AND ")))
             }
+            if (once.isNotEmpty()) append("\n    WHERE ").append(once.joinToString(" AND "))
         }
         val relationship = if (single) listOf(GraphTable.Column("eid", "e.eid"), GraphTable.Column("eprops", "e.props")) else emptyList()
         return graphTable(pattern, listOf(GraphTable.Column("src", "$from.nid")) + relationship + GraphTable.node(alias) + extra, alias)
@@ -55,10 +70,6 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
 
     /** The name [reached] gives the node step [i] of [steps] reaches: [alias] for the last, `m1`, `m2`… before it. */
     fun stepNode(steps: List<Step>, i: Int, alias: String): String = if (i == steps.lastIndex) alias else "m${i + 1}"
-
-    /** The steps that reach the nodes of [relationship]: see [Step.reaching]. */
-    fun steps(relationship: RelationshipModel, targetLabels: List<String>, maxDepth: Int = 1): List<Step> =
-        Step.reaching(relationship, targetLabels, maxDepth)
 
     /**
      * The rows named [row] reached from the row [parent] by [steps]: the query a relationship field or

@@ -111,8 +111,24 @@ class OracleRowSourcesTest {
         val sql = rows.reached("n_", listOf(Step("PART_OF", Direction.INCOMING, emptyList(), maxDepth = 3)), "t_").whole().squashed()
 
         assertTrue("(n_ IS node) <-[e IS edge WHERE e.type = 'PART_OF']-{1,3} (t_ IS node)" in sql, sql)
-        assertFalse("eid" in sql || "eprops" in sql, sql)
+        assertFalse("e.eid," in sql || "eprops" in sql, sql)
         assertTrue("COLUMNS (n_.nid AS src, t_.nid, " in sql, sql)
+    }
+
+    @Test
+    fun `a path takes each relationship once, as Cypher's does, which Oracle's pattern does not of itself`() {
+        val walked = rows.reached("n_", listOf(Step("LINK", Direction.UNDIRECTED, emptyList(), maxDepth = 2)), "t_").whole().squashed()
+        assertTrue("(t_ IS node) WHERE COUNT(DISTINCT e.eid) = COUNT(e.eid) COLUMNS" in walked, walked)
+
+        val hops = rows.reached(
+            "n_",
+            listOf(Step("LINK", Direction.UNDIRECTED, emptyList()), Step("OWNS", Direction.OUTGOING, emptyList()), Step("LINK", Direction.UNDIRECTED, emptyList())),
+            "t_",
+        ).whole().squashed()
+        assertTrue("(t_ IS node) WHERE e1.eid <> e3.eid COLUMNS" in hops, hops)
+
+        val one = rows.reached("n_", listOf(Step("LINK", Direction.UNDIRECTED, emptyList())), "t_").whole()
+        assertFalse("WHERE COUNT" in one || "<>" in one, one)
     }
 
     @Test
@@ -158,7 +174,7 @@ class OracleRowSourcesTest {
 
     @Test
     fun `a relationship is one step to its depth, with the target's labels on the node it ends at`() {
-        val step = rows.steps(relationship(HumanClaims::class.java, "claims"), listOf("Claim"), maxDepth = 4).single()
+        val step = Step.reaching(relationship(HumanClaims::class.java, "claims"), listOf("Claim"), maxDepth = 4).single()
 
         assertEquals("MENTIONS", step.type)
         assertEquals(Direction.INCOMING, step.direction)
@@ -168,7 +184,7 @@ class OracleRowSourcesTest {
 
     @Test
     fun `a path is a step for each hop taken once, the target's labels on the last and each hop's own label on the node before`() {
-        val steps = rows.steps(relationship(ClaimEmployers::class.java, "employers"), listOf("Company"), maxDepth = 9)
+        val steps = Step.reaching(relationship(ClaimEmployers::class.java, "employers"), listOf("Company"), maxDepth = 9)
 
         assertEquals(listOf("MENTIONS", "WORKS_AT"), steps.map { it.type })
         assertEquals(listOf(listOf("Human"), listOf("Company")), steps.map { it.labels })

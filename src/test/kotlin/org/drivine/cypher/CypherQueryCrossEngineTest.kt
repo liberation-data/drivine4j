@@ -48,6 +48,9 @@ abstract class CypherQueryContract {
     private fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher.trimIndent())).bind(parameters))
 
+    /** Rows as a multiset, a null row included, to compare those of a statement that gives no order. */
+    private fun unordered(rows: List<Any?>) = rows.groupingBy { it }.eachCount()
+
     @TestFactory
     fun spec() = CypherSpec.load("queries.yaml").let { spec ->
         spec.tests(CypherSpec.storeOf(pm.type), before = { clear(); seed(requireNotNull(spec.graph)) }) { step -> query(step.cypher, step.parameters) }
@@ -219,6 +222,47 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a pattern comprehension whose body reads none of its pattern's variables gives an item for each match, on each row`() {
+        // Not in the spec yet (#467): its aggregate read only the row's columns, so it was the row query's, which Postgres refused
+        // and SQLite worked out over every row, giving one.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val sizes = listOf(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 4L), listOf("Laurence", 2L))
+        assertEquals(
+            listOf(listOf("Carrie", listOf("Carrie", "Carrie")), listOf("Hugo", emptyList<String>()), listOf("Keanu", List(4) { "Keanu" }), listOf("Laurence", listOf("Laurence", "Laurence"))),
+            query("MATCH (p:Person) RETURN p.name, [(p)-->() | p.name] ORDER BY p.name"),
+        )
+        listOf(
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | p]) ORDER BY p.name",
+            "MATCH (p:Person) WITH p, 7 AS k RETURN p.name, size([(p)-->() | k]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | COUNT { (p)-->() }]) ORDER BY p.name",
+            "MATCH (p:Person) CALL (p) { RETURN [(p)-->() | p.name] AS names } RETURN p.name, size(names) ORDER BY p.name",
+            "MATCH (p:Person) CALL { WITH p RETURN [(p)-->(m) | p.name] AS names } RETURN p.name, size(names) ORDER BY p.name",
+            "OPTIONAL MATCH (p:Person) RETURN p.name, size([(p)-->() | p.name]) ORDER BY p.name",
+            // Its WHERE may read only the row too.
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) WHERE p.born > 0 OR p.born IS NULL | p.name]) ORDER BY p.name",
+            // A name of the pattern's that the body binds again for its own, and reads only so, is not the pattern's.
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] | m]]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | reduce(m = '', x IN [1] | m + p.name)]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | any(m IN [p.name] WHERE m = 'Keanu')]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-[r]->() | p {.name, n: [r IN [1] | r]}]) ORDER BY p.name",
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [(p)-->() | [m IN [p.name] | m]]]) ORDER BY p.name",
+        ).forEach { assertEquals(sizes, query(it), it) }
+        // One that reads no row, a parameter, is gathered as it was.
+        assertEquals(sizes, query("MATCH (p:Person) RETURN p.name, size([(p)-->() | \$x]) ORDER BY p.name", mapOf("x" to 5)))
+        // Read by a relationship of the row, in another comprehension's body, or in a WHERE.
+        assertEquals(listOf(listOf("Keanu", listOf("KNOWS", "KNOWS")), listOf("Laurence", List(4) { "KNOWS" })), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, [(q)-->() | type(r)] ORDER BY p.name"))
+        assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person)-[r:KNOWS]->(q) RETURN p.name, size([(q)-->() | r]) ORDER BY p.name"))
+        assertEquals(listOf(listOf("Keanu", 2L), listOf("Laurence", 4L)), query("MATCH (p:Person) UNWIND [(p)-->(m) | [(m)-->() | p.name]] AS l WITH p, l WHERE size(l) > 0 RETURN p.name, size(l) ORDER BY p.name"))
+        assertEquals(listOf("Carrie", "Keanu", "Laurence"), query("MATCH (p:Person) WHERE size([(p)-->() | p.name]) > 1 RETURN p.name ORDER BY p.name"))
+        // A UUID made for each match, as it was.
+        assertEquals(listOf(listOf(8L, 8L)), query("MATCH (p:Person) UNWIND [(p)-->(m) | p.name + randomUUID()] AS u RETURN count(u), count(DISTINCT u)"))
+        // In a write, which Postgres refused and SQLite wrote wrong.
+        query("MATCH (p:Person) SET p.knows = size([(p)-->() | p.name])")
+        assertEquals(sizes, query("MATCH (p:Person) RETURN p.name, p.knows ORDER BY p.name"))
+    }
+
+    @Test
     fun `a list comprehension over nodes or relationships that keeps them gives a list of them, compared by id`() {
         // Not in the spec yet: what entityComprehension keeps, with no projection or one of the item, is still a list of nodes or relationships.
         clear()
@@ -312,6 +356,9 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) AS u UNION RETURN 'x' AS u } RETURN u" to 101,
             // A variable quoted as the compiler names its own is the statement's: imported as named, and a UUID made still.
             "UNWIND range(1, 100) AS `#anewi` CALL (`#anewi`) { RETURN toString(`#anewi`) + randomUUID() AS u } RETURN u" to 100,
+            // And a CASE that reads one is not taken for a randomUUID() the compiler read beside the row's UUID, so left as it is (#479).
+            "UNWIND range(1, 100) AS i WITH i, 1 AS `#anew1` RETURN [x IN [1] | CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END][0]" to 100,
+            "UNWIND range(1, 100) AS i WITH i, 1 AS `#anew1` RETURN [x IN range(1, 3) | CASE WHEN `#anew1` IS NULL THEN null ELSE randomUUID() END]" to 300,
             // A CALL that writes makes one for each row it writes, as it did.
             "UNWIND range(1, 100) AS i CALL (i) { CREATE (n:CyUuidCall {id: toUpper(randomUUID())}) RETURN n.id AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
@@ -358,6 +405,25 @@ abstract class CypherQueryContract {
             val made = rows.flatMap { it[1] as List<*> }
             "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 }
         }
+        // A variable quoted as the compiler names its own is the statement's (#479): it was taken for the UUID's, so read as the
+        // UUID, left out of a star, or hidden by a pattern comprehension's path. Each row is given without its last column, u.
+        fun read(cypher: String) = runCatching { query(cypher).map { (it as List<*>).dropLast(1) } }.getOrElse { listOf(it.message) }
+        val quoted = listOf(
+            "UNWIND [1, 2] AS `#anew2` RETURN `#anew2` AS a, toUpper(randomUUID()) AS u ORDER BY a" to listOf(listOf(1L), listOf(2L)),
+            "UNWIND [1, 2] AS i WITH i, 1 AS `#anew1`, 2 AS `#anew2`, 3 AS `#anew3`, 4 AS `#anew4`, 5 AS `#anew5`, 6 AS `#anew6` " +
+                "CALL { RETURN toUpper(randomUUID()) AS u } RETURN * ORDER BY i" to listOf(listOf(1L, 2L, 3L, 4L, 5L, 6L, 1L), listOf(1L, 2L, 3L, 4L, 5L, 6L, 2L)),
+            // Nor is it the variable a CALL's query unwinds the row's UUID to.
+            "UNWIND [1, 2] AS i WITH i, 4 AS `#anew4 row` CALL { RETURN toUpper(randomUUID()) AS u } RETURN * ORDER BY i" to listOf(listOf(4L, 1L), listOf(4L, 2L)),
+            // A UNION's queries are compiled one by one: the name made in the first was a later one's variable.
+            "UNWIND [1] AS i CALL (i) { RETURN toString(i) + randomUUID() AS u } RETURN 0 AS x, u " +
+                "UNION ALL WITH 2 AS `#anew2` WITH * RETURN `#anew2` AS x, 0 AS u" to listOf(listOf(0L), listOf(2L)),
+        ).mapNotNull { (cypher, expected) -> read(cypher).takeIf { it != expected }?.let { "$cypher: $it" } } +
+            // Nor is it the path a pattern comprehension's body is read beside, named where the pattern names none.
+            listOf("MATCH (p:Person) WITH p, 4 AS `#anew4 path0` RETURN p.name, [(p)-->() | toString(`#anew4 path0`) + randomUUID()]").mapNotNull { cypher ->
+                val rows = runCatching { query(cypher).map { it as List<*> } }.getOrElse { return@mapNotNull "$cypher: ${it.message}" }
+                val made = rows.flatMap { it[1] as List<*> }
+                "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 || made.any { !(it as String).startsWith("4") } }
+            }
         // The UUID made first for the row is no variable of the statement's.
         val starred = listOf(
             "UNWIND range(1, 2) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < 'z' RETURN *",
@@ -373,7 +439,7 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '0' RETURN i, p",
             "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' OPTIONAL MATCH (p)-->(m) WHERE toUpper(randomUUID()) < 'Z' RETURN i, p, m",
         ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 3 || rows.any { (it as List<*>).drop(1).any { v -> v != null } } }?.let { "$cypher: $it" } }
-        val wrong = failed + kept + found + starred + nulls
+        val wrong = failed + kept + found + quoted + starred + nulls
         assertEquals(emptyList(), wrong, wrong.joinToString("\n"))
     }
 
@@ -2618,6 +2684,199 @@ abstract class CypherQueryContract {
                     "UNION ALL MATCH (a:Movie) RETURN count(a) AS n } RETURN a.name, n"
             ),
         )
+    }
+
+    @Test
+    fun `a WITH star at the start of a CALL passes on what the CALL imports, and nothing where nothing is bound`() {
+        // #472: the star expanded to the variables the CALL's first query bound, not those it imported, so it was refused with
+        // "A projection has at least one item" unless an aggregate had bound them; and a WITH * where nothing was bound was
+        // refused so. The spec holds the rest. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // Its WHERE is met still, on the rows it reads; with DISTINCT, an order, SKIP or LIMIT it is refused, not left out.
+        assertEquals(listOf(1L), query("WITH * WHERE true RETURN 1 AS x"))
+        // Neo4j gives [], [], [] and [1, 2] for these.
+        if (pm.type != DatabaseType.NEO4J) {
+            assertThrows<Exception> { query("WITH * LIMIT 0 RETURN 1 AS x") }
+            assertThrows<Exception> { query("WITH * SKIP 1 RETURN 1 AS x") }
+            assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH * LIMIT 0 RETURN i AS x } RETURN x") }
+            assertThrows<Exception> { query("UNWIND [1, 2] AS i CALL (i) { WITH DISTINCT * RETURN i AS x } RETURN x") }
+        }
+        // Made for each row, beside a randomUUID(): not the compiler's own variables (#412), which no star shows.
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL { WITH * RETURN toString(i) + randomUUID() AS u } RETURN count(DISTINCT u) AS n"))
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS i CALL () { WITH * RETURN toUpper(randomUUID()) AS u } RETURN count(DISTINCT u) AS n"))
+        query("UNWIND [1, 2] AS i CALL { WITH * RETURN toUpper(randomUUID()) AS u } RETURN *").let { rows ->
+            assertEquals(listOf(1L, 2L), rows.map { (it as List<*>).first() })
+            assertTrue(rows.all { (it as List<*>).size == 2 && (it[1] as String).length == 36 }, "$rows")
+        }
+        query("UNWIND [1, 2] AS i CALL { WITH * WITH i AS j, toUpper(randomUUID()) AS u RETURN * } RETURN *").let { rows ->
+            assertEquals(listOf(listOf(1L, 1L), listOf(2L, 2L)), rows.map { (it as List<*>).take(2) })
+            assertTrue(rows.all { (it as List<*>).size == 3 && (it[2] as String).length == 36 }, "$rows")
+        }
+        query("UNWIND [1, 2] AS i CALL (i) { WITH * RETURN i AS x, toUpper(randomUUID()) AS u } RETURN *").let { rows ->
+            assertEquals(listOf(listOf(1L, 1L), listOf(2L, 2L)), rows.map { (it as List<*>).let { r -> listOf(r[0], r[2]) } })
+            assertEquals(2, rows.map { (it as List<*>)[1] }.toSet().size, "$rows")
+        }
+    }
+
+    @Test
+    fun `an aggregate in the WHERE of a WITH that aggregates or is DISTINCT filters its groups, as Neo4j does`() {
+        // #497: refused since #490, as an aggregate in any WHERE is, though Neo4j runs it. The spec holds the rest ("Aggregate in
+        // the WHERE of a WITH that groups"). The rows are Neo4j's (2026.10.1); where it gives them in no order of the statement's,
+        // they are compared in any order.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        fun rows(vararg rows: Any?) = rows.toList()
+        val ordered = listOf(
+            // A key's property, read through the item it is renamed to, of a map and of a node.
+            "UNWIND [{a: 1}, {a: 1}, {a: 2}] AS x WITH x AS y, count(*) AS c WHERE x.a > 1 AND count(*) = 1 RETURN y.a, c" to rows(listOf(2L, 1L)),
+            "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p AS q, count(*) AS c WHERE p.born > 1965 RETURN q.name, c ORDER BY q.name" to rows(listOf("Carrie", 2L)),
+            // A key and an aggregate compared as grouping compares them, a function's name in any case; count(DISTINCT i) is not count(i).
+            "UNWIND ['a', 'A', 'b'] AS x WITH toUpper(x) AS u, count(*) AS c WHERE TOUPPER(x) = 'A' RETURN u, c" to rows(listOf("A", 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, Sum(i) AS s WHERE SUM(i) > 1 RETURN i, s ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(i) AS c WHERE count(DISTINCT i) = 1 AND count(i) > 1 RETURN i, c" to rows(listOf(1L, 2L)),
+            // A property's name keeps its case: sum(x.A) is not sum(x.a).
+            "UNWIND [{a: 1, A: 10}, {a: 2, A: 20}] AS x WITH count(*) AS c, sum(x.a) AS s WHERE sum(x.A) > 25 RETURN c, s" to rows(listOf(2L, 3L)),
+        ) +(1..6).map { n ->
+            // An item quoted as a made item would be named is the statement's own.
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS `#having$n` WHERE sum(i) > 1 RETURN i, `#having$n` ORDER BY i" to rows(listOf(1L, 2L), listOf(2L, 1L))
+        }
+        ordered.forEach { (cypher, expected) -> assertEquals(expected, query(cypher), cypher) }
+        val unordered = listOf(
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 WITH * RETURN *" to rows(listOf(2L, 1L), listOf(1L, 2L)),
+            "UNWIND [1, 1, 2] AS i WITH i, count(*) AS c WHERE sum(i) > 1 RETURN i UNION UNWIND [5] AS `#having2` RETURN `#having2` AS i" to rows(1L, 2L, 5L),
+        )
+        unordered.forEach { (cypher, expected) -> assertEquals(expected.map(Any?::toString).sorted(), query(cypher).map(Any?::toString).sorted(), cypher) }
+    }
+
+    @Test
+    fun `a null in a map or a list and a missing key are one null, grouped, kept distinct and sorted as one`() {
+        // #500: on the SQL stores a map's null is JSON's null and a missing key SQL's. The spec holds the rest ("A null in a map
+        // and a missing key are one null"). The rows are Neo4j's (2026.10).
+        // A UNION in a CALL, and a part beside a CALL's UNION ALL, which leaves the part's rows compared.
+        assertEquals(listOf(listOf(null, 1L)), query("CALL { UNWIND [{a: null}] AS x RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v } RETURN v, count(*) AS c"))
+        assertEquals(
+            listOf(null),
+            query("UNWIND [{a: null}] AS x CALL { RETURN 1 AS z UNION ALL RETURN 2 AS z } RETURN x.a AS v UNION UNWIND [{b: 1}] AS x RETURN x.a AS v"),
+        )
+        // An order ties them, so the next term decides, for a value kept distinct too, which on Oracle may be JSON's null still.
+        assertEquals(listOf(3L, 2L, 1L), query("UNWIND [{a: null, i: 1}, {b: 1, i: 2}, {a: 0, i: 3}] AS x WITH DISTINCT x.a AS a, x.i AS i RETURN i ORDER BY a, i DESC"))
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // A value kept distinct, on Oracle JSON's null, is still the same null as a property a node has not.
+        assertEquals(listOf(null), query("UNWIND [{a: null}] AS x WITH DISTINCT x.a AS a RETURN a AS v UNION MATCH (p:Person {name: 'Hugo'}) RETURN p.nickname AS v"))
+        assertEquals(
+            listOf(listOf(null, 4L)),
+            query("UNWIND [{a: null}, {b: 1}] AS x WITH DISTINCT x.a AS a MATCH (p:Person) RETURN CASE WHEN p.born IS NULL THEN p.nickname ELSE a END AS v, count(*) AS c"),
+        )
+        // Grouped by a value of an unwound list that holds a null, and sorted by it.
+        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("UNWIND [null, 1, null] AS v RETURN v, count(*) AS c ORDER BY v"))
+    }
+
+    @Test
+    fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
+        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
+        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
+        assertEquals(
+            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
+            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
+        )
+        // In a part of an outer UNION, which compares rows by it.
+        assertEquals(
+            unordered(listOf(null, 1L, 2L)),
+            unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
+        )
+    }
+
+    @Test
+    fun `a CALL's UNION ALL whose first part gives a list and a later one a number or a map sorts each by its kind`() {
+        // The column is a list only where every part's value is, so a number or a map a later part gives sorts by its kind, not
+        // as a list would. The rows are Neo4j's (2026.10). Postgres takes jsonb's order of kinds, a number before a list (#307),
+        // and refuses a written list's json beside a number's jsonb in one UNION ALL.
+        if (pm.type == DatabaseType.POSTGRES) return
+        assertEquals(listOf(listOf(10L), 10L), query("CALL { RETURN [10] AS v UNION ALL RETURN 10 AS v } RETURN v ORDER BY v"))
+        assertEquals(listOf(listOf(1L, 2L), 10L), query("CALL { RETURN [1, 2] AS v UNION ALL RETURN 10 AS v } RETURN v ORDER BY v"))
+        assertEquals(listOf(mapOf("a" to 1L), listOf(10L)), query("CALL { RETURN [10] AS v UNION ALL RETURN {a: 1} AS v } RETURN v ORDER BY v"))
+        assertEquals(
+            listOf(listOf(2L), listOf(9L), listOf(10L), 10L),
+            query("CALL { RETURN [10] AS v UNION ALL RETURN 10 AS v UNION ALL RETURN [9] AS v UNION ALL RETURN [2] AS v } RETURN v ORDER BY v"),
+        )
+        // A later part's number compares as a number; a later part's null in a list makes `=` and IN null, not false; and a later
+        // part's list of numbers unwinds to numbers, which sort after the first part's list. The first three give no order.
+        assertEquals(unordered(listOf(null, true)), unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN 1 AS v } RETURN v < 2 AS r")))
+        assertEquals(unordered(listOf(true, null)), unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN [null] AS v } RETURN v = [1] AS r")))
+        assertEquals(
+            unordered(listOf(true, null)),
+            unordered(query("CALL { RETURN [1] AS v UNION ALL RETURN [null] AS v } RETURN v IN [[1], 1] AS r")),
+        )
+        assertEquals(listOf(listOf(1L), 1L), query("CALL { RETURN [[1]] AS v UNION ALL RETURN [1] AS v } UNWIND v AS x RETURN x AS r ORDER BY r"))
+    }
+
+    @Test
+    fun `an aggregating item over a key that is a property groups by the property, as Neo4j does`() {
+        // #491: beside the shapes now refused, those Neo4j takes. The spec holds the rest ("Implicit grouping key"). The rows are
+        // Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val roles = listOf("Johnny", "Morpheus", "Neo", "Trinity")
+        // A null key is one group; two keys of one variable group by both, not by the variable (two rows have a = 1, b = 1).
+        assertEquals(
+            listOf(listOf("Welcome to the Real World", mapOf("t" to "Welcome to the Real World", "n" to 1L)), listOf(null, mapOf("t" to null, "n" to 2L))),
+            query("MATCH (m:Movie) RETURN m.tagline AS t, {t: m.tagline, n: count(*)} AS n ORDER BY t"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 1L, 13L), listOf(1L, 2L, 13L), listOf(2L, 2L, 23L)),
+            query(
+                "UNWIND [{a: 1, b: 1, c: 1}, {a: 1, b: 1, c: 2}, {a: 1, b: 2, c: 1}, {a: 2, b: 2, c: 1}] AS x " +
+                    "RETURN x.a AS a, x.b AS b, x.a * 10 + x.b + count(*) AS n ORDER BY a, b",
+            ),
+        )
+        // In a comprehension's WHERE inside another's WHERE, the key too; but not where a comprehension binds the key's variable.
+        assertEquals(
+            roles.zip(listOf(1L, 0L, 0L, 0L)).map { (role, n) -> listOf(role, n) },
+            query("MATCH (:Person)-[r:ACTED_IN]->(m) RETURN r.role AS role, size([t IN collect(m.title) WHERE size([u IN [t] WHERE u CONTAINS r.role]) > 0]) AS n ORDER BY role"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(2L, 3L)),
+            query("UNWIND [{a: 1}, {a: 2}, {a: 2}] AS x RETURN x.a AS a, size([x IN [{a: 5}] WHERE x.a > 1]) + count(*) AS n ORDER BY a"),
+        )
+    }
+
+    @Test
+    fun `a key read in a body nested in a list comprehension's WHERE, in a body over no aggregate, in any(y IN … WHERE y = e) or in an order term groups by the property`() {
+        // #505: the spec holds the rest (drivine-cypher-spec#43, in "Implicit grouping key"). The rows are Neo4j's
+        // (2026.10). Two x share a = 1, so grouping by x gives a = 1 twice.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val x = "UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x RETURN x.a AS a"
+        // Inside a list comprehension's WHERE, the key all through.
+        assertEquals(listOf(listOf(1L, 1L), listOf(2L, 0L)), query("$x, size([t IN collect(x.b) WHERE any(u IN [t] WHERE all(v IN [u] WHERE v > x.a))]) AS n ORDER BY a"))
+        // Neo4j reads any(y IN list WHERE y = e) as e IN list; not all(…) or an OR.
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + 0) AS n ORDER BY a"))
+        assertEquals(
+            listOf(listOf(1L, true), listOf(2L, false)),
+            query("UNWIND [{a: 1, b: 1}, {a: 1, b: 2}, {a: 2, b: 1}] AS x WITH x.a AS a, any(y IN collect(x.b) WHERE y = x.a) AS n RETURN a, n ORDER BY a"),
+        )
+        assertEquals(
+            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
+            query("$x, any(y IN collect(x.b) WHERE y = x.a OR y = 5) AS n ORDER BY a, n"),
+        )
+        // Nor single(…), y.p = e, y IN [e1, e2], or an e that reads y; e IN [y] is y = e. With a null in the list, as e IN list.
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)), query("$x, single(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x) WHERE y.b = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE y IN [x.a, 5]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(1L, false), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + y) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE x.a IN [y]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(2L, null)), query("$x, any(y IN collect(x.b) + [null] WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, false), listOf(2L, null)), query("$x, none(y IN collect(x.b) + [null] WHERE y = x.a + 1) AS n ORDER BY a, n"))
+        // A key that is a map's null and one that is missing are one null, read by its name in a body too (#500).
+        val z = "UNWIND [{b: 1}, {a: null, b: 2}, {a: 1, b: 1}, {a: 1, b: 3}] AS x RETURN x.a AS a"
+        assertEquals(listOf(listOf(1L, true), listOf(null, null)), query("$z, any(y IN collect(x.b) WHERE y = x.a) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, 1L), listOf(null, 2L)), query("$z, size([t IN collect(x.b) WHERE any(u IN [t] WHERE u > coalesce(x.a, 0))]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
+        // An order term that aggregates reads the key as an item does.
+        assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY reduce(s = 0, y IN collect(x.b) | s + x.a), a"))
     }
 
     @Test
