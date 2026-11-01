@@ -43,6 +43,18 @@ class PostgresTemporalSql(shared: (List<String>, (List<String>) -> String) -> St
 
     override fun secondsBetween(from: String, to: String) = "EXTRACT(EPOCH FROM ($to - $from))"
 
-    override fun truncate(unit: String, timestamp: String) =
-        if (unit in setOf("year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond")) "date_trunc('$unit', $timestamp)" else null
+    /**
+     * `date_trunc`, but for the units it counts otherwise than Neo4j: its millennium starts in 2001 and its century in
+     * 1901, so those and the decade are the year less its years into the span (see [YEARS_OF]). The week-based year is
+     * so many weeks before the timestamp's week, its ISO week less one.
+     */
+    override fun truncate(unit: String, timestamp: String) = when (unit) {
+        in setOf("year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond") -> "date_trunc('$unit', $timestamp)"
+        "microsecond" -> "date_trunc('microseconds', $timestamp)"
+        in YEARS_OF -> shared(listOf(timestamp)) { (t) ->
+            "(date_trunc('year', $t) - make_interval(years => MOD(CAST(EXTRACT(YEAR FROM $t) AS int), ${YEARS_OF.getValue(unit)})))"
+        }
+        "weekYear" -> shared(listOf(timestamp)) { (t) -> "(date_trunc('week', $t) - make_interval(weeks => CAST(EXTRACT(WEEK FROM $t) AS int) - 1))" }
+        else -> null
+    }
 }

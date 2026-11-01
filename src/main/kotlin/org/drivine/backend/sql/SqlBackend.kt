@@ -109,7 +109,8 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
 
     override fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = select(graphClass, indexed = true)
+        // The depths the query gives: a condition on a field walks them, as the load does.
+        val select = select(graphClass, depthOverrides = query.depthOverrides, indexed = true)
         return select.count(listOfNotNull(select.predicate(query.conditions, indexed = true)))
     }
 
@@ -152,7 +153,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
 
     override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = select(graphClass, indexed = true)
+        val select = select(graphClass, depthOverrides = query.depthOverrides, indexed = true)
         return deleting(select, listOfNotNull(select.predicate(query.conditions, indexed = true)))
     }
 

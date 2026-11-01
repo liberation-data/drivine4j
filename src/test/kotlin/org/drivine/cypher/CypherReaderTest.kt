@@ -164,6 +164,9 @@ class CypherReaderTest {
         assertEquals(listOf(true, false), ret.orderBy.map { it.descending })
         assertEquals(Expression.Literal(2L), ret.skip)
         assertEquals(Expression.Parameter("n"), ret.limit)
+        // As Neo4j names them (#491): an unnamed map projection after its variable, an alias before it, any other item as written.
+        val maps = (CypherReader.read("MATCH (p) RETURN p {.name}, p {.name, .age} AS q, p {.name}.name").clauses.last() as Clause.Return).projection
+        assertEquals(listOf("p", "q", "p {.name}.name"), maps.items.map { it.name })
     }
 
     @Test

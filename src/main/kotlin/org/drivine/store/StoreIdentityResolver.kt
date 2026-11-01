@@ -1,8 +1,14 @@
 package org.drivine.store
 
+import org.drivine.backend.GraphBackend
+import org.drivine.backend.GraphBackends
+import org.drivine.backend.sql.DdlContention
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.SaveExecutor
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
+import org.drivine.schema.ConstraintManager
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.StoreStampStatements
@@ -10,8 +16,10 @@ import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.reservedNode
 import org.drivine.schema.UniquenessConstraintSpec
 import org.slf4j.LoggerFactory
+import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
+import kotlin.random.Random
 
 /**
  * Reads the store's [StoreIdentity], minting it on first sight.
@@ -21,8 +29,16 @@ import java.util.UUID
  * database reads the same value.
  *
  * Resolution is idempotent and safe to call on every boot.
+ *
+ * [sleep] waits out the pauses between looks for the winner's constraint (see [winnersInForce]); a test gives one that
+ * doesn't wait, as [DdlContention.whenNotContended]'s pause is given.
  */
-class StoreIdentityResolver(private val persistenceManager: PersistenceManager) {
+class StoreIdentityResolver internal constructor(
+    private val persistenceManager: PersistenceManager,
+    private val sleep: (millis: Long) -> Unit,
+) {
+
+    constructor(persistenceManager: PersistenceManager) : this(persistenceManager, { Thread.sleep(it) })
 
     /**
      * Returns this store's identity, assigning one if the store has never been stamped.
@@ -76,53 +92,121 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
     /**
      * Ensures the uniqueness constraint on the merge key. Returns whether it is in force; false degrades
      * [resolve] to best-effort convergence rather than failing boot over an identity that can still be read.
+     *
+     * Managers making the constraint at once can deadlock (Neo4j does, on the label's lock), so one turned
+     * away so makes it again, and then finds the winner's. Going on to write the stamp without it would let
+     * two stamps be written before the winner's constraint is in force, and it then fails on them (#473).
+     *
+     * One manager's statement can also be refused for what another's has just made ([madeMeanwhile]): on
+     * FalkorDB the key's backing index already there, before the winner's constraint is, and on Postgres the
+     * index's name taken in `pg_class`. The constraint is then ensured again, a few times at most, which finds
+     * the other's, rather than going on without it (#492, as liberation-data/drivine#489).
+     *
+     * A manager whose making still fails, as one that lost each round of Neo4j's label lock to the others does,
+     * looks for the winner's constraint before it goes on best-effort ([winnersInForce]). Turned away for
+     * contention and finding none, it ensures the constraint once more, by then with fewer making it at once.
+     *
+     * That narrows the window for two stamps without closing it: a manager whose last ensure is turned away too
+     * writes its stamp unguarded, and so may another, while no constraint is in force yet. No store offers a lock
+     * to make the constraint under, and ensuring or looking for longer would only move the window. A stamp written
+     * unguarded is still written again when a constraint made meanwhile refuses it ([assignIfAbsent]), and of two
+     * stamps each manager reads the oldest ([resolve]).
      */
     private fun ensureUniqueKey(): Boolean {
         if (!persistenceManager.supportsSchemaManagement) return false
         val constraints = persistenceManager.constraints
-        return try {
-            // The label is Drivine's, so a plain index on the key (Neo4j) is replaced by the constraint.
-            when (val result = constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)) {
-                is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
-                is EnsureResult.Violation -> {
-                    logger.warn(
-                        "[store-identity] Database '{}' already holds duplicate DrivineStore stamps from an " +
-                            "earlier concurrent first boot, so uniqueness cannot be enforced. Identity is " +
-                            "best-effort until the duplicates are removed.",
-                        persistenceManager.database,
-                    )
-                    false
-                }
-                is EnsureResult.Drift -> {
-                    logger.warn(
-                        "[store-identity] Unexpected constraint on DrivineStore(key) on database '{}': {}. " +
-                            "Identity is best-effort.",
-                        persistenceManager.database, result.existing,
-                    )
-                    false
-                }
-                is EnsureResult.BlockedByIndex -> {
-                    logger.warn(
-                        "[store-identity] Index {} on DrivineStore(key) on database '{}' is in the way of its " +
-                            "uniqueness constraint. Identity is best-effort until it is dropped.",
-                        result.index.name, persistenceManager.database,
-                    )
-                    false
-                }
-            }
+        val failure = try {
+            return inForceAfter(ensuredAgainWhenMadeMeanwhile(constraints))
         } catch (e: Exception) {
-            // Another process creating the same constraint at the same moment surfaces here on engines
-            // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
-            // the race was benign. One whose build failed (FalkorDB) is listed, yet enforces nothing.
-            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull()?.takeUnless { it.buildFailed } != null) {
-                true
-            } else {
+            e
+        }
+        // Another process creating the same constraint at the same moment surfaces here on engines
+        // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
+        // the race was benign.
+        val contended = DdlContention.gaveUp(failure) || contended(failure)
+        if (winnersInForce(constraints, contended)) return true
+        val last = if (contended) {
+            try {
+                return inForceAfter(ensuredAgainWhenMadeMeanwhile(constraints))
+            } catch (again: Exception) {
+                again
+            }
+        } else failure
+        logger.warn(
+            "[store-identity] Could not ensure uniqueness on DrivineStore(key) on database '{}' ({}). " +
+                "Identity is best-effort.",
+            persistenceManager.database, last.message,
+        )
+        return false
+    }
+
+    /** Whether the key's constraint is in force after [result]; warns, and answers false, when it can't be. */
+    private fun inForceAfter(result: EnsureResult): Boolean =
+        when (result) {
+            is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
+            is EnsureResult.Violation -> {
                 logger.warn(
-                    "[store-identity] Could not ensure uniqueness on DrivineStore(key) on database '{}' ({}). " +
-                        "Identity is best-effort.",
-                    persistenceManager.database, e.message,
+                    "[store-identity] Database '{}' already holds duplicate DrivineStore stamps from an " +
+                        "earlier concurrent first boot, so uniqueness cannot be enforced. Identity is " +
+                        "best-effort until the duplicates are removed.",
+                    persistenceManager.database,
                 )
                 false
+            }
+            is EnsureResult.Drift -> {
+                logger.warn(
+                    "[store-identity] Unexpected constraint on DrivineStore(key) on database '{}': {}. " +
+                        "Identity is best-effort.",
+                    persistenceManager.database, result.existing,
+                )
+                false
+            }
+            is EnsureResult.BlockedByIndex -> {
+                logger.warn(
+                    "[store-identity] Index {} on DrivineStore(key) on database '{}' is in the way of its " +
+                        "uniqueness constraint. Identity is best-effort until it is dropped.",
+                    result.index.name, persistenceManager.database,
+                )
+                false
+            }
+        }
+
+    /**
+     * Whether another manager's key constraint is in force, looked for after this one's making failed. Of managers
+     * making it at once on Neo4j, each round of the label's lock goes to one and turns the rest away as deadlocked;
+     * with many at once, the rounds can go on past [DdlContention.ATTEMPTS] (liberation-data/drivine CI run
+     * 41260212023, and 128 managers here). A loser turned away each time finds the winner's here, and, looking
+     * rather than making it again, leaves the lock to the others, so that one of them wins sooner. The winner may
+     * still be making it, so after [contended] making it is looked for up to [LOOKS_FOR_THE_WINNER] times, with longer
+     * pauses between ([lookPause]). After a failure of another kind (no permission, an index in the way, refused as
+     * made meanwhile each time) it is looked for once: no winner is still making it, and the warning shouldn't wait.
+     * One still being built (FalkorDB) is waited on, as it enforces nothing yet, and one whose build failed is listed,
+     * yet enforces nothing ([ConstraintManager.inForce]). A look that fails finds nothing.
+     */
+    private fun winnersInForce(constraints: ConstraintManager, contended: Boolean): Boolean {
+        repeat(if (contended) LOOKS_FOR_THE_WINNER else 1) { look ->
+            if (look > 0) sleep(lookPause(look))
+            if (runCatching { constraints.inForce(KEY_CONSTRAINT) }.getOrDefault(false)) return true
+        }
+        return false
+    }
+
+    /** Ensures the key's constraint, again when another manager made it, or what it needs, meanwhile. */
+    private fun ensuredAgainWhenMadeMeanwhile(constraints: ConstraintManager): EnsureResult {
+        var attempt = 1
+        while (true) {
+            try {
+                // The label is Drivine's, so a plain index on the key (Neo4j) is replaced by the constraint.
+                return DdlContention.whenNotContended(turnedAway = ::contended) {
+                    constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)
+                }
+            } catch (e: Exception) {
+                // A deadlock has been run again already, by whenNotContended, as many times as it runs one, and one it
+                // gave up on is not run again here: at most MAX_ENSURE_ATTEMPTS × DdlContention.ATTEMPTS ensures in all.
+                if (attempt >= MAX_ENSURE_ATTEMPTS || DdlContention.gaveUp(e) || !madeMeanwhile(e, constraints.grammar)) throw e
+                logger.debug("[store-identity] DrivineStore(key) made meanwhile by another manager on attempt {}; ensuring again", attempt)
+                Thread.sleep(SaveExecutor.contendedPause(attempt - 1))
+                attempt++
             }
         }
     }
@@ -130,6 +214,11 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
     /**
      * `MERGE`s the stamp. Under the constraint, a concurrent first writer can make this one fail with a
      * violation or a write conflict rather than block; retrying then matches the winner's node.
+     *
+     * A violation is retried even when [ensureUniqueKey] could not confirm the constraint, for the violation
+     * itself proves one is in force: on Neo4j, managers making it at once deadlock, and a loser may not see
+     * the winner's constraint yet when it looks, though it is enforced by the time the stamp is written (#473).
+     * A conflict proves nothing, so it is retried only under a constraint confirmed.
      */
     private fun assignIfAbsent(guarded: Boolean) {
         var attempt = 1
@@ -147,7 +236,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                 )
                 return
             } catch (e: Exception) {
-                if (!guarded || attempt >= MAX_MERGE_ATTEMPTS || !lostTheRace(e)) throw e
+                if (attempt >= MAX_MERGE_ATTEMPTS || !(if (guarded) lostTheRace(e) else violatedTheKey(e))) throw e
                 logger.debug("[store-identity] Concurrent stamp won on attempt {}; merging again", attempt)
                 // Back off so the winner can commit; otherwise the retry just conflicts with it again.
                 Thread.sleep(MERGE_BACKOFF_MILLIS shl (attempt - 1))
@@ -156,8 +245,23 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         }
     }
 
+    /** The store's backend, which knows its engine's deadlocks: see [GraphBackend.contended]. */
+    private val backend: GraphBackend by lazy { GraphBackends.of(persistenceManager, Neo4jObjectMapper.instance) }
+
+    /**
+     * Whether [e], or a cause under it, is the engine turning a statement away for another session's. On the SQL
+     * stores this includes the DDL deadlocks [DdlContention] retries on its own, for the store's DDL run within
+     * this run of it is run once.
+     */
+    private fun contended(e: Throwable): Boolean =
+        DdlContention.contended(e) || generateSequence(e) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
+
+    /** Whether [e] is a constraint refusing the stamp. Only a manager with schema management has a grammar to ask. */
+    private fun violatedTheKey(e: Throwable): Boolean =
+        persistenceManager.supportsSchemaManagement && persistenceManager.constraints.grammar.isConstraintViolation(e)
+
     private fun lostTheRace(e: Throwable): Boolean =
-        persistenceManager.constraints.grammar.isConstraintViolation(e) ||
+        violatedTheKey(e) ||
             // Memgraph's optimistic concurrency: "Cannot resolve conflicting transactions. You can retry…"
             SchemaGrammar.messagesOf(e).contains("conflicting transactions", ignoreCase = true)
 
@@ -195,6 +299,62 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         /** Lost-race MERGE retries, backing off 50, 100, 200, 400 ms — enough for a peer's boot write to commit. */
         private const val MAX_MERGE_ATTEMPTS = 5
         private const val MERGE_BACKOFF_MILLIS = 50L
+
+        /** How far down a failure's causes the engine's own error is looked for. */
+        private const val MAX_CAUSE_DEPTH = 10
+
+        /** How many times the key's constraint is ensured when another manager made it meanwhile: see [madeMeanwhile]. */
+        private const val MAX_ENSURE_ATTEMPTS = 3
+
+        /** How many times the winner's key constraint is looked for after this manager's making failed: see [winnersInForce]. */
+        internal const val LOOKS_FOR_THE_WINNER = 8
+
+        /** The least pause before the second look for the winner's constraint; each later one is as much longer. */
+        private const val LOOK_PAUSE_MILLIS = 50L
+
+        /**
+         * The pause before look [look] (from 1) for the winner's constraint: as many [LOOK_PAUSE_MILLIS] as looks so
+         * far, and up to as much again at random, so that losers looking together don't ask together. 2.8 s at most
+         * over all the looks.
+         */
+        internal fun lookPause(look: Int, random: Random = Random.Default): Long {
+            val base = look * LOOK_PAUSE_MILLIS
+            return base + random.nextLong(base)
+        }
+
+        /** A graph engine refusing a schema statement for what is there: FalkorDB's "Constraint already exists", "Attribute 'key' is already indexed". */
+        private val ALREADY_MADE = Regex("already (exists|indexed)", RegexOption.IGNORE_CASE)
+
+        /** The schema of Postgres's own catalog, whose `pg_class_relname_nsp_index` two sessions making one index can both write. */
+        private const val PG_CATALOG = "pg_catalog"
+
+        /**
+         * Whether [e], or a cause under it, is a schema statement refused for what another session made meanwhile.
+         * On the SQL stores only by code: Oracle's `ORA-00955` (a name already used), and Postgres's `23505` in its
+         * catalog ([inPostgresCatalog]), as two sessions running `CREATE UNIQUE INDEX IF NOT EXISTS` at once get; a 23505
+         * on a graph's rows is a violation, and not this. On a graph engine, "already exists" or "already indexed",
+         * unless it is an index in the way of the constraint ([SchemaGrammar.isBlockedByIndex]), which
+         * [ConstraintManager.ensure] answers itself. The graph engines' messages are in English whatever the locale.
+         */
+        internal fun madeMeanwhile(e: Throwable, grammar: SchemaGrammar): Boolean {
+            val causes = generateSequence(e) { it.cause }.take(MAX_CAUSE_DEPTH).toList()
+            val sql = causes.filterIsInstance<SQLException>()
+            if (sql.isNotEmpty()) {
+                return sql.any { it.errorCode == 955 || (it.sqlState == "23505" && inPostgresCatalog(it)) }
+            }
+            return !grammar.isBlockedByIndex(e) && causes.any { ALREADY_MADE.containsMatchIn(it.message.orEmpty()) }
+        }
+
+        /**
+         * Whether the Postgres driver's [e] names a constraint of the catalog, by the schema the server sends in its own
+         * field (`PSQLException.getServerErrorMessage().getSchema()`). Not by the message, which is in the server's
+         * language (`lc_messages`), and which names a graph's own index alike when the graph's name starts `pg_`. The
+         * driver is not a dependency of Drivine's, so it is asked by reflection; another driver's failure is not this.
+         */
+        private fun inPostgresCatalog(e: SQLException): Boolean = runCatching {
+            val detail = e.javaClass.getMethod("getServerErrorMessage").invoke(e) ?: return false
+            detail.javaClass.getMethod("getSchema").invoke(detail) == PG_CATALOG
+        }.getOrDefault(false)
 
         /** The MERGE key. Fixed, so a second boot matches the node the first one wrote. */
         internal const val SINGLETON_KEY = "singleton"

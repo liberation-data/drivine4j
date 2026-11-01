@@ -191,6 +191,12 @@ data class OrgPersonView(
 )
 ```
 
+**A list of fragments over several hops.** `maxDepth` above 1 on a `List<Fragment>` field reads every node of the
+target's labels within that many hops (`-[:NEXT*1..2]->`), each once, and never over one relationship twice in a
+path. It does so at every level, on a view nested in another too: there the graph engines read only one hop before
+liberation-data/drivine4j#461, while the SQL stores read the whole depth, so a nested load on Neo4j, Memgraph or
+FalkorDB may now give more nodes than it did.
+
 **Saving.** A view nested in itself, as above, is saved: each level is one relationship from the level above. A list of *fragments* read over several hops (`maxDepth` above 1 on a `List<Fragment>` field) is loaded and never written, like a path field: see [`@ReadOnly`](#readonly-a-field-that-is-loaded-and-never-written). A recursive collection cannot be sorted in the query; use [`@SortedBy`](#client-side-sorting-with-sortedby), which orders every level.
 
 #### 5. Path Traversal - Skipping Intermediary Nodes
@@ -689,9 +695,15 @@ graphObjectManager.loadAll<PropositionView> {
 }
 ```
 
-Rendered as an existence subquery, per engine — `EXISTS { (root)-[:HAS_MENTION]->(m) WHERE … }` on
-Neo4j, `size([(root)-[:HAS_MENTION]->(m) WHERE … | 1]) > 0` on Memgraph, a `CALL`-subquery count on
-FalkorDB — with `none{}` wrapping it in `NOT (…)`. `any{}` is the explicit form of the flat
+Rendered as an existence subquery, per engine — `EXISTS { (root)-[:HAS_MENTION]->(m:Mention) WHERE … }` on
+Neo4j, `size([(root)-[:HAS_MENTION]->(m:Mention) WHERE … | 1]) > 0` on Memgraph, a `CALL`-subquery count on
+FalkorDB — with `none{}` wrapping it in `NOT (…)`. The related node must carry the field's target labels,
+as the load matches them, on every store: a condition tests only the nodes the field would load, so a
+node of another label at the end of the same relationship neither matches `any { }` nor fails `none { }`.
+The same holds of a relationship of a nested view, and of a single-valued relationship. A list of fragments
+read over several hops (`maxDepth` above 1) is tested to the same depth the load reads it, a `depth(…)` given
+for the query included: `following.any { text eq "c" }` on a field of `maxDepth = 2` walks
+`-[:NEXT*1..2]->`, and finds a node two hops away, as the load would give it. `any{}` is the explicit form of the flat
 `mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
 or for clarity. (Backends without subquery support throw, per the grammar default.)
 

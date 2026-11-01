@@ -34,6 +34,11 @@ class OraclePredicatesTest {
     private val name = "JSON_VALUE(n_.props, '$.name')"
     private val rank = "JSON_VALUE(n_.props, '$.rank' RETURNING NUMBER)"
 
+    /** The test that a related node carries [label]: a node the field loads carries its target's labels. */
+    private fun carries(row: String, label: String) =
+        "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE($row.labels), ']'), '[') || ',\"', ',\"$label\",\"') > 0"
+    private val human = carries("people_", "Human")
+
     // ----- One case per operator -----
 
     @Test
@@ -294,13 +299,13 @@ class OraclePredicatesTest {
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
             PropertyCondition("people.id", ComparisonOperator.EQUALS, "h1"),
         )))
-        // The related node is the field's row, and the pattern that reaches it tests it.
+        // The related node is the field's row, and the pattern that reaches it tests it: its labels first, as the load does.
         assertEquals(
             """
             EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
                     COLUMNS (claim_.nid AS src)) people_
                 WHERE people_.src = claim_.nid)
             """.trimIndent(),
@@ -322,7 +327,7 @@ class OraclePredicatesTest {
             EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
                     COLUMNS (claim_.nid AS src, people_.props)) people_
                 WHERE people_.src = claim_.nid
                   AND JSON_VALUE(people_.props, '$.id') IN (SELECT v FROM JSON_TABLE(${'$'}_p1, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$'))))
@@ -345,13 +350,13 @@ class OraclePredicatesTest {
         )
         for (condition in onRows) {
             val sql = asked(condition)
-            assertTrue("(people_ IS node)" in sql, sql)
+            assertTrue("(people_ IS node WHERE $human)" in sql, sql)
             assertTrue("WHERE people_.src = claim_.nid\n      AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR " in sql, sql)
         }
 
         val inPattern = asked(WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))))
         assertTrue(
-            "(people_ IS node WHERE (JSON_VALUE(people_.props, '$.name') = \$_p0 OR NOT (JSON_VALUE(people_.props, '$.name') = \$_p1)))" in inPattern,
+            "(people_ IS node WHERE $human AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR NOT (JSON_VALUE(people_.props, '$.name') = \$_p1)))" in inPattern,
             inPattern,
         )
         assertTrue(inPattern.endsWith("WHERE people_.src = claim_.nid)"), inPattern)
@@ -362,10 +367,32 @@ class OraclePredicatesTest {
         val select = OracleSelect(graph, Dossier::class.java)
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))
         assertEquals(2, Regex("EXISTS").findAll(sql).count(), sql)
-        assertTrue(sql.contains("MATCH (memo_ IS node) -[e IS edge WHERE e.type = 'COVERS']-> (claims_ IS node)"), sql)
-        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = \$_p0)"), sql)
+        // Each level tests only the nodes its field loads: a claim, then a human.
+        assertTrue(sql.contains("MATCH (memo_ IS node) -[e IS edge WHERE e.type = 'COVERS']-> (claims_ IS node WHERE ${carries("claims_", "Claim")})"), sql)
+        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = \$_p0)"), sql)
         // The inner EXISTS names the row of the outer, so it is asked of that row and not in its pattern.
         assertTrue(sql.contains("WHERE claims_.src = memo_.nid\n      AND EXISTS ("), sql)
+    }
+
+    @Test
+    fun `a condition on a list read over several hops asks a path of each length to its depth`() {
+        val window = sample.conditiondepth.CdWindowView::class.java
+        fun asked(depths: Map<String, Int>) = assertNotNull(
+            OracleSelect(graph, window, depthOverrides = depths)
+                .predicate(listOf(RelationshipCondition("following", listOf(PropertyCondition("following.text", ComparisonOperator.EQUALS, "c"))))),
+        )
+        val target = "(following_ IS node WHERE ${carries("following_", "CdNode")} AND JSON_VALUE(following_.props, '$.text') = \$_p0)"
+        val walked = asked(emptyMap())
+        // No quantified step: one with a bound value in its pattern fails on Oracle Free (ORA-00600 [qctcte1]).
+        assertFalse("->{" in walked, walked)
+        assertEquals(2, Regex("EXISTS").findAll(walked).count(), walked)
+        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in walked, walked)
+        assertTrue("-[e2 IS edge WHERE e2.type = 'NEXT']-> $target" in walked, walked)
+        assertTrue(walked.startsWith("(EXISTS ") && " OR EXISTS " in walked, walked)
+        assertEquals(3, Regex("EXISTS").findAll(asked(mapOf("following" to 3))).count())
+        val one = asked(mapOf("following" to 1))
+        assertEquals(1, Regex("EXISTS").findAll(one).count(), one)
+        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in one, one)
     }
 
     @Test
@@ -376,9 +403,9 @@ class OraclePredicatesTest {
 
     @Test
     fun `a label condition on a relationship alias tests the related node's row`() {
-        val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Human")))))
+        val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Author")))))
         assertTrue(sql.startsWith("EXISTS"), sql)
-        assertTrue(sql.contains("(people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0)"), sql)
+        assertTrue(sql.contains("(people_ IS node WHERE $human AND ${carries("people_", "Author")})"), sql)
     }
 
     @Test

@@ -80,7 +80,7 @@ class QuantifiedRelationshipTest {
             conditionsOf { where { query.mentions.any { resolvedId eq "ent-1" } } }, viewModel, grammar,
         ).whereClause!!
         assertTrue(any.contains("EXISTS {"))
-        assertTrue(any.contains("(proposition)-[:HAS_MENTION]->(mentions)"))
+        assertTrue(any.contains("(proposition)-[:HAS_MENTION]->(mentions:Mention)"))
         assertTrue(any.contains("mentions.resolvedId ="))
         assertFalse(any.trimStart().startsWith("NOT "))
 
@@ -107,12 +107,42 @@ class QuantifiedRelationshipTest {
     }
 
     @Test
-    fun `an empty block checks for the relationship with an unlabelled far node`() {
+    fun `FalkorDB counts the related node by its name, which the pattern labels as the field's target`() {
+        val result = CypherGenerator.buildWhereClause(
+            conditionsOf { where { query.mentions.any { resolvedId eq "ent-1" } } }, viewModel, FalkorDbCypherGrammar(CallSubqueryEmitter()),
+        )
+        val prolog = result.prologs.single()
+        assertTrue(prolog.contains("WITH proposition\n"), prolog)
+        assertTrue(prolog.contains("OPTIONAL MATCH (proposition)-[:HAS_MENTION]->(mentions:Mention) WHERE"), prolog)
+        assertTrue(prolog.contains("RETURN count(mentions) AS _ec0"), prolog)
+        assertEquals("_ec0 > 0", result.whereClause)
+    }
+
+    @Test
+    fun `a condition on a path walks each hop to a node labelled as its target`() {
+        val shelf = GraphViewModel.from(sample.targetlabel.TlShelfView::class.java)
+        fun where(spec: GraphQuerySpec<sample.targetlabel.TlShelfViewQueryDsl>.() -> Unit, grammar: org.drivine.query.grammar.CypherGrammar) =
+            CypherGenerator.buildWhereClause(
+                GraphQuerySpec(sample.targetlabel.TlShelfViewQueryDsl.INSTANCE).apply(spec).conditions, shelf, grammar,
+            ).whereClause!!
+
+        assertEquals(
+            "EXISTS { (shelf)-[:HOLDS]->(:TlEntry)-[:TAGGED]->(tagged:TlMarker) WHERE tagged.name = \$param_tagged_name_0 }",
+            where({ where { query.tagged.any { name eq "red" } } }, Neo4j5Grammar(ApocSortMapsEmitter())),
+        )
+        assertEquals(
+            "NOT (EXISTS { (shelf)-[:HOLDS]->(:TlEntry)-[:TAGGED]->(_:TlMarker) })",
+            where({ where { query.tagged.none { } } }, Neo4j5Grammar(ApocSortMapsEmitter())),
+        )
+    }
+
+    @Test
+    fun `an empty block checks for a node the field loads, labelled as its target`() {
         val rendered = listOf(
-            Neo4j5Grammar(ApocSortMapsEmitter()) to "EXISTS { (proposition)-[:HAS_MENTION]->(_) }",
-            Neo4j4Grammar(ApocSortMapsEmitter()) to "exists((proposition)-[:HAS_MENTION]->())",
-            MemgraphGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->()",
-            FalkorDbCypherGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->()",
+            Neo4j5Grammar(ApocSortMapsEmitter()) to "EXISTS { (proposition)-[:HAS_MENTION]->(_:Mention) }",
+            Neo4j4Grammar(ApocSortMapsEmitter()) to "exists((proposition)-[:HAS_MENTION]->(:Mention))",
+            MemgraphGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->(:Mention)",
+            FalkorDbCypherGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->(:Mention)",
         )
         rendered.forEach { (grammar, check) ->
             val any = CypherGenerator.buildWhereClause(

@@ -59,7 +59,7 @@ internal class PostgresSelect(
     depthOverrides: Map<String, Int> = emptyMap(),
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = PostgresRowSources(graph, scope)
-    private val predicates = PostgresPredicates(scope, rows, rootAlias, root, rootModel, viewModel)
+    private val predicates = PostgresPredicates(scope, rows, rootAlias, root, rootModel, viewModel, depthOverrides)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----

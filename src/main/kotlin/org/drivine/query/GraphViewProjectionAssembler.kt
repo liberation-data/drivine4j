@@ -233,11 +233,7 @@ internal class GraphViewProjectionAssembler(
                 }
 
                 val direction = Directions.directionString(rel)
-
-                // Get labels for the target - for relationship fragments, use the target node type
-                val targetType = if (rel.isRelationshipFragment) rel.targetNodeType!! else rel.elementType
-                val targetLabels = GraphTypeLabels.labelsForType(targetType)
-                val targetLabelString = targetLabels.joinToString(":")
+                val targetLabelString = GraphTypeLabels.targetLabels(rel).joinToString(":")
 
                 grammar.existenceCheck(rootFieldName, direction, targetLabelString)
             }
@@ -418,8 +414,8 @@ internal class GraphViewProjectionAssembler(
         // Direct target reference pattern (existing behavior)
         val direction = Directions.directionString(rel)
 
-        // Get all labels for the target type
-        val targetLabels = GraphTypeLabels.labelsForType(rel.elementType)
+        // Get all labels for the target type: those a condition on the field tests too
+        val targetLabels = GraphTypeLabels.targetLabels(rel)
         if (targetLabels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for relationship target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
         }
@@ -445,13 +441,10 @@ internal class GraphViewProjectionAssembler(
         // a variable-length `*1..N` traversal collecting every reached node into a de-duplicated flat
         // list — a transitive N-hop neighbourhood, distinct from recursive-view nesting. maxDepth == 1
         // (the default) keeps the single-hop comprehension below byte-identical; views are unaffected.
-        if (rel.isCollection && !isGraphView) {
-            val effectiveMaxDepth = context.depthOverrides[rel.fieldName] ?: rel.maxDepth
-            if (effectiveMaxDepth > 1) {
-                return buildVariableLengthListPattern(
-                    rootFieldName, rel, targetAlias, targetLabelString, effectiveMaxDepth, visitCounts
-                )
-            }
+        // A condition on the field walks the same hops (RelationshipDepth.hops).
+        val hops = RelationshipDepth.hops(rel, context.depthOverrides)
+        if (hops > 1) {
+            return buildVariableLengthListPattern(rootFieldName, rel, targetAlias, targetLabelString, hops, visitCounts)
         }
 
         // Delegate nested GraphView projection to the grammar's projector
@@ -524,7 +517,11 @@ internal class GraphViewProjectionAssembler(
                 NestedRelInfo(
                     fieldName = nestedRel.fieldName,
                     alias = nestedAlias,
-                    direction = Directions.directionString(nestedRel),
+                    // Over several hops for a list of fragments read so, as a condition on it walks: each
+                    // node reached is collected once, by the DISTINCT the projector collects with.
+                    direction = RelationshipDepth.hops(nestedRel, context.depthOverrides).let { hops ->
+                        if (hops > 1) Directions.varLengthDirectionString(nestedRel, hops) else Directions.directionString(nestedRel)
+                    },
                     labelString = nestedLabels.joinToString(":"),
                     projection = projection,
                     isCollection = nestedRel.isCollection,
@@ -682,7 +679,7 @@ internal class GraphViewProjectionAssembler(
 
         // Get labels for the target node type
         val targetNodeType = rel.targetNodeType!!
-        val targetLabels = GraphTypeLabels.labelsForType(targetNodeType)
+        val targetLabels = GraphTypeLabels.targetLabels(rel)
         if (targetLabels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for relationship fragment target ${targetNodeType.name}. @GraphFragment or @GraphView must specify at least one label.")
         }
@@ -992,7 +989,18 @@ internal class GraphViewProjectionAssembler(
             val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts, "${fieldName}_${nestedRel.fieldName}")
 
             // Use [0] suffix for single-object relationships to return object instead of array
-            if (nestedRel.isCollection) {
+            val hops = RelationshipDepth.hops(nestedRel, context.depthOverrides)
+            if (hops > 1) {
+                // A list of fragments read over several hops, as at the top level: each node it reaches
+                // within them once, which a condition on the field tests too.
+                val reached = "[($varName)${Directions.varLengthDirectionString(nestedRel, hops)}($nestedTargetAlias:$nestedTargetLabelString) | $nestedTargetAlias]"
+                val seen = "_${nestedTargetAlias}_seen"
+                val node = "_${nestedTargetAlias}_n"
+                val distinct = "reduce($seen = [], $node IN $reached | CASE WHEN $node IN $seen THEN $seen ELSE $seen + [$node] END)"
+                val list = "[$nestedTargetAlias IN $distinct | $nestedProjection]"
+                val sort = findSortForNestedRelationship(fieldName, nestedRel.fieldName)
+                fields.add("\n            ${nestedRel.fieldName}: ${wrapWithNestedSortIfNeeded(list, sort, nestedRel.elementType)}")
+            } else if (nestedRel.isCollection) {
                 // Collection: check if there's a sort for this nested relationship
                 val listComprehension = """[
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |

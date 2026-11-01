@@ -37,7 +37,8 @@ import kotlin.test.assertNotEquals
  * property of the DATA, not of the client that read it or the address it was reached at.
  *
  * Each engine runs [verifyStableAcrossClients], [verifyEmptiedStoreIsANewStore],
- * [verifyConcurrentFirstBootsAgree] and [verifyExistingDuplicatesStillResolve]; Neo4j and Memgraph add
+ * [verifyConcurrentFirstBootsAgree], [verifyConcurrentFirstBootsWithoutTheConstraintAgree] and
+ * [verifyExistingDuplicatesStillResolve]; Neo4j and Memgraph add
  * [verifyInFlightPeerStampIsNotDuplicated]; FalkorDB adds
  * [verifyDistinctStoresDiffer], since two graphs on one container are two stores without needing a
  * second container or an enterprise licence.
@@ -92,8 +93,7 @@ private fun verifyDistinctStoresDiffer(
  * shape. Without the uniqueness constraint, two MERGEs can each create a node, and a worker that read
  * before the other write landed caches a different id from one that read after.
  */
-private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersistenceManager) {
-    val workers = 8
+private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersistenceManager, workers: Int = 8) {
     val managers = List(workers) { open() }
     val start = CountDownLatch(1)
     val pool = Executors.newFixedThreadPool(workers)
@@ -114,6 +114,26 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersiste
         QuerySpecification.withStatement("MATCH (s:DrivineStore) RETURN count(s) AS n").transform<Long>()
     ).single()
     assertEquals(1L, stamps, "the constraint must stop a second stamp from existing")
+}
+
+/**
+ * [verifyConcurrentFirstBootsAgree] on a store that has never had the key's constraint, so that the
+ * managers race to make it too, several rounds over. On Neo4j most of them deadlock making it, and a
+ * loser may not see the winner's constraint yet when it looks; its stamp, refused by that constraint,
+ * must then be written again rather than fail the boot (#473). On FalkorDB a loser's statement is
+ * instead refused for what the winner made meanwhile ("already indexed"); it must still end up under
+ * the winner's constraint, so no manager may warn that identity is best-effort (liberation-data/drivine#489).
+ */
+private fun verifyConcurrentFirstBootsWithoutTheConstraintAgree(
+    open: () -> NonTransactionalPersistenceManager,
+    wipe: () -> Unit,
+    rounds: Int = 5,
+) = assertNoBestEffortWarning {
+    repeat(rounds) {
+        open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
+        wipe()
+        verifyConcurrentFirstBootsAgree(open, workers = 16)
+    }
 }
 
 /**
@@ -217,6 +237,9 @@ class StoreIdentityNeo4jTest {
     @Test fun `concurrent first boots agree on one identity on Neo4j`() =
         verifyConcurrentFirstBootsAgree({ open() })
 
+    @Test fun `concurrent first boots without the constraint agree on one identity on Neo4j`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree({ open() }, ::wipe)
+
     @Test fun `existing duplicate stamps still resolve on Neo4j`() =
         verifyExistingDuplicatesStillResolve({ open() })
 
@@ -273,6 +296,9 @@ class StoreIdentityFalkorDbTest {
     @Test fun `concurrent first boots agree on one identity on FalkorDB`() =
         verifyConcurrentFirstBootsAgree({ open() })
 
+    @Test fun `concurrent first boots without the constraint agree on one identity on FalkorDB`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree({ open() }, ::wipe)
+
     @Test fun `existing duplicate stamps still resolve on FalkorDB`() =
         verifyExistingDuplicatesStillResolve({ open() })
 
@@ -317,6 +343,9 @@ class StoreIdentityMemgraphTest {
 
     @Test fun `concurrent first boots agree on one identity on Memgraph`() =
         verifyConcurrentFirstBootsAgree({ open() })
+
+    @Test fun `concurrent first boots without the constraint agree on one identity on Memgraph`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree({ open() }, ::wipe)
 
     @Test fun `existing duplicate stamps still resolve on Memgraph`() =
         verifyExistingDuplicatesStillResolve({ open() })

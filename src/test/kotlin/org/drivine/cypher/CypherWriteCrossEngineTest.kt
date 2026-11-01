@@ -52,6 +52,12 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
+    fun `a write's rows group a key's value that is no null as before`() {
+        // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
+        assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
+    }
+
+    @Test
     fun `CALLs that write, nested, give each row its own variables with the nodes they return`() {
         // Not in the spec yet: a caller row at each depth, merged with a node returned from below it.
         assertEquals(
@@ -68,6 +74,44 @@ abstract class CypherWriteContract {
         assertEquals(
             listOf(listOf(2020L, 3L)),
             query("WITH date('2020-01-02') AS d CALL { CREATE (n:CyWrite) RETURN date('2021-03-04') AS e } RETURN [d.year, e.month]"),
+        )
+    }
+
+    @Test
+    fun `a CALL that writes sees only the variables it imports, so a CREATE of a name it does not import makes a new node`() {
+        // Not in the spec yet (#410): the row's node of that name was joined, so no node was made. The rows are Neo4j's (2026.10).
+        query("CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})")
+        assertEquals(
+            listOf(listOf(1L, true), listOf(2L, true)),
+            query("MATCH (a:CyWrite) CALL () { CREATE (a:CyWrite {made: true}) RETURN a.made AS m } RETURN a.id, m ORDER BY a.id"),
+        )
+        assertEquals(listOf(listOf(1L, 1L)), query("MATCH (a:CyWrite {id: 1}) CALL { CREATE (a:CyWrite {made: false}) RETURN 1 AS x } RETURN [a.id, x]"))
+        assertEquals(listOf(listOf(2L, 3L)), query("MATCH (n:CyWrite) RETURN [count(n.id), count(n.made)]"))
+        // CALL (a) imports a alone: b in it is new, and the row's b is as it was after it.
+        query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a) { CREATE (a)-[:R]->(b:CyWrite {id: 3}) } RETURN 1")
+        assertEquals(listOf(listOf(1L, 3L)), query("MATCH (a:CyWrite)-[:R]->(b) RETURN [a.id, b.id]"))
+        assertEquals(
+            listOf(listOf(2L, 4L)),
+            query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a) { CREATE (b:CyWrite {id: 4}) RETURN b.id AS made } RETURN [b.id, made]"),
+        )
+        // What brackets import is seen after a leading WITH that does not pass it on, as Neo4j has it.
+        assertEquals(listOf(true), query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a, b) { WITH a SET b.seen = true } RETURN b.seen"))
+        // ... and after any WITH: a CREATE of it joins the row's node, and a SET writes it.
+        query("MATCH (a:CyWrite {id: 1}) CALL (a) { WITH 1 AS one CREATE (a)-[:S]->(:CyWrite {id: 5}) } RETURN 1")
+        assertEquals(listOf(listOf(1L, 5L)), query("MATCH (a:CyWrite)-[:S]->(b) RETURN [a.id, b.id]"))
+        assertEquals(listOf(5L), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyWrite {id: 5}) WITH c SET a.next = c.id RETURN a.next AS n } RETURN n"))
+        assertEquals(listOf(1L), query("MATCH (a:CyWrite {id: 2}) CALL (*) { WITH 1 AS one SET a.one = one } RETURN a.one"))
+        // An aggregate over no rows still gives its row, and the WITH's WHERE reads what brackets import.
+        assertEquals(listOf(0L), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyNone) WITH count(c) AS n SET a.none = n RETURN a.none AS v } RETURN v"))
+        assertEquals(listOf(listOf(1L, 5L)), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyWrite) WITH c WHERE c.id = a.next SET c.prev = a.id RETURN c.prev AS p, c.id AS i } RETURN [p, i]"))
+        // Reading the imports again after a WITH that aggregates, or keeps rows distinct, gives one row for each row of the call.
+        assertEquals(
+            listOf(listOf(1L, 8L, 8L), listOf(2L, 8L, 8L)),
+            query("MATCH (a:CyWrite) WHERE a.id IN [1, 2] CALL (a) { MATCH (c:CyWrite) WITH count(*) AS n SET a.count = n RETURN n } RETURN [a.id, n, a.count] ORDER BY a.id"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L)),
+            query("MATCH (a:CyWrite) WHERE a.id IN [1, 2] CALL (a) { MATCH (c:CyWrite) WITH DISTINCT 1 AS one SET a.d = one RETURN one } RETURN [a.id, a.d] ORDER BY a.id"),
         )
     }
 

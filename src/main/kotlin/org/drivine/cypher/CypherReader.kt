@@ -72,7 +72,7 @@ object CypherReader {
         val items = call.oC_YieldItems()
             ?: throw DrivineException("A CALL of a procedure within a query names what it yields, as in Cypher: CALL ${procedure.qualifiedName}() YIELD ${procedure.field}.")
         val where = items.oC_Where()?.let { expression(it.oC_Expression()) }
-        return Clause.Call(false, procedure.query(invocation.oC_Expression().map(::expression), yields(items), where))
+        return Clause.Call(false, procedure.query(invocation.oC_Expression().map(::expression), yields(items), where), importsAll = true)
     }
 
     /** The procedure a call names, or the call refused where the compiler does not take it. */
@@ -185,8 +185,11 @@ object CypherReader {
         return Projection(
             distinct = context.DISTINCT() != null,
             star = items.children.firstOrNull()?.text == "*",
+            // As Neo4j names them: an item a map projection is, unnamed, after its variable, so `ORDER BY p.name` after
+            // `RETURN p {.name}, count(*)` reads the item.
             items = items.oC_ProjectionItem().map { item ->
-                Projection.Item(expression(item.oC_Expression()), item.oC_Variable()?.let(::name) ?: item.oC_Expression().text)
+                val expression = expression(item.oC_Expression())
+                Projection.Item(expression, item.oC_Variable()?.let(::name) ?: (expression as? Expression.MapProjection)?.variable ?: item.oC_Expression().text)
             },
             orderBy = context.oC_Order()?.oC_SortItem()?.map { sort ->
                 Projection.SortItem(expression(sort.oC_Expression()), sort.DESC() != null || sort.DESCENDING() != null)

@@ -46,7 +46,7 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
     /** The seconds from [from] to [to], a fraction of one among them. */
     abstract fun secondsBetween(from: String, to: String): String
 
-    /** [timestamp] truncated to [unit] (`year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`, `millisecond`): null for another unit. */
+    /** [timestamp] truncated to [unit], one of [UNITS], as Neo4j truncates: null for another unit. */
     abstract fun truncate(unit: String, timestamp: String): String?
 
     /** The name of the function that writes a timestamp or a number as text in a pattern (`'YYYY-MM-DD'`, `'FM0000'`), as Postgres's and Oracle's `to_char` does. */
@@ -69,4 +69,21 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
 
     /** The zoned text [text] without the offset it ends with. */
     protected fun unzoned(text: String) = replace(text, "'${Temporal.OFFSET}'", "''")
+
+    companion object {
+        /**
+         * The units a timestamp truncates to, as Cypher names them, from the longest. The week-based year starts on the
+         * Monday of its first ISO week. A timestamp keeps microseconds alone, so cut to them it is the same.
+         */
+        val UNITS = listOf(
+            "millennium", "century", "decade", "year", "weekYear", "quarter", "month", "week", "day", "hour", "minute", "second",
+            "millisecond", "microsecond",
+        )
+
+        /**
+         * The units of many years, and how many: as Neo4j counts them, the year less its years into the span, counted toward
+         * zero as Java divides. So 2017's millennium starts in 2000, 1984's century in 1900, and -1234's millennium in -1000.
+         */
+        val YEARS_OF = mapOf("millennium" to 1000, "century" to 100, "decade" to 10)
+    }
 }

@@ -6,6 +6,7 @@ import org.drivine.annotation.GraphView
 import org.drivine.backend.postgres.PostgresSql.property
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.StatementScope
+import org.drivine.backend.sql.Step
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
@@ -31,6 +32,7 @@ import org.drivine.query.dsl.WhereCondition
  * @param rootAlias what a condition calls the root, and [root] the root's row in the statement
  * @param rootModel the root fragment, whose declared fields say how a property is read
  * @param viewModel the view whose relationship fields a condition may name; null for a fragment
+ * @param depthOverrides the depths the query reads relationship fields to, by field, which a condition on one walks too
  */
 internal class PostgresPredicates(
     private val scope: StatementScope,
@@ -39,6 +41,7 @@ internal class PostgresPredicates(
     private val root: String,
     private val rootModel: FragmentModel,
     private val viewModel: GraphViewModel?,
+    private val depthOverrides: Map<String, Int> = emptyMap(),
 ) {
 
     /** The predicate [conditions] make on the root; null when there are none. */
@@ -87,7 +90,11 @@ internal class PostgresPredicates(
         is WhereCondition.NotCondition -> "NOT (${all(condition.conditions, rows, model)})"
     }
 
-    /** Whether some node related through the field meets the conditions on it; none does, when the condition is negated. */
+    /**
+     * Whether some node the field loads meets the conditions on it; none does, when the condition is negated. Those
+     * are the nodes related through the field that carry its target's labels, as many hops away as the load reads
+     * ([Step.read]), here and on a nested field.
+     */
     private fun related(condition: WhereCondition.RelationshipCondition, rows: Map<String, String>, model: GraphViewModel?): String {
         requireNotNull(model) { "A condition on the relationship '${condition.relationshipName}' needs a @GraphView to find it in." }
         val relationship = model.relationships.find { it.fieldName == condition.relationshipName }
@@ -102,10 +109,8 @@ internal class PostgresPredicates(
             it is WhereCondition.PropertyCondition && it.propertyPath.substringBefore('.').startsWith("${target}_")
         }
         val targetType = relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
-        val found = this.rows.exists(
-            parent, this.rows.steps(relationship, emptyList()), row,
-            directPredicates(direct, target, row) + nestedPredicates(nested, targetType, target, row),
-        )
+        val predicates = directPredicates(direct, target, row) + nestedPredicates(nested, targetType, target, row)
+        val found = Step.anyPath(Step.read(relationship, depthOverrides)) { steps -> this.rows.exists(parent, steps, row, predicates) }
         return if (condition.negate) "NOT $found" else found
     }
 
@@ -139,8 +144,8 @@ internal class PostgresPredicates(
                 val nestedType = nestedRelationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
                 val below = nestedPredicates(deeper, nestedType, "${target}_$name", nestedRow)
                 val names = mapOf("${target}_$name" to nestedRow)
-                // No labels: a condition on a relationship is met by whatever node it leads to.
-                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, conditions.map { one(it, names, null) } + below)
+                val predicates = conditions.map { one(it, names, null) } + below
+                Step.anyPath(Step.read(nestedRelationship, depthOverrides)) { steps -> rows.exists(row, steps, nestedRow, predicates) }
             }
     }
 

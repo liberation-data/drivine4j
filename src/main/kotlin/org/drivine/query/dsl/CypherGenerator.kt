@@ -2,7 +2,10 @@ package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.Directions
 import org.drivine.query.FragmentQueryBuilder
+import org.drivine.query.GraphTypeLabels
+import org.drivine.query.RelationshipDepth
 import org.drivine.query.projectedKey
 import org.drivine.query.projectedKeyOrNull
 import org.drivine.query.grammar.CypherGrammar
@@ -46,6 +49,9 @@ object CypherGenerator {
      * [buildWhereClause] for a statement that holds several predicates, each written by a call of its
      * own: the parameters are numbered from [startIndex], and [parameterCount] says how far the next
      * predicate's are numbered on. Numbered apart, two predicates on one property bind two parameters.
+     *
+     * [depthOverrides] are the depths the query reads relationship fields to, by field: a condition on a
+     * field walks as deep as the load reads it ([RelationshipDepth.hops]).
      */
     internal fun buildWhereClause(
         conditions: List<WhereCondition>,
@@ -53,6 +59,7 @@ object CypherGenerator {
         grammar: CypherGrammar,
         projectedCollectionMode: Boolean,
         startIndex: Int,
+        depthOverrides: Map<String, Int> = emptyMap(),
     ): WhereClauseResult {
         val grouped = groupConditionsByAlias(conditions, viewModel)
         val prologs = mutableListOf<String>()
@@ -60,7 +67,7 @@ object CypherGenerator {
         val ecCounter = AtomicInteger(0)
 
         val whereClause = renderConditionList(
-            grouped, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
+            grouped, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides,
         )
 
         return WhereClauseResult(
@@ -86,6 +93,7 @@ object CypherGenerator {
         prologs: MutableList<String>,
         bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean,
+        depthOverrides: Map<String, Int>,
         separator: String = " AND ",
     ): String {
         val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
@@ -100,7 +108,7 @@ object CypherGenerator {
                     val relationship = relationshipOf(condition.propertyPath, relationshipNames)
                     val result = if (relationship != null) {
                         val relCondition = WhereCondition.RelationshipCondition(relationship, listOf(condition))
-                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides)
                     } else {
                         val lhs = rootPath(condition.propertyPath, viewModel, projectedCollectionMode)
                         buildPropertyConditionWithLhs(condition, paramIndex, lhs)
@@ -112,20 +120,20 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides)
                     paramIndex += countParameters(condition.targetConditions)
                     result
                 }
                 is WhereCondition.LabelCondition -> {
                     if (condition.alias in relationshipNames) {
                         val relCondition = WhereCondition.RelationshipCondition(condition.alias, listOf(condition))
-                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides)
                     } else {
                         buildLabelCondition(condition)
                     }
                 }
                 is WhereCondition.OrCondition -> {
-                    val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides)
                     paramIndex += countParameters(condition.conditions)
                     result
                 }
@@ -136,7 +144,7 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.NotCondition -> {
-                    val result = buildNotCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    val result = buildNotCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides)
                     paramIndex += countParameters(condition.conditions)
                     result
                 }
@@ -179,9 +187,10 @@ object CypherGenerator {
         prologs: MutableList<String>,
         bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean,
+        depthOverrides: Map<String, Int>,
     ): String {
         val inner = renderConditionList(
-            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
+            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides,
         )
         return "NOT ($inner)"
     }
@@ -746,7 +755,10 @@ object CypherGenerator {
      * Builds a Cypher condition for relationship target filtering.
      * Uses EXISTS with pattern matching.
      *
-     * Example: EXISTS { (issue)-[:ASSIGNED_TO]->(assignee) WHERE assignee.name = $param }
+     * Example: EXISTS { (issue)-[:ASSIGNED_TO]->(assignee:Person) WHERE assignee.name = $param }
+     *
+     * The far node carries the field's target labels, and is as many hops away as the load reads it
+     * ([RelationshipDepth.hops], with [depthOverrides]), so only the nodes the field loads are tested.
      */
     private fun buildRelationshipCondition(
         condition: WhereCondition.RelationshipCondition,
@@ -757,6 +769,7 @@ object CypherGenerator {
         prologs: MutableList<String> = mutableListOf(),
         bridgeVars: MutableList<String> = mutableListOf(),
         projectedCollectionMode: Boolean = false,
+        depthOverrides: Map<String, Int> = emptyMap(),
     ): String {
         requireNotNull(viewModel) {
             "GraphViewModel is required for relationship filtering. " +
@@ -788,12 +801,8 @@ object CypherGenerator {
         fun finalize(inlineCondition: String): String =
             if (condition.negate) "NOT ($inlineCondition)" else inlineCondition
 
-        // Build the relationship pattern based on direction
-        val relationshipPattern = when (relationship.direction) {
-            org.drivine.annotation.Direction.OUTGOING -> "($rootAlias)-[:${relationship.type}]->($targetAlias)"
-            org.drivine.annotation.Direction.INCOMING -> "($rootAlias)<-[:${relationship.type}]-($targetAlias)"
-            org.drivine.annotation.Direction.UNDIRECTED -> "($rootAlias)-[:${relationship.type}]-($targetAlias)"
-        }
+        // The relationship to the nodes the field loads: those that carry its target's labels
+        val relationshipPattern = "($rootAlias)" + hopTo(relationship, targetAlias, depthOverrides)
 
         // Separate direct properties from nested relationship properties
         val targetViewModel = runCatching { GraphViewModel.from(relationship.elementType) }.getOrNull()
@@ -825,7 +834,7 @@ object CypherGenerator {
                         buildLabelCondition(targetCondition)
                     }
                     is WhereCondition.OrCondition -> {
-                        buildOrCondition(targetCondition, viewModel, indexOf.getValue(targetCondition), grammar, ecCounter, prologs, bridgeVars)
+                        buildOrCondition(targetCondition, viewModel, indexOf.getValue(targetCondition), grammar, ecCounter, prologs, bridgeVars, depthOverrides = depthOverrides)
                     }
                     is WhereCondition.ListMembershipCondition -> throw UnsupportedOperationException(
                         "hasItem (list-membership) is not supported inside a relationship any{}/none{} block; " +
@@ -858,7 +867,7 @@ object CypherGenerator {
                     val branches = mutableListOf<MutableList<String>>()
                     val nestedWhereClauses = mutableListOf<String>()
 
-                    flattenNestedConditions(targetAlias, nestedConditions, targetViewModel, indexOf, compoundParts, nestedWhereClauses, branches)
+                    flattenNestedConditions(targetAlias, nestedConditions, targetViewModel, indexOf, compoundParts, nestedWhereClauses, branches, depthOverrides)
 
                     // Build compound pattern: (rootAlias)-[:REL]->(target)-[:A]->(target_a), (target)-[:B]->(target_b)
                     val compoundPattern = relationshipPattern + compoundParts.joinToString("") +
@@ -888,6 +897,7 @@ object CypherGenerator {
                             ecCounter = ecCounter,
                             prologs = prologs,
                             bridgeVars = bridgeVars,
+                            depthOverrides = depthOverrides,
                         )
                     }
                 }
@@ -919,12 +929,9 @@ object CypherGenerator {
             bridgeVars.addAll(result.bridgeVariables)
             return finalize(result.inlineCondition)
         } else {
-            val direction = when (relationship.direction) {
-                org.drivine.annotation.Direction.OUTGOING -> "-[:${relationship.type}]->"
-                org.drivine.annotation.Direction.INCOMING -> "<-[:${relationship.type}]-"
-                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${relationship.type}]-"
-            }
-            return finalize(grammar.existenceCheck(rootAlias, direction, ""))
+            // An empty block: whether the field loads a node at all.
+            val targetLabels = GraphTypeLabels.targetLabels(relationship).joinToString(":")
+            return finalize(grammar.existenceCheck(rootAlias, arrowsTo(relationship, depthOverrides), targetLabels))
         }
     }
 
@@ -981,7 +988,7 @@ object CypherGenerator {
      * Example: When filtering RaisedAndAssignedIssue by raisedBy.worksFor.name:
      * - parentAlias = "raisedBy"
      * - nestedRelationshipName = "worksFor"
-     * - Generates: EXISTS { (raisedBy)-[:WORKS_FOR]->(worksFor) WHERE worksFor.name = $param }
+     * - Generates: EXISTS { (raisedBy)-[:WORKS_FOR]->(raisedBy_worksFor:Organization) WHERE raisedBy_worksFor.name = $param }
      */
     private fun buildNestedRelationshipCondition(
         parentAlias: String,
@@ -993,6 +1000,7 @@ object CypherGenerator {
         ecCounter: AtomicInteger = AtomicInteger(0),
         prologs: MutableList<String> = mutableListOf(),
         bridgeVars: MutableList<String> = mutableListOf(),
+        depthOverrides: Map<String, Int> = emptyMap(),
     ): String {
         // Find the nested relationship in the target view model
         val nestedRel = targetViewModel.relationships.find { it.fieldName == nestedRelationshipName }
@@ -1001,13 +1009,9 @@ object CypherGenerator {
                 "Available relationships: ${targetViewModel.relationships.map { it.fieldName }}"
             )
 
-        // Build the relationship pattern
+        // The relationship to the nodes the nested field loads
         val nestedAlias = "${parentAlias}_${nestedRelationshipName}"
-        val relationshipPattern = when (nestedRel.direction) {
-            org.drivine.annotation.Direction.OUTGOING -> "($parentAlias)-[:${nestedRel.type}]->($nestedAlias)"
-            org.drivine.annotation.Direction.INCOMING -> "($parentAlias)<-[:${nestedRel.type}]-($nestedAlias)"
-            org.drivine.annotation.Direction.UNDIRECTED -> "($parentAlias)-[:${nestedRel.type}]-($nestedAlias)"
-        }
+        val relationshipPattern = "($parentAlias)" + hopTo(nestedRel, nestedAlias, depthOverrides)
 
         // Its own conditions, and those of the levels below it, each a check of its own within this one.
         val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
@@ -1024,6 +1028,7 @@ object CypherGenerator {
                     ecCounter = ecCounter,
                     prologs = prologs,
                     bridgeVars = bridgeVars,
+                    depthOverrides = depthOverrides,
                 )
             }
         val whereClauses = clauses.joinToString(" AND ")
@@ -1049,6 +1054,7 @@ object CypherGenerator {
         patternParts: MutableList<String>,
         whereClauses: MutableList<String>,
         branches: MutableList<MutableList<String>>,
+        depthOverrides: Map<String, Int>,
     ) {
         nested.entries.forEachIndexed { i, (nestedRelName, nestedConds) ->
             val path = if (i == 0) patternParts else mutableListOf("($parentAlias)").also { branches.add(it) }
@@ -1058,21 +1064,44 @@ object CypherGenerator {
                     "Available relationships: ${parentViewModel.relationships.map { it.fieldName }}"
                 )
             val nestedAlias = "${parentAlias}_${nestedRelName}"
-            val nestedDirection = when (nestedRel.direction) {
-                org.drivine.annotation.Direction.OUTGOING -> "-[:${nestedRel.type}]->"
-                org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
-                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
-            }
-            path.add("${nestedDirection}($nestedAlias)")
+            path.add(hopTo(nestedRel, nestedAlias, depthOverrides))
             val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
             val (direct, deeper) = separateNestedConditions(nestedConds, nestedAlias, nestedViewModel)
             direct.forEach { cond -> whereClauses.add(buildPropertyCondition(cond as WhereCondition.PropertyCondition, indexOf.getValue(cond))) }
             if (deeper.isNotEmpty()) {
                 flattenNestedConditions(
-                    nestedAlias, deeper, nestedViewModel ?: throw notAView(nestedAlias, nestedRel), indexOf, path, whereClauses, branches,
+                    nestedAlias, deeper, nestedViewModel ?: throw notAView(nestedAlias, nestedRel), indexOf, path, whereClauses, branches, depthOverrides,
                 )
             }
         }
+    }
+
+    /**
+     * One hop of a condition's pattern along [relationship] to the node it names [alias], with the
+     * labels of the field's target: `-[:HOLDS]->(entries:Entry)`. A condition so tests only the nodes
+     * the field loads ([GraphTypeLabels.targetLabels]), and not any node the relationship leads to.
+     * A `@GraphPath` is each of its hops, the node between two carrying the hop's label where it names
+     * one, as the load walks it: the conditions are on the node the path ends at. A list of fragments read
+     * over several hops is all of them, `-[:NEXT*1..2]->(following:Seq)`, to the depth the load reads.
+     */
+    private fun hopTo(relationship: RelationshipModel, alias: String, depthOverrides: Map<String, Int>): String {
+        val labels = GraphTypeLabels.targetLabels(relationship).joinToString("") { ":$it" }
+        return "${arrowsTo(relationship, depthOverrides)}($alias$labels)"
+    }
+
+    /**
+     * What leads to the node [relationship] ends at, without that node: its arrow, over as many hops as
+     * the load reads ([RelationshipDepth.hops]), or a path's hops and the nodes between them.
+     */
+    private fun arrowsTo(relationship: RelationshipModel, depthOverrides: Map<String, Int>): String {
+        if (!relationship.isPath) {
+            val hops = RelationshipDepth.hops(relationship, depthOverrides)
+            return if (hops > 1) Directions.varLengthDirectionString(relationship, hops) else Directions.directionString(relationship)
+        }
+        return relationship.hops.mapIndexed { i, hop ->
+            val arrow = Directions.hopArrow(hop.type, hop.direction)
+            if (i == relationship.hops.lastIndex) arrow else "$arrow(${hop.intermediateLabel?.let { ":$it" }.orEmpty()})"
+        }.joinToString("")
     }
 
     private fun notAView(alias: String, relationship: RelationshipModel) = IllegalArgumentException(
@@ -1094,9 +1123,10 @@ object CypherGenerator {
         prologs: MutableList<String>,
         bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean = false,
+        depthOverrides: Map<String, Int> = emptyMap(),
     ): String {
         val clauses = renderConditionList(
-            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, separator = " OR ",
+            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, depthOverrides, separator = " OR ",
         )
         return "($clauses)"
     }

@@ -325,7 +325,9 @@ declares the function itself.
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
   read (`d.year`, `t.hour`, `dur.days`), a duration is added to a moment or to another duration,
-  `duration.between` and `truncate` work them out, and two moments compare as the moments they are. A zoned
+  `duration.between` and `truncate` work them out, and two moments compare as the moments they are. `truncate`
+  takes each unit Neo4j does, from `millennium` to `microsecond`, and a map of fields to set on the value cut short
+  (`date.truncate('month', d, {day: 2})`), but not yet a nanosecond, a week's or a quarter's field, or a named zone. A zoned
   value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`); one read as a property sorts as
   its text, and so does a map that holds one. A list of them, or a list of lists of them, sorts item by item
   so in an `ORDER BY`, `min` and `max`. Oracle reads by their places, not with `JSON_TABLE`, the items of a

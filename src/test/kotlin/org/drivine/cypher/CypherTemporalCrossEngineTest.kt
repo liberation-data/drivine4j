@@ -24,6 +24,7 @@ import org.testcontainers.containers.Neo4jContainer
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 
 /**
  * openCypher's temporal values give the same fields, arithmetic and comparisons on a SQL store, compiled, as on
@@ -157,6 +158,122 @@ abstract class CypherTemporalContract {
             listOf(listOf(2L, 1L), listOf(1L, 2L)),
             query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)"),
         )
+    }
+
+    @Test
+    fun `a truncation's map of fields is laid over the value cut short, as Neo4j lays it`() {
+        // #422: the third argument was refused on the SQL stores. The spec holds the rest; this adds a field that is null as read.
+        // A field that is null is given as its least, written or read: no hour, the first month, Monday, no fraction.
+        assertEquals(
+            mapOf("hour" to 0L, "month" to 1L, "monday" to 8L, "fraction" to 0L, "read" to listOf(0L, 7L)),
+            one(
+                """
+                WITH {} AS m
+                WITH datetime.truncate('minute', datetime('2017-10-11T12:31:14+01:00'), {hour: m.h, second: coalesce(m.s, 7)}) AS read
+                RETURN {hour: datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: null}).hour,
+                        month: date.truncate('day', date('1984-10-11'), {month: null}).month,
+                        monday: date.truncate('day', date('1984-10-11'), {dayOfWeek: null}).day,
+                        fraction: datetime.truncate('millisecond', datetime('2017-10-11T12:31:14.645876+01:00'), {millisecond: null, microsecond: 8}).microsecond,
+                        read: [read.hour, read.second]}
+                """,
+            ),
+        )
+    }
+
+    @Test
+    fun `a value read from the store truncates with a map of fields, whatever its kind`() {
+        // On a SQL store a stored value is of the kind its text tells, so each kind is cut and given its fields as such.
+        // Neo4j fails a truncation of null, where the SQL stores give null, so no node here is without one.
+        query("CREATE (:CyTrunc {id: 1, at: datetime('2017-10-11T12:31:14.645876+01:00')}), (:CyTrunc {id: 2, at: date('2017-10-11')})")
+        assertEquals(
+            listOf(listOf(1L, 2010L, 2L, 3L, "+01:00"), listOf(2L, 2010L, 2L, 3L, "Z")),
+            query(
+                "MATCH (n:CyTrunc) WITH n, datetime.truncate('decade', n.at, {day: 2, hour: 3}) AS d " +
+                    "RETURN n.id AS id, d.year AS year, d.day AS day, d.hour AS hour, d.timezone AS zone ORDER BY id",
+            ),
+        )
+    }
+
+    @Test
+    fun `a date or a moment is made from a week, an ordinal day or a quarter, as on Neo4j`() {
+        // #495: refused on the SQL stores before. The year is the week-based year; week 53 of a year of 52 weeks and a day
+        // of the quarter past its last run on into the next, and a field that is null is its least. The spec holds these
+        // in statements of its own, and the moments.
+        assertEquals(
+            mapOf(
+                "week" to listOf(1984L, 3L, 5L), "weekDay" to listOf(1984L, 3L, 7L), "ordinal" to listOf(1984L, 7L, 20L),
+                "quarter" to listOf(1984L, 7L, 1L), "quarterDay" to listOf(1984L, 8L, 14L),
+                "long" to listOf(2020L, 12L, 28L), "sunday" to listOf(2021L, 1L, 3L), "before" to listOf(2018L, 12L, 31L), "friday" to listOf(2016L, 1L, 1L),
+                "rolled" to listOf(2019L, 12L, 30L), "q1" to listOf(2023L, 4L, 1L), "leap" to listOf(2024L, 12L, 31L), "q4" to listOf(2024L, 12L, 31L),
+                "nulls" to listOf(listOf(1L, 2L), listOf(1L, 9L), listOf(1L, 1L), listOf(4L, 1L)),
+            ),
+            one(
+                """
+                WITH date({year: 1984, week: 10}) AS w, date({year: 1984, week: 10, dayOfWeek: 3}) AS wd, date({year: 1984, ordinalDay: 202}) AS o,
+                     date({year: 1984, quarter: 3}) AS q, date({year: 1984, quarter: 3, dayOfQuarter: 45}) AS qd,
+                     date({year: 2020, week: 53}) AS long, date({year: 2020, week: 53, dayOfWeek: 7}) AS sunday, date({year: 2019, week: 1}) AS before,
+                     date({year: 2015, week: 53, dayOfWeek: 5}) AS friday, date({year: 2019, week: 53}) AS rolled, date({year: 2023, quarter: 1, dayOfQuarter: 91}) AS q1,
+                     date({year: 2024, ordinalDay: 366}) AS leap, date({year: 2024, quarter: 4, dayOfQuarter: 92}) AS q4,
+                     [date({year: 2023, week: null}), date({year: 2023, week: 2, dayOfWeek: null}), date({year: 2023, ordinalDay: null}),
+                      date({year: 2023, quarter: 2, dayOfQuarter: null})] AS nulls
+                RETURN {week: [w.year, w.month, w.day], weekDay: [wd.year, wd.month, wd.day], ordinal: [o.year, o.month, o.day], quarter: [q.year, q.month, q.day],
+                        quarterDay: [qd.year, qd.month, qd.day], long: [long.year, long.month, long.day], sunday: [sunday.year, sunday.month, sunday.day],
+                        before: [before.year, before.month, before.day], friday: [friday.year, friday.month, friday.day], rolled: [rolled.year, rolled.month, rolled.day],
+                        q1: [q1.year, q1.month, q1.day], leap: [leap.year, leap.month, leap.day], q4: [q4.year, q4.month, q4.day],
+                        nulls: [d IN nulls | [d.month, d.day]]}
+                """,
+            ),
+        )
+    }
+
+    @Test
+    fun `a date is made from a week, an ordinal day or a quarter an expression gives, and fails past their range as the statement runs`() {
+        // #495: worked out by the store, which fails on a field past its range as Neo4j does. The spec holds the rows, and these
+        // fields past their range but for a week's day, a quarter's day and a moment's.
+        listOf(
+            "UNWIND [[2023, 2, 0]] AS p RETURN date({year: p[0], week: p[1], dayOfWeek: p[2]})",
+            "UNWIND [[2024, 4, 93]] AS p RETURN date({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
+            // A moment's too, which Oracle reads as a JSON value's, null where it is no moment.
+            "UNWIND [[2023, 366]] AS p RETURN localdatetime({year: p[0], ordinalDay: p[1], hour: 3})",
+            "UNWIND [[2020, 54]] AS p RETURN datetime({year: p[0], week: p[1], timezone: '+01:00'})",
+            "UNWIND [[2024, 4, 93]] AS p RETURN localdatetime({year: p[0], quarter: p[1], dayOfQuarter: p[2]})",
+        ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
+    }
+
+    @Test
+    fun `a date or a moment gives the day of its quarter, and the fields of its week at the year's turn, as on Neo4j`() {
+        // #427 item 4: dayOfQuarter was null on the SQL stores. The spec holds these in two statements, and a value read from the store.
+        assertEquals(
+            listOf(11L, 92L, 90L, 91L, 1L, 50L, 32L, 53L, 2020L, 7L, 1L, 2019L, 53L, 366L, 1L),
+            query(
+                """
+                RETURN [date('1984-10-11').dayOfQuarter, date('2024-12-31').dayOfQuarter, date('2023-03-31').dayOfQuarter, date('2024-03-31').dayOfQuarter,
+                        date('2024-01-01').dayOfQuarter, datetime('2024-05-20T10:00+02:00').dayOfQuarter, localdatetime('2024-08-01T23:00').dayOfQuarter,
+                        date('2021-01-03').week, date('2021-01-03').weekYear, date('2021-01-03').dayOfWeek, date('2018-12-31').week, date('2018-12-31').weekYear,
+                        date('2020-12-31').week, date('2024-12-31').ordinalDay, date('2021-01-03').quarter]
+                """,
+            ).single(),
+        )
+    }
+
+    @Test
+    fun `a date, a time or a moment is made from another temporal value, with the map's fields laid over its own, as on Neo4j`() {
+        // #508: refused on the SQL stores before. The spec's temporal steps hold the rest; it hasn't this one.
+        listOf(
+            // Beside a day of the week a year moves the date so many years, to February 28th from the 29th, then to the day of its week.
+            "WITH date({date: date('2024-02-29'), year: 2023, dayOfWeek: 3}) AS a, date({date: date('2021-01-02'), year: 2021, dayOfWeek: 1}) AS b, date({date: date('2020-12-31'), year: 2021, dayOfWeek: 1}) AS c, localdatetime({date: date('2024-02-29'), year: 2023, dayOfWeek: 2, hour: 1}) AS e RETURN [[a.year, a.month, a.day], [b.year, b.month, b.day], [c.year, c.month, c.day], [e.year, e.month, e.day, e.hour]]" to listOf(listOf(listOf(2023L, 3L, 1L), listOf(2020L, 12L, 28L), listOf(2021L, 12L, 27L), listOf(2023L, 2L, 28L, 1L))),
+        ).forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
+    }
+
+    @Test
+    fun `another temporal value an expression gives that is null or of the wrong kind fails as the statement runs`() {
+        // #508: as Neo4j fails (22007, 22G05), not given as null. The spec's temporal steps hold the rest; it hasn't these.
+        listOf(
+            "UNWIND [date('2024-03-15'), null] AS x RETURN date({date: x, day: 1})",
+            "UNWIND ['hello'] AS x RETURN localtime({time: x})",
+            "UNWIND [localtime('10:00')] AS x RETURN date({date: x})",
+            "UNWIND [date('2024-03-15')] AS x RETURN time({time: x, timezone: '+01:00'})",
+        ).forEach { cypher -> assertFails(cypher) { query(cypher) } }
     }
 
     @Test

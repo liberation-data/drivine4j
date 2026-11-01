@@ -124,7 +124,8 @@ interface CypherGrammar {
     /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
      * Used for non-nullable single relationships in GraphView queries, and for an empty `any { }` /
-     * `none { }` block, which passes no [targetLabels]: the far node is then left unlabelled.
+     * `none { }` block. [targetLabels] are the labels of the field's target, as the load matches them;
+     * with none, the far node is left unlabelled.
      */
     fun existenceCheck(rootAlias: String, direction: String, targetLabels: String): String
 
@@ -137,7 +138,7 @@ interface CypherGrammar {
      * For openCypher, the inline condition references a count variable, and the prolog
      * is a `CALL { }` block that computes it.
      *
-     * @param relationshipPattern e.g. "(issue)-[:ASSIGNED_TO]->(assignee)"
+     * @param relationshipPattern e.g. "(issue)-[:ASSIGNED_TO]->(assignee:Person)", its far node labelled as the field loads it
      * @param whereClause e.g. "assignee.name = $param" (without WHERE keyword)
      * @param uniqueId a unique suffix for generated variable names to avoid collisions
      */
@@ -420,8 +421,9 @@ open class OpenCypherGrammar(
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int): FilteredExistenceResult {
         val countVar = "_ec$uniqueId"
-        val rootAlias = relationshipPattern.substringAfter("(").substringBefore(")")
-        val targetAlias = relationshipPattern.substringAfterLast("(").substringBefore(")")
+        // A node of the pattern is its name and then its labels, `(entries:Entry)`: the name is counted.
+        val rootAlias = relationshipPattern.substringAfter("(").substringBefore(")").substringBefore(":")
+        val targetAlias = relationshipPattern.substringAfterLast("(").substringBefore(")").substringBefore(":")
         val prolog = "CALL {\n    WITH $rootAlias\n    OPTIONAL MATCH $relationshipPattern WHERE $whereClause\n    RETURN count($targetAlias) AS $countVar\n}"
         return FilteredExistenceResult(
             inlineCondition = "$countVar > 0",
