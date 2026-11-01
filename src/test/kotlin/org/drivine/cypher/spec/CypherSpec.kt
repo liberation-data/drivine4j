@@ -1,5 +1,6 @@
 package org.drivine.cypher.spec
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
@@ -15,6 +16,8 @@ import kotlin.test.fail
  * gives. The three Drivine libraries run the same files; README.md there describes them.
  */
 data class CypherSpec(
+    /** The spec file, in `src/test/resources/cypher`, this was read from. */
+    @JsonIgnore val file: String = "",
     /** The label every node the spec writes carries. */
     val label: String? = null,
     /** The Cypher that writes the graph each case starts from. */
@@ -59,22 +62,53 @@ data class CypherSpec(
 
         fun load(file: String): CypherSpec {
             val resource = requireNotNull(CypherSpec::class.java.getResource("/cypher/$file")) { "No spec file cypher/$file" }
-            return yaml.readValue(resource)
+            return yaml.readValue<CypherSpec>(resource).copy(file = file)
         }
+
+        /**
+         * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
+         * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
+         * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
+         * taken out when the fix lands.
+         */
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
+            "queries.yaml" to mapOf(
+                // A NaN or infinite parameter is bound as its text.
+                "NaN and the infinities as parameters" to listOf(Hold(295, listOf("sql"))),
+                // Oracle holds NaN equal to NaN, and fails to read back the NaN it works out.
+                "NaN worked out" to listOf(Hold(409, listOf("oracle"))),
+            ),
+            "writes.yaml" to mapOf("NaN and the infinities written" to listOf(Hold(295, listOf("sql")))),
+        )
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
     }
 
+    private data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null)
+
+    /** The issue the step at [index] (from 0) of [case] is held for on [store], if it is: see [HELD]. */
+    private fun heldFor(case: Case, index: Int, store: String): Int? =
+        HELD[file]?.get(case.name).orEmpty().firstOrNull { hold ->
+            Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
+        }?.issue
+
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
-     * the store fails. A step not run on [store] is passed over.
+     * the store fails. A step not run on [store] is passed over; one held there ([HELD]) is checked to fail.
      */
     fun tests(store: String, before: () -> Unit, run: (Step) -> List<Any?>): List<DynamicTest> = cases.map { case ->
         DynamicTest.dynamicTest(case.name) {
             before()
+            val passing = mutableListOf<String>()
             case.steps.forEachIndexed { index, step ->
-                if (step.runsOn(store)) check(case, index, step, store, run)
+                if (!step.runsOn(store)) return@forEachIndexed
+                val issue = heldFor(case, index, store)
+                if (issue == null) check(case, index, step, store, run)
+                else if (runCatching { check(case, index, step, store, run) }.isSuccess) passing += "step ${index + 1} (#$issue)"
+            }
+            if (passing.isNotEmpty()) {
+                fail("$file, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")
             }
         }
     }
@@ -82,7 +116,7 @@ data class CypherSpec(
     private fun check(case: Case, index: Int, step: Step, store: String, run: (Step) -> List<Any?>) {
         val where = "${case.name}, step ${index + 1}, on $store: ${step.cypher.trim()}"
         if (step.error != null) {
-            val failure = runCatching { run(step) }.exceptionOrNull() ?: fail("Expected a failure: $where")
+            val failure = runCatching { run(step.copy(parameters = expanded(step.parameters))) }.exceptionOrNull() ?: fail("Expected a failure: $where")
             when (val error = step.error) {
                 is String -> assertEquals(error, failure.message, where)
                 is List<*> -> if (failure.message !in error) fail("Expected one of $error, but was <${failure.message}>: $where")
@@ -94,12 +128,18 @@ data class CypherSpec(
         assertEquals(canonical(expanded(expected), step, step.unordered), canonical(rows, step, step.unordered), where)
     }
 
-    /** [value] with each `{$repeat: text, times: n}` in it written out: [text] repeated [n] times. */
+    /**
+     * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
+     * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
+     */
     @Suppress("UNCHECKED_CAST")
     private fun <T> expanded(value: T): T = when (value) {
         is Map<*, *> -> (
-            if (value.keys == setOf("\$repeat", "times")) (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
-            else value.mapValues { (_, item) -> expanded(item) }
+            when (value.keys) {
+                setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
+                setOf("\$float") -> (value["\$float"] as String).toDouble()
+                else -> value.mapValues { (_, item) -> expanded(item) }
+            }
         ) as T
         is List<*> -> value.map { expanded(it) } as T
         else -> value

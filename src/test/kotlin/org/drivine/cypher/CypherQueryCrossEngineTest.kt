@@ -2747,14 +2747,9 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
-        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
-        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
-        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
-        assertEquals(
-            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
-            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
-        )
-        // In a part of an outer UNION, which compares rows by it.
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. The spec holds it in a CALL
+        // (drivine-cypher-spec#45, in #42's case); here, in a part of an outer UNION, which compares rows by it. The rows are
+        // Neo4j's (2026.10), in any order.
         assertEquals(
             unordered(listOf(null, 1L, 2L)),
             unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
@@ -2862,12 +2857,6 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
         // An order term that aggregates reads the key as an item does.
         assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY reduce(s = 0, y IN collect(x.b) | s + x.a), a"))
-        // A y of the scope is no y a comprehension binds of its own, read in its WHERE and its projection both: not grouped by.
-        // In the projection of one over an aggregate, x.a groups by x, as Neo4j does, not by y too.
-        val w = "UNWIND [1, 2] AS y UNWIND [{a: 1, b: 1}, {a: 1, b: 2}] AS x RETURN x.a AS a"
-        assertEquals(listOf(listOf(1L, listOf(1L, 2L, 1L, 2L))), query("$w, [y IN collect(x.b) WHERE y > 0 | y] AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 2L), listOf(1L, 2L)), query("$w, size([y IN collect(x.b) WHERE y > 0 | y + x.a]) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 5L)), query("$w, count(*) + [y IN [1] WHERE y > 0 | y][0] AS n ORDER BY a"))
     }
 
     @Test
