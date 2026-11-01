@@ -1816,6 +1816,32 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB is in no list of short items, null where one is null, on several rows`() {
+        // On Oracle, n.t IN $l with a null and a short item in $l closed the session (ORA-03113, #475): where no item was equal,
+        // the property was taken out as JSON over two rows to tell null from false.
+        clear()
+        val long = "a".repeat(40_000)
+        for (i in 0..1) query("CREATE (:CyInNull {i: \$i, t: \$t})", mapOf("i" to i, "t" to "$long$i"))
+        // Short items, and an empty one and one past 4,000 bytes, which are compared with the text as texts.
+        val lists = listOf(
+            listOf("abc", 5L, null) to null, listOf("abc", null) to null, listOf(null) to null, listOf("abc", 5L) to false,
+            listOf("", null) to null, listOf("x".repeat(5_000), null) to null, listOf("", "abc") to false,
+        )
+        onOneSession(lists.indices.associate { "l$it" to lists[it].first }) { query ->
+            repeat(3) { run ->
+                for ((i, list) in lists.withIndex()) {
+                    val (items, found) = list
+                    assertEquals(listOf(found, found), query("MATCH (n:CyInNull) RETURN n.t IN \$l$i ORDER BY n.i"), "$items, run ${run + 1}")
+                    assertEquals(listOf(0L), query("MATCH (n:CyInNull) WHERE n.t IN \$l$i RETURN count(*)"), "$items in a WHERE, run ${run + 1}")
+                }
+                // And written out, which is compared item by item.
+                assertEquals(listOf(null, null), query("MATCH (n:CyInNull) RETURN n.t IN ['abc', 5, null] ORDER BY n.i"), "written, run ${run + 1}")
+            }
+        }
+        clear()
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
