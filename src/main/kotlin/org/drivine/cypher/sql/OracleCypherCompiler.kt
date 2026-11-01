@@ -298,7 +298,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     /**
      * Where each of [items] is null or read as a `VARCHAR2` (see [givenEquals]), [item] equal as JSON to [value], or to null where
      * [value] is a text that isn't, and is longer than any of them: a plain equality, as before: an `IN` of three items over 20,000
-     * rows took 28 ms, against 14 ms before, where [jsonEquals], which tests both sides in a `CASE`, took 90 ms.
+     * rows took 28 ms, against 14 ms before, where [jsonEquals], which tests both sides in a `CASE`, took 90 ms. Where one
+     * of them is or holds NaN, as [jsonEquals] (#409).
      */
     override fun givenItemEquals(item: String, value: String, items: List<Any?>): String {
         if (asJson || !items.all { it == null || readShort(it) && !holdsNonFinite(it, Double::isNaN) }) return jsonEquals(item, value)

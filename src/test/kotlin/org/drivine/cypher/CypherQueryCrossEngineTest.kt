@@ -525,6 +525,45 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `NaN beside a text past 32 KB is equal to nothing and ordered with nothing, stored and given, on several rows`() {
+        // On Oracle a text past 32 KB is compared as a text (#389), and NaN, which Oracle's JSON finds equal to itself, as
+        // equal to nothing (#409): both at once. Postgres stores no NaN, and SQLite none, so there it is only given.
+        clear()
+        try {
+            val long = "a".repeat(40_000) + "x"
+            val nan = if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) emptyList() else listOf(Double.NaN)
+            val values = listOf<Any?>(long, long, long.dropLast(1) + "y", "abc") + nan + listOf(1.0, null)
+            for (i in values.indices) query("CREATE (:CyNan {i: \$i, t: \$t})", mapOf("i" to i, "t" to values[i]))
+            fun compared(a: Any?, operator: String, b: Any?): Boolean? {
+                if (a == null || b == null) return null
+                val order = when {
+                    a is String && b is String -> a.compareTo(b)
+                    a is Double && b is Double -> if (a.isNaN() || b.isNaN()) return operator == "<>" else a.compareTo(b)
+                    else -> return when (operator) { "=" -> false; "<>" -> true; else -> null }
+                }
+                return when (operator) { "=" -> order == 0; "<>" -> order != 0; "<" -> order < 0; ">" -> order > 0; "<=" -> order <= 0; else -> order >= 0 }
+            }
+            val pairs = values.indices.flatMap { i -> values.indices.map { j -> i to j } }
+            onOneSession(mapOf("p" to Double.NaN, "long" to long, "l" to listOf(long, Double.NaN))) { query ->
+                repeat(2) { run ->
+                    for (operator in listOf("=", "<>", "<", ">", "<=", ">=")) {
+                        val stored = pairs.map { (i, j) -> compared(values[i], operator, values[j]) }
+                        assertEquals(stored, query("MATCH (n:CyNan), (m:CyNan) RETURN n.t $operator m.t ORDER BY n.i, m.i"), "stored, $operator, run ${run + 1}")
+                        assertEquals(values.map { compared(it, operator, Double.NaN) }, query("MATCH (n:CyNan) RETURN n.t $operator \$p ORDER BY n.i"), "given NaN, $operator, run ${run + 1}")
+                    }
+                    val inLists = pairs.map { (i, j) -> compared(values[i], "=", values[j]) }
+                    assertEquals(inLists, query("MATCH (n:CyNan), (m:CyNan) RETURN n.t IN [m.t] ORDER BY n.i, m.i"), "IN, run ${run + 1}")
+                    val inGiven = values.map { it?.let { it == long } }
+                    assertEquals(inGiven, query("MATCH (n:CyNan) RETURN n.t IN [\$p, \$long] ORDER BY n.i"), "IN a list written, run ${run + 1}")
+                    assertEquals(inGiven, query("MATCH (n:CyNan) RETURN n.t IN \$l ORDER BY n.i"), "IN a given list, run ${run + 1}")
+                }
+            }
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
     fun `a row that holds NaN gives each other value in it as a row without NaN gives it`() {
         // Oracle's driver writes no text of such a row, and it is read through the driver's own JSON value instead (#295).
         assertEquals(
