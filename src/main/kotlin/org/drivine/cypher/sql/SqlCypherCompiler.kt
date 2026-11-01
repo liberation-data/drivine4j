@@ -2731,7 +2731,9 @@ abstract class SqlCypherCompiler(graph: String) {
             // only in a key that `rekeyed` reads by its name; so is a pattern's or a subquery's. A subquery may name any variable:
             // each the projection groups by is kept.
             fun named(expression: Expression): Set<String> = if (isAggregate(expression)) emptySet() else variablesOutsideAggregates(expression) + when (expression) {
-                is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::named) - expression.variable
+                // A set, as in variablesReadIn: a list less a name loses only its first, so a scope's variable of the comprehension's
+                // name, read in both its WHERE and its projection, was grouped by.
+                is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::named).toSet() - expression.variable
                 is Expression.Quantifier -> listOfNotNull(expression.where).flatMap(::named) - expression.variable
                 is Expression.Reduce -> named(expression.expression) - expression.accumulator - expression.variable
                 is Expression.PatternComprehension, is Expression.PatternPredicate, is Expression.Exists -> variablesIn(expression)
@@ -2776,7 +2778,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     Expression.Binary.Operator.IN -> (where.right as? Expression.ListLiteral)?.items?.singleOrNull()?.let { compared(where.left, it) }
                     else -> null
                 }
-                return part.kind in setOf(Expression.Quantifier.Kind.ANY, Expression.Quantifier.Kind.NONE) && compared != null && part.variable !in variablesIn(compared)
+                // A `y` that a comprehension or a reduce in `e` binds of its own is not the quantifier's.
+                return part.kind in setOf(Expression.Quantifier.Kind.ANY, Expression.Quantifier.Kind.NONE) && compared != null && part.variable !in variablesReadIn(compared)
             }
             // As Neo4j reads a key in an item that aggregates: by its name in a part that holds no aggregate, and in a list
             // comprehension's WHERE, all through. In the projection of a comprehension over an aggregate, or the WHERE of a
@@ -5209,7 +5212,8 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Variable -> setOf(expression.name)
             is Expression.MapProjection -> setOf(expression.variable) +
                 expression.elements.filterIsInstance<Expression.MapProjection.Element.Variable>().map { it.name } + children(expression).flatMap(::variablesReadIn)
-            is Expression.ListComprehension -> variablesReadIn(expression.list) + (listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn) - expression.variable)
+            // A set: a list less a name loses only its first, so a `y` the WHERE and the projection both read would stay.
+            is Expression.ListComprehension -> variablesReadIn(expression.list) + (listOfNotNull(expression.where, expression.projection).flatMap(::variablesReadIn).toSet() - expression.variable)
             is Expression.Quantifier -> variablesReadIn(expression.list) + (expression.where?.let(::variablesReadIn).orEmpty() - expression.variable)
             is Expression.Reduce -> variablesReadIn(expression.initial) + variablesReadIn(expression.list) +
                 (variablesReadIn(expression.expression) - expression.accumulator - expression.variable)
