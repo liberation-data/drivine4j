@@ -8,6 +8,7 @@ import org.neo4j.driver.exceptions.Neo4jException
 import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -300,6 +301,29 @@ class ConstraintManagerTest {
         assertTrue(result is EnsureResult.Created, "expected Created, got $result")
         assertTrue(store.schema.none { it.startsWith("DROP CONSTRAINT") }, "${store.schema}")
         assertEquals(1, store.schema.count { it.startsWith("CREATE CONSTRAINT") })
+    }
+
+    @Test
+    fun `a constraint another process is still building is waited on, and in force once built`() {
+        // Under construction, FalkorDB enforces nothing yet: two stamps could still be written.
+        val store = buildingInStore("UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "OPERATIONAL")
+
+        assertTrue(store.constraints.inForce(spec))
+        assertEquals(3, store.schema.count { it.startsWith("SHOW CONSTRAINTS") })
+        assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "${store.schema}")
+    }
+
+    @Test
+    fun `a constraint another process is building whose build then fails is not in force, and left`() {
+        val store = buildingInStore("UNDER CONSTRUCTION", "FAILED")
+
+        assertFalse(store.constraints.inForce(spec))
+        assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "${store.schema}")
+    }
+
+    @Test
+    fun `a constraint that is not there is not in force`() {
+        assertFalse(buildingInStore(null).constraints.inForce(spec))
     }
 
     @Test
