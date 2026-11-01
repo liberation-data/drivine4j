@@ -243,6 +243,8 @@ abstract class CypherQueryContract {
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] | m]]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | reduce(m = '', x IN [1] | m + p.name)]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | any(m IN [p.name] WHERE m = 'Keanu')]) ORDER BY p.name",
+            // Read in the comprehension's WHERE and its projection both (#519).
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] WHERE m <> '' | m]]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-[r]->() | p {.name, n: [r IN [1] | r]}]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [(p)-->() | [m IN [p.name] | m]]]) ORDER BY p.name",
         ).forEach { assertEquals(sizes, query(it), it) }
@@ -2842,6 +2844,12 @@ abstract class CypherQueryContract {
         // y in a list or an initial value does.
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE [y IN [x.a] | y][0] = y) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = reduce(y = 0, z IN [x.a] | y + z)) AS n ORDER BY a, n"))
+        // A quantifier's own y too, but not where its list reads the outer one.
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = CASE WHEN any(y IN [x.a] WHERE y > 0) THEN x.a END) AS n ORDER BY a, n"))
+        assertEquals(
+            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
+            query("$x, any(y IN collect(x.b) WHERE y = CASE WHEN any(y IN [y] WHERE y > 0) THEN x.a END) AS n ORDER BY a, n"),
+        )
         assertEquals(listOf(listOf(1L, false), listOf(1L, false), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = [z IN [y] | z + x.a][0]) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, true), listOf(1L, true), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE reduce(s = y, z IN [x.a] | s + z) = y) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE x.a IN [y]) AS n ORDER BY a, n"))
