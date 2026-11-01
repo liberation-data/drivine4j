@@ -154,6 +154,13 @@ compared as JSON, and refused. So is a text in a statement that writes, or in th
 PL/SQL: there a CLOB read from an unwound row's JSON, `UNWIND $items AS t MERGE (n {a: t.a})`, closed the session,
 where the JSON is refused (ORA-40180).
 
+The same crash came back with `n.t IN $l` where `$l` held a short item and a null (liberation-data/drivine4j#475): where no
+item was equal, the property was read for the nulls it holds, written out with `JSON_SERIALIZE(JSON_QUERY(props, '$.a'
+RETURNING JSON) …)`, and compared with each item again by the graph's `nulls_equal` function, so a text past 32 KB was
+taken out as JSON over two rows. Items the statement writes or is given, none a list or a map, are equal to no value that holds a null,
+and a comparison with one is null only where the item is null, so Drivine decides between null and false when it compiles
+the statement and doesn't read the property again (see `SqlCypherCompiler.givenItemsDecided`).
+
 ## An argument of `coalesce()`
 
 The same crash comes from a text past 32 KB that is an argument of `coalesce()` (liberation-data/drivine4j#459):
