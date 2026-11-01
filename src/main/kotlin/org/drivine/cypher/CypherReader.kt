@@ -431,9 +431,7 @@ object CypherReader {
                 if (magnitude == LONG_MIN_MAGNITUDE) return Expression.Literal(Long.MIN_VALUE)
                 if (magnitude > LONG_MIN_MAGNITUDE) throw outOfRange("-${literal.text}")
             }
-            written.oC_Atom().oC_Literal()?.oC_NumberLiteral()?.oC_DoubleLiteral()?.let { literal ->
-                if (literal.text.toDouble().isInfinite()) throw floatOutOfRange("-${literal.text}")
-            }
+            written.oC_Atom().oC_Literal()?.oC_NumberLiteral()?.oC_DoubleLiteral()?.let { float("-${it.text}") }
         }
         val operand = nonArithmetic(written)
         return if (negated) Expression.Unary(Expression.Unary.Operator.NEGATE, operand) else operand

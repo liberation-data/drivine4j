@@ -143,6 +143,28 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a float past a double's range is refused wherever it is written, and one too small to tell from 0 is 0`() {
+        val range = "is past the range of a float, from -1.7976931348623157E308 to 1.7976931348623157E308."
+        for ((cypher, written) in listOf(
+            "RETURN 1e999" to "1e999",
+            "RETURN .5e999" to ".5e999",
+            "RETURN -1e400" to "-1e400",
+            "RETURN - 1e400" to "-1e400",
+            "RETURN -(1e400)" to "1e400",
+            "RETURN 2 - 1e400" to "1e400",
+            "RETURN [1, 1e400]" to "1e400",
+            "RETURN {x: 1e400}" to "1e400",
+            "MATCH (n {x: 1e400}) RETURN n" to "1e400",
+            "MATCH (n) RETURN n SKIP 1e400" to "1e400",
+            "MATCH (n) RETURN n LIMIT -1e400" to "-1e400",
+        )) {
+            assertEquals("$written $range", assertThrows<DrivineException>(cypher) { CypherReader.read(cypher) }.message, cypher)
+        }
+        assertEquals(Expression.Literal(0.0), returned("RETURN 1e-400"))
+        assertEquals(Expression.Literal(Double.MAX_VALUE), returned("RETURN 1.7976931348623157E308"))
+    }
+
+    @Test
     fun `string, list and null predicates, labels, lists and functions read`() {
         assertEquals(
             Expression.Binary(Operator.STARTS_WITH, Expression.Property(Expression.Variable("n"), "name"), Expression.Parameter("p")),
