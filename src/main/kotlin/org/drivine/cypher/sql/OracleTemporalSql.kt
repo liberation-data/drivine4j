@@ -12,30 +12,44 @@ class OracleTemporalSql(
 ) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE -> "TO_TIMESTAMP(${era(text)}, 'SYYYY-MM-DD')"
-        Temporal.LOCAL_DATE_TIME -> iso(era(text), "TIMESTAMP")
-        Temporal.DATE_TIME -> iso(era(unzoned(text)), "TIMESTAMP")
+        Temporal.DATE -> "TO_TIMESTAMP(${eraOf(text)}, 'SYYYY-MM-DD')"
+        Temporal.LOCAL_DATE_TIME -> iso(eraOf(text), "TIMESTAMP")
+        Temporal.DATE_TIME -> iso(eraOf(text, zoned = true), "TIMESTAMP")
         Temporal.LOCAL_TIME -> iso("'1970-01-01T' || $text", "TIMESTAMP")
         Temporal.TIME -> iso("'1970-01-01T' || ${unzoned(text)}", "TIMESTAMP")
         Temporal.DURATION -> error("a duration is no moment")
     }
 
     override fun utc(text: String, kind: Temporal) = when (kind) {
-        Temporal.DATE_TIME -> "CAST(SYS_EXTRACT_UTC(${iso(era(text), "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
+        Temporal.DATE_TIME -> "CAST(SYS_EXTRACT_UTC(${iso(eraOf(text), "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
         Temporal.TIME -> "CAST(SYS_EXTRACT_UTC(${iso("'1970-01-01T' || $text", "TIMESTAMP WITH TIME ZONE")}) AS TIMESTAMP)"
         else -> local(text, kind)
     }
 
     /**
      * Oracle numbers a year BC from -1, with no year 0, in ISO text as in its own: so 1 BC, the year `0000`, is `-0001`,
-     * and 45 BC, the year `-0044`, is `-0045`.
+     * and 45 BC, the year `-0044`, is `-0045`. See [bcOnly].
      */
-    override fun era(text: String) =
-        "REGEXP_REPLACE($text, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR($text, '^-?[0-9]{4}')) - 1, 'FM0000'))"
+    override fun era(text: String) = shared(listOf(text)) { (t) ->
+        bcOnly(t, "ASCII($t) < $BC_BELOW", "REGEXP_REPLACE($t, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR($t, '^-?[0-9]{4}')) - 1, 'FM0000'))")
+    }
 
-    /** `SYYYY` writes a year with its sign, as Oracle numbers it. */
-    override fun date(timestamp: String, then: String) =
-        "REGEXP_REPLACE(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')), '^-[0-9]{4}', TO_CHAR(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000'))"
+    /**
+     * The digits the text opens with, and their sign; but the year of the timestamp where the text is [knownAd], whose year
+     * Oracle numbers so too, as reading the timestamp's is quicker on Oracle than a regular expression.
+     */
+    override fun textYear(text: String, kind: Temporal) = when {
+        kind != Temporal.DATE && kind != Temporal.LOCAL_DATE_TIME && kind != Temporal.DATE_TIME -> null
+        readsAd(text) -> extract("YEAR", local(text, kind))
+        else -> "TO_NUMBER(REGEXP_SUBSTR($text, '^-?[0-9]+'))"
+    }
+
+    /** Where it may be BC ([bcOnly]), `SYYYY` writes a year with its sign, as Oracle numbers it. */
+    override fun date(timestamp: String, then: String) = bcOnly(
+        timestamp, "$timestamp < TIMESTAMP '0001-01-01 00:00:00'",
+        "REGEXP_REPLACE(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')), '^-[0-9]{4}', TO_CHAR(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000'))",
+        super.date(timestamp, then),
+    )
 
     /**
      * The clock as a query starts. A block reads it once, into its variable [NOW], where each statement of the block
