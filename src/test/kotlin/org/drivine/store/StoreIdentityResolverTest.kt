@@ -256,8 +256,124 @@ class StoreIdentityResolverTest {
             }
         }
 
-        assertEquals("store-12", StoreIdentityResolver(store).resolve().id)
-        assertEquals(DdlContention.ATTEMPTS, creates, "run as often as whenNotContended runs it, and no more: ${store.schema}")
+        assertEquals("store-12", StoreIdentityResolver(store) {}.resolve().id)
+        // Ensured once more only after the looks for the winner's constraint find none, not once per refusal.
+        assertEquals(2 * DdlContention.ATTEMPTS, creates, "run as often as whenNotContended runs it, twice, and no more: ${store.schema}")
+    }
+
+    /**
+     * A Neo4j store where many managers race to make the key's constraint, and this one loses every round of the
+     * label's lock: each `CREATE CONSTRAINT` deadlocks, or the first [deadlocks] of them, and a later one makes it.
+     * The winner's constraint is listed from the first look after this one's last attempt for which [listedAt]
+     * answers true, told how many looks there have been since. Its [resolver] doesn't wait between looks, and keeps
+     * the [pauses] it would have waited.
+     */
+    private class LostEveryRound(private val deadlocks: Int = Int.MAX_VALUE, listedAt: (looksSince: Int) -> Boolean) {
+        val pauses = mutableListOf<Long>()
+        fun resolver() = StoreIdentityResolver(store) { pauses += it }
+        var creates = 0
+        var looks = 0
+        var looksAtLastCreate = 0
+        var merges = 0
+        private var made = false
+        private val stamp = CypherStoreStamp("DrivineStore", "key")
+        private val constraint = mapOf(
+            "name" to "drivinestore_key", "type" to "UNIQUENESS", "entityType" to "NODE",
+            "labelsOrTypes" to listOf("DrivineStore"), "properties" to listOf("key"),
+        )
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> {
+                    looksAtLastCreate = looks
+                    if (creates++ < deadlocks) {
+                        TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle.")
+                    } else {
+                        emptyList<Any?>().also { made = true }
+                    }
+                }
+                ran.statement.trimStart().startsWith("SHOW CONSTRAINTS") -> {
+                    looks++
+                    if (made || creates >= DdlContention.ATTEMPTS && listedAt(looks - looksAtLastCreate)) listOf(constraint) else emptyList<Any?>()
+                }
+                ran.statement == stamp.assignIfAbsent ->
+                    if (merges++ == 0) IllegalStateException("Cannot resolve conflicting transactions") else emptyList<Any?>()
+                ran.statement == stamp.readStamps -> listOf(Stamp("store-13", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a manager whose making deadlocks each time it is run finds the winner's constraint, and writes the stamp under it`() {
+        // liberation-data/drivine CI run 41260212023: of 16 managers, one lost every round of the label's lock.
+        val race = LostEveryRound { true }
+
+        assertEquals("store-13", race.resolver().resolve().id)
+        assertEquals(DdlContention.ATTEMPTS, race.creates, "run as often as whenNotContended runs it: ${race.store.schema}")
+        assertEquals(2, race.merges, "under the winner's constraint, a conflict is a lost race, and written again")
+    }
+
+    @Test
+    fun `the winner's constraint is looked for again, after a pause, while the winner is still making it`() {
+        val race = LostEveryRound { looksSince -> looksSince > 2 }
+
+        assertEquals("store-13", race.resolver().resolve().id)
+        assertEquals(2, race.merges, "the stamp is written under the winner's constraint")
+    }
+
+    @Test
+    fun `the winner's constraint is looked for only so many times, and identity is then best effort`() {
+        val race = LostEveryRound { false }
+
+        assertFailsWith<IllegalStateException> { race.resolver().resolve() }
+        assertEquals(2 * DdlContention.ATTEMPTS, race.creates, "ensured once more after the looks: ${race.store.schema}")
+        // A look before each attempt, as ensure finds what is there first, and the looks after the first ensure's.
+        assertEquals(2 * DdlContention.ATTEMPTS + StoreIdentityResolver.LOOKS_FOR_THE_WINNER, race.looks, "${race.store.schema}")
+        assertEquals(StoreIdentityResolver.LOOKS_FOR_THE_WINNER - 1, race.pauses.size, "a pause before each look but the first")
+        race.pauses.forEachIndexed { i, pause -> assertTrue(pause in (i + 1) * 50L until (i + 1) * 100L, "pause ${i + 1}: ${race.pauses}") }
+        assertEquals(1, race.merges, "without the constraint confirmed, a conflict is not taken for a lost race")
+    }
+
+    @Test
+    fun `the constraint is ensured once more when the looks for the winner's find none, and the stamp written under it`() {
+        // The other managers have stopped making it, or given up: the last ensure makes it, so no stamp goes unguarded.
+        val race = LostEveryRound(deadlocks = DdlContention.ATTEMPTS) { false }
+
+        assertEquals("store-13", race.resolver().resolve().id)
+        assertEquals(DdlContention.ATTEMPTS + 1, race.creates, "${race.store.schema}")
+        assertEquals(StoreIdentityResolver.LOOKS_FOR_THE_WINNER - 1, race.pauses.size)
+        assertEquals(2, race.merges, "under the constraint made, a conflict is a lost race, and written again")
+    }
+
+    @Test
+    fun `after a refusal that isn't contention the winner's constraint is looked for once, without a pause`() {
+        // No permission to make it: no winner is still making it, so the warning doesn't wait out the looks.
+        val forbidden = ClientException("Neo.ClientError.Security.Forbidden", "Schema operation denied")
+        var creates = 0
+        var looks = 0
+        var looksAtCreate = 0
+        val pauses = mutableListOf<Long>()
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> forbidden.also { creates++; looksAtCreate = looks }
+                ran.statement.trimStart().startsWith("SHOW CONSTRAINTS") -> emptyList<Any?>().also { looks++ }
+                ran.statement == cypherStamp.readStamps -> listOf(Stamp("store-14", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-14", StoreIdentityResolver(store) { pauses += it }.resolve().id)
+        assertEquals(1, creates, "a refusal for good is not run again: ${store.schema}")
+        assertEquals(1, looks - looksAtCreate, "the resolver looks once after the refusal: ${store.schema}")
+        assertEquals(emptyList(), pauses)
+    }
+
+    @Test
+    fun `a look for the winner's constraint pauses longer each time, and by chance up to as long again`() {
+        val pauses = (1 until StoreIdentityResolver.LOOKS_FOR_THE_WINNER).map { look ->
+            List(100) { StoreIdentityResolver.lookPause(look) }.also { all -> assertTrue(all.all { it in look * 50L until look * 100L }, "look $look: $all") }
+        }
+        assertTrue(pauses.sumOf { it.max() } < 2_800, "all the looks together take under 2.8 s")
     }
 
     @Test

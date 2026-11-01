@@ -245,6 +245,8 @@ abstract class CypherQueryContract {
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] | m]]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | reduce(m = '', x IN [1] | m + p.name)]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | any(m IN [p.name] WHERE m = 'Keanu')]) ORDER BY p.name",
+            // Read in the comprehension's WHERE and its projection both (#519).
+            "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [m IN [p.name] WHERE m <> '' | m]]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-[r]->() | p {.name, n: [r IN [1] | r]}]) ORDER BY p.name",
             "MATCH (p:Person) RETURN p.name, size([(p)-->(m) | [(p)-->() | [m IN [p.name] | m]]]) ORDER BY p.name",
         ).forEach { assertEquals(sizes, query(it), it) }
@@ -2775,14 +2777,9 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
-        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
-        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
-        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
-        assertEquals(
-            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
-            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
-        )
-        // In a part of an outer UNION, which compares rows by it.
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. The spec holds it in a CALL
+        // (drivine-cypher-spec#45, in #42's case); here, in a part of an outer UNION, which compares rows by it. The rows are
+        // Neo4j's (2026.10), in any order.
         assertEquals(
             unordered(listOf(null, 1L, 2L)),
             unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
@@ -2867,6 +2864,19 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x) WHERE y.b = x.a) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, false), listOf(1L, true), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE y IN [x.a, 5]) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, false), listOf(1L, false), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = x.a + y) AS n ORDER BY a, n"))
+        // An e that reads only a y a comprehension or a reduce in it binds of its own reads no y of the quantifier's (#519);
+        // the spec holds three more (drivine-cypher-spec#46). A reduce's accumulator is its own too. One that reads the quantifier's
+        // y in a list or an initial value does.
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE [y IN [x.a] | y][0] = y) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = reduce(y = 0, z IN [x.a] | y + z)) AS n ORDER BY a, n"))
+        // A quantifier's own y too, but not where its list reads the outer one.
+        assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = CASE WHEN any(y IN [x.a] WHERE y > 0) THEN x.a END) AS n ORDER BY a, n"))
+        assertEquals(
+            listOf(listOf(1L, false), listOf(1L, true), listOf(2L, false)),
+            query("$x, any(y IN collect(x.b) WHERE y = CASE WHEN any(y IN [y] WHERE y > 0) THEN x.a END) AS n ORDER BY a, n"),
+        )
+        assertEquals(listOf(listOf(1L, false), listOf(1L, false), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE y = [z IN [y] | z + x.a][0]) AS n ORDER BY a, n"))
+        assertEquals(listOf(listOf(1L, true), listOf(1L, true), listOf(2L, true)), query("$x, none(y IN collect(x.b) WHERE reduce(s = y, z IN [x.a] | s + z) = y) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, true), listOf(2L, false)), query("$x, any(y IN collect(x.b) WHERE x.a IN [y]) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, true), listOf(2L, null)), query("$x, any(y IN collect(x.b) + [null] WHERE y = x.a) AS n ORDER BY a, n"))
         assertEquals(listOf(listOf(1L, false), listOf(2L, null)), query("$x, none(y IN collect(x.b) + [null] WHERE y = x.a + 1) AS n ORDER BY a, n"))

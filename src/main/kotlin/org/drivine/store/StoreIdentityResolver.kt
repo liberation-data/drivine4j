@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
+import kotlin.random.Random
 
 /**
  * Reads the store's [StoreIdentity], minting it on first sight.
@@ -28,8 +29,16 @@ import java.util.UUID
  * database reads the same value.
  *
  * Resolution is idempotent and safe to call on every boot.
+ *
+ * [sleep] waits out the pauses between looks for the winner's constraint (see [winnersInForce]); a test gives one that
+ * doesn't wait, as [DdlContention.whenNotContended]'s pause is given.
  */
-class StoreIdentityResolver(private val persistenceManager: PersistenceManager) {
+class StoreIdentityResolver internal constructor(
+    private val persistenceManager: PersistenceManager,
+    private val sleep: (millis: Long) -> Unit,
+) {
+
+    constructor(persistenceManager: PersistenceManager) : this(persistenceManager, { Thread.sleep(it) })
 
     /**
      * Returns this store's identity, assigning one if the store has never been stamped.
@@ -92,55 +101,94 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
      * FalkorDB the key's backing index already there, before the winner's constraint is, and on Postgres the
      * index's name taken in `pg_class`. The constraint is then ensured again, a few times at most, which finds
      * the other's, rather than going on without it (#492, as liberation-data/drivine#489).
+     *
+     * A manager whose making still fails, as one that lost each round of Neo4j's label lock to the others does,
+     * looks for the winner's constraint before it goes on best-effort ([winnersInForce]). Turned away for
+     * contention and finding none, it ensures the constraint once more, by then with fewer making it at once.
+     *
+     * That narrows the window for two stamps without closing it: a manager whose last ensure is turned away too
+     * writes its stamp unguarded, and so may another, while no constraint is in force yet. No store offers a lock
+     * to make the constraint under, and ensuring or looking for longer would only move the window. A stamp written
+     * unguarded is still written again when a constraint made meanwhile refuses it ([assignIfAbsent]), and of two
+     * stamps each manager reads the oldest ([resolve]).
      */
     private fun ensureUniqueKey(): Boolean {
         if (!persistenceManager.supportsSchemaManagement) return false
         val constraints = persistenceManager.constraints
-        return try {
-            val result = ensuredAgainWhenMadeMeanwhile(constraints)
-            when (result) {
-                is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
-                is EnsureResult.Violation -> {
-                    logger.warn(
-                        "[store-identity] Database '{}' already holds duplicate DrivineStore stamps from an " +
-                            "earlier concurrent first boot, so uniqueness cannot be enforced. Identity is " +
-                            "best-effort until the duplicates are removed.",
-                        persistenceManager.database,
-                    )
-                    false
-                }
-                is EnsureResult.Drift -> {
-                    logger.warn(
-                        "[store-identity] Unexpected constraint on DrivineStore(key) on database '{}': {}. " +
-                            "Identity is best-effort.",
-                        persistenceManager.database, result.existing,
-                    )
-                    false
-                }
-                is EnsureResult.BlockedByIndex -> {
-                    logger.warn(
-                        "[store-identity] Index {} on DrivineStore(key) on database '{}' is in the way of its " +
-                            "uniqueness constraint. Identity is best-effort until it is dropped.",
-                        result.index.name, persistenceManager.database,
-                    )
-                    false
-                }
-            }
+        val failure = try {
+            return inForceAfter(ensuredAgainWhenMadeMeanwhile(constraints))
         } catch (e: Exception) {
-            // Another process creating the same constraint at the same moment surfaces here on engines
-            // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
-            // the race was benign. One whose build failed (FalkorDB) is listed, yet enforces nothing.
-            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull()?.takeUnless { it.buildFailed } != null) {
-                true
-            } else {
+            e
+        }
+        // Another process creating the same constraint at the same moment surfaces here on engines
+        // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
+        // the race was benign.
+        val contended = DdlContention.gaveUp(failure) || contended(failure)
+        if (winnersInForce(constraints, contended)) return true
+        val last = if (contended) {
+            try {
+                return inForceAfter(ensuredAgainWhenMadeMeanwhile(constraints))
+            } catch (again: Exception) {
+                again
+            }
+        } else failure
+        logger.warn(
+            "[store-identity] Could not ensure uniqueness on DrivineStore(key) on database '{}' ({}). " +
+                "Identity is best-effort.",
+            persistenceManager.database, last.message,
+        )
+        return false
+    }
+
+    /** Whether the key's constraint is in force after [result]; warns, and answers false, when it can't be. */
+    private fun inForceAfter(result: EnsureResult): Boolean =
+        when (result) {
+            is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
+            is EnsureResult.Violation -> {
                 logger.warn(
-                    "[store-identity] Could not ensure uniqueness on DrivineStore(key) on database '{}' ({}). " +
+                    "[store-identity] Database '{}' already holds duplicate DrivineStore stamps from an " +
+                        "earlier concurrent first boot, so uniqueness cannot be enforced. Identity is " +
+                        "best-effort until the duplicates are removed.",
+                    persistenceManager.database,
+                )
+                false
+            }
+            is EnsureResult.Drift -> {
+                logger.warn(
+                    "[store-identity] Unexpected constraint on DrivineStore(key) on database '{}': {}. " +
                         "Identity is best-effort.",
-                    persistenceManager.database, e.message,
+                    persistenceManager.database, result.existing,
+                )
+                false
+            }
+            is EnsureResult.BlockedByIndex -> {
+                logger.warn(
+                    "[store-identity] Index {} on DrivineStore(key) on database '{}' is in the way of its " +
+                        "uniqueness constraint. Identity is best-effort until it is dropped.",
+                    result.index.name, persistenceManager.database,
                 )
                 false
             }
         }
+
+    /**
+     * Whether another manager's key constraint is in force, looked for after this one's making failed. Of managers
+     * making it at once on Neo4j, each round of the label's lock goes to one and turns the rest away as deadlocked;
+     * with many at once, the rounds can go on past [DdlContention.ATTEMPTS] (liberation-data/drivine CI run
+     * 41260212023, and 128 managers here). A loser turned away each time finds the winner's here, and, looking
+     * rather than making it again, leaves the lock to the others, so that one of them wins sooner. The winner may
+     * still be making it, so after [contended] making it is looked for up to [LOOKS_FOR_THE_WINNER] times, with longer
+     * pauses between ([lookPause]). After a failure of another kind (no permission, an index in the way, refused as
+     * made meanwhile each time) it is looked for once: no winner is still making it, and the warning shouldn't wait.
+     * One still being built (FalkorDB) is waited on, as it enforces nothing yet, and one whose build failed is listed,
+     * yet enforces nothing ([ConstraintManager.inForce]). A look that fails finds nothing.
+     */
+    private fun winnersInForce(constraints: ConstraintManager, contended: Boolean): Boolean {
+        repeat(if (contended) LOOKS_FOR_THE_WINNER else 1) { look ->
+            if (look > 0) sleep(lookPause(look))
+            if (runCatching { constraints.inForce(KEY_CONSTRAINT) }.getOrDefault(false)) return true
+        }
+        return false
     }
 
     /** Ensures the key's constraint, again when another manager made it, or what it needs, meanwhile. */
@@ -257,6 +305,22 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
 
         /** How many times the key's constraint is ensured when another manager made it meanwhile: see [madeMeanwhile]. */
         private const val MAX_ENSURE_ATTEMPTS = 3
+
+        /** How many times the winner's key constraint is looked for after this manager's making failed: see [winnersInForce]. */
+        internal const val LOOKS_FOR_THE_WINNER = 8
+
+        /** The least pause before the second look for the winner's constraint; each later one is as much longer. */
+        private const val LOOK_PAUSE_MILLIS = 50L
+
+        /**
+         * The pause before look [look] (from 1) for the winner's constraint: as many [LOOK_PAUSE_MILLIS] as looks so
+         * far, and up to as much again at random, so that losers looking together don't ask together. 2.8 s at most
+         * over all the looks.
+         */
+        internal fun lookPause(look: Int, random: Random = Random.Default): Long {
+            val base = look * LOOK_PAUSE_MILLIS
+            return base + random.nextLong(base)
+        }
 
         /** A graph engine refusing a schema statement for what is there: FalkorDB's "Constraint already exists", "Attribute 'key' is already indexed". */
         private val ALREADY_MADE = Regex("already (exists|indexed)", RegexOption.IGNORE_CASE)
