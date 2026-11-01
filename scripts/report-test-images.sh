@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Pulls each image named and says which release it is: its digest, when it was built, and the other tags
-# Docker Hub gives that digest, as falkordb/falkordb:latest is also 6.0.3. The nightly workflow runs it
-# before the tests, so a run that fails on a new release names it. In GitHub Actions the table is also
-# written to the job's summary.
+# Docker Hub gives that digest, as ghcr.io/falkordb/falkordb:latest is also 6.0.3. The nightly workflow
+# runs it before the tests, so a run that fails on a new release names it. In GitHub Actions the table is
+# also written to the job's summary. An image of ghcr.io has its tags looked up in the Docker Hub repository
+# of the same name, which has the same digests.
 #
 #   scripts/report-test-images.sh <image>...
 set -euo pipefail
@@ -18,6 +19,7 @@ for image in "$@"; do
     digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" | sed 's/.*@//')"
     created="$(docker image inspect --format '{{.Created}}' "$image")"
     repo="${image%:*}"
+    repo="${repo#ghcr.io/}"
     tag="${image##*:}"
     case "$repo" in */*) ;; *) repo="library/$repo" ;; esac
     # Best effort: the tags among the hundred updated last that share the digest, other than the one pulled,

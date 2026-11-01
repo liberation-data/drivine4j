@@ -36,7 +36,11 @@ repositories {
 // runs so; a pull request's run keeps the pins.
 ext.testImagesUnpinned = providers.gradleProperty('test.images.unpinned')
 	.orElse(providers.environmentVariable('TEST_IMAGES_UNPINNED')).getOrElse('false') == 'true'
-ext.testImagePins = testImagesUnpinned ? [:] : file('gradle/test-images.txt').readLines()
+// Unpinned, a moving tag that isn't the engine's latest release is run as one that is. Docker Hub's
+// falkordb/falkordb:latest is whichever release FalkorDB pushed last, an older line's backport among
+// them (v4.22.3, after 6.0.3); ghcr.io's latest is its newest release. When to drop it: TEST_CONTAINERS.md.
+ext.testImagesLatest = ['falkordb/falkordb:latest': 'ghcr.io/falkordb/falkordb:latest']
+ext.testImagePins = testImagesUnpinned ? testImagesLatest : file('gradle/test-images.txt').readLines()
 	.collect { it.trim() }.findAll { it && !it.startsWith('#') }
 	.collectEntries { line ->
 		def (named, pinned) = line.split(/\s+/)

@@ -15,7 +15,8 @@ on:
 permissions:
   contents: read
 
-# Every test task runs each image as the test names it (see build.gradle).
+# Every test task runs each image as the test names it (see build.gradle), but falkordb/falkordb:latest:
+# Docker Hub's can be an older line's backport, so FalkorDB runs as ghcr.io/falkordb/falkordb:latest.
 env:
   TEST_IMAGES_UNPINNED: true
 
@@ -62,7 +63,7 @@ jobs:
       # A plain `./gradlew test` runs the cross-engine tests on each graph engine.
       - name: Pull the images and say which release each is
         run: |
-          scripts/report-test-images.sh neo4j:latest neo4j:5.26-community falkordb/falkordb:latest memgraph/memgraph:latest
+          scripts/report-test-images.sh neo4j:latest neo4j:5.26-community ghcr.io/falkordb/falkordb:latest memgraph/memgraph:latest
           if [ "$POSTGRES_TESTS" = true ]; then scripts/report-test-images.sh pgvector/pgvector:pg17; fi
 
       - name: Build with Gradle
@@ -109,7 +110,7 @@ jobs:
         run: echo "api.version=1.44" > ~/.docker-java.properties
 
       - name: Pull the images and say which release each is
-        run: scripts/report-test-images.sh falkordb/falkordb:latest neo4j:latest neo4j:5.26-community memgraph/memgraph:latest
+        run: scripts/report-test-images.sh ghcr.io/falkordb/falkordb:latest neo4j:latest neo4j:5.26-community memgraph/memgraph:latest
 
       - name: Configure sample module for FalkorDB
         run: |
@@ -186,7 +187,7 @@ jobs:
         run: echo "api.version=1.44" > ~/.docker-java.properties
 
       - name: Pull the images and say which release each is
-        run: scripts/report-test-images.sh memgraph/memgraph:latest neo4j:latest neo4j:5.26-community falkordb/falkordb:latest
+        run: scripts/report-test-images.sh memgraph/memgraph:latest neo4j:latest neo4j:5.26-community ghcr.io/falkordb/falkordb:latest
 
       - name: Configure sample module for Memgraph
         run: |
