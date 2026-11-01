@@ -462,7 +462,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
      * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
-     * and so is an item of a list read by its place: see [listItem].
+     * so is an item of a list read by its place: see [listItem]; and so is a property that is an argument of `coalesce()`:
+     * see [coalescedProperty].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -470,6 +471,33 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      */
     override fun itemProperty(props: String, key: String) =
         "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM($props, KEEP ${OracleSql.path(key)}) RETURNING CLOB EXTENDED), ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+
+    /**
+     * A property that is an argument of `coalesce()`, `coalesce(${'$'}p.q, n.a)`, by its kind, read by the property's own path: a
+     * text of at most 4,000 bytes as a `VARCHAR2`, a longer one (and an empty one, null as a `VARCHAR2`) through its text as
+     * [itemProperty] reads it, JSON's null as null, and anything else, or nothing, as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#459), to be removed with it.** Taken out as JSON, `CASE WHEN
+     * JSON_VALUE(JSON_QUERY(n1.props, '$.a' RETURNING JSON), '$.type()') <> 'null' THEN JSON_QUERY(n1.props, '$.a' RETURNING
+     * JSON) END`, a text past 32 KB closed the session over two rows or more (ORA-03113, and ORA-00600 `[kghfrempty:ds]` in
+     * a write), on the first run of the statement or a later one: returned, passed on, measured, read by a text function,
+     * of a node or of a relationship, beside a variable-length walk and in a write. A property of anything but a node or a
+     * relationship a variable names (`coalesce(m.a, …)` of a map `m`) is read as before. The `CASE` on the property's kind,
+     * which made Oracle drop a label test where an item read a node's properties twice (see [itemProperty]), kept each one
+     * here, in a `WHERE` and beside another node's table (`CypherQueryContract`'s "a text past 32 KB that coalesce() gives").
+     * [itemProperty]'s form alone cost about twice the read it replaced on short texts; a short text read as a `VARCHAR2`
+     * costs none: 20,000 rows of `RETURN coalesce(${'$'}p.q, n.name)` took 72 ms either way, and of `RETURN
+     * toLower(trim(coalesce(${'$'}p.q, n.name)))` 93 ms against 109 ms.
+     *
+     * To remove it, delete this override with [itemProperty]'s, once an Oracle release no longer crashes on the repro in
+     * `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past 32 KB that coalesce() gives"
+     * test still passes without it.
+     */
+    override fun coalescedProperty(props: String, key: String) = shared(props) { (p) ->
+        val path = OracleSql.path(key)
+        "CASE JSON_VALUE($p, ${OracleSql.path(key, ".type()")}) WHEN 'string' THEN COALESCE(JSON_SCALAR(JSON_VALUE($p, $path)), ${itemProperty(p, key)}) " +
+            "WHEN 'null' THEN NULL ELSE JSON_QUERY($p, $path RETURNING JSON) END"
+    }
 
     /**
      * A value that a write takes from the row it is writing, to work out what it writes (`SET n.a = t.a`, `CREATE (:X {a:

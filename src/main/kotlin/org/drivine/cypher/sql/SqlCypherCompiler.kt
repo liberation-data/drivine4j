@@ -297,6 +297,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
 
     /**
+     * The property [key] of the node or relationship whose properties are [props], where it is an argument of `coalesce()`:
+     * as [propertyOf] reads it, null where it is JSON's null, but on a store that must read such an argument apart.
+     */
+    protected open fun coalescedProperty(props: String, key: String): String = nullIfJsonNull(propertyOf(props, key))
+
+    /**
      * The value at [keys], each of a map in the one before, in the row a write is making ([ROW]), where a statement of the
      * write reads it to work out what it writes: as [propertyOf] reads each key, but on a store that must read it apart.
      */
@@ -4392,6 +4398,20 @@ abstract class SqlCypherCompiler(graph: String) {
             )
         }
 
+        /**
+         * An argument of `coalesce()`, [value] as compiled from [argument], null where it is JSON's null: a property of a node
+         * or a relationship a variable names as [coalescedProperty] reads it, which on Oracle reads a long text through its
+         * text (#459).
+         */
+        private fun coalesced(argument: Expression, value: Value, scope: Map<String, Value>): String {
+            if (argument is Expression.Property && argument.subject is Expression.Variable) when (val subject = scope[argument.subject.name]) {
+                is Value.Node -> if (argument.key != Stamps.PROPERTY) return coalescedProperty(subject.props, argument.key)
+                is Value.Relationship -> return coalescedProperty(subject.props, argument.key)
+                else -> {}
+            }
+            return nullIfJsonNull(comparable(json(value)))
+        }
+
         /** Whether [value] may be JSON's null: see [Value.Json.jsonNull]. */
         private fun mayBeJsonNull(value: Value) = (value as? Value.Json)?.jsonNull == true
 
@@ -4415,7 +4435,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 "nodes" -> (one() as? Value.Path)?.let { nodeList(it.nids) } ?: throw DrivineException("nodes() takes a path.")
                 "relationships" -> (one() as? Value.Path)?.let { relationshipList(it.eids) } ?: throw DrivineException("relationships() takes a path.")
                 "coalesce" -> Value.Json(
-                    "COALESCE(${arguments.joinToString(", ") { nullIfJsonNull(comparable(json(it))) }})",
+                    "COALESCE(${function.arguments.zip(arguments).joinToString(", ") { (argument, value) -> coalesced(argument, value, scope) }})",
                     temporal = kindOf(function.arguments.zip(arguments)),
                     // A list of one kind where each is, or is null or an empty list written, as `coalesce(l, [])`: so Oracle reads its items
                     // by their places, as it reads l's (#347).

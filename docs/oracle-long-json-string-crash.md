@@ -160,3 +160,28 @@ RETURNING JSON) …)`, and compared with each item again by the graph's `nulls_e
 taken out as JSON over two rows. Items the statement writes or is given, none a list or a map, are equal to no value that holds a null,
 and a comparison with one is null only where the item is null, so Drivine decides between null and false when it compiles
 the statement and doesn't read the property again (see `SqlCypherCompiler.givenItemsDecided`).
+
+## An argument of `coalesce()`
+
+The same crash comes from a text past 32 KB that is an argument of `coalesce()` (liberation-data/drivine4j#459):
+`coalesce($p.q, n.a)` took the property out as JSON, and tested it for JSON's null, with
+`CASE WHEN JSON_VALUE(JSON_QUERY(props, '$.a' RETURNING JSON), '$.type()') <> 'null' THEN JSON_QUERY(props, '$.a'
+RETURNING JSON) END`. Over two or more rows, it closed the session on the first run of the statement or a later one:
+returned whole, passed on by a `WITH`, measured, read by `trim` or `toLower`, of a node or a relationship, beside a
+variable-length walk, and in a write (there with ORA-00600 `[kghfrempty:ds]`). Read by its kind, each by the property's
+own path, it ran clean in a fresh container, three runs:
+
+```sql
+CASE JSON_VALUE(props, '$.a.type()')
+  WHEN 'string' THEN COALESCE(JSON_SCALAR(JSON_VALUE(props, '$.a')),
+                              JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(props, KEEP '$.a') RETURNING CLOB EXTENDED),
+                                              '$.a' RETURNING CLOB) EXTENDED))
+  WHEN 'null' THEN NULL
+  ELSE JSON_QUERY(props, '$.a' RETURNING JSON)
+END
+```
+
+A text of at most 4,000 bytes is read as a `VARCHAR2`, and only a longer one (or an empty one, which a `VARCHAR2` holds
+as null) through its text, which alone cost about twice the plain read on short texts. Read so, 20,000 rows of
+`coalesce($p.q, n.name)` took as long as before, 72 ms. Drivine reads an argument of `coalesce()` so where it is a
+property of a node or a relationship (see `OracleCypherCompiler.coalescedProperty`); one of a map is read as before.
