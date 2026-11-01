@@ -85,32 +85,59 @@ data class CypherSpec(
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
     }
 
-    private data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null)
-
-    /** The issue the step at [index] (from 0) of [case] is held for on [store], if it is: see [HELD]. */
-    private fun heldFor(case: Case, index: Int, store: String): Int? =
-        HELD[file]?.get(case.name).orEmpty().firstOrNull { hold ->
-            Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
-        }?.issue
+    /** Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. */
+    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null)
 
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
-     * the store fails. A step not run on [store] is passed over; one held there ([HELD]) is checked to fail.
+     * the store fails. A step not run on [store] is passed over; one held there ([held], by case name) is checked to
+     * fail, by an assertion or as the store fails, not as the runner crashes. A hold naming a case or a step the
+     * file does not have fails at once, so that a typo or a renamed case holds nothing unseen.
      */
-    fun tests(store: String, before: () -> Unit, run: (Step) -> List<Any?>): List<DynamicTest> = cases.map { case ->
+    internal fun tests(
+        store: String,
+        before: () -> Unit,
+        held: Map<String, List<Hold>> = HELD[file].orEmpty(),
+        run: (Step) -> List<Any?>,
+    ): List<DynamicTest> {
+        held.forEach { (name, holds) ->
+            val case = requireNotNull(cases.find { it.name == name }) { "$file has no case \"$name\" to hold" }
+            holds.flatMap { it.steps.orEmpty() }.filter { it !in 1..case.steps.size }.let { missing ->
+                require(missing.isEmpty()) { "$file, $name has no step $missing to hold: it has ${case.steps.size}" }
+            }
+        }
+        return cases.map { case -> test(case, store, before, held[case.name].orEmpty(), run) }
+    }
+
+    private fun test(case: Case, store: String, before: () -> Unit, holds: List<Hold>, run: (Step) -> List<Any?>) =
         DynamicTest.dynamicTest(case.name) {
             before()
             val passing = mutableListOf<String>()
             case.steps.forEachIndexed { index, step ->
                 if (!step.runsOn(store)) return@forEachIndexed
-                val issue = heldFor(case, index, store)
+                val issue = holds.firstOrNull { hold ->
+                    Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
+                }?.issue
                 if (issue == null) check(case, index, step, store, run)
-                else if (runCatching { check(case, index, step, store, run) }.isSuccess) passing += "step ${index + 1} (#$issue)"
+                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#$issue)"
             }
             if (passing.isNotEmpty()) {
                 fail("$file, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")
             }
         }
+
+    /**
+     * Whether a held step still fails: by an assertion (rows or a message not as the spec says), or as the store fails
+     * in [run]. Anything else the runner throws, such as a spec value it cannot read, is thrown on, so a hold does not
+     * hide the runner's own crash.
+     */
+    private fun stillFails(case: Case, index: Int, step: Step, store: String, run: (Step) -> List<Any?>): Boolean {
+        var storeFailed = false
+        val failure = runCatching {
+            check(case, index, step, store) { runCatching { run(it) }.onFailure { storeFailed = true }.getOrThrow() }
+        }.exceptionOrNull() ?: return false
+        if (failure is AssertionError || storeFailed) return true
+        throw failure
     }
 
     private fun check(case: Case, index: Int, step: Step, store: String, run: (Step) -> List<Any?>) {
