@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
+import kotlin.random.Random
 
 /**
  * Reads the store's [StoreIdentity], minting it on first sight.
@@ -129,8 +130,8 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         } catch (e: Exception) {
             // Another process creating the same constraint at the same moment surfaces here on engines
             // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
-            // the race was benign. One whose build failed (FalkorDB) is listed, yet enforces nothing.
-            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull()?.takeUnless { it.buildFailed } != null) {
+            // the race was benign.
+            if (winnersInForce(constraints)) {
                 true
             } else {
                 logger.warn(
@@ -141,6 +142,25 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                 false
             }
         }
+    }
+
+    /**
+     * Whether another manager's key constraint is in force, looked for after this one's making failed. Of managers
+     * making it at once on Neo4j, each round of the label's lock goes to one and turns the rest away as deadlocked;
+     * with many at once, the rounds can go on past [DdlContention.ATTEMPTS] (liberation-data/drivine CI run
+     * 41260212023, and 128 managers here). A loser turned away each time finds the winner's here, and, looking
+     * rather than making it again, leaves the lock to the others, so that one of them wins sooner. The winner may
+     * still be making it, so it is looked for up to [LOOKS_FOR_THE_WINNER] times, with longer pauses between
+     * ([lookPause]). One whose build failed (FalkorDB) is listed, yet enforces nothing. A look that fails finds nothing.
+     */
+    private fun winnersInForce(constraints: ConstraintManager): Boolean {
+        repeat(LOOKS_FOR_THE_WINNER) { look ->
+            if (look > 0) Thread.sleep(lookPause(look))
+            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull()?.takeUnless { it.buildFailed } != null) {
+                return true
+            }
+        }
+        return false
     }
 
     /** Ensures the key's constraint, again when another manager made it, or what it needs, meanwhile. */
@@ -257,6 +277,22 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
 
         /** How many times the key's constraint is ensured when another manager made it meanwhile: see [madeMeanwhile]. */
         private const val MAX_ENSURE_ATTEMPTS = 3
+
+        /** How many times the winner's key constraint is looked for after this manager's making failed: see [winnersInForce]. */
+        internal const val LOOKS_FOR_THE_WINNER = 8
+
+        /** The least pause before the second look for the winner's constraint; each later one is as much longer. */
+        private const val LOOK_PAUSE_MILLIS = 50L
+
+        /**
+         * The pause before look [look] (from 1) for the winner's constraint: as many [LOOK_PAUSE_MILLIS] as looks so
+         * far, and up to as much again at random, so that losers looking together don't ask together. 2.8 s at most
+         * over all the looks.
+         */
+        internal fun lookPause(look: Int, random: Random = Random.Default): Long {
+            val base = look * LOOK_PAUSE_MILLIS
+            return base + random.nextLong(base)
+        }
 
         /** A graph engine refusing a schema statement for what is there: FalkorDB's "Constraint already exists", "Attribute 'key' is already indexed". */
         private val ALREADY_MADE = Regex("already (exists|indexed)", RegexOption.IGNORE_CASE)

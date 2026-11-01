@@ -260,6 +260,74 @@ class StoreIdentityResolverTest {
         assertEquals(DdlContention.ATTEMPTS, creates, "run as often as whenNotContended runs it, and no more: ${store.schema}")
     }
 
+    /**
+     * A Neo4j store where many managers race to make the key's constraint, and this one loses every round of the
+     * label's lock: each `CREATE CONSTRAINT` deadlocks. The winner's constraint is listed from the first look after
+     * this one's last attempt for which [listedAt] answers true, told how many looks there have been since.
+     */
+    private class LostEveryRound(listedAt: (looksSince: Int) -> Boolean) {
+        var creates = 0
+        var looks = 0
+        var looksAtLastCreate = 0
+        var merges = 0
+        private val stamp = CypherStoreStamp("DrivineStore", "key")
+        private val constraint = mapOf(
+            "name" to "drivinestore_key", "type" to "UNIQUENESS", "entityType" to "NODE",
+            "labelsOrTypes" to listOf("DrivineStore"), "properties" to listOf("key"),
+        )
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> {
+                    looksAtLastCreate = looks
+                    TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle.").also { creates++ }
+                }
+                ran.statement.trimStart().startsWith("SHOW CONSTRAINTS") -> {
+                    looks++
+                    if (creates >= DdlContention.ATTEMPTS && listedAt(looks - looksAtLastCreate)) listOf(constraint) else emptyList<Any?>()
+                }
+                ran.statement == stamp.assignIfAbsent ->
+                    if (merges++ == 0) IllegalStateException("Cannot resolve conflicting transactions") else emptyList<Any?>()
+                ran.statement == stamp.readStamps -> listOf(Stamp("store-13", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a manager whose making deadlocks each time it is run finds the winner's constraint, and writes the stamp under it`() {
+        // liberation-data/drivine CI run 41260212023: of 16 managers, one lost every round of the label's lock.
+        val race = LostEveryRound { true }
+
+        assertEquals("store-13", StoreIdentityResolver(race.store).resolve().id)
+        assertEquals(DdlContention.ATTEMPTS, race.creates, "run as often as whenNotContended runs it: ${race.store.schema}")
+        assertEquals(2, race.merges, "under the winner's constraint, a conflict is a lost race, and written again")
+    }
+
+    @Test
+    fun `the winner's constraint is looked for again, after a pause, while the winner is still making it`() {
+        val race = LostEveryRound { looksSince -> looksSince > 2 }
+
+        assertEquals("store-13", StoreIdentityResolver(race.store).resolve().id)
+        assertEquals(2, race.merges, "the stamp is written under the winner's constraint")
+    }
+
+    @Test
+    fun `the winner's constraint is looked for only so many times, and identity is then best effort`() {
+        val race = LostEveryRound { false }
+
+        assertFailsWith<IllegalStateException> { StoreIdentityResolver(race.store).resolve() }
+        assertEquals(StoreIdentityResolver.LOOKS_FOR_THE_WINNER, race.looks - race.looksAtLastCreate, "looks after the last attempt")
+        assertEquals(1, race.merges, "without the constraint confirmed, a conflict is not taken for a lost race")
+    }
+
+    @Test
+    fun `a look for the winner's constraint pauses longer each time, and by chance up to as long again`() {
+        val pauses = (1 until StoreIdentityResolver.LOOKS_FOR_THE_WINNER).map { look ->
+            List(100) { StoreIdentityResolver.lookPause(look) }.also { all -> assertTrue(all.all { it in look * 50L until look * 100L }, "look $look: $all") }
+        }
+        assertTrue(pauses.sumOf { it.max() } < 2_800, "all the looks together take under 2.8 s")
+    }
+
     @Test
     fun `a stamp refused for a reason that is not the constraint is not written again`() {
         val deadlock = TransientException("Neo.TransientError.Transaction.DeadlockDetected", "Deadlock wait cycle.")
