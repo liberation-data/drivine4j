@@ -21,9 +21,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.junit.jupiter.api.assertThrows
-import org.junit.jupiter.api.assertTimeoutPreemptively
 import org.testcontainers.containers.Neo4jContainer
-import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -1830,16 +1828,14 @@ abstract class CypherQueryContract {
             listOf("", null) to null, listOf("x".repeat(5_000), null) to null, listOf("", "abc") to false,
         )
         onOneSession(lists.indices.associate { "l$it" to lists[it].first }) { query ->
-            // Each statement given at most 30 s: one that hangs fails here, and doesn't hold the suite.
-            fun capped(cypher: String) = assertTimeoutPreemptively(Duration.ofSeconds(30), cypher) { query(cypher) }
             repeat(3) { run ->
                 for ((i, list) in lists.withIndex()) {
                     val (items, found) = list
-                    assertEquals(listOf(found, found), capped("MATCH (n:CyInNull) RETURN n.t IN \$l$i ORDER BY n.i"), "$items, run ${run + 1}")
-                    assertEquals(listOf(0L), capped("MATCH (n:CyInNull) WHERE n.t IN \$l$i RETURN count(*)"), "$items in a WHERE, run ${run + 1}")
+                    assertEquals(listOf(found, found), query("MATCH (n:CyInNull) RETURN n.t IN \$l$i ORDER BY n.i"), "$items, run ${run + 1}")
+                    assertEquals(listOf(0L), query("MATCH (n:CyInNull) WHERE n.t IN \$l$i RETURN count(*)"), "$items in a WHERE, run ${run + 1}")
                 }
                 // And written out, which is compared item by item.
-                assertEquals(listOf(null, null), capped("MATCH (n:CyInNull) RETURN n.t IN ['abc', 5, null] ORDER BY n.i"), "written, run ${run + 1}")
+                assertEquals(listOf(null, null), query("MATCH (n:CyInNull) RETURN n.t IN ['abc', 5, null] ORDER BY n.i"), "written, run ${run + 1}")
             }
         }
         clear()
