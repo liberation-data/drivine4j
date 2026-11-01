@@ -61,6 +61,42 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `an aggregate of a CASE that tests a field of a moment added to twice compiles to a statement of a few kilobytes`() {
+        // #469: Oracle's search of an aggregate's CASE for a subquery wrote each long value out wherever it was read: with
+        // one addition, 165 million characters, searched and thrown away, and with two, past the JVM's longest string.
+        val cypher = "MATCH (c:Claim) RETURN count(CASE WHEN (datetime(c.at) + duration('PT1H') + duration('PT1H')).minute > 0 THEN 1 END)"
+        compilers.forEach { compiler ->
+            val sql = compiler.compile(cypher).sql
+            assertTrue(sql.length < 40_000, "${compiler::class.simpleName}: ${sql.length} characters")
+        }
+    }
+
+    @Test
+    fun `on Oracle, an aggregate of a CASE beside a moment added to twice aggregates no subquery and declares only the functions it calls`() {
+        // #469: the search of the CASE for a subquery writes each long value beside what reads it, under names of no subquery:
+        // a subquery of the CASE's own, in such a value or beside it, is still found, and the aggregate reads it worked out
+        // first. What the search declares is given back: a reduce()'s step searched so declared a function reading those names.
+        val moment = "(datetime(n.at) + duration('PT1H') + duration('PT1H')).minute"
+        listOf(
+            "MATCH (n:C) RETURN count(CASE WHEN EXISTS { MATCH (n)-->(m) WHERE m.x > 0 } AND $moment > 0 THEN 1 END)",
+            "MATCH (n:C) RETURN count(CASE WHEN COUNT { (n)-->() } > $moment THEN 1 END)",
+            "MATCH (n:C) RETURN collect(CASE WHEN $moment > 0 THEN [(n)-->(m) | m.id] END)",
+            "MATCH (n:C) RETURN collect(CASE WHEN (datetime([(n)-->(m) | m.at][0]) + duration('PT1H') + duration('PT1H')).minute > 0 THEN 1 END)",
+            "MATCH (n:C) RETURN count(CASE WHEN reduce(a = 0, x IN n.l | a + $moment) > 0 THEN 1 END)",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertTrue(sql.length < 60_000, "$statement: ${sql.length} characters")
+            assertTrue("probed." !in sql, "$statement: $sql")
+            // The statement's own aggregate, its first after the functions it declares.
+            val aggregate = sql.lines().dropWhile { !it.startsWith("SELECT") }.first { Regex("\\b(count|JSON_ARRAYAGG)\\(").containsMatchIn(it) }
+            assertTrue("SELECT" !in aggregate.substringAfter("SELECT"), "$statement: $aggregate")
+            val declared = Regex("FUNCTION (cy_\\w+)\\(").findAll(sql).map { it.groupValues[1] }.toList()
+            assertEquals(declared.distinct(), declared, statement)
+            assertTrue(declared.all { Regex("\\b$it\\(").findAll(sql).count() > 1 }, "$statement: $declared")
+        }
+    }
+
+    @Test
     fun `a sum of twice the terms compiles to about twice the statement`() {
         fun sum(terms: Int) = "MATCH (c:Claim) RETURN " + (1..terms).joinToString(" + ") { "c.p$it" }
         compilers.forEach { compiler ->

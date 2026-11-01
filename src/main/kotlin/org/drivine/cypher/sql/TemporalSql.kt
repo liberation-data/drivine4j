@@ -131,8 +131,9 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
     protected fun readsAd(text: String): Boolean = (text in ad).also { if (it) readAd = true }
 
     /**
-     * The SQL [block] writes, each of [derived] [knownAd] in it where [of] is: a value worked out of [of] whose year is from
-     * 1000 on where [of]'s is, as a truncation's, or [of] itself bound to a name.
+     * The SQL [block] writes, each of [derived] [knownAd] in it where [of] is: a value worked out of [of] whose year is after 0
+     * where [of]'s is from 1000 on, as a truncation's, or [of] itself bound to a name. Not always from 1000 on itself (the
+     * week-based year of `1000-01-01` starts on `0999-12-30`), but a store writes and reads every year after 0 as ISO 8601 does.
      */
     fun asAd(of: String, derived: List<String>, block: () -> String): String = if (readsAd(of)) knownAd(derived, block).first else block()
 
