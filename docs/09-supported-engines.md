@@ -315,6 +315,12 @@ declares the function itself.
   Still not worked around: a map made of a long property and then read (`head([n {.bio}]).bio`), and `=` of a long
   property with a value that may hold a null (`head([n]).bio = n.bio`), both still close the session, and so does a
   long text in a map that is itself a property, returned as it is (`RETURN n.meta.bio`).
+- So are texts `reverse()` gives ([#538](https://github.com/liberation-data/drivine4j/issues/538)), wherever the
+  `reverse()` is (returned, passed on, measured, searched, collected, in a `WHERE`, an `ORDER BY` or a write): a text
+  past 4,000 bytes, reversed in pieces put together as a list, is taken out of that list through its text, and the kind
+  of a property `reverse()` is given is read by the property's own path. A text of at most 4,000 bytes is reversed as
+  before, a little faster, as its kind is read by its path too (20,000 rows of `RETURN reverse(n.bio)` take about 310 ms,
+  against 335 to 340 ms).
 - An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
   an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)

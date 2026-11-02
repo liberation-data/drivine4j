@@ -213,3 +213,25 @@ of a long property with a value that may hold a null (`head([n]).a = n.a`, `UNWI
 (n) WHERE r.a = n.a`), which takes the stored property out as JSON to compare it; and a long text in a map that is
 itself a property, returned as it is (`RETURN n.m.a`), which is taken out of the map as JSON. Measured, searched or
 compared (`size(n.m.a)`, `n.m.a ENDS WITH 'x'`), that one is read from the map as text and runs clean.
+
+## A text reversed
+
+The same crash comes from `reverse()` of a text past 32 KB (liberation-data/drivine4j#538), in two places. A text past
+4,000 bytes is reversed in pieces, put together as a JSON list of one text, and that text was taken out of the list as
+JSON, `JSON_QUERY(list, '$[0]' RETURNING JSON)`, as an item of a list was above. And the kind of a property `reverse()`
+is given, a text or a list, was read from the property taken out as JSON, `JSON_VALUE(JSON_QUERY(props, '$.a' RETURNING
+JSON), '$.type()')`. Over two or more rows, each closed the session (ORA-03113, or ORA-00600 `[kghfrh:ds]`) on the first
+run of the statement or a later one: returned, passed on, measured, searched, collected, in a `WHERE` and an `ORDER BY`,
+and of a stored text, of a property of a value a function gives, of a map, of an item of a list, and of a text made
+from a long one. A given text, bound once, ran clean. Taken out through its text, as an item of a list is, and with the
+property's kind read by its own path, each ran clean in a fresh container, three runs:
+
+```sql
+CASE JSON_VALUE(props, '$.a.type()')
+  WHEN 'string' THEN ... JSON(JSON_QUERY(list_text, '$[0]' RETURNING CLOB ASCII)) ...
+  WHEN 'array' THEN ...
+END
+```
+
+The list's text is written in ASCII, so a character past U+FFFF stays whole. See `OracleCypherCompiler.reversedPieces`
+and `OracleCypherCompiler.reversedKind`. A text of at most 4,000 bytes is reversed as a `VARCHAR2`, as before.

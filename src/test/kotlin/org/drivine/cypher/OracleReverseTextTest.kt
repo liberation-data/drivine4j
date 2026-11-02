@@ -28,16 +28,20 @@ class OracleReverseTextTest {
         // Each piece reversed as a short text is, and the pieces put together last to first, written in ASCII and read as JSON.
         assertTrue(long.contains("(SELECT LISTAGG(SUBSTR(rv_piece.s, LEVEL, 1)) WITHIN GROUP (ORDER BY LEVEL DESC) FROM DUAL CONNECT BY LEVEL <= LENGTH(rv_piece.s)) r"), long)
         val joined = "JSON_SERIALIZE(JSON_ARRAYAGG('x' || rv_reversed.r ORDER BY rv_reversed.n DESC RETURNING JSON) RETURNING CLOB ASCII)"
-        assertTrue(long.contains("(SELECT JSON_QUERY(JSON(REPLACE(REPLACE($joined, '\",\"x'), '[\"x', '[\"')), '\$[0]' RETURNING JSON)"), long)
+        // Taken out of the list through its text, and not as JSON, which closed the session over two rows (#538).
+        assertTrue(long.contains("(SELECT JSON(JSON_QUERY(REPLACE(REPLACE($joined, '\",\"x'), '[\"x', '[\"'), '\$[0]' RETURNING CLOB ASCII))"), long)
         // Worked out once, and not made JSON again.
         assertEquals(1, Regex("JSON_ARRAYAGG\\('x'").findAll(sql).count(), sql)
-        assertTrue(!long.contains("JSON_SCALAR(CASE WHEN LENGTH((SELECT JSON_QUERY"), long)
+        assertTrue(!long.contains("JSON_SCALAR(CASE WHEN LENGTH((SELECT JSON(JSON_QUERY"), long)
     }
 
     @Test
     fun `a stored text reversed is read by its own path, and on Postgres a text is reversed as it was`() {
         val stored = sql("MATCH (n:Doc) RETURN reverse(n.a)")
         assertTrue(stored.contains("JSON_VALUE(n1.props, '\$.a')") && stored.contains("JSON_VALUE(n1.props, '\$.a' RETURNING CLOB)"), stored)
+        // Its kind too, and not from the property taken out as JSON, which closed the session over two rows (#538).
+        assertTrue(stored.contains("CASE DECODE(JSON_VALUE(n1.props, '\$.a.type()'), 'double', 'number', 'float', 'number', JSON_VALUE(n1.props, '\$.a.type()')) WHEN 'string'"), stored)
+        assertTrue(!stored.contains("JSON_VALUE(JSON_QUERY(n1.props, '\$.a' RETURNING JSON), '\$.type()')"), stored)
         val postgres = PostgresCypherCompiler("g").compile("WITH \$t AS t RETURN reverse(t)", mapOf("t" to "abc")).sql
         assertTrue(postgres.contains("THEN to_jsonb(reverse(CASE WHEN jsonb_typeof(w2.c1) = 'string' THEN w2.c1 #>> '{}' END))"), postgres)
     }

@@ -464,7 +464,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
      * so is an item of a list read by its place: see [listItem]; and so is a property that is an argument of `coalesce()`:
      * see [coalescedProperty]; and so is a property of a value the statement works out, a node a function gives or a map: see
-     * [valueProperty].
+     * [valueProperty]; and so is a text `reverse()` gives, and the kind of a property it is given: see [reversedPieces] and
+     * [reversedKind].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -1175,6 +1176,20 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun reversedText(text: String) = if (long) bound("TO_CLOB($text)") { (t) -> reversedPieces(t) } else super.reversedText(text)
 
     /**
+     * The kind of a property `reverse()` is given, read by the property's own path, `JSON_VALUE(n1.props, '$.t.type()')`, as
+     * [texts] reads its text (see [direct]); of any other value, as [typeOf] reads it.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#538), to be removed with it.** Read from the property taken out as
+     * JSON, `JSON_VALUE(JSON_QUERY(n1.props, '$.t' RETURNING JSON), '$.type()')`, the kind of a text past 32 KB closed the
+     * session over two rows or more (ORA-03113, or ORA-00600 `[kghfrh:ds]`), as #255's did: returned, measured, searched, in
+     * a `WHERE`, passed on and in a write. Read by its path, a short text's kind costs a little less than before: 20,000
+     * rows of `RETURN reverse(n.name)` take about 310 ms, against 335 to 340 ms. To remove it, delete this override with
+     * [itemProperty]'s, once an Oracle release no longer crashes on the repro in `docs/oracle-long-json-string-crash.md`,
+     * and `CypherQueryOracleTest`'s "a text past 32 KB reversed" test still passes without it.
+     */
+    override fun reversedKind(json: String) = direct(typeOf(json), json)
+
+    /**
      * The CLOB [text] reversed as a JSON text: cut into pieces of [REVERSED_PIECE] of its UTF-16 units, each a `VARCHAR2`
      * reversed by [reverseText], and the pieces put together last to first.
      *
@@ -1185,10 +1200,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      *
      * The pieces are put together as a JSON list, each after an `x`, written in ASCII: a `","x` in it is then only ever
      * between two of them, as a quote in a text is written `\"`, so removing each, and the first `x`, leaves a list of one
-     * text, which is read as JSON. A null text has one piece, as a hierarchical query has a first row, which is left out, so
-     * the list is null, and so is the text. Written otherwise, a character past U+FFFF whose two units are the 4,000th and
-     * the 4,001st of a CLOB Oracle has made, as a CLOB put together or cut is, comes out of `JSON_SCALAR`, `JSON_ARRAY` and
-     * `JSON_OBJECT` as two U+FFFD; in ASCII it is written `\uD83D\uDE00`, and read back whole. The pieces are `VARCHAR2`s.
+     * text, which is taken out of it as text, in ASCII, and read as JSON, as [listItem] takes a text out through its text.
+     * A null text has one piece, as a hierarchical query has a first row, which is left out, so the list is null, and so is
+     * the text. Written otherwise, a character past U+FFFF whose two units are the 4,000th and the 4,001st of a CLOB Oracle
+     * has made, as a CLOB put together or cut is, comes out of `JSON_SCALAR`, `JSON_ARRAY` and `JSON_OBJECT` as two U+FFFD;
+     * in ASCII it is written `\uD83D\uDE00`, and read back whole. The pieces are `VARCHAR2`s.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#538), to be removed with it.** Taken out of the list as JSON,
+     * `JSON_QUERY(list, '$[0]' RETURNING JSON)`, a text past 32 KB closed the session over two rows (ORA-03113, or ORA-00600
+     * `[kghfrh:ds]`), as #255's did. To remove it, take the text out as JSON again, once an Oracle release no longer crashes on
+     * the repro in `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past 32 KB reversed" test
+     * still passes without it.
      */
     private fun reversedPieces(text: String): String {
         fun pairStarts(unit: String) = "LENGTH(REGEXP_SUBSTR($text, '.', $unit, 1, 'n')) = 2"
@@ -1196,7 +1218,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         val last = "(LEVEL * $REVERSED_PIECE + CASE WHEN ${pairStarts("LEVEL * $REVERSED_PIECE")} THEN 1 ELSE 0 END)"
         val cut = "SELECT LEVEL n, DBMS_LOB.SUBSTR($text, $last - $first + 1, $first) s FROM DUAL CONNECT BY LEVEL <= CEIL(LENGTH($text) / $REVERSED_PIECE)"
         val joined = "JSON_SERIALIZE(JSON_ARRAYAGG('x' || rv_reversed.r ORDER BY rv_reversed.n DESC RETURNING JSON) RETURNING CLOB ASCII)"
-        return "(SELECT JSON_QUERY(JSON(REPLACE(REPLACE($joined, '\",\"x'), '[\"x', '[\"')), '\$[0]' RETURNING JSON) " +
+        return "(SELECT JSON(JSON_QUERY(REPLACE(REPLACE($joined, '\",\"x'), '[\"x', '[\"'), '\$[0]' RETURNING CLOB ASCII)) " +
             "FROM (SELECT rv_piece.n, ${reverseText("rv_piece.s")} r FROM ($cut) rv_piece WHERE rv_piece.s IS NOT NULL) rv_reversed)"
     }
 
