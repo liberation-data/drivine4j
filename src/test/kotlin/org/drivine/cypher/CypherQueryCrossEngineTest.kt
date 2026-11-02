@@ -1580,6 +1580,17 @@ abstract class CypherQueryContract {
         // A stored list, whose kind is read by its path too, is reversed as it was, and a property that isn't there is null.
         query("CREATE (:CyRevList {l: [1, 2, 3]})")
         assertEquals(listOf(listOf(listOf(3L, 2L, 1L), null)), query("MATCH (n:CyRevList) RETURN [reverse(n.l), reverse(n.missing)]"))
+        // Over two rows too: texts past 32 KB of characters of more than one byte and past U+FFFF, reversed by character, and
+        // a short, an empty and a missing text, whose kinds are read by their path as well.
+        clear()
+        fun reversed(t: String) = t.codePoints().toArray().reversedArray().let { String(it, 0, it.size) }
+        val texts = listOf("é中😀".repeat(5_000) + "0", "x" + "😀é".repeat(6_000), "a😀é", "")
+        texts.forEachIndexed { i, t -> query("CREATE (:CyRevWide {i: \$i, t: \$t})", mapOf("i" to i, "t" to t)) }
+        query("CREATE (:CyRevWide {i: 4})")
+        val wide = texts.map { if (it.isEmpty()) empty else reversed(it) } + listOf(null)
+        onOneSession { query ->
+            repeat(3) { run -> assertEquals(wide, query("MATCH (n:CyRevWide) WITH n ORDER BY n.i RETURN reverse(n.t)"), "run ${run + 1}") }
+        }
         clear()
     }
 
