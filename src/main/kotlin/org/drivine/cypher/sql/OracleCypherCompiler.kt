@@ -274,41 +274,130 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * is read as a `VARCHAR2` first, and its kind only where that is null. A list or a map that holds a long text is compared as
      * JSON, and refused. Each side is read more than once, so a long one is bound, as [sharedCompared] binds it.
      *
-     * Neither holds NaN, which is equal to nothing (#409): Oracle's JSON finds a `BINARY_DOUBLE` NaN equal to itself.
+     * Beside a value the statement writes (see [written]), as beside one it is given (see [givenEquals]), only the other side is
+     * tested, and two such values are compared as JSON: tested on both sides, `list = list` of a few hundred literal items,
+     * compared item by item, was about four times the SQL it had been (#476).
+     *
+     * Neither holds NaN, which is equal to nothing (#409): Oracle's JSON finds a `BINARY_DOUBLE` NaN equal to itself. Two values
+     * that are equal as JSON hold NaN only where both do, so one side is tested, and neither beside a literal, which holds none
+     * (see [nanFree]).
      */
-    override fun jsonEquals(x: String, y: String) = sharedCompared(x, y) { (a, b) ->
-        val equal = if (asJson) "$a = $b" else "CASE WHEN ${short(a)} IS NOT NULL AND ${short(b)} IS NOT NULL THEN $a = $b " +
-            "WHEN ${kind(a)} = 'string' AND ${kind(b)} = 'string' THEN ${clobOrder(a, "=", b)} " +
-            "WHEN ${kind(a)} IS NULL OR ${kind(b)} IS NULL THEN NULL WHEN ${kind(a)} = 'string' OR ${kind(b)} = 'string' THEN FALSE ELSE $a = $b END"
-        "($equal AND NOT ${holdsNaN(a)})"
+    override fun jsonEquals(x: String, y: String) = jsonEquals(x, y, oneNaNFree = false)
+
+    /** [jsonEquals], where [oneNaNFree] says one side holds no NaN, and so neither is tested for it. */
+    private fun jsonEquals(x: String, y: String, oneNaNFree: Boolean): String {
+        fun guarded(equal: String, json: String) = if (oneNaNFree) equal else notNaN(equal, json)
+        if (asJson || written(x) && written(y)) {
+            if (oneNaNFree || nanFree(x) || nanFree(y)) return "$x = $y"
+            return sharedCompared(x, y) { (a, b) -> guarded("$a = $b", a) }
+        }
+        if (written(x) || written(y)) {
+            val (other, value) = if (written(y)) x to y else y to x
+            if (writtenScalar(value) == false) return sharedCompared(other, value) { (a, b) -> if (nanFree(value)) oneSided(a, b) else guarded(oneSided(a, b), b) }
+            // Beside a value of one kind, a list or a map is not equal, and isn't compared as JSON, which refuses one that holds a
+            // text past 32 KB.
+            return sharedCompared(other, value) { (a, b) -> oneSided(a, b, containers = false) }
+        }
+        return sharedCompared(x, y) { (a, b) ->
+            guarded("CASE WHEN ${short(a)} IS NOT NULL AND ${short(b)} IS NOT NULL THEN $a = $b " +
+                "WHEN ${kind(a)} = 'string' AND ${kind(b)} = 'string' THEN ${clobOrder(a, "=", b)} " +
+                "WHEN ${kind(a)} IS NULL OR ${kind(b)} IS NULL THEN NULL WHEN ${kind(a)} = 'string' OR ${kind(b)} = 'string' THEN FALSE ELSE $a = $b END", a)
+        }
     }
 
     /**
      * [jsonEquals], but where [given] is a number, a truth value, or a text of 1 to 4,000 bytes, which is read as a `VARCHAR2`:
-     * then only the other side is tested, and where it is a text that isn't, it is longer, and not equal. A property read from
-     * the store is not null as JSON, and so needs no test of its own. Where [given] is or holds NaN, as [jsonEquals] (#409).
+     * then only the other side is tested (see [oneSided]), and beside a value the statement writes (see [written]), neither. A
+     * property read from the store is not null as JSON, and so needs no test of its own. Where [given] is or holds NaN, as
+     * [jsonEquals] (#409).
      */
     override fun givenEquals(x: String, y: String, given: Any): String {
         if (holdsNonFinite(given, Double::isNaN)) return jsonEquals(x, y)
         if (asJson) return "$x = $y"
         if (!readShort(given)) return jsonEquals(x, y)
-        return sharedCompared(x, y) { (a, b) -> "CASE WHEN ${short(a)} IS NOT NULL OR NVL(${kind(a)}, 'null') <> 'string' THEN $a = $b ELSE FALSE END" }
+        if (written(x)) return "$x = $y"
+        return sharedCompared(x, y) { (a, b) -> oneSided(a, b) }
     }
 
     /**
-     * Where each of [items] is null or read as a `VARCHAR2` (see [givenEquals]), [item] equal as JSON to [value], or to null where
-     * [value] is a text that isn't, and is longer than any of them: a plain equality, as before: an `IN` of three items over 20,000
-     * rows took 28 ms, against 14 ms before, where [jsonEquals], which tests both sides in a `CASE`, took 90 ms. Where one
-     * of them is or holds NaN, as [jsonEquals] (#409).
+     * Whether the JSON value [a] is equal to [b], a value that is no text, or a text read as a `VARCHAR2`: as JSON, where [a] is
+     * read as a `VARCHAR2` too or is no text; else [a] is a text that is longer, or empty, and not equal.
      */
-    override fun givenItemEquals(item: String, value: String, items: List<Any?>): String {
-        if (asJson || !items.all { it == null || readShort(it) && !holdsNonFinite(it, Double::isNaN) }) return jsonEquals(item, value)
-        return sharedCompared(item, value) { (a, b) -> "$a = CASE WHEN ${short(b)} IS NOT NULL OR NVL(${kind(b)}, 'null') <> 'string' THEN $b END" }
+    private fun oneSided(a: String, b: String, containers: Boolean = true) = "CASE WHEN ${shortOrNoText(a, containers)} THEN $a = $b ELSE FALSE END"
+
+    /**
+     * Whether the JSON value [json] is read as a `VARCHAR2`, a text of 1 to [SHORT_TEXT] bytes, or is no text; SQL's null is no
+     * text. Where not [containers], a list or a map doesn't pass either: beside a value of one kind it is not equal.
+     */
+    private fun shortOrNoText(json: String, containers: Boolean = true) =
+        "${short(json)} IS NOT NULL OR NVL(${kind(json)}, 'null') ${if (containers) "<> 'string'" else "NOT IN ('string', 'array', 'object')"}"
+
+    /**
+     * Where each of [items] is null or read as a `VARCHAR2` (see [givenEquals]), whether a value is read as one too, or is no
+     * text: then each item is compared with it as JSON, a plain equality, as before #389, and where it is a text that isn't,
+     * it is longer than any of them, or empty, and in none. Tested once for the value, beside the `EXISTS` over the items, and
+     * not in each item's comparison: over 20,000 rows `n.name IN ['n1', 'n2', 'n3']` took 8.8 ms so, against 14.4 ms with
+     * the test in each item's comparison (#475). Not where an item is NaN, which a plain equality finds equal to itself: each
+     * item is then compared as [jsonEquals] compares them, which finds NaN equal to nothing (#409).
+     */
+    override fun givenItemsTest(items: List<Any?>): ((String) -> String)? =
+        if (asJson || !items.all { it == null || readShort(it) && !holdsNonFinite(it, Double::isNaN) }) null else { value -> "(${shortOrNoText(value)})" }
+
+    /** Not in a statement that writes, nor in the step of a `reduce()`, which compare as before (see [asJson]). */
+    override val givenItemsDecided get() = !asJson
+
+    /**
+     * As [jsonEquals], but where none of [items] is NaN, neither side is tested for it: the item holds none, and two values
+     * equal as JSON hold NaN only where both do. Tested, a stored text past 32 KB was taken out as JSON (#475).
+     */
+    override fun givenItemEquals(item: String, value: String, items: List<Any?>) =
+        jsonEquals(item, value, oneNaNFree = items.none { holdsNonFinite(it, Double::isNaN) })
+
+    /** [equal], a comparison of [json] with a value, but false where [json] is or holds NaN, which is equal to nothing (#409). */
+    private fun notNaN(equal: String, json: String) = "($equal AND NOT ${holdsNaN(json)})"
+
+    /**
+     * Whether [json] is a literal the statement writes ([literalJson]), or a list or a map it makes of them, which hold no NaN:
+     * Cypher writes none, and a float literal past a double's range is refused. Tested for NaN, two list literals of a hundred
+     * items, compared item by item, were half as long again (#476).
+     */
+    private fun nanFree(json: String): Boolean {
+        if (!written(json) || json.contains("TO_BINARY_DOUBLE('NaN')")) return false
+        // A list or a map the statement makes of literals alone: no word but its own and theirs outside a quoted text.
+        val words = json.replace(QUOTED, "").split(WRITTEN_SEPARATORS)
+        return words.all { it.isEmpty() || it in WRITTEN_WORDS }
     }
 
     /** Whether the value [given] is a number, a truth value or a text of 1 to [SHORT_TEXT] bytes, which `JSON_VALUE` reads as a `VARCHAR2`. */
     private fun readShort(given: Any) =
         given is Number || given is Boolean || given is String && given.isNotEmpty() && given.toByteArray(Charsets.UTF_8).size <= SHORT_TEXT
+
+    /**
+     * Whether [json] is a value the statement writes that is no text, or a text of 1 to [SHORT_TEXT] bytes, which `JSON_VALUE`
+     * reads as a `VARCHAR2`: a literal as [literalJson] writes it, a float among them, or a list or a map the statement makes
+     * ([jsonArray], [jsonObject]), which is never SQL's null, whatever it holds, and is compared as JSON, as before. Beside it
+     * the other side alone is tested (see [jsonEquals]), as beside a value the statement is given.
+     */
+    private fun written(json: String) = writtenScalar(json) != null
+
+    /** Whether [json], where it is [written], is a value of one kind (true) or a list or a map (false); null where it isn't written. */
+    private fun writtenScalar(json: String): Boolean? {
+        if (json.startsWith("JSON('") && json.endsWith("')")) {
+            // One literal, its quotes doubled: not two, `JSON('1') = JSON('2')`.
+            val text = json.substring(6, json.length - 2)
+            if (!text.replace("''", "").contains('\'')) {
+                val value = runCatching { Neo4jObjectMapper.instance.readTree(text.replace("''", "'")) }.getOrNull() ?: return null
+                return when {
+                    value.isContainerNode -> false
+                    !value.isTextual || readShort(value.textValue()) -> true
+                    else -> null
+                }
+            }
+        }
+        // A list or a map, one call whose parentheses close only at its end.
+        if ((json.startsWith("JSON_ARRAY(") || json.startsWith("JSON_OBJECT(")) && json.endsWith(")") && balanced(json.substring(json.indexOf('(') + 1, json.length - 1))) return false
+        return if (WRITTEN_FLOAT.matches(json)) true else null
+    }
 
     /**
      * Two texts, as [textOrder] orders them; any other two of one kind as JSON. JSON ordered a text past 32 KB, read from the
@@ -325,8 +414,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * Whether the JSON texts [x] and [y] stand as [operator] says, `=`, `<`, `>=`…: as `VARCHAR2`s where both are read so, which
      * compare by their bytes, so by their code points; else as CLOBs, by `DBMS_LOB.COMPARE`, which compares the whole of each,
      * a shorter one that starts the other first. An empty text, null as a CLOB, comes before any other. A CLOB is compared by
-     * its UTF-16 units, so between two texts past 4,000 bytes that first differ where one has a character past U+FFFF and the
-     * other one from U+E000 to U+FFFF, the order is the other way round from Cypher's.
+     * its UTF-16 units, so where either text is past 4,000 bytes, between two that first differ where one has a character past
+     * U+FFFF and the other one from U+E000 to U+FFFF, the order is the other way round from Cypher's.
      */
     private fun textOrder(x: String, operator: String, y: String) =
         "CASE WHEN ${short(x)} IS NOT NULL AND ${short(y)} IS NOT NULL THEN ${short(x)} $operator ${short(y)} ELSE ${clobOrder(x, operator, y)} END"
@@ -413,7 +502,9 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
      * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
-     * and so is an item of a list read by its place: see [listItem].
+     * so is an item of a list read by its place: see [listItem]; and so is a property that is an argument of `coalesce()`:
+     * see [coalescedProperty]; and so is a property of a value the statement works out, a node a function gives or a map: see
+     * [valueProperty].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -421,6 +512,64 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      */
     override fun itemProperty(props: String, key: String) =
         "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM($props, KEEP ${OracleSql.path(key)}) RETURNING CLOB EXTENDED), ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+
+    /**
+     * A property that is an argument of `coalesce()`, `coalesce(${'$'}p.q, n.a)`, by its kind, read by the property's own path: a
+     * text of at most 4,000 bytes as a `VARCHAR2`, a longer one (and an empty one, null as a `VARCHAR2`) through its text as
+     * [itemProperty] reads it, JSON's null as null, and anything else, or nothing, as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#459), to be removed with it.** Taken out as JSON, `CASE WHEN
+     * JSON_VALUE(JSON_QUERY(n1.props, '$.a' RETURNING JSON), '$.type()') <> 'null' THEN JSON_QUERY(n1.props, '$.a' RETURNING
+     * JSON) END`, a text past 32 KB closed the session over two rows or more (ORA-03113, and ORA-00600 `[kghfrempty:ds]` in
+     * a write), on the first run of the statement or a later one: returned, passed on, measured, read by a text function,
+     * of a node or of a relationship, beside a variable-length walk and in a write. A property of a map, or of a node a
+     * function gives (`coalesce(m.a, …)`, `coalesce(head([n]).a, …)`), is read as [valueProperty] reads one, and one of an
+     * unwound item as before. The `CASE` on the property's kind, which made Oracle drop a label test where an item read a
+     * node's properties twice (see [itemProperty]), kept each one here, in a `WHERE` and beside another node's table
+     * (`CypherQueryContract`'s "a text past 32 KB that coalesce() gives").
+     * [itemProperty]'s form alone cost about twice the read it replaced on short texts; a short text read as a `VARCHAR2`
+     * costs none: 20,000 rows of `RETURN coalesce(${'$'}p.q, n.name)` took 72 ms either way, and of `RETURN
+     * toLower(trim(coalesce(${'$'}p.q, n.name)))` 93 ms against 109 ms.
+     *
+     * To remove it, delete this override with [itemProperty]'s, once an Oracle release no longer crashes on the repro in
+     * `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past 32 KB that coalesce() gives"
+     * test still passes without it.
+     */
+    override fun coalescedProperty(props: String, key: String) = shared(props) { (p) ->
+        val path = OracleSql.path(key)
+        "CASE JSON_VALUE($p, ${OracleSql.path(key, ".type()")}) WHEN 'string' THEN COALESCE(JSON_SCALAR(JSON_VALUE($p, $path)), ${itemProperty(p, key)}) " +
+            "WHEN 'null' THEN NULL ELSE JSON_QUERY($p, $path RETURNING JSON) END"
+    }
+
+    /**
+     * A property of a value the statement works out, a node or a relationship a function or an index gives (`head([n]).a`,
+     * `[n][0].a`, `last(ns).a`) or a map (`properties(n).a`, `head([properties(n)]).a`): as JSON, as before, by a path whose
+     * filter leaves out a text past 4,000 characters, `'$.a?(@.type() != "string" || @.length() <= 4000)'`, and such a text
+     * through its text, as [itemProperty] reads it. Where the value is long, it is bound in a subquery, and the property read
+     * there by its own path.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#531), to be removed with it.** Taken out as JSON, `JSON_QUERY(value,
+     * '$.a' RETURNING JSON)`, a text past 32 KB closed the session over two rows or more (ORA-03113, or ORA-00600 `[17114]`),
+     * on the first run of the statement or a later one: returned, passed on, measured, searched, compared, in a `WHERE` and
+     * in an `ORDER BY`. A property of an unwound item, which `JSON_TABLE` takes out, is read as before, and so is a key of a
+     * map that is itself a property (`n.m.a`), which [direct] reads from the map where a text function, a measure or a
+     * comparison reads it; returned as it is, `RETURN n.m.a`, a text past 32 KB there still closes the session. So do a map
+     * made of a long property and then read (`head([n {.a}]).a`), and `=` of a long property with a value that may hold a
+     * null (`head([n]).a = n.a`), which takes the stored property out as JSON to compare it. Read by its kind, as
+     * [coalescedProperty] reads one, a property of a map a `WITH` passes on cost about 1.5 times the plain read on short
+     * texts, as the map was worked out again for each of the reads; read so, 20,000 rows of `WITH properties(n) AS m RETURN
+     * m.t` take as long as before.
+     *
+     * To remove it, delete this override with [itemProperty]'s, once an Oracle release no longer crashes on the repro in
+     * `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past 32 KB that is a property of a node,
+     * a relationship or a map a function gives" test still passes without it.
+     */
+    override fun valueProperty(json: String, key: String) =
+        if (propertyRead(json) != null) propertyOf(json, key)
+        else shared(json) { (x) ->
+            val short = OracleSql.path(key, "?(@.type() != \"string\" || @.length() <= $SHORT_TEXT)")
+            "COALESCE(JSON_QUERY($x, $short RETURNING JSON), ${itemProperty(x, key)})"
+        }
 
     /**
      * A value that a write takes from the row it is writing, to work out what it writes (`SET n.a = t.a`, `CREATE (:X {a:
@@ -456,7 +605,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * label test where it read a node's properties twice (see [itemProperty]), reads the item here, a column of the list it
      * is unwound from, and the labelled patterns beside it kept their tests (`CypherWriteContract`'s "an unwound item's text
      * … returned only for the nodes a labelled pattern matches"). So only a value read from such an item is read so (see
-     * [Value.Json.fromList]); a map made of a node's properties and not unwound (`WITH n {.a} AS m`, `properties(n)`) is read as before. It cost about
+     * [Value.Json.fromList]); a map made of a node's properties and not unwound (`WITH n {.a} AS m`, `properties(n)`) is read as [valueProperty] reads one. It cost about
      * 1.3 times the plain read on short values: 100,000 rows of `UNWIND ${'$'}items AS t RETURN t.a` took 860 to 880 ms against
      * 650 to 670 ms.
      *
@@ -1251,6 +1400,18 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** A property as [propertyOf] reads it, its properties and its path, a literal whose quotes are doubled: see [propertyRead]. */
         val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$(?:[^']|'')*') RETURNING JSON\)""")
+
+        /** A float [literalJson] writes: see [written]. */
+        private val WRITTEN_FLOAT = Regex("""JSON_SCALAR\(TO_BINARY_DOUBLE\('[^']*'\)\)""")
+
+        /** A quoted SQL text, its quotes doubled: see [nanFree]. */
+        private val QUOTED = Regex("'(?:[^']|'')*'")
+
+        /** What separates the words of a value the statement writes: see [nanFree]. */
+        private val WRITTEN_SEPARATORS = Regex("[\\s(),]+")
+
+        /** The words of a literal ([literalJson]), and of a list or a map made of them ([jsonArray], [jsonObject]): see [nanFree]. */
+        private val WRITTEN_WORDS = setOf("JSON", "JSON_SCALAR", "TO_BINARY_DOUBLE", "JSON_ARRAY", "JSON_OBJECT", "VALUE", "NULL", "ON", "RETURNING")
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
