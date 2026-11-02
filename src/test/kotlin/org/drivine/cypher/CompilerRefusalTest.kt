@@ -109,7 +109,7 @@ class CompilerRefusalTest {
                 // A variable a later WITH, a comprehension, a quantifier or a reduce() binds again is of the kind that one makes it.
                 "WITH 1 AS x WITH {a: 1} AS x RETURN x.a" to emptyMap(),
                 "WITH 1 AS x RETURN [x IN [{a: 1}] | x.a], [x IN [true] WHERE x], any(x IN [true] WHERE x), reduce(x = true, y IN [true] | x AND y)" to emptyMap(),
-                // A CASE, a coalesce(), a list joined, an item of a list or a map written, or a parameter, is of no kind known.
+                // A CASE of values of two kinds, a coalesce(), a list joined, an item of a list or a map written, or a parameter, is of no kind known.
                 "WITH CASE WHEN true THEN {a: 1} ELSE 1 END AS x, coalesce(null, {a: 1}) AS y, [1] + [{a: 1}] AS z RETURN x.a, y.a, z[1]" to emptyMap(),
                 "RETURN [{a: 1}][0].a, [true][0] AND true, {a: true}.a AND true, {a: [1]}['a'][0]" to emptyMap(),
                 "WITH \$p AS x RETURN x.a, x AND true, x[0], 1 IN x, properties(x)" to mapOf("p" to mapOf("a" to 1)),
@@ -121,6 +121,33 @@ class CompilerRefusalTest {
                 "WITH 1 AS x CREATE (n) WITH {a: 1} AS x CREATE (m) RETURN x.a" to emptyMap(),
                 "WITH 1 AS x CREATE (n) WITH 1 AS y UNWIND [{a: 1}] AS x RETURN x.a" to emptyMap(),
             ).forEach { (cypher, parameters) -> compiler().compile(cypher, parameters) }
+        }
+    }
+
+    @Test
+    fun `a number a function, arithmetic, a CASE or an UNWIND makes is refused where another kind is taken, as Neo4j refuses it`() {
+        // #285 widens #448's known kinds (#420), and so its other refusals: Neo4j refuses each of the first group when it plans the
+        // statement, and plans each of the second.
+        listOf({ PostgresCypherCompiler("g") }, { OracleCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            listOf(
+                "RETURN [1, 2][toFloat(0)]" to "A list is indexed by an integer, not a float, as in Neo4j.",
+                "UNWIND [2 ^ 1] AS c RETURN [1, 2][c]" to "A list is indexed by an integer, not a float, as in Neo4j.",
+                "RETURN range(0, round(2.5))" to "range() takes integers, not a float, as in Neo4j.",
+                "MATCH (n) WHERE 1 + 1 RETURN n" to "An integer is not a condition, as in Neo4j.",
+                "RETURN toFloat(1) AND true" to "AND takes a truth value, not a float, as in Neo4j.",
+                "UNWIND ['a'] AS s RETURN s.x" to "A text has no properties.",
+                "RETURN 1 IN CASE WHEN true THEN 1.5 ELSE 2.5 END" to "IN takes a list, not a float, as in Neo4j.",
+            ).forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>(cypher) { compiler().compile(cypher) }.message, cypher)
+            }
+            // Integer arithmetic is an integer, and a CASE or a list of an integer and a float or a null is of no kind known.
+            listOf(
+                "RETURN [1, 2][1 + 0], [1, 2, 3][5 % 3], [1, 2, 3][5 / 3], range(0, 5 / 2), range(0, -(1 + 1), -1)",
+                "RETURN [1, 2][CASE WHEN true THEN 0 END], [1, 2][CASE WHEN true THEN 0 ELSE 1.5 END], range(0, CASE WHEN true THEN 1 ELSE 1.5 END)",
+                "UNWIND [1, null] AS x RETURN [1, 2][x]",
+                "UNWIND [1, 2.5] AS c RETURN range(0, c)",
+                "UNWIND [[1, 2]] AS l UNWIND [{a: 1}] AS m RETURN l[0], m.a",
+            ).forEach { compiler().compile(it) }
         }
     }
 
