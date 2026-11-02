@@ -669,7 +669,7 @@ cases:
         rows: [["trix", "tr", "Ma", "rix", "The Matrix", "The M_trix"]]
 
   - name: "Start and length of a text function"
-    description: "substring(), left() and right() refuse a written float and a start or length outside 0 to 2147483647, and cut a bound float toward zero, as Neo4j does."
+    description: "substring(), left() and right() refuse a float the statement writes or makes and a start or length outside 0 to 2147483647, and cut a bound float toward zero, as Neo4j does."
     steps:
       - note: "A written float is refused whatever the text, a whole one too."
         cypher: "RETURN left('hello', 2.7)"
