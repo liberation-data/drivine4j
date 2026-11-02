@@ -83,7 +83,8 @@ class JdbcConnection(
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
         val given = spec.finalizedCopy(QueryLanguage.SQL)
         val compiledFromCypher = given.statement!!.language == QueryLanguage.CYPHER
-        val finalizedSpec = cypherCompiled(given)
+        val cypher = cypherCompiled(given)
+        val finalizedSpec = cypher?.let { given.withSql(it.sql, it.parameters) } ?: given
         if (finalizedSpec.statement!!.language != QueryLanguage.SQL) {
             throw DrivineException("This database speaks SQL, and was given a ${finalizedSpec.statement!!.language} statement.", spec = spec)
         }
@@ -108,9 +109,9 @@ class JdbcConnection(
                 if (statement.execute() || statement.moreResults) {
                     if (type == DatabaseType.SQLITE) {
                         val json = positional.statement.trimStart().startsWith(SqliteSql.JSON_ROWS)
-                        statement.resultSet.use { JdbcResultMapper.sqliteRows(it, json) }
+                        statement.resultSet.use { JdbcResultMapper.sqliteRows(it, json, cypher?.nonFinite == true) }
                     } else {
-                        statement.resultSet.use(JdbcResultMapper::rows)
+                        statement.resultSet.use { JdbcResultMapper.rows(it, cypher?.nonFinite == true) }
                     }
                 } else {
                     emptyList()
@@ -127,23 +128,22 @@ class JdbcConnection(
 
     /**
      * A Cypher statement compiled to the store's SQL over the graph's tables, so a statement written for a
-     * graph engine runs here and gives the same rows; anything else as it is.
+     * graph engine runs here and gives the same rows; null for anything else, which runs as it is.
      */
-    private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): QuerySpecification<T> {
-        if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
+    private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): CompiledCypher? {
+        if (spec.statement!!.language != QueryLanguage.CYPHER) return null
         // A graph name that cannot name tables is refused here, when Cypher is first run, and not as the connection is had:
         // plain SQL works whatever the name, as it did before the provider made the graph's tables (#364).
         refusedGraph?.let { throw DrivineException(it, spec = spec) }
         // So is an Oracle older than 23.9, which has no UUID() for randomUUID().
         cypherRefusal?.let { throw DrivineException(it, spec = spec) }
-        val compiled = when (type) {
+        return when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
             DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
             // Its text values are JSON: see JdbcResultMapper.sqliteRows.
             DatabaseType.SQLITE -> SqliteCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
-        return spec.withSql(compiled.sql, compiled.parameters)
     }
 
     /**

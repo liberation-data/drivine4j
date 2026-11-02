@@ -2,6 +2,7 @@ package org.drivine.backend.sqlite
 
 import java.sql.Connection
 import java.sql.PreparedStatement
+import java.sql.SQLException
 
 /**
  * The statements a function runs on the connection it is registered on, each prepared the first time
@@ -34,7 +35,7 @@ internal class SqliteStatements(private val connection: Connection) {
     }
 
     /** Runs [sql] with [values], and gives how many rows it changed. */
-    fun update(sql: String, vararg values: Any?): Int = prepared(sql, *values).executeUpdate()
+    fun update(sql: String, vararg values: Any?): Int = dropped(sql) { prepared(sql, *values).executeUpdate() }
 
     /** Runs [sql], a statement of no values, such as a savepoint's. */
     fun run(sql: String) {
@@ -42,12 +43,24 @@ internal class SqliteStatements(private val connection: Connection) {
     }
 
     /** The rows [sql] with [values] reads, each as [read] makes it. */
-    fun <T> rows(sql: String, vararg values: Any?, read: (java.sql.ResultSet) -> T): List<T> =
+    fun <T> rows(sql: String, vararg values: Any?, read: (java.sql.ResultSet) -> T): List<T> = dropped(sql) {
         prepared(sql, *values).executeQuery().use { results ->
             val rows = mutableListOf<T>()
             while (results.next()) rows += read(results)
             rows
         }
+    }
+
+    /**
+     * [run] over the statement [sql], which is closed and no longer kept where it fails: the driver can run no more a statement
+     * that a function failed in, such as `drivine_fail` in a write that would store NaN.
+     */
+    private fun <T> dropped(sql: String, run: () -> T): T = try {
+        run()
+    } catch (failure: SQLException) {
+        prepared.remove(sql)?.let { runCatching { it.close() } }
+        throw failure
+    }
 
     private companion object {
         /** The statements a connection keeps: more than any one plan runs. */
