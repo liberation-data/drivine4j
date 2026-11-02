@@ -14,6 +14,9 @@ import kotlin.test.assertTrue
  */
 class OracleItemPropertyTest {
 
+    /** The path a property of a value the statement works out is read by as JSON: no text past 4,000 characters (#531). */
+    private val shortText = "'\$.a?(@.type() != \"string\" || @.length() <= 4000)'"
+
     private val long = "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(n1.props, KEEP '\$.a') RETURNING CLOB EXTENDED), '\$.a' RETURNING CLOB) EXTENDED)"
 
     @Test
@@ -129,9 +132,10 @@ class OracleItemPropertyTest {
     }
 
     @Test
-    fun `a map's value returned is read as elsewhere`() {
+    fun `a map's value returned is read by a path that leaves out a long text`() {
+        // As any property of a value the statement works out (#531): a text past 32 KB taken out as JSON closed the session.
         val sql = OracleCypherCompiler("g").compile("WITH {a: 1} AS m RETURN m.a").sql
-        assertTrue(!sql.contains("KEEP") && sql.contains("'\$.a' RETURNING JSON)"), sql)
+        assertTrue(sql.contains("COALESCE(JSON_QUERY(w2.c1, $shortText RETURNING JSON), ${long.replace("n1.props", "w2.c1")})"), sql)
     }
 
     @Test
@@ -210,8 +214,10 @@ class OracleItemPropertyTest {
     }
 
     @Test
-    fun `a value of a map made of a node's properties, or written, is read as elsewhere`() {
-        // Only a value read from an unwound item is read through its text: a CASE on a node's properties made Oracle drop a label test.
+    fun `a value of a map made of a node's properties, or written, is read by a path that leaves out a long text, and not through the whole map's text`() {
+        // Only a value read from an unwound item is read through the item's text, which a CASE on a node's properties made Oracle
+        // drop a label test for. A map's value is read by a path that leaves out a long text instead, and such a text through
+        // its own (#531): the contract's "a text past 32 KB that is a property of … a map a function gives" checks a label test is kept.
         listOf(
             "MATCH (n:Doc) RETURN properties(n).a",
             "MATCH (n:Doc) WITH n {.a} AS m RETURN m.a",
@@ -219,7 +225,8 @@ class OracleItemPropertyTest {
             "MATCH (n:Doc) CALL { WITH n RETURN n {.a} AS m UNION ALL UNWIND [{a: 1}] AS m RETURN m } RETURN m.a",
         ).forEach { cypher ->
             val sql = OracleCypherCompiler("g").compile(cypher).sql
-            assertTrue(!sql.contains("SERIALIZE"), sql)
+            assertTrue(sql.contains(shortText) && sql.contains("KEEP '\$.a') RETURNING CLOB EXTENDED"), sql)
+            assertTrue(!sql.contains(" RETURNING CLOB), '\$.a' RETURNING CLOB))"), sql)
         }
     }
 
@@ -284,10 +291,11 @@ class OracleItemPropertyTest {
         val relationship = Regex("CASE JSON_VALUE\\((\\w+)\\.props, '\\$\\.a\\.type\\(\\)'\\)").findAll(sql).map { it.groupValues[1] }.single { it != "n1" }
         assertEquals(3, Regex(Regex.escape("$relationship.props, '\$.a")).findAll(sql).count(), sql)
         assertTrue(sql.contains(long.replace("n1.props", "$relationship.props")) && sql.contains("ELSE JSON_QUERY($relationship.props, '\$.a' RETURNING JSON) END"), sql)
-        // The parameter's key, and a property of a map, are read as they were.
+        // The parameter's key is read as it was, and a property of a map as any property of a map is (see valueProperty, #531),
+        // its JSON null then tested as any argument's is.
         assertTrue(sql.contains("<> 'null' THEN JSON_QUERY("), sql)
         val map = OracleCypherCompiler("g").compile("WITH {a: 'x'} AS m RETURN coalesce(m.a, 'z')").sql
-        assertTrue(!map.contains("KEEP"), map)
+        assertTrue(map.contains(shortText) && !map.contains("WHEN 'null' THEN NULL") && map.contains("<> 'null' THEN"), map)
         // Elsewhere a property coalesce() reads is read as it was.
         val postgres = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN coalesce(\$p.q, n.a)", mapOf("p" to mapOf("q" to null))).sql
         assertTrue(postgres.contains("(n1.props -> 'a')") && !postgres.contains("KEEP"), postgres)
@@ -298,6 +306,35 @@ class OracleItemPropertyTest {
         // The stamp is a column of the node's row, not a property in its JSON, so it is not read as coalesce()'s other properties are (#459).
         val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc) RETURN coalesce(n.`__drivine.stamp`, 0)").sql
         assertTrue(sql.contains("JSON_SCALAR(n1.stamp)") && !sql.contains("KEEP") && !sql.contains("__drivine.stamp"), sql)
+    }
+
+    @Test
+    fun `a property of a node, a relationship or a map a function gives is read by a path that leaves out a long text, from where the value is bound`() {
+        // Taken out as JSON, JSON_QUERY(value, '$.a' RETURNING JSON), a text past 32 KB closed the session over two rows or more (#531).
+        // As JSON by a path that leaves out a text past 4,000 characters, and such a text through its text.
+        fun read(x: String) = "COALESCE(JSON_QUERY($x, $shortText RETURNING JSON), ${long.replace("n1.props", x)})"
+        // A node or a relationship head(), last() or an index gives, and a map: a long value is bound in a subquery, and its
+        // property read there by its own path, so the value it is read from is never the property taken out as JSON.
+        listOf("MATCH (n:Doc) RETURN size(head([n]).a)", "MATCH ()-[r:R]->() RETURN size(last([r]).a)", "MATCH (n:Doc) RETURN size([n][0].a)",
+            "MATCH (n:Doc) WITH collect(n) AS ns RETURN size(head(ns).a)", "MATCH (n:Doc) RETURN size(head([properties(n)]).a)").forEach { cypher ->
+            val sql = OracleCypherCompiler("g").compile(cypher).sql
+            val bound = Regex("COALESCE\\(JSON_QUERY\\((sh\\d+\\.v1), ").find(sql)?.groupValues?.get(1)
+            assertTrue(bound != null && sql.contains(read(bound)) && !sql.contains("'\$.a' RETURNING JSON)"), sql)
+        }
+        // And of a map whose key names a temporal value's field, which is read by its kind.
+        val day = OracleCypherCompiler("g").compile("MATCH (n:Doc) RETURN size(properties(n).day)").sql
+        assertTrue(day.contains("'\$.day?(@.type() != \"string\" || @.length() <= 4000)'") && !day.contains("'\$.day' RETURNING JSON)"), day)
+        // A short one is read where it is.
+        val map = OracleCypherCompiler("g").compile("MATCH (n:Doc) WITH n {.a} AS m RETURN m.a").sql
+        assertTrue(Regex("\\b(\\w+\\.c1)\\b").findAll(map).map { it.groupValues[1] }.any { map.contains(read(it)) }, map)
+        // A property of a node or a relationship a pattern binds, and of an unwound item, is read as it was.
+        val bound = OracleCypherCompiler("g").compile("MATCH (n:Doc)-[r:R]->() WHERE n.a = 1 AND r.a = 1 RETURN n.b").sql
+        assertTrue(bound.contains("JSON_QUERY(n1.props, '\$.a' RETURNING JSON)") && !bound.contains(shortText), bound)
+        val unwound = OracleCypherCompiler("g").compile("UNWIND [{a: 1}] AS x WITH x WHERE x.a = 1 RETURN 1").sql
+        assertTrue(!unwound.contains(shortText) && !unwound.contains("KEEP"), unwound)
+        // Elsewhere such a property is read as it was.
+        val postgres = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN size(head([n]).a)").sql
+        assertTrue(postgres.contains("-> 'a')") && !postgres.contains("KEEP"), postgres)
     }
 
     @Test
