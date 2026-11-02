@@ -336,6 +336,9 @@ abstract class CypherQueryContract {
             "$one WITH p, a UNWIND relationships(p) AS r RETURN [a.i, r.i] ORDER BY a.i" to listOf(listOf(0L, 0L), listOf(1L, 1L)),
             "MATCH (a:CyPa) CALL (a) { MATCH p = (a)-[:CY_PA]->() WITH p RETURN nodes(p)[1].i AS j } RETURN j ORDER BY a.i" to listOf(1L, 0L),
             "MATCH (a:CyPa) OPTIONAL MATCH p = (a)-[:CY_PA {i: 0}]->() WITH p, a ORDER BY a.i RETURN [x IN nodes(p) | x.i]" to listOf(listOf(0L, 1L), null),
+            // A variable-length relationship's list is no path, and a path a CALL returns is no WITH's: each row reads its own too.
+            "MATCH (a:CyPa)-[rs:CY_PA*2]->() WITH rs, a ORDER BY a.i RETURN [r IN rs | r.i]" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            "MATCH (a:CyPa) CALL (a) { MATCH p = (a)-[:CY_PA]->() RETURN p } RETURN [x IN nodes(p) | x.i] ORDER BY a.i" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
         )
         cases.forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
     }
