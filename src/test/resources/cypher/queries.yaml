@@ -2692,7 +2692,7 @@ cases:
         rows: [[false, true, false, false, false, false, true]]
       - cypher: "RETURN 0.0 / 0.0 IN [0.0 / 0.0, 's', null]"
         rows: [null]
-      - note: "A float zero worked out from the rows, and an integer divided by it. Neo4j fails a division by an integer zero worked out, though not one written (1.0 / 0)."
+      - note: "A float zero worked out from the rows, and an integer divided by it. Neo4j fails a division by an integer zero, but where both numbers are written (1.0 / 0)."
         only: [neo4j, sql]
         cypher: "UNWIND [0.0, 2.0] AS z RETURN [1.0 / z, -1 / z, z / z]"
         rows: [[{$float: "Infinity"}, {$float: "-Infinity"}, {$float: "NaN"}], [0.5, -0.5, 1.0]]

@@ -614,14 +614,14 @@ relationships with it.
   and works with it as the float it is, as Neo4j does; the rows give it back as that float. A statement that writes
   and is given one is refused, rather than store that number.
 - A statement that reads and may work NaN or an infinity out is compiled the same way, decided as it is compiled: one
-  that divides or takes `%` by anything but a number other than 0 written in it or given, or takes `toFloat` of
-  anything but a number, or a text that names neither, written in it or given. So a float divided by zero is NaN or an
-  infinity, as on Neo4j (`0.0 / 0.0`, `1.0 / 0`), where `numeric` fails, and `toFloat('NaN')` is NaN. Such a
-  statement's SQL is longer (`RETURN n.x / n.y` about three times) and slower: over 20,000 nodes, `n.x / n.y` of the
-  2,000 a filter keeps takes about 1.8 times as long (18 ms against 10), and three values worked out from each node
-  about 3 times (226 ms against 75). Any other statement compiles exactly as before. A statement that writes and
-  divides a float by zero fails with `division by zero`, rather than store that number. An integer divided by zero
-  fails, as on Neo4j.
+  that divides or takes `%` by anything but a number other than 0 written in it or given, or takes `toFloat` of anything
+  but a number, or a text that names neither, written in it or given. So a float divided by zero is NaN or an infinity,
+  as on Neo4j (`0.0 / 0.0`, `1.0 / 0`), where `numeric` fails, and `toFloat('NaN')` is NaN. Such a statement's SQL is
+  longer (`RETURN n.x / n.y` about three times) and slower: over 20,000 nodes, `n.x / n.y` of the 2,000 a filter keeps
+  takes about 1.8 times as long (18 ms against 10), and three values worked out from each node about 3 times (226 ms
+  against 75). Any other statement compiles exactly as before. A statement that writes and divides a float by zero fails
+  with `division by zero`, rather than store that number, and `toFloat` of a text that names NaN or an infinity is null
+  in it. An integer divided by zero fails, as on Neo4j.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
