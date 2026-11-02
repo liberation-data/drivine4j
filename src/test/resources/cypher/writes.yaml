@@ -800,26 +800,27 @@ cases:
         error: "A statement that writes is given NaN, which SQLite's JSON holds as no number: it would store another value in its place."
 
   - name: "MERGE of a null or NaN property"
-    description: "A MERGE fails where it makes a node or relationship whose pattern gives a property that is null or NaN, which is equal to nothing, so no MERGE would find it again: only as it makes it, so not over no rows. ON CREATE SET and ON MATCH SET write NaN, and a list that holds NaN is merged, and made again each time."
+    description: "A MERGE fails where it makes a node or relationship whose pattern gives a property that is null or NaN, which is equal to nothing, which no MERGE would find again; over no rows it does not fail. ON CREATE SET and ON MATCH SET write NaN, and a list that holds NaN is merged, and made again each time."
     steps:
-      - except: [memgraph, falkordb, neptune]
+      - note: "A SQL store made a new node on every run (drivine4j#543)."
+        except: [neptune]
         cypher: "MERGE (n:CyWrite {id: 1, x: null})"
         error: true
-      - except: [memgraph, falkordb, neptune]
+      - except: [neptune]
         cypher: "MERGE (n:CyWrite {id: 1, x: $p})"
         parameters: {p: null}
         error: true
       - cypher: "CREATE (:CyWrite {id: 1})"
-      - except: [memgraph, falkordb, neptune]
+      - except: [neptune]
         cypher: "MATCH (s:CyWrite {id: 1}) MERGE (n:CyWrite {x: s.none})"
         error: true
-      - except: [memgraph, falkordb, neptune]
+      - except: [neptune]
         cypher: "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: null}]->(:CyWrite {id: 2})"
         error: true
-      - except: [memgraph, falkordb, neptune]
+      - except: [neptune]
         cypher: "UNWIND [2, null] AS v MERGE (:CyWrite {id: v})"
         error: true
-      - except: [memgraph, falkordb, neptune]
+      - except: [neptune]
         cypher: "MATCH (s:CyWrite {id: 9}) MERGE (n:CyWrite {x: null}) RETURN n.x"
         rows: []
       - cypher: "MATCH (n) RETURN count(n)"
