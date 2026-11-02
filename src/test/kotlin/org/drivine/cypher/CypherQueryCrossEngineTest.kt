@@ -1534,6 +1534,56 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB reversed on two rows is reversed whole`() {
+        // On Oracle reverse() read a property's kind from the property taken out as JSON, JSON_VALUE(JSON_QUERY(n1.props, '$.t'
+        // RETURNING JSON), '$.type()'), and took a text past 4,000 bytes, reversed in pieces, out of the list it put them
+        // together in as JSON, JSON_QUERY(list, '$[0]' RETURNING JSON): a text past 32 KB so closed the session over two rows
+        // (ORA-03113, or ORA-00600 [kghfrh:ds], #538), as #255's did, on the first run of the statement or a later one. A
+        // given text, bound once, ran clean. A node of another label holds the same text, and is not read.
+        clear()
+        val t0 = "a".repeat(40_000) + "0"
+        val t1 = "a".repeat(40_000) + "1"
+        query("CREATE (:CyRev {i: 0, t: \$t0}), (:CyRev {i: 1, t: \$t1}), (:CyRevOther {i: 2, t: \$t1})", mapOf("t0" to t0, "t1" to t1))
+        val (r0, r1) = t0.reversed() to t1.reversed()
+        val o = "MATCH (n:CyRev) WITH n ORDER BY n.i"
+        fun each(value: Any?) = listOf(value, value)
+        val statements = listOf(
+            // The issue's: a stored text, returned, measured and searched, and in a WHERE.
+            "$o RETURN reverse(n.t)" to listOf(r0, r1),
+            "$o RETURN size(reverse(n.t))" to each(40_001L),
+            "$o RETURN reverse(n.t) STARTS WITH '0'" to listOf(true, false),
+            "$o WHERE reverse(n.t) STARTS WITH '1' RETURN n.i" to listOf(1L),
+            "$o WHERE size(reverse(n.t)) > 0 RETURN n.i" to listOf(0L, 1L),
+            // Passed on, in a list, collected, twice, and in an ORDER BY.
+            "$o WITH reverse(n.t) AS r RETURN size(r)" to each(40_001L),
+            "$o WITH n.t AS t RETURN size(reverse(t))" to each(40_001L),
+            "$o RETURN [reverse(n.t)]" to listOf(listOf(r0), listOf(r1)),
+            "MATCH (n:CyRev) RETURN size(head(collect(reverse(n.t))))" to listOf(40_001L),
+            "$o RETURN size(reverse(reverse(n.t)))" to each(40_001L),
+            "MATCH (n:CyRev) RETURN size(reverse(n.t)) ORDER BY size(reverse(n.t))" to each(40_001L),
+            // Of a value a function gives, of a map, of an item of a list, and of a text made from a long one.
+            "$o RETURN reverse(head([n]).t)" to listOf(r0, r1),
+            "$o RETURN size(reverse(head([n]).t))" to each(40_001L),
+            "$o RETURN size(reverse(properties(n).t))" to each(40_001L),
+            "$o WITH properties(n) AS m RETURN size(reverse(m.t))" to each(40_001L),
+            "$o RETURN size(reverse(coalesce(n.t, 'z')))" to each(40_001L),
+            "$o RETURN size(reverse(split(n.t, 'x')[0]))" to each(40_001L),
+            "$o RETURN size(reverse(toLower(n.t)))" to each(40_001L),
+            "$o RETURN size(reverse(substring(n.t, 1)))" to each(40_000L),
+            "$o RETURN size(reverse(n.t + 'z'))" to each(40_002L),
+            // In a write.
+            "$o SET n.r = reverse(n.t) RETURN size(n.r)" to each(40_001L),
+        )
+        onOneSession { query ->
+            repeat(3) { run -> for ((cypher, expected) in statements) assertEquals(expected, query(cypher), "$cypher, run ${run + 1}") }
+        }
+        // A stored list, whose kind is read by its path too, is reversed as it was, and a property that isn't there is null.
+        query("CREATE (:CyRevList {l: [1, 2, 3]})")
+        assertEquals(listOf(listOf(listOf(3L, 2L, 1L), null)), query("MATCH (n:CyRevList) RETURN [reverse(n.l), reverse(n.missing)]"))
+        clear()
+    }
+
+    @Test
     fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
         // Beside the spec's writes case since v0.6.17 (#298): read where it is used too, and by more functions.
         // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
