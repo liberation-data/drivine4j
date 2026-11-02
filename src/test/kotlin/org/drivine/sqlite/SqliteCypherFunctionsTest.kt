@@ -90,6 +90,14 @@ class SqliteCypherFunctionsTest {
                     "drivine_to_char(2.5, 'FM9990.999'), drivine_to_char(3, 'FM9990.999'), drivine_to_char(-1.25, 'FM9990.999'), drivine_to_char(NULL, 'FM00')"
             ),
         )
+        // A year before 1 as ISO 8601 numbers it: four digits after its sign, 0000 for 1 BC.
+        assertEquals(
+            listOf("-0044-03-15T10:30:05", "0000-01-01", "-0001", "-1234"),
+            row(
+                "SELECT drivine_to_char('-0044-03-15T10:30:05.000000', 'YYYY-MM-DD\"T\"HH24:MI:SS'), drivine_to_char('0000-01-01T00:00:00.000000', 'YYYY-MM-DD'), " +
+                    "drivine_to_char('0000-01-01T00:00:00.000000', 'IYYY'), drivine_to_char('-1234-06-01T00:00:00.000000', 'YYYY')"
+            ),
+        )
     }
 
     @Test
@@ -150,6 +158,11 @@ class SqliteCypherFunctionsTest {
         assertEquals(
             listOf("2024-03-31T10:00:00.000000", "2023-11-30T10:00:00.000000"),
             row("SELECT drivine_temporal('add_months', '2024-01-31T10:00:00.000000', 1.5), drivine_temporal('add_months', '2024-01-31T10:00:00.000000', -1.5)"),
+        )
+        // A year before 1, which SQLite's own date functions don't read.
+        assertEquals(
+            listOf("-0044-03-15T00:00:00.000000", 4L, -44L),
+            row("SELECT drivine_temporal('local', '-0044-03-15', 'DATE'), drivine_temporal('day_of_week', '-0044-03-15T00:00:00.000000'), drivine_temporal('extract', '-0044-03-15T00:00:00.000000', 'YEAR')"),
         )
         assertEquals(null, row("SELECT drivine_temporal('local', NULL, 'DATE')"))
         val refused = assertFailsWith<DrivineException> { row("SELECT drivine_temporal('local', '2024-02-30', 'DATE')") }
