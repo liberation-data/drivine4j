@@ -1779,6 +1779,9 @@ abstract class CypherQueryContract {
             "$o WITH head([n]) AS h RETURN size(h.t)" to each(40_001L),
             "$o WITH head([n]) AS h WHERE h.t ENDS WITH '1' RETURN h.i" to listOf(1L),
             "$o WITH [n] AS ns RETURN size(ns[0].t)" to each(40_001L),
+            // A node coalesce() or a CASE gives, whose properties aren't a column of its row.
+            "$o RETURN size(coalesce(n, n).t)" to each(40_001L),
+            "$o RETURN size(CASE WHEN n.i >= 0 THEN n END.t)" to each(40_001L),
             // Of a list collect() gives.
             "$grouped RETURN size(head(ns).t)" to each(40_001L),
             "$grouped RETURN size(last(ns).t)" to each(40_001L),
@@ -1812,6 +1815,8 @@ abstract class CypherQueryContract {
             // In a write.
             "$o SET n.copy = head([n]).t RETURN size(n.copy)" to each(40_001L),
             "$o SET n.copy = properties(n).t RETURN size(n.copy)" to each(40_001L),
+            "$o CREATE (c:CyFnCopy {t: last([n]).t}) RETURN size(c.t)" to each(40_001L),
+            "$o MERGE (c:CyFnCopy {i: n.i}) SET c.t = [n][0].t RETURN size(c.t)" to each(40_001L),
         )
         onOneSession { query ->
             // Oracle closed the session on the first run, or from the second on.
