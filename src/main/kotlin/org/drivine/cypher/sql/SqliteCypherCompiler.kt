@@ -157,28 +157,51 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         else "(($x ->> '$') $operator ($y ->> '$'))"
 
     /**
-     * Where the statement is given NaN or an infinity, NaN where either number is NaN, or where an infinity makes the result NaN,
-     * which SQLite gives as null: `∞ - ∞`, `∞ * 0`, `∞ / ∞`. A division by zero is null, as it is otherwise (#201).
+     * Where the statement is given NaN or an infinity, or may work one out, NaN where either number is NaN, or where an infinity
+     * makes the result NaN, which SQLite gives as null: `∞ - ∞`, `∞ * 0`, `∞ / ∞`. A float divided by zero, which SQLite gives as
+     * null too, is NaN for zero, and else the infinity of the dividend's sign, as in Java (#408). Two integers are divided by
+     * [wholeQuotient], whose division by zero is null still (#201).
      */
     override fun arithmetic(a: String, b: String, operator: String): String {
         if (!nonFinite) return super.arithmetic(a, b, operator)
         return shared(a, b) { (x, y) ->
             val result = super.arithmetic(x, y, operator)
             val infinite = "(abs(${number(x)}) = $INFINITY OR abs(${number(y)}) = $INFINITY)" + if (operator == "/") " AND ${number(y)} <> 0" else ""
+            val byZero = if (operator != "/") "" else "WHEN ${typeOf(x)} = 'number' AND ${number(y)} = 0 THEN CASE WHEN ${number(x)} > 0 THEN json_quote($INFINITY) " +
+                "WHEN ${number(x)} < 0 THEN json_quote(-$INFINITY) ELSE $NAN_JSON END "
             "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR ($result IS NULL AND $infinite)) " +
-                "THEN $NAN_JSON ELSE $result END"
+                "THEN $NAN_JSON ${byZero}ELSE $result END"
         }
     }
 
-    /** NaN, where a number of the group is NaN, or where it holds both infinities: SQLite's own `sum` passes NaN by, and gives null for `∞ + -∞`. */
+    /**
+     * Where the statement is given NaN or an infinity, or may work one out, NaN where either number is NaN, the first is an
+     * infinity, or a float is taken by zero, as in Java, which SQLite gives as null (#408). Two integers by zero are null still.
+     */
+    override fun remainder(a: String, b: String): String {
+        if (!nonFinite) return super.remainder(a, b)
+        return shared(a, b) { (x, y) ->
+            "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR abs(${number(x)}) = $INFINITY " +
+                "OR (${number(y)} = 0 AND NOT (${integral(x)} AND ${integral(y)}))) THEN $NAN_JSON ELSE ${super.remainder(x, y)} END"
+        }
+    }
+
+    /** In a statement that writes too: an infinity it works out is stored, and NaN fails ([finite]), as for one given. */
+    override fun nonFiniteWorkedOut(writes: Boolean) = true
+
+    /**
+     * NaN, where it holds both infinities, whatever the statement is given, as an infinity may be stored (#544); and where the
+     * statement is given NaN or an infinity, or may work one out, where a number of the group is NaN. SQLite's own `sum` passes
+     * NaN by, and gives null for `∞ + -∞`, which `COALESCE` would make 0.
+     */
     override fun sum(json: String, distinct: String) = nanOfGroup(json, super.sum(json, distinct))
 
     /** NaN where [sum] is. */
     override fun avg(json: String, distinct: String) = nanOfGroup(json, super.avg(json, distinct))
 
-    /** [summed], of the JSON values [json] of a group, or NaN as [sum] gives it, where the statement is given NaN or an infinity. */
-    private fun nanOfGroup(json: String, summed: String) = if (!nonFinite) summed else
-        "(CASE WHEN max(${isNaN(json)}) = 1 OR max(${number(json)}) = $INFINITY AND min(${number(json)}) = -$INFINITY THEN $NAN_JSON ELSE $summed END)"
+    /** [summed], of the JSON values [json] of a group, or NaN as [sum] gives it. */
+    private fun nanOfGroup(json: String, summed: String) = "(CASE WHEN " + (if (nonFinite) "max(${isNaN(json)}) = 1 OR " else "") +
+        "max(${number(json)}) = $INFINITY AND min(${number(json)}) = -$INFINITY THEN $NAN_JSON ELSE $summed END)"
 
     /** By [SqliteFunctions.LIST_ORDER], which walks the two as Cypher does. */
     override fun listOrder(x: String, y: String) = "${SqliteFunctions.LIST_ORDER}($x, $y)"
@@ -261,10 +284,13 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
                 "WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(CAST(trim($x ->> '$') AS REAL) AS INTEGER)) END END" +
                 if (nonFinite) " END" else ""
         }
+        // A text that names NaN or an infinity, as Java reads it, is that float, where the statement may work one out (#545).
         "tofloat" -> shared(json) { (x) ->
             (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN $x ELSE " else "") +
             "CASE json_type($x) WHEN 'integer' THEN json_quote(CAST($x ->> '$' AS REAL)) WHEN 'real' THEN $x " +
-                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) END END" +
+                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) " +
+                (if (nonFinite) "WHEN ($x ->> '$') REGEXP ${literal(NAN_NAME)} THEN $NAN_JSON WHEN ($x ->> '$') REGEXP ${literal(INFINITY_NAME)} THEN json_quote($INFINITY) " +
+                    "WHEN ($x ->> '$') REGEXP ${literal(NEGATIVE_INFINITY_NAME)} THEN json_quote(-$INFINITY) " else "") + "END END" +
                 if (nonFinite) " END" else ""
         }
         "head" -> "($json -> 0)"

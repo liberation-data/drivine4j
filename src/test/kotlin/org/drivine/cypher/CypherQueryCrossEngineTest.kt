@@ -3331,6 +3331,19 @@ class CypherQueryPostgresTest : CypherQueryContract() {
             ),
         )
     }
+
+    @Test
+    fun `a statement that writes and divides a float by zero fails, rather than store the number that stands for the infinity`() {
+        // `jsonb` holds no infinity, so a write is not compiled to work one out, and `numeric` fails the division (#408).
+        clear()
+        try {
+            val failure = assertThrows<Exception> { pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Dz {x: 1.0 / 0})"))) }
+            assertTrue(failure.message!!.contains("division by zero"), failure.message)
+            assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Dz) RETURN count(n)"))))
+        } finally {
+            clear()
+        }
+    }
 }
 
 @OracleTests

@@ -798,3 +798,10 @@ cases:
         cypher: "CREATE (n:CyWrite {a: $p})"
         parameters: {p: {$float: "NaN"}}
         error: "A statement that writes is given NaN, which SQLite's JSON holds as no number: it would store another value in its place."
+      - note: "The two infinities stored are summed to NaN by a statement given neither (drivine4j#544)."
+        only: [neo4j, oracle, sqlite]
+        cypher: "CREATE (:CyWrite {b: $n})"
+        parameters: {n: {$float: "-Infinity"}}
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) RETURN [min(n.b), max(n.b), sum(n.b), avg(n.b)]"
+        rows: [[{$float: "-Infinity"}, {$float: "Infinity"}, {$float: "NaN"}, {$float: "NaN"}]]

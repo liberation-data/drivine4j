@@ -2452,9 +2452,7 @@ cases:
       - cypher: "RETURN [toString($f), toString($g), $f + 'a']"
         parameters: {f: 0.00012, g: 12345678.5}
         rows: [["1.2E-4", "1.23456785E7", "1.2E-4a"]]
-      - note: "JSON holds no NaN: Postgres fails a division by zero, and SQLite's gives null (drivine4j#201)."
-        cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
-        except: [postgres, sqlite]
+      - cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
         rows: [["NaN", "Infinity", "-Infinity"]]
 
   - name: "Sorted by a list"
@@ -2685,18 +2683,46 @@ cases:
         rows: [[{$float: "Infinity"}, {$float: "Infinity"}]]
 
   - name: "NaN worked out"
-    description: "0.0 / 0.0 is NaN and 1.0 / 0.0 an infinity, as Java has them: NaN is equal to nothing, itself included (drivine4j#409). Postgres fails a division by zero, and SQLite's gives null (drivine4j#201, drivine4j#408)."
+    description: "0.0 / 0.0 is NaN and 1.0 / 0.0 an infinity, as Java has them, and so is a float taken % by zero, or a text toFloat reads as one: NaN is equal to nothing, itself included (drivine4j#409, drivine4j#408, drivine4j#545). An integer divided by zero fails."
     steps:
-      - except: [postgres, sqlite]
-        cypher: "RETURN [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0]"
+      - cypher: "RETURN [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0]"
         rows: [[{$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]]
-      - except: [postgres, sqlite]
-        cypher: "RETURN [0.0 / 0.0 = 0.0 / 0.0, 0.0 / 0.0 <> 0.0 / 0.0, 0.0 / 0.0 > 1.0, 0.0 / 0.0 <= 0.0 / 0.0, 0.0 / 0.0 IN [0.0 / 0.0], [0.0 / 0.0] = [0.0 / 0.0], 1.0 / 0.0 = $i]"
+      - cypher: "RETURN [0.0 / 0.0 = 0.0 / 0.0, 0.0 / 0.0 <> 0.0 / 0.0, 0.0 / 0.0 > 1.0, 0.0 / 0.0 <= 0.0 / 0.0, 0.0 / 0.0 IN [0.0 / 0.0], [0.0 / 0.0] = [0.0 / 0.0], 1.0 / 0.0 = $i]"
         parameters: {i: {$float: "Infinity"}}
         rows: [[false, true, false, false, false, false, true]]
-      - except: [postgres]
-        cypher: "RETURN 0.0 / 0.0 IN [0.0 / 0.0, 's', null]"
+      - cypher: "RETURN 0.0 / 0.0 IN [0.0 / 0.0, 's', null]"
         rows: [null]
+      - note: "A float zero worked out from the rows, and an integer divided by it. Neo4j fails a division by an integer zero worked out, though not one written (1.0 / 0)."
+        only: [neo4j, sql]
+        cypher: "UNWIND [0.0, 2.0] AS z RETURN [1.0 / z, -1 / z, z / z]"
+        rows: [[{$float: "Infinity"}, {$float: "-Infinity"}, {$float: "NaN"}], [0.5, -0.5, 1.0]]
+      - note: "Oracle gives the number taken % by zero, as its MOD does."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN [5.0 % 0, 0.0 % 0, 5 % 0.0, -5.5 % 0.0]"
+        rows: [[{$float: "NaN"}, {$float: "NaN"}, {$float: "NaN"}, {$float: "NaN"}]]
+      - note: "SQLite gives null for an integer divided by zero."
+        only: [neo4j, postgres, oracle]
+        cypher: "RETURN 1 / 0"
+        error: true
+      - note: "SQLite gives null, and Oracle the number taken % by zero, as its MOD does."
+        only: [neo4j, postgres]
+        cypher: "RETURN 5 % 0"
+        error: true
+      - note: "toFloat reads a text as Java reads a double: NaN and the infinities by Java's names, spaces around them allowed."
+        only: [neo4j, sql]
+        cypher: "RETURN [toFloat('NaN'), toFloat('Infinity'), toFloat('-Infinity'), toFloat('+Infinity'), toFloat(' NaN '), toFloat('-NaN'), toFloat('Infinityx')]"
+        rows: [[{$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}, {$float: "Infinity"}, {$float: "NaN"}, {$float: "NaN"}, null]]
+      - note: "Java's names in case and all: Oracle reads these too."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN [toFloat('nan'), toFloat('inf'), toFloat('INFINITY')]"
+        rows: [[null, null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND ['NaN', '-Infinity', '1.5'] AS s RETURN [toFloat(s), toFloat(s) = toFloat(s), toFloat(s) < 2.0]"
+        rows: [[{$float: "NaN"}, false, false], [{$float: "-Infinity"}, true, true], [1.5, true, true]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [toFloat($s), toString(toFloat($s)), toFloat($s) IN [toFloat($s)]]"
+        parameters: {s: "Infinity"}
+        rows: [[{$float: "Infinity"}, "Infinity", true]]
 
   - name: "Round by a mode"
     description: "round(value, precision, mode) rounds in decimal by one of Java's rounding modes, as Neo4j does, so 2.345 is halfway; a null gives null."

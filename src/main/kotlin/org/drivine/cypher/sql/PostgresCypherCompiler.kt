@@ -97,8 +97,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun jsonEquals(x: String, y: String) =
         if (!nonFinite) super.jsonEquals(x, y) else shared(x, y) { (a, b) -> "($a = $b AND NOT ${holdsNaN(a)})" }
 
-    /** As [jsonEquals] where the statement is given NaN or an infinity, which may be the value given. */
-    override fun givenEquals(x: String, y: String, given: Any) = if (!nonFinite) super.givenEquals(x, y, given) else jsonEquals(x, y)
+    /** As [jsonEquals] where the value given is or holds NaN or an infinity: no other is equal to NaN as JSON. */
+    override fun givenEquals(x: String, y: String, given: Any) = if (!nonFinite || !holdsNonFinite(given)) super.givenEquals(x, y, given) else jsonEquals(x, y)
 
     override fun integral(json: String) = shared(json) { (x) -> "(jsonb_typeof($x) = 'number' AND ($x #>> '{}') ~ '^-?[0-9]+$')" }
 
@@ -127,10 +127,18 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /**
      * As any store works it out, in `numeric`, and a quotient without the zeros `numeric`'s division leaves after its digits:
      * `4.0 / 2` is `2.0`, not `2.0000000000000000`. Postgres works a float out exactly, so a result may differ from a double's
-     * in the last digits: `0.1 * 3` is `0.3`, where Cypher gives `0.30000000000000004` (#188).
+     * in the last digits: `0.1 * 3` is `0.3`, where Cypher gives `0.30000000000000004` (#188). Where the statement may work NaN or
+     * an infinity out ([nonFinite]), a float divided by zero is one, as in Java: NaN for zero or NaN, else the infinity of the
+     * dividend's sign, where `numeric` fails (#408).
      */
-    override fun arithmetic(a: String, b: String, operator: String) =
-        if (operator == "/") scalar(float("(${number(a)} / ${number(b)})")) else super.arithmetic(a, b, operator)
+    override fun arithmetic(a: String, b: String, operator: String) = when {
+        operator != "/" -> super.arithmetic(a, b, operator)
+        !nonFinite -> scalar(float("(${number(a)} / ${number(b)})"))
+        else -> scalar(float(shared(number(a), number(b)) { (x, y) ->
+            "CASE WHEN $y = 0 THEN CASE WHEN $x = 'NaN' OR $x = 0 THEN 'NaN'::numeric WHEN $x > 0 THEN 'Infinity'::numeric " +
+                "WHEN $x < 0 THEN '-Infinity'::numeric END ELSE $x / $y END"
+        }))
+    }
 
     override fun jsonArray(items: List<String>) = spliced(items, MOST_ARGUMENTS) { "json_build_array(${it.joinToString(", ")})" }
 
@@ -358,7 +366,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun idTokens(ids: String, key: String) = "CAST(regexp_replace(CAST($ids AS text), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}, 'g') AS jsonb)"
 
-    override fun modulo(a: String, b: String) = "($a % $b)"
+    /**
+     * Where the statement may work NaN or an infinity out ([nonFinite]), NaN for a float by zero, as in Java, where `numeric` fails:
+     * a float has a scale, an integer none, and NaN and the infinities none to read (#408). Two integers still fail, as on Neo4j.
+     */
+    override fun modulo(a: String, b: String) = if (!nonFinite) "($a % $b)" else shared(a, b) { (x, y) ->
+        "CASE WHEN $y = 0 AND $x IS NOT NULL AND (COALESCE(scale($x), 1) > 0 OR scale($y) > 0) THEN 'NaN'::numeric ELSE $x % $y END"
+    }
 
     override fun startsWith(a: String, b: String) = "starts_with($a, $b)"
 
@@ -377,7 +391,12 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tointeger" -> if (!nonFinite) "to_jsonb(trunc(${numeric(json)}))" else shared(numeric(json)) { (n) ->
             "to_jsonb(CASE $n WHEN 'NaN' THEN 0 WHEN 'Infinity' THEN ${Long.MAX_VALUE} WHEN '-Infinity' THEN ${Long.MIN_VALUE} ELSE trunc($n) END)"
         }
-        "tofloat" -> scalar(float(numeric(json)))
+        // A text that names NaN or an infinity, as Java reads it, is that float, where the statement may work one out (#545).
+        "tofloat" -> scalar(float(if (!nonFinite) numeric(json) else shared(json) { (x) ->
+            "CASE WHEN jsonb_typeof($x) = 'string' THEN CASE WHEN ($x #>> '{}') ~ ${literal(NAN_NAME)} THEN 'NaN'::numeric " +
+                "WHEN ($x #>> '{}') ~ ${literal(INFINITY_NAME)} THEN 'Infinity'::numeric WHEN ($x #>> '{}') ~ ${literal(NEGATIVE_INFINITY_NAME)} " +
+                "THEN '-Infinity'::numeric ELSE ${numeric(x)} END ELSE ${numeric(x)} END"
+        }))
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"
         "abs" -> scalar("abs(${number(json)})")
@@ -388,6 +407,9 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private fun numeric(json: String) = shared(json) { (x) ->
         "CASE WHEN jsonb_typeof($x) = 'number' THEN ${number(x)} WHEN ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
     }
+
+    /** A statement that reads only: one that writes would store the number that stands for one, and fails as `numeric` does. */
+    override fun nonFiniteWorkedOut(writes: Boolean) = !writes
 
     override fun refuseNonFiniteWrite(parameters: Map<String, Any?>) =
         throw DrivineException(NON_FINITE_WRITE.format("NaN or an infinity", "Postgres's `jsonb`"))

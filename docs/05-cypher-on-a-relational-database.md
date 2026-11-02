@@ -137,13 +137,18 @@ variable bound as something else.
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
   total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store.
-  A float divided by zero fails on Postgres, gives null on SQLite, and on Oracle is the NaN or
-  infinity Neo4j gives.
+  A float divided by zero is the NaN or infinity Neo4j gives on each (`0.0 / 0.0` is NaN, `1.0 / 0` an infinity), and
+  a float taken `%` by zero is NaN, but on Oracle, which gives the number taken, as its `MOD` does. Neo4j fails a
+  division by an integer zero worked out as the statement runs (`WITH 0 AS z RETURN 1.0 / z`), where each SQL store
+  gives the infinity. An integer divided or taken `%` by zero fails, as on Neo4j, but is null on SQLite, and taken
+  `%` is the number taken on Oracle. On Postgres, a statement that writes and divides a float by zero fails, as its
+  `jsonb` holds neither. `toFloat` reads a text that names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`)
+  on each SQL store; Oracle reads `'nan'`, `'inf'` and `'INFINITY'` so too, where Neo4j gives null.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `%`,
-  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN, and for an
-  infinity it gives null from `%`, the infinity from `^`, `abs`, `round` and `floor`, and fails from `sqrt`, `log` and
-  `exp`. Oracle stores them too. SQLite stores an infinity, and
+  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a
+  function of numbers, and for an infinity it gives the infinity from `^`, `abs`, `round` and `floor`, and fails from
+  `sqrt`, `log` and `exp`; its `%` gives NaN, as Neo4j does. Oracle stores them too. SQLite stores an infinity, and
   refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold

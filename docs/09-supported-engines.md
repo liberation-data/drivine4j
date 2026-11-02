@@ -274,7 +274,9 @@ declares the function itself.
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
   are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
-  null, where Neo4j gives NaN or an infinity.
+  null, where Neo4j gives NaN or an infinity. A number taken `%` by zero is that number, as Oracle's `MOD` gives it,
+  where Neo4j gives NaN for a float and fails for an integer. `toFloat` reads `'nan'`, `'inf'` and `'INFINITY'` as NaN
+  and the infinities too, where Neo4j gives null.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
@@ -611,6 +613,15 @@ relationships with it.
 - `jsonb` holds no NaN or infinity. A statement given one as a parameter writes it as a number past any double's,
   and works with it as the float it is, as Neo4j does; the rows give it back as that float. A statement that writes
   and is given one is refused, rather than store that number.
+- A statement that reads and may work NaN or an infinity out is compiled the same way, decided as it is compiled: one
+  that divides or takes `%` by anything but a number other than 0 written in it or given, or takes `toFloat` of
+  anything but a number, or a text that names neither, written in it or given. So a float divided by zero is NaN or an
+  infinity, as on Neo4j (`0.0 / 0.0`, `1.0 / 0`), where `numeric` fails, and `toFloat('NaN')` is NaN. Such a
+  statement's SQL is longer (`RETURN n.x / n.y` about three times) and slower: over 20,000 nodes, `n.x / n.y` of the
+  2,000 a filter keeps takes about 1.8 times as long (18 ms against 10), and three values worked out from each node
+  about 3 times (226 ms against 75). Any other statement compiles exactly as before. A statement that writes and
+  divides a float by zero fails with `division by zero`, rather than store that number. An integer divided by zero
+  fails, as on Neo4j.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -776,9 +787,12 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
 - An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one
   as a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives
   it back as NaN. A statement that writes and is given NaN is refused, rather than store that map, and one that writes
-  NaN it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A float divided by zero is still null. So
-  is NaN worked out from a stored infinity by a statement given no NaN or infinity (`n.inf - n.inf`, `n.inf * 0`),
-  where Neo4j gives NaN, but for the two infinities added with `+`, which give NaN.
+  NaN it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A statement that may work NaN or an
+  infinity out, as on [Postgres](#postgres) (dividing or taking `%` by anything but a number other than 0, `toFloat`
+  of a text), is compiled as one given one: a float divided by zero is NaN or an infinity, as on Neo4j, and an
+  infinity it works out is stored. An integer divided by zero is null, where Neo4j fails. NaN worked out from a stored
+  infinity by any other statement (`n.inf - n.inf`, `n.inf * 0`) is null, where Neo4j gives NaN, but for the two
+  infinities added with `+`, summed with `sum()` or averaged with `avg()`, which give NaN.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
