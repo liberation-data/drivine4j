@@ -431,6 +431,7 @@ object CypherReader {
                 if (magnitude == LONG_MIN_MAGNITUDE) return Expression.Literal(Long.MIN_VALUE)
                 if (magnitude > LONG_MIN_MAGNITUDE) throw outOfRange("-${literal.text}")
             }
+            written.oC_Atom().oC_Literal()?.oC_NumberLiteral()?.oC_DoubleLiteral()?.let { float("-${it.text}") }
         }
         val operand = nonArithmetic(written)
         return if (negated) Expression.Unary(Expression.Unary.Operator.NEGATE, operand) else operand
@@ -564,7 +565,7 @@ object CypherReader {
         context.oC_BooleanLiteral() != null -> Expression.Literal(context.oC_BooleanLiteral().TRUE() != null)
         context.NULL() != null -> Expression.Literal(null)
         context.oC_NumberLiteral() != null -> context.oC_NumberLiteral().let { number ->
-            number.oC_IntegerLiteral()?.let { Expression.Literal(integer(it)) } ?: Expression.Literal(number.oC_DoubleLiteral().text.toDouble())
+            number.oC_IntegerLiteral()?.let { Expression.Literal(integer(it)) } ?: Expression.Literal(float(number.oC_DoubleLiteral().text))
         }
         context.StringLiteral() != null -> Expression.Literal(string(context.StringLiteral()))
         context.oC_ListLiteral() != null -> Expression.ListLiteral(context.oC_ListLiteral().oC_Expression().map(::expression))
@@ -612,6 +613,12 @@ object CypherReader {
 
     private fun outOfRange(written: String) =
         DrivineException("$written is past the range of a whole number, from -9223372036854775808 to 9223372036854775807.")
+
+    /** The float [written], refused where it is past a double's range, which Neo4j refuses too: it is no infinity. */
+    private fun float(written: String): Double = written.toDouble().also { if (it.isInfinite()) throw floatOutOfRange(written) }
+
+    private fun floatOutOfRange(written: String) =
+        DrivineException("$written is past the range of a float, from -${Double.MAX_VALUE} to ${Double.MAX_VALUE}.")
 
     private val LONG_MAX_MAGNITUDE = BigInteger.valueOf(Long.MAX_VALUE)
 

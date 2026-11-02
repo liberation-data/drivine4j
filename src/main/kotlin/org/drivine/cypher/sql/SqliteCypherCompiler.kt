@@ -1,5 +1,7 @@
 package org.drivine.cypher.sql
 
+import org.drivine.DrivineException
+import org.drivine.backend.sqlite.SqliteCypherValues
 import org.drivine.backend.sqlite.SqliteFunctions
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.mapper.Neo4jObjectMapper
@@ -23,10 +25,30 @@ import java.math.RoundingMode
  *
  * A statement that writes is a procedure, as on the other stores, which a function Drivine registers carries out:
  * see [procedure].
+ *
+ * An infinity is the number SQLite's JSON writes for one, `9.0e+999`, which it reads as the infinity. NaN SQLite's JSON holds as no
+ * number, so a statement given one ([nonFinite]) writes it as `{"${'$'}numberDouble": "NaN"}` ([SqliteCypherValues.NAN]), which it
+ * takes for a number ([typeOf]), equal to nothing and ordered with nothing; arithmetic over it gives it, as does arithmetic over an
+ * infinity that gives NaN, and it is written as Java writes it. The rows give it back as NaN (see
+ * [org.drivine.mapper.JdbcResultMapper]). A statement that writes refuses NaN, as the store would keep that map in its place, and
+ * fails where it writes NaN it works out ([finite]).
  */
 class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
-    override fun literalJson(value: Any?) = literal(Neo4jObjectMapper.instance.writeValueAsString(value))
+    override fun literalJson(value: Any?) = literal(parameterText(value))
+
+    /** As JSON, NaN and the infinities as the class writes them. */
+    override fun parameterText(value: Any?): String =
+        if (!holdsNonFinite(value)) Neo4jObjectMapper.instance.writeValueAsString(value)
+        else SqliteCypherValues.write(Neo4jObjectMapper.instance.valueToTree(value))
+
+    /** NaN, which SQLite's JSON holds as no number: an infinity it holds, as the number it writes for one. */
+    override fun refuseNonFiniteWrite(parameters: Map<String, Any?>) {
+        if (parameters.values.any { holdsNonFinite(it, Double::isNaN) }) throw DrivineException(NON_FINITE_WRITE.format("NaN", "SQLite's JSON"))
+    }
+
+    /** Whether the JSON [json] is NaN, as a statement given one writes it: see the class. */
+    private fun isNaN(json: String) = "(json_type($json) = 'object' AND json_extract($json, '\$.\"\$numberDouble\"') = 'NaN')"
 
     override fun parameterJson(marker: String, text: String?) = marker
 
@@ -41,7 +63,11 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** SQLite has no failing expression of its own: Drivine's function fails with the text. */
     override fun failure(message: String, value: String) = "${SqliteFunctions.FAIL}(${literal("$message ")} || $value)"
 
-    override fun typeOf(json: String) =
+    /** NaN, where the statement is given one, is a number: see the class. */
+    override fun typeOf(json: String) = if (nonFinite) shared(json) { (x) -> "(CASE WHEN ${isNaN(x)} THEN 'number' ELSE ${kindOf(x)} END)" } else kindOf(json)
+
+    /** The kind of the JSON [json], as [typeOf] names it, but for NaN. */
+    private fun kindOf(json: String) =
         "(CASE json_type($json) WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' " +
             "WHEN 'false' THEN 'boolean' WHEN 'array' THEN 'array' WHEN 'object' THEN 'object' WHEN 'null' THEN 'null' END)"
 
@@ -125,7 +151,34 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         else -> jsonEquals(x, y)
     }
 
-    override fun ordered(x: String, operator: String, y: String) = "(($x ->> '$') $operator ($y ->> '$'))"
+    /** NaN, where the statement is given one, is ordered with nothing: the comparison is false, as in Cypher. */
+    override fun ordered(x: String, operator: String, y: String) =
+        if (nonFinite) "(CASE WHEN ${isNaN(x)} OR ${isNaN(y)} THEN 0 ELSE (($x ->> '$') $operator ($y ->> '$')) END)"
+        else "(($x ->> '$') $operator ($y ->> '$'))"
+
+    /**
+     * Where the statement is given NaN or an infinity, NaN where either number is NaN, or where an infinity makes the result NaN,
+     * which SQLite gives as null: `∞ - ∞`, `∞ * 0`, `∞ / ∞`. A division by zero is null, as it is otherwise (#201).
+     */
+    override fun arithmetic(a: String, b: String, operator: String): String {
+        if (!nonFinite) return super.arithmetic(a, b, operator)
+        return shared(a, b) { (x, y) ->
+            val result = super.arithmetic(x, y, operator)
+            val infinite = "(abs(${number(x)}) = $INFINITY OR abs(${number(y)}) = $INFINITY)" + if (operator == "/") " AND ${number(y)} <> 0" else ""
+            "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR ($result IS NULL AND $infinite)) " +
+                "THEN $NAN_JSON ELSE $result END"
+        }
+    }
+
+    /** NaN, where a number of the group is NaN, or where it holds both infinities: SQLite's own `sum` passes NaN by, and gives null for `∞ + -∞`. */
+    override fun sum(json: String, distinct: String) = nanOfGroup(json, super.sum(json, distinct))
+
+    /** NaN where [sum] is. */
+    override fun avg(json: String, distinct: String) = nanOfGroup(json, super.avg(json, distinct))
+
+    /** [summed], of the JSON values [json] of a group, or NaN as [sum] gives it, where the statement is given NaN or an infinity. */
+    private fun nanOfGroup(json: String, summed: String) = if (!nonFinite) summed else
+        "(CASE WHEN max(${isNaN(json)}) = 1 OR max(${number(json)}) = $INFINITY AND min(${number(json)}) = -$INFINITY THEN $NAN_JSON ELSE $summed END)"
 
     /** By [SqliteFunctions.LIST_ORDER], which walks the two as Cypher does. */
     override fun listOrder(x: String, y: String) = "${SqliteFunctions.LIST_ORDER}($x, $y)"
@@ -137,11 +190,12 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * Where the kind comes, then the SQL value `->>` reads, which orders a number before a text, and a truth value, 1 or 0, among
      * the numbers. The first term is a text: the kind's rank, a list's followed by itself as [SqliteFunctions.SORT_KEY] writes
      * it, so a list is ordered by it; and null for null. The value is read once more, not twice, as [sortKey] reads it, and
-     * each term is a value JSON holds, as a `CALL { … }` carries it out.
+     * each term is a value JSON holds, as a `CALL { … }` carries it out. NaN, where the statement is given it, is a number, whose
+     * text the value is, which comes after every number.
      */
     override fun openSortKey(json: String) = shared(json) { (x) ->
-        "CASE json_type($x) WHEN 'object' THEN '1' WHEN 'array' THEN '2' || ${SqliteFunctions.SORT_KEY}($x) WHEN 'text' THEN '3' " +
-            "WHEN 'true' THEN '4' WHEN 'false' THEN '4' WHEN 'integer' THEN '5' WHEN 'real' THEN '5' END"
+        (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN '5' ELSE " else "") + "CASE json_type($x) WHEN 'object' THEN '1' WHEN 'array' THEN '2' || ${SqliteFunctions.SORT_KEY}($x) WHEN 'text' THEN '3' " +
+            "WHEN 'true' THEN '4' WHEN 'false' THEN '4' WHEN 'integer' THEN '5' WHEN 'real' THEN '5' END" + if (nonFinite) " END" else ""
     }.let { rank -> listOf(rank, shared(json) { (x) -> "($x ->> '$')" }) }
 
     /** SQLite puts null first when ascending, and Cypher last. */
@@ -196,16 +250,22 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "trim" -> scalar("trim(${text(json)}, $WHITESPACE)")
         // A string is itself; anything else is the text of its JSON.
         "tostring" -> shared(json) { (x) ->
-            "CASE json_type($x) WHEN 'text' THEN $x WHEN 'null' THEN NULL WHEN 'real' THEN json_quote(${SqliteFunctions.FLOAT_TEXT}($x ->> '$')) ELSE json_quote('' || $x) END"
+            (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN '\"NaN\"' ELSE " else "") +
+            "CASE json_type($x) WHEN 'text' THEN $x WHEN 'null' THEN NULL WHEN 'real' THEN json_quote(${SqliteFunctions.FLOAT_TEXT}($x ->> '$')) ELSE json_quote('' || $x) END" + if (nonFinite) " END" else ""
         }
+        // NaN, where the statement is given it, as Java casts it to a long, as Neo4j does: 0. An infinity is cast so already.
         "tointeger" -> shared(json) { (x) ->
+            (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN '0' ELSE " else "") +
             "CASE json_type($x) WHEN 'integer' THEN $x WHEN 'real' THEN json_quote(CAST($x ->> '$' AS INTEGER)) " +
                 "WHEN 'text' THEN CASE WHEN trim($x ->> '$') REGEXP '^[+-]?[0-9]+$' THEN json_quote(CAST(trim($x ->> '$') AS INTEGER)) " +
-                "WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(CAST(trim($x ->> '$') AS REAL) AS INTEGER)) END END"
+                "WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(CAST(trim($x ->> '$') AS REAL) AS INTEGER)) END END" +
+                if (nonFinite) " END" else ""
         }
         "tofloat" -> shared(json) { (x) ->
+            (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN $x ELSE " else "") +
             "CASE json_type($x) WHEN 'integer' THEN json_quote(CAST($x ->> '$' AS REAL)) WHEN 'real' THEN $x " +
-                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) END END"
+                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) END END" +
+                if (nonFinite) " END" else ""
         }
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"
@@ -431,9 +491,17 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun appended(list: String, item: String) = "json_insert($list, '$[#]', json($item))"
 
     /** A merge patch onto an empty map leaves out each entry whose value is null. */
-    override fun stripNulls(json: String) = "json_patch('{}', $json)"
+    override fun stripNulls(json: String) = "json_patch('{}', ${finite(json)})"
 
-    override fun merged(props: String, map: String) = "json_patch($props, $map)"
+    override fun merged(props: String, map: String) = "json_patch($props, ${finite(map)})"
+
+    /**
+     * The JSON map [json], which a statement writes, failing where it holds NaN: worked out from an infinity given or stored
+     * (`${'$'}i - ${'$'}i`, `n.inf + n.negative`), it is the map the class writes for it, which the store would keep in its place.
+     */
+    private fun finite(json: String) = shared(json) { (x) ->
+        "CASE WHEN instr($x, $NAN_JSON) > 0 THEN ${SqliteFunctions.FAIL}(${literal(NAN_WRITTEN)}) ELSE $x END"
+    }
 
     override fun withoutLabel(labels: String, label: String) =
         "(SELECT json_group_array(l.value ORDER BY l.key) FROM json_each($labels) l WHERE l.value <> ${literal(label)})"
@@ -453,5 +521,14 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
         /** The characters `trim` takes off a text's ends, as Cypher's does: SQLite's own takes spaces alone. */
         const val WHITESPACE = "char(32, 9, 10, 11, 12, 13)"
+
+        /** An infinity, as SQLite reads the number its JSON writes for one. */
+        const val INFINITY = SqliteCypherValues.INFINITY
+
+        /** Why a statement that writes NaN it works out fails: see [finite]. */
+        const val NAN_WRITTEN = "A statement that writes works out NaN, which SQLite's JSON holds as no number: it would store another value in its place."
+
+        /** NaN, as a statement given it writes it, as SQL: see the class. */
+        val NAN_JSON = literal(SqliteCypherValues.write(SqliteCypherValues.NAN))
     }
 }

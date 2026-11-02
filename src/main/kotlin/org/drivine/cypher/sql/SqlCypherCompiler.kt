@@ -106,17 +106,32 @@ abstract class SqlCypherCompiler(graph: String) {
     fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher =
         compile(CypherReader.read(cypher), parameters)
 
+    /**
+     * Whether the statement's parameters hold NaN or an infinity, at any depth: set as [compile] starts. A store whose JSON holds
+     * no such float as a number writes one as a value of its own, and works with that value as the float it is only where the
+     * statement is given one, so a statement given none compiles as it would without it (see Postgres's and SQLite's).
+     */
+    protected var nonFinite = false
+
+    /**
+     * Refuses a statement that writes and is given NaN or an infinity ([nonFinite]), in its [parameters], where the store's JSON
+     * holds no such float and would store another value in its place: by default it holds them, as Oracle's does.
+     */
+    protected open fun refuseNonFiniteWrite(parameters: Map<String, Any?>) {}
+
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
         VariableKinds.check(query)
         // An aggregate in a WHERE too.
         Aggregates(::isAggregate, ::children).check(query)
+        nonFinite = parameters.values.any { holdsNonFinite(it) }
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
-            return withFunctions(CompiledCypher(planned(writer.query(query)), writer.parameters.values))
+            return withFunctions(CompiledCypher(planned(writer.query(query)), writer.parameters.values, nonFinite))
         }
+        if (nonFinite) refuseNonFiniteWrite(parameters)
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
         val writer = Writer(
@@ -129,7 +144,7 @@ abstract class SqlCypherCompiler(graph: String) {
         // body reads it as extended JSON.
         val values = writer.parameters.values
         val body = writer.procedure(query)
-        return CompiledCypher(procedure(body), values)
+        return CompiledCypher(procedure(body), values, nonFinite)
     }
 
     /**
@@ -225,7 +240,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val key = comparable(Value.Json("u.result", ordered = true))
             "SELECT d.result FROM (\n${indent("SELECT $key AS result, MIN(u.part * 1000000000.0 + u.n) AS k FROM (\n${indent(rows)}\n) u\nGROUP BY $key")}\n) d\nORDER BY d.k"
         }
-        return CompiledCypher(planned(sql), writer.parameters.values)
+        return CompiledCypher(planned(sql), writer.parameters.values, nonFinite)
     }
 
     // ----- A store's SQL -----
@@ -443,6 +458,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun givenItemsTest(items: List<Any?>): ((String) -> String)? = null
 
     /**
+     * Whether [item], an item of a list whose items the statement writes or is given, [items], each a text, a number, a truth
+     * value or null, is equal to the JSON value [value], as an `IN` tests it where the store has no [givenItemsTest] for them.
+     */
+    protected open fun givenItemEquals(item: String, value: String, items: List<Any?>) = jsonEquals(item, value)
+
+    /**
      * Whether an `IN` of such items, where none is equal to the value, is null where they hold a null and else false, as the
      * statement is compiled, and the value is not read for its nulls: such items are equal to no value that holds one, and a
      * comparison with one of them is null only where the item is null. Else the value is read for its nulls, and compared with
@@ -546,6 +567,9 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
+    /** `avg` of the JSON values [json] of a group, as [sum] adds them, as a float: null where there are none. */
+    protected open fun avg(json: String, distinct: String) = scalar(float("avg($distinct${number(json)})"))
+
     /**
      * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
      * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
@@ -630,6 +654,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The SQL text [text], its characters backwards, as JSON: see Oracle's, which reverses a text past 4,000 bytes otherwise. */
     protected open fun reversedText(text: String) = scalar(reverseText(text))
+
+    /** The kind of the JSON [json] that `reverse()` is given, as [typeOf] gives it: see Oracle's, which reads a property's by its own path. */
+    protected open fun reversedKind(json: String) = typeOf(json)
 
     /** Whether the text [a] holds the text [b]. */
     protected abstract fun containsText(a: String, b: String): String
@@ -4283,7 +4310,11 @@ abstract class SqlCypherCompiler(graph: String) {
             // Where the store tests the value alone beside such items (see givenItemsTest), it is tested once, beside the EXISTS,
             // and not in each item's comparison, which is then a plain equality.
             val test = items?.let(::givenItemsTest)
-            fun matches(item: String, value: String) = if (id != null || test != null) "$item = $value" else equals(item, value)
+            fun matches(item: String, value: String) = when {
+                id != null || test != null -> "$item = $value"
+                items != null -> givenItemEquals(item, value, items)
+                else -> equals(item, value)
+            }
             /** Whether an item of the list [l], read as [i], is equal to the value [v], and [v] meets the store's test where it has one. */
             fun found(l: String, v: String, i: String): String {
                 val exists = "EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)})"
@@ -4527,7 +4558,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
                 "sum" -> Value.Json(sum(comparable(json(one())), distinct))
-                "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
+                "avg" -> Value.Json(avg(comparable(json(one())), distinct))
                 // Zoned values as the moments they are, whatever their offsets, and lists of them item by item so; of a temporal kind,
                 // still of it, and a list of the kinds of list it was. A list the statement makes item by item, as an ORDER BY sorts it: a store's
                 // JSON may put the shorter list first.
@@ -4558,7 +4589,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
-                    "CASE ${typeOf(x)} WHEN 'string' THEN ${texts(x) { (t) -> reversedText(t) }} " +
+                    "CASE ${reversedKind(x)} WHEN 'string' THEN ${texts(x) { (t) -> reversedText(t) }} " +
                         "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elementsOf(one(), x, e)}) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), text = isText(one()), texts = holdsTexts(one()),
                     temporals = holdsTemporals(one()))
@@ -4932,6 +4963,24 @@ abstract class SqlCypherCompiler(graph: String) {
         val PENDING_COLUMN = Regex("${PENDING}\\.(\\w+)")
 
         fun literal(text: String) = "'${text.replace("'", "''")}'"
+
+        /** Why a store refuses a statement that writes and is given a float, the first named, its JSON, the second, holds as no number. */
+        const val NON_FINITE_WRITE = "A statement that writes is given %s, which %s holds as no number: it would store another value in its place."
+
+        /**
+         * Whether [value], a parameter's value as the caller gave it, is or holds a float that is [nonFinite], at any depth: by
+         * default NaN or an infinity.
+         */
+        fun holdsNonFinite(value: Any?, nonFinite: (Double) -> Boolean = { !it.isFinite() }): Boolean = when (value) {
+            is Double -> nonFinite(value)
+            is Float -> nonFinite(value.toDouble())
+            is Map<*, *> -> value.values.any { holdsNonFinite(it, nonFinite) }
+            is Iterable<*> -> value.any { holdsNonFinite(it, nonFinite) }
+            is Array<*> -> value.any { holdsNonFinite(it, nonFinite) }
+            is DoubleArray -> value.any(nonFinite)
+            is FloatArray -> value.any { nonFinite(it.toDouble()) }
+            else -> false
+        }
 
         /**
          * The most arguments a function takes on Postgres, and on the SQLite Drivine ships: a list or a map written by one
