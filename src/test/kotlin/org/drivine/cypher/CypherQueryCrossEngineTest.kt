@@ -502,6 +502,97 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a stored infinity and a stored NaN are matched, compared, made distinct and sorted as Neo4j does`() {
+        // Postgres stores neither, and SQLite no NaN: each refuses the write that would (#295, #409).
+        if (pm.type == DatabaseType.POSTGRES) return
+        clear()
+        try {
+            val infinities = mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)
+            query("CREATE (:Nn {b: \$i, c: \$n, k: 2})", infinities)
+            assertEquals(listOf(2L), query("MATCH (n:Nn {b: \$i}) WHERE n.c = \$n AND \$i IN [n.b] RETURN n.k", infinities))
+            assertEquals(listOf(Double.NEGATIVE_INFINITY, 1.0, Double.POSITIVE_INFINITY), query("MATCH (n:Nn) UNWIND [n.b, n.c, 1.0] AS x RETURN x ORDER BY x"))
+            if (pm.type == DatabaseType.SQLITE) return
+            val nan = mapOf("p" to Double.NaN)
+            query("CREATE (:Nn {a: \$p, l: [\$p, 1.0], k: 1})", nan)
+            assertEquals(listOf(0L), query("MATCH (n:Nn {a: \$p}) RETURN count(n)", nan))
+            assertEquals(listOf(0L), query("MATCH (n:Nn) WHERE n.a IN [n.a] OR n.l = n.l RETURN count(n)"))
+            assertEquals(listOf(2L), query("MATCH (n:Nn) WITH DISTINCT n.a AS a RETURN count(*)"))
+            assertEquals(listOf(2L, 1L), query("MATCH (n:Nn) RETURN n.k ORDER BY n.a DESC"))
+            assertEquals(listOf(listOf(Double.NaN, Double.NaN, listOf(Double.NaN))), query("MATCH (n:Nn) RETURN [max(n.a), min(n.a), collect(n.a)]"))
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
+    fun `NaN beside a text past 32 KB is equal to nothing and ordered with nothing, stored and given, on several rows`() {
+        // On Oracle a text past 32 KB is compared as a text (#389), and NaN, which Oracle's JSON finds equal to itself, as
+        // equal to nothing (#409): both at once. Postgres stores no NaN, and SQLite none, so there it is only given.
+        clear()
+        try {
+            val long = "a".repeat(40_000) + "x"
+            val nan = if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) emptyList() else listOf(Double.NaN)
+            val values = listOf<Any?>(long, long, long.dropLast(1) + "y", "abc") + nan + listOf(1.0, null)
+            for (i in values.indices) query("CREATE (:CyNan {i: \$i, t: \$t})", mapOf("i" to i, "t" to values[i]))
+            fun compared(a: Any?, operator: String, b: Any?): Boolean? {
+                if (a == null || b == null) return null
+                val order = when {
+                    a is String && b is String -> a.compareTo(b)
+                    a is Double && b is Double -> if (a.isNaN() || b.isNaN()) return operator == "<>" else a.compareTo(b)
+                    else -> return when (operator) { "=" -> false; "<>" -> true; else -> null }
+                }
+                return when (operator) { "=" -> order == 0; "<>" -> order != 0; "<" -> order < 0; ">" -> order > 0; "<=" -> order <= 0; else -> order >= 0 }
+            }
+            val pairs = values.indices.flatMap { i -> values.indices.map { j -> i to j } }
+            onOneSession(mapOf("p" to Double.NaN, "long" to long, "l" to listOf(long, Double.NaN))) { query ->
+                repeat(2) { run ->
+                    for (operator in listOf("=", "<>", "<", ">", "<=", ">=")) {
+                        val stored = pairs.map { (i, j) -> compared(values[i], operator, values[j]) }
+                        assertEquals(stored, query("MATCH (n:CyNan), (m:CyNan) RETURN n.t $operator m.t ORDER BY n.i, m.i"), "stored, $operator, run ${run + 1}")
+                        assertEquals(values.map { compared(it, operator, Double.NaN) }, query("MATCH (n:CyNan) RETURN n.t $operator \$p ORDER BY n.i"), "given NaN, $operator, run ${run + 1}")
+                    }
+                    val inLists = pairs.map { (i, j) -> compared(values[i], "=", values[j]) }
+                    assertEquals(inLists, query("MATCH (n:CyNan), (m:CyNan) RETURN n.t IN [m.t] ORDER BY n.i, m.i"), "IN, run ${run + 1}")
+                    val inGiven = values.map { it?.let { it == long } }
+                    assertEquals(inGiven, query("MATCH (n:CyNan) RETURN n.t IN [\$p, \$long] ORDER BY n.i"), "IN a list written, run ${run + 1}")
+                    assertEquals(inGiven, query("MATCH (n:CyNan) RETURN n.t IN \$l ORDER BY n.i"), "IN a given list, run ${run + 1}")
+                }
+            }
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
+    fun `a row that holds NaN gives each other value in it as a row without NaN gives it`() {
+        // Oracle's driver writes no text of such a row, and it is read through the driver's own JSON value instead (#295).
+        assertEquals(
+            listOf(listOf(Double.NaN, "s", null, true, false, 2L, 1.5, mapOf("k" to Double.NaN, "t" to "u"), listOf(1L, Double.NEGATIVE_INFINITY))),
+            query("RETURN [\$p, 's', null, true, false, 2, 1.5, {k: \$p, t: 'u'}, [1, \$n]]", mapOf("p" to Double.NaN, "n" to Double.NEGATIVE_INFINITY)),
+        )
+    }
+
+    @Test
+    fun `a map given beside NaN that is keyed as a store's JSON writes a double comes back as the map it is`() {
+        // SQLite's JSON writes NaN as such a map, which it takes for NaN: no other store reads one so (#295).
+        if (pm.type == DatabaseType.SQLITE) return
+        val tagged = mapOf("\$numberDouble" to "NaN")
+        assertEquals(
+            listOf(listOf(tagged, Double.NaN), listOf(tagged)),
+            query("UNWIND [[\$m, \$p], [\$m]] AS x RETURN x", mapOf("m" to tagged, "p" to Double.NaN)),
+        )
+    }
+
+    @Test
+    fun `a list that holds NaN is sorted with NaN after every number in it`() {
+        // NaN is a number in a list's sort key, and sorts after the infinity, as it does alone (#295).
+        assertEquals(
+            listOf(listOf(1L, 2.0), listOf(1L, Double.POSITIVE_INFINITY), listOf(1L, Double.NaN)),
+            query("UNWIND [[1, \$p], [1, \$i], [1, 2.0]] AS x RETURN x ORDER BY x", mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY)),
+        )
+    }
+
+    @Test
     fun `a quotient of floats is written without the zeros its scale leaves`() {
         // The spec's float arithmetic steps skip Postgres, which works a float out in exact decimal (#188): these it gives as a double does.
         assertEquals(
@@ -2060,6 +2151,39 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `NaN is in no list of given items, null where one is null, stored and given`() {
+        // On Oracle an IN of given items is decided between null and false as it compiles, its items compared by a plain
+        // equality (#475), which finds a BINARY_DOUBLE NaN equal to itself: NaN is equal to nothing (#409), so NaN IN [NaN] is
+        // false, and null beside a null. Postgres and SQLite store no NaN, so there it is only given.
+        clear()
+        try {
+            val p = mapOf("p" to Double.NaN, "l" to listOf(Double.NaN), "m" to listOf(Double.NaN, null), "k" to listOf(1.0, null))
+            assertEquals(
+                listOf(listOf(false, null, null, false, null, false, null)),
+                query("RETURN [\$p IN [\$p], \$p IN [\$p, null], 1 IN [\$p, null], 1 IN [\$p], \$p IN [1.0, null], \$p IN \$l, \$p IN \$m]", p),
+            )
+            assertEquals(listOf(0L), query("UNWIND [\$p] AS x WITH x WHERE x IN [\$p, 1.0] OR x IN \$l RETURN count(*)", p))
+            // Lists the statement makes that hold NaN, compared as a whole and item by item.
+            assertEquals(listOf(listOf(false, false, false)), query("RETURN [[\$p] = [\$p], [[\$p]] = [[\$p]], [\$p] IN [[\$p]]]", p))
+            // A list given that holds NaN and a null, compared item by item as the statement is compiled with it: NaN's pair is false.
+            assertEquals(
+                listOf(listOf(false, false, true, false)),
+                query("RETURN [[\$p, null] = \$m, \$m = \$m, \$m <> \$m, [[\$p], null] = \$n]", p + ("n" to listOf(listOf(Double.NaN), null))),
+            )
+            if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) return
+            query("CREATE (:CyNanIn {a: \$p, l: [\$p, 1.0], k: 1}), (:CyNanIn {a: 1.0, l: [1.0], k: 2})", p)
+            assertEquals(
+                listOf(listOf(false, null, false, null, false), listOf(false, null, true, true, true)),
+                query("MATCH (n:CyNanIn) RETURN [n.a IN [\$p], n.a IN [\$p, null], n.a IN [1.0], n.a IN \$k, n.l IN [[\$p, 1.0], [1.0]]] ORDER BY n.k", p),
+            )
+            assertEquals(listOf(listOf(false, false), listOf(false, true)), query("MATCH (n:CyNanIn) RETURN [n.l = [\$p, 1.0], n.l = [1.0]] ORDER BY n.k", p))
+            assertEquals(listOf(0L), query("MATCH (n:CyNanIn) WHERE n.a IN \$l OR n.a IN [\$p] OR n.l = [\$p, 1.0] RETURN count(*)", p))
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
@@ -3183,6 +3307,30 @@ class CypherQueryPostgresTest : CypherQueryContract() {
     override fun seed(cypher: String) = PostgresTestDatabase.seed(manager, cypher)
 
     override fun clear() = PostgresTestDatabase.clear(manager)
+
+    @Test
+    fun `toInteger of NaN and the infinities is the long Java casts each to, as on Neo4j`() {
+        // `numeric`'s NaN and infinities have no whole number: 0 and the long's ends, as Neo4j gives (#295).
+        assertEquals(
+            listOf(listOf(0L, Long.MAX_VALUE, Long.MIN_VALUE, 2L)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [toInteger(\$p), toInteger(\$i), toInteger(\$n), toInteger(2.7)]"))
+                    .bind(mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
+
+    @Test
+    fun `sign of NaN is 0, as on Neo4j`() {
+        // `numeric`'s sign of its NaN is NaN, where Java's signum casts NaN to the integer 0 (#295).
+        assertEquals(
+            listOf(listOf(0L, 1L, -1L, -1L)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [sign(\$p), sign(\$i), sign(\$n), sign(-2.5)]"))
+                    .bind(mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
 }
 
 @OracleTests
@@ -3215,4 +3363,51 @@ class CypherQuerySqliteTest : CypherQueryContract() {
     override val compiles = true
     override fun seed(cypher: String) = SqliteTestDatabase.seed(manager, cypher)
     override fun clear() = SqliteTestDatabase.clear(manager)
+
+    @Test
+    fun `an infinity is rounded to itself, as on Neo4j`() {
+        // SQLite stores an infinity, and rounds it by Drivine's function, in decimal, which holds none (#295).
+        assertEquals(
+            listOf(listOf(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [round(\$i), round(\$n), round(\$i, 2, 'HALF_DOWN')]"))
+                    .bind(mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
+
+    @Test
+    fun `NaN worked out from stored infinities by a statement given none comes back as NaN`() {
+        // SQLite's JSON writes NaN as a map of its own, which the rows give back as NaN, whatever the statement is given (#295).
+        clear()
+        try {
+            pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Inf {b: \$i, c: [\$n]})")).bind(mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)))
+            assertEquals(listOf(listOf(Double.NaN, Double.POSITIVE_INFINITY)), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN [n.b + n.c[0], round(n.b)]"))))
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
+    fun `NaN worked out by a statement that writes is refused, as NaN given is, and no map is stored in its place`() {
+        // SQLite's JSON holds no NaN: worked out from an infinity given or stored, it would be stored as `{"$numberDouble": "NaN"}` (#295).
+        clear()
+        try {
+            val infinity = mapOf("i" to Double.POSITIVE_INFINITY)
+            pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Inf {b: \$i, c: [-\$i]})")).bind(infinity))
+            fun refused(cypher: String, parameters: Map<String, Any?> = emptyMap()) {
+                val failure = assertThrows<Exception>(cypher) { pm.execute(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters)) }
+                assertTrue(failure.message!!.contains("works out NaN"), failure.message)
+            }
+            refused("CREATE (:Inf {x: \$i - \$i})", infinity)
+            refused("MATCH (n:Inf) SET n.x = [\$i * 0]", infinity)
+            refused("MATCH (n:Inf) SET n += {x: n.b + n.c[0]}")
+            assertEquals(listOf(listOf(1L, null)), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN [count(n), collect(n.x)[0]]"))))
+            // An infinity worked out is stored, as one given is, by the statement that failed above, which runs again.
+            pm.execute(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) SET n.x = n.b + 1")))
+            assertEquals(listOf(Double.POSITIVE_INFINITY), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN n.x"))))
+        } finally {
+            clear()
+        }
+    }
 }
