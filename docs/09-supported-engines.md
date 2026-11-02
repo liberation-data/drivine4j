@@ -300,6 +300,11 @@ declares the function itself.
   passes on (`split(n.bio, 'x')[0]`, `head(n.tags)`), is read from the list's text where it is a text, at about 1.4 to
   2.5 times a plain read, and the list is written out whole for it. Any other item is read as before, and so is an
   unwound item. A list made of a long property (`[n.bio, 'y']`) still takes the property out as JSON, as above.
+- So are reads of an argument of `coalesce()` that is a property of a node or a relationship
+  ([#459](https://github.com/liberation-data/drivine4j/issues/459)), wherever the `coalesce()` is (`coalesce($p.q,
+  n.bio)`, `size(trim(coalesce(n.bio, '')))`, `SET n.a = coalesce(n.bio, '')`): a text of at most 4,000 bytes is read
+  as a `VARCHAR2`, at no cost measured (20,000 rows take 72 ms either way), and a longer one through its text. Any
+  other value is read as before, and so is a value of a map (`coalesce(m.a, 'z')`).
 - An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
   an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)

@@ -170,6 +170,14 @@ class ConstraintManager internal constructor(
         return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, made) }
     }
 
+    /**
+     * Whether the constraint that [spec] refers to is there and built, so that the engine enforces it, as one
+     * another process made. One still being built (FalkorDB) is waited on; one whose build failed is not in force,
+     * and is left as it is.
+     */
+    internal fun inForce(spec: ConstraintSpec): Boolean =
+        awaitBuild(spec, untilListed = false)?.takeUnless { it.buildFailed } != null
+
     /** Lists all managed constraints on the database. */
     fun list(): List<SchemaItemInfo> =
         introspect(grammar.listConstraintsQuery())?.let { grammar.parseConstraintRows(it) } ?: emptyList()

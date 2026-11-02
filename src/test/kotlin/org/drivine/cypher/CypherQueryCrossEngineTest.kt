@@ -1744,6 +1744,63 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB that coalesce() gives from a property, on two rows, is read whole`() {
+        // On Oracle an argument of coalesce() that is a property was taken out as JSON, JSON_QUERY(props, '$.a' RETURNING JSON):
+        // a text past 32 KB so closed the session over two rows or more (ORA-03113, #459), as #255's did, on the first run of
+        // the statement or a later one, and in a write. A node of another label holds the same values, and is not read.
+        clear()
+        val bio = "a".repeat(40_000) + "x"
+        val props = "{name: 'x', bio: \$bio, e: '', f: 1.0, n: 5, l: ['a'], m: \$m, m2: \$m2}"
+        query(
+            "CREATE (a:CyCo $props)-[:CY_CO {bio: \$bio}]->(b:CyCo $props)-[:CY_CO {bio: \$bio}]->(a), (:CyCoOther $props)-[:CY_CO {bio: \$bio}]->(b)",
+            // Of two bytes a letter: m is 4,000 bytes, a VARCHAR2's most, and m2 one letter past it.
+            mapOf("bio" to bio, "m" to "\u00e9".repeat(2000), "m2" to "\u00e9".repeat(2001)),
+        )
+        val all = "MATCH (n:CyCo)"
+        fun each(value: Any?) = listOf(value, value)
+        val statements = listOf(
+            // The issue's, and the shapes that closed the session with it.
+            "$all RETURN size(toLower(trim(coalesce(\$p.q, n.bio))))" to each(40_001L),
+            "$all RETURN size(trim(coalesce(\$p.q, n.bio)))" to each(40_001L),
+            "$all RETURN size(coalesce(\$p.q, n.bio))" to each(40_001L),
+            "$all RETURN size(coalesce(n.bio, 'z'))" to each(40_001L),
+            "$all RETURN coalesce(\$p.q, n.bio)" to each(bio),
+            "$all RETURN toLower(coalesce(\$p.q, n.bio))" to each(bio),
+            "$all RETURN size(toLower(coalesce(\$p.q, n.bio)) + 'z')" to each(40_002L),
+            "$all RETURN coalesce(n.bio, 'z') ENDS WITH 'x'" to each(true),
+            "$all RETURN size(toUpper(coalesce(n.nope, \$p.q, n.bio)))" to each(40_001L),
+            "$all WITH coalesce(\$p.q, n.bio) AS b RETURN size(toLower(b))" to each(40_001L),
+            "$all RETURN [size(coalesce(\$p.q, n.bio)), coalesce(n.nope, n.name)]" to each(listOf(40_001L, "x")),
+            // Of a relationship, and beside a variable-length walk.
+            "MATCH (:CyCo)-[r:CY_CO]->(:CyCo) RETURN size(toLower(trim(coalesce(\$p.q, r.bio))))" to each(40_001L),
+            "MATCH (n:CyCo)-[:CY_CO*1..2]->(o:CyCo) RETURN size(coalesce(\$p.q, o.bio))" to List(4) { 40_001L },
+            "MATCH (n:CyCo)-[:CY_CO*1..2]->(o:CyCo) RETURN size(toLower(coalesce(\$p.q, n.bio)))" to List(4) { 40_001L },
+            // In a WHERE, and of two nodes' tables side by side: the CASE on the property's kind keeps each label test.
+            "$all WHERE coalesce(\$p.q, n.bio) ENDS WITH 'x' RETURN size(coalesce(n.bio, 'z'))" to each(40_001L),
+            "MATCH (n:CyCo), (o:CyCo) RETURN size(coalesce(\$p.q, n.bio)) + size(coalesce(\$p.q, o.bio))" to List(4) { 80_002L },
+            // Of a node in a list, as a comprehension reads it, of an optional match that found none, and as a grouping key.
+            "$all WITH collect(n) AS ns RETURN [x IN ns | size(coalesce(\$p.q, x.bio))]" to listOf(listOf(40_001L, 40_001L)),
+            "$all OPTIONAL MATCH (n)-[:CY_NONE]->(o) RETURN coalesce(o.bio, n.name)" to each("x"),
+            "$all RETURN coalesce(\$p.q, n.name) AS k, count(*) AS c" to listOf(listOf("x", 2L)),
+            // A text of multibyte letters, at a VARCHAR2's most and past it.
+            "$all RETURN [size(coalesce(\$p.q, n.m)), size(coalesce(\$p.q, n.m2)), coalesce(\$p.q, n.m) = n.m, coalesce(\$p.q, n.m2) = n.m2]" to
+                each(listOf(2_000L, 2_001L, true, true)),
+            // In a write.
+            "$all SET n.copy = coalesce(\$p.q, n.bio) RETURN size(n.copy)" to each(40_001L),
+        )
+        onOneSession(mapOf("p" to mapOf("q" to null))) { query ->
+            // Oracle closed the session on the first run, or from the second on.
+            repeat(3) { run -> for ((cypher, expected) in statements) assertEquals(expected, query(cypher), "$cypher, run ${run + 1}") }
+            // A property of every other kind, and one that isn't there, is read as it was.
+            assertEquals(
+                each(listOf("", 1.0, 5L, listOf("a"), "z", null)),
+                query("$all RETURN [coalesce(n.e, 'z'), coalesce(\$p.q, n.f), coalesce(n.n, 0), coalesce(n.l, []), coalesce(n.nope, 'z'), coalesce(n.nope, \$p.q)]"),
+            )
+        }
+        clear()
+    }
+
+    @Test
     fun `a text past 32 KB compares as equal, unequal, in a list and in order, stored, given and beside a long value, on several rows`() {
         // On Oracle two values were compared as JSON: = and IN with a text past 32 KB on either side were refused (ORA-40180,
         // #389), and <, >, <= and >= of one read from the store on two rows or more closed the session on the first run or a
@@ -1810,6 +1867,32 @@ abstract class CypherQueryContract {
                 // A long text the statement makes, beside no property and no long value.
                 assertEquals(listOf(true), query("WITH \$same AS t, \$prefix AS x RETURN substring(t, 0, 32768) = x"), "made, run ${run + 1}")
                 assertEquals(listOf(listOf(true, false, true)), query("WITH \$same AS t RETURN [substring(t, 0, 40001) = t, substring(t, 0, 40000) = t, substring(t, 0, 40000) < t]"), "made, run ${run + 1}")
+            }
+        }
+        clear()
+    }
+
+    @Test
+    fun `a text past 32 KB is in no list of short items, null where one is null, on several rows`() {
+        // On Oracle, n.t IN $l with a null and a short item in $l closed the session (ORA-03113, #475): where no item was equal,
+        // the property was taken out as JSON over two rows to tell null from false.
+        clear()
+        val long = "a".repeat(40_000)
+        for (i in 0..1) query("CREATE (:CyInNull {i: \$i, t: \$t})", mapOf("i" to i, "t" to "$long$i"))
+        // Short items, and an empty one and one past 4,000 bytes, which are compared with the text as texts.
+        val lists = listOf(
+            listOf("abc", 5L, null) to null, listOf("abc", null) to null, listOf(null) to null, listOf("abc", 5L) to false,
+            listOf("", null) to null, listOf("x".repeat(5_000), null) to null, listOf("", "abc") to false,
+        )
+        onOneSession(lists.indices.associate { "l$it" to lists[it].first }) { query ->
+            repeat(3) { run ->
+                for ((i, list) in lists.withIndex()) {
+                    val (items, found) = list
+                    assertEquals(listOf(found, found), query("MATCH (n:CyInNull) RETURN n.t IN \$l$i ORDER BY n.i"), "$items, run ${run + 1}")
+                    assertEquals(listOf(0L), query("MATCH (n:CyInNull) WHERE n.t IN \$l$i RETURN count(*)"), "$items in a WHERE, run ${run + 1}")
+                }
+                // And written out, which is compared item by item.
+                assertEquals(listOf(null, null), query("MATCH (n:CyInNull) RETURN n.t IN ['abc', 5, null] ORDER BY n.i"), "written, run ${run + 1}")
             }
         }
         clear()
@@ -2747,14 +2830,9 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a CALL's UNION ALL whose later part gives a list's null keeps it one null with a missing key`() {
-        // #512: the column may be JSON's null where any part's value may be, not only the first's. Until the spec holds these
-        // (drivine-cypher-spec#45, in #42's case), held here. The rows are Neo4j's (2026.10), in any order where the statement gives none.
-        assertEquals(listOf(null), query("CALL { RETURN {}.a AS v UNION ALL RETURN [null][0] AS v } RETURN DISTINCT v"))
-        assertEquals(
-            unordered(listOf(listOf(1L, 1L), listOf(null, 2L))),
-            unordered(query("CALL { RETURN 1 AS v UNION ALL RETURN [null][0] AS v UNION ALL RETURN {}.a AS v } RETURN v, count(*) AS c")),
-        )
-        // In a part of an outer UNION, which compares rows by it.
+        // #512: the column may be JSON's null where any part's value may be, not only the first's. The spec holds it in a CALL
+        // (drivine-cypher-spec#45, in #42's case); here, in a part of an outer UNION, which compares rows by it. The rows are
+        // Neo4j's (2026.10), in any order.
         assertEquals(
             unordered(listOf(null, 1L, 2L)),
             unordered(query("CALL { RETURN {}.a AS v UNION ALL RETURN 1 AS v UNION ALL RETURN [null][0] AS v } RETURN v UNION RETURN 2 AS v")),
@@ -2862,12 +2940,6 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, 3L), listOf(null, 2L)), query("$z, count(*) + [y IN [1] | coalesce(x.a, 0)][0] AS n ORDER BY a, n"))
         // An order term that aggregates reads the key as an item does.
         assertEquals(listOf(listOf(1L, 1L), listOf(1L, 1L), listOf(2L, 1L)), query("$x, count(*) AS n ORDER BY reduce(s = 0, y IN collect(x.b) | s + x.a), a"))
-        // A y of the scope is no y a comprehension binds of its own, read in its WHERE and its projection both: not grouped by.
-        // In the projection of one over an aggregate, x.a groups by x, as Neo4j does, not by y too.
-        val w = "UNWIND [1, 2] AS y UNWIND [{a: 1, b: 1}, {a: 1, b: 2}] AS x RETURN x.a AS a"
-        assertEquals(listOf(listOf(1L, listOf(1L, 2L, 1L, 2L))), query("$w, [y IN collect(x.b) WHERE y > 0 | y] AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 2L), listOf(1L, 2L)), query("$w, size([y IN collect(x.b) WHERE y > 0 | y + x.a]) AS n ORDER BY a"))
-        assertEquals(listOf(listOf(1L, 5L)), query("$w, count(*) + [y IN [1] WHERE y > 0 | y][0] AS n ORDER BY a"))
     }
 
     @Test

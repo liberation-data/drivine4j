@@ -272,6 +272,35 @@ class OracleItemPropertyTest {
     }
 
     @Test
+    fun `a property coalesce() reads is read through its text, its kind by its own path, and anything else as it was`() {
+        // Taken out as JSON, a text past 32 KB closed the session over two rows or more (#459).
+        val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc)-[r:R]->() RETURN [coalesce(\$p.q, n.a), coalesce(r.a, 'z')]", mapOf("p" to mapOf("q" to null))).sql
+        // A text of at most 4,000 bytes as a VARCHAR2, a longer one through its text, anything else as JSON, as it was.
+        assertTrue(sql.contains(
+            "CASE JSON_VALUE(n1.props, '\$.a.type()') WHEN 'string' THEN COALESCE(JSON_SCALAR(JSON_VALUE(n1.props, '\$.a')), $long) " +
+                "WHEN 'null' THEN NULL ELSE JSON_QUERY(n1.props, '\$.a' RETURNING JSON) END",
+        ), sql)
+        // The relationship's too: read by its own path for its kind, its VARCHAR2 and, in the ELSE, its JSON, and kept whole for its text.
+        val relationship = Regex("CASE JSON_VALUE\\((\\w+)\\.props, '\\$\\.a\\.type\\(\\)'\\)").findAll(sql).map { it.groupValues[1] }.single { it != "n1" }
+        assertEquals(3, Regex(Regex.escape("$relationship.props, '\$.a")).findAll(sql).count(), sql)
+        assertTrue(sql.contains(long.replace("n1.props", "$relationship.props")) && sql.contains("ELSE JSON_QUERY($relationship.props, '\$.a' RETURNING JSON) END"), sql)
+        // The parameter's key, and a property of a map, are read as they were.
+        assertTrue(sql.contains("<> 'null' THEN JSON_QUERY("), sql)
+        val map = OracleCypherCompiler("g").compile("WITH {a: 'x'} AS m RETURN coalesce(m.a, 'z')").sql
+        assertTrue(!map.contains("KEEP"), map)
+        // Elsewhere a property coalesce() reads is read as it was.
+        val postgres = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN coalesce(\$p.q, n.a)", mapOf("p" to mapOf("q" to null))).sql
+        assertTrue(postgres.contains("(n1.props -> 'a')") && !postgres.contains("KEEP"), postgres)
+    }
+
+    @Test
+    fun `a node's stamp coalesce() reads is read from its column`() {
+        // The stamp is a column of the node's row, not a property in its JSON, so it is not read as coalesce()'s other properties are (#459).
+        val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc) RETURN coalesce(n.`__drivine.stamp`, 0)").sql
+        assertTrue(sql.contains("JSON_SCALAR(n1.stamp)") && !sql.contains("KEEP") && !sql.contains("__drivine.stamp"), sql)
+    }
+
+    @Test
     fun `on Postgres a property returned is read as elsewhere`() {
         val sql = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN n.a").sql
         assertTrue(sql.contains("(n1.props -> 'a')"), sql)

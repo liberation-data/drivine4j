@@ -9,7 +9,7 @@ import kotlin.test.assertNull
 /**
  * The image [PinnedImages] runs for the one a test names: the pin the build hands it, or, with no pin, as
  * named. The build hands none when run with `-Ptest.images.unpinned=true`, as the nightly workflow runs
- * it. This does not start a container.
+ * it, but for a moving tag that isn't the engine's latest release. This does not start a container.
  */
 class PinnedImagesTest {
 
@@ -37,6 +37,11 @@ class PinnedImagesTest {
         if (System.getProperty("drivine.test.images.unpinned") == "true") {
             assertNull(neo4j, "an unpinned run hands no pin")
             assertEquals("neo4j:latest", PinnedImages().apply(DockerImageName.parse("neo4j:latest")).asCanonicalNameString())
+            // Docker Hub's falkordb/falkordb:latest isn't always FalkorDB's latest release: see build.gradle.
+            assertEquals(
+                "ghcr.io/falkordb/falkordb:latest",
+                PinnedImages().apply(DockerImageName.parse("falkordb/falkordb:latest")).asCanonicalNameString(),
+            )
         } else {
             assumeTrue(neo4j != null, "not run by Gradle, which hands the pins")
             assertEquals(neo4j, PinnedImages().apply(DockerImageName.parse("neo4j:latest")).asCanonicalNameString())

@@ -304,6 +304,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
 
     /**
+     * The property [key] of the node or relationship whose properties are [props], where it is an argument of `coalesce()`:
+     * as [propertyOf] reads it, null where it is JSON's null, but on a store that must read such an argument apart.
+     */
+    protected open fun coalescedProperty(props: String, key: String): String = nullIfJsonNull(propertyOf(props, key))
+
+    /**
      * The value at [keys], each of a map in the one before, in the row a write is making ([ROW]), where a statement of the
      * write reads it to work out what it writes: as [propertyOf] reads each key, but on a store that must read it apart.
      */
@@ -422,10 +428,20 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun givenEquals(x: String, y: String, given: Any) = "$x = $y"
 
     /**
-     * Whether [item], an item of a list whose items the statement writes or is given, [items], each a text, a number, a truth
-     * value or null, is equal to the JSON value [value], as an `IN` tests it: null or false where it is not.
+     * A test of a JSON value alone, for an `IN` of a list whose items the statement writes or is given, [items], each a text, a
+     * number, a truth value or null: where the value meets it, an item is equal to it where it is equal as JSON, a plain `=`, and
+     * where it doesn't, no item is. Null where the store has no such test: then each item is compared with the value as
+     * [jsonEquals] compares them.
      */
-    protected open fun givenItemEquals(item: String, value: String, items: List<Any?>) = jsonEquals(item, value)
+    protected open fun givenItemsTest(items: List<Any?>): ((String) -> String)? = null
+
+    /**
+     * Whether an `IN` of such items, where none is equal to the value, is null where they hold a null and else false, as the
+     * statement is compiled, and the value is not read for its nulls: such items are equal to no value that holds one, and a
+     * comparison with one of them is null only where the item is null. Else the value is read for its nulls, and compared with
+     * each item again where none is equal, as with any list.
+     */
+    protected open val givenItemsDecided: Boolean get() = false
 
     /** Whether the JSON values [x] and [y], of one kind, a number, a text or a truth value, stand as [operator] says (`<`, `>=`…). */
     protected open fun ordered(x: String, operator: String, y: String) = "$x $operator $y"
@@ -4236,10 +4252,14 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             val equals: (String, String) -> String = if (identities) ::identityEquals else ::jsonEquals
             val items = if (id == null && !identities) givenItems(binary.right) else null
-            fun matches(item: String, value: String) = when {
-                id != null -> "$item = $value"
-                items != null -> givenItemEquals(item, value, items)
-                else -> equals(item, value)
+            // Where the store tests the value alone beside such items (see givenItemsTest), it is tested once, beside the EXISTS,
+            // and not in each item's comparison, which is then a plain equality.
+            val test = items?.let(::givenItemsTest)
+            fun matches(item: String, value: String) = if (id != null || test != null) "$item = $value" else equals(item, value)
+            /** Whether an item of the list [l], read as [i], is equal to the value [v], and [v] meets the store's test where it has one. */
+            fun found(l: String, v: String, i: String): String {
+                val exists = "EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)})"
+                return test?.let { "(${it(v)} AND $exists)" } ?: exists
             }
             val within = isFlat(right)
             // A node, a relationship or a value of one kind holds no null; nor does an item of a list that holds none.
@@ -4253,14 +4273,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 // But JSON's null is equal as JSON to an item that is, so a value that may be JSON's null (not a property read from
                 // the store, which is SQL's null where it is not there) is in a list that may hold a null only where it is not null.
                 val nullable = !within && id == null && !present(binary.left) && !stored(binary.left, scope) && holdsNull("x") != null
-                if (!nullable) return "EXISTS (SELECT 1 FROM ${elementsOf(right, list, i)} WHERE ${matches(item(i), x)})"
-                return sharedCompared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
+                if (!nullable) return if (test == null) found(list, x, i) else sharedCompared(list, x) { (l, v) -> found(l, v, i) }
+                return sharedCompared(list, x) { (l, v) -> "(${found(l, v, i)} AND NOT ${isJsonNull(v)})" }
             }
             // A value that may be null, in a list that is not and holds none: in where an item is equal, null where the value is
             // null, else not, written so the store still answers the first as it did, as a semi-join.
             if (present(binary.right) && within && whole && filled) {
                 val i = alias("i")
-                return sharedCompared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
+                return sharedCompared(list, x) { (l, v) -> "(${found(l, v, i)} OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
             }
             return sharedCompared(list, x) { (l, v) ->
                 val (i, j) = alias("i") to alias("i")
@@ -4269,9 +4289,15 @@ abstract class SqlCypherCompiler(graph: String) {
                 // Null is compared with each item, and is in no empty list.
                 if (!present(binary.left)) cases += "WHEN ${isJsonNull(v)} THEN " +
                     if (filled) "NULL" else "CASE WHEN EXISTS (SELECT 1 FROM ${elementsOf(right, l, j)}) THEN NULL ELSE FALSE END"
+                // Beside items the statement gives, the answer where none is equal is known here (see givenItemsDecided): a
+                // stored text past 32 KB, taken out as JSON to read its nulls, closed Oracle's session (#475).
+                if (items != null && givenItemsDecided) {
+                    cases += "WHEN ${found(l, v, i)} THEN TRUE"
+                    return@sharedCompared "CASE ${cases.joinToString(" ")} ELSE ${if (null in items) "NULL" else "FALSE"} END"
+                }
                 // A value that holds a null is equal to no item.
                 val held = if (whole) null else holdsNull(v)
-                cases += "WHEN ${held?.let { "NOT ($it) AND " }.orEmpty()}EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) THEN TRUE"
+                cases += "WHEN ${held?.let { "NOT ($it) AND " }.orEmpty()}${found(l, v, i)} THEN TRUE"
                 if (!(within && whole)) {
                     val k = alias("i")
                     val undecided = if (id != null) isJsonNull(item(k)) else "(${nullableEquals(item(k), v, equals)}) IS NULL"
@@ -4283,7 +4309,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The items of the list [expression] where the statement writes or is given each, a list literal of literals and parameters,
-         * or a parameter: null where it is not so given, or holds a list or a map, whose items [givenItemEquals] doesn't know.
+         * or a parameter: null where it is not so given, or holds a list or a map, whose items [givenItemsTest] doesn't know, and beside
+         * which [givenItemsDecided] can't decide: such an item may be null beside a value that holds a null.
          */
         private fun givenItems(expression: Expression): List<Any?>? = when (expression) {
             is Expression.ListLiteral -> expression.items.map { item ->
@@ -4398,6 +4425,20 @@ abstract class SqlCypherCompiler(graph: String) {
             )
         }
 
+        /**
+         * An argument of `coalesce()`, [value] as compiled from [argument], null where it is JSON's null: a property of a node
+         * or a relationship a variable names as [coalescedProperty] reads it, which on Oracle reads a long text through its
+         * text (#459).
+         */
+        private fun coalesced(argument: Expression, value: Value, scope: Map<String, Value>): String {
+            if (argument is Expression.Property && argument.subject is Expression.Variable) when (val subject = scope[argument.subject.name]) {
+                is Value.Node -> if (argument.key != Stamps.PROPERTY) return coalescedProperty(subject.props, argument.key)
+                is Value.Relationship -> return coalescedProperty(subject.props, argument.key)
+                else -> {}
+            }
+            return nullIfJsonNull(comparable(json(value)))
+        }
+
         /** Whether [value] may be JSON's null: see [Value.Json.jsonNull]. */
         private fun mayBeJsonNull(value: Value) = (value as? Value.Json)?.jsonNull == true
 
@@ -4421,7 +4462,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 "nodes" -> (one() as? Value.Path)?.let { nodeList(it.nids) } ?: throw DrivineException("nodes() takes a path.")
                 "relationships" -> (one() as? Value.Path)?.let { relationshipList(it.eids) } ?: throw DrivineException("relationships() takes a path.")
                 "coalesce" -> Value.Json(
-                    "COALESCE(${arguments.joinToString(", ") { nullIfJsonNull(comparable(json(it))) }})",
+                    "COALESCE(${function.arguments.zip(arguments).joinToString(", ") { (argument, value) -> coalesced(argument, value, scope) }})",
                     temporal = kindOf(function.arguments.zip(arguments)),
                     // A list of one kind where each is, or is null or an empty list written, as `coalesce(l, [])`: so Oracle reads its items
                     // by their places, as it reads l's (#347).
