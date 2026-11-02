@@ -291,10 +291,10 @@ declares the function itself.
 - So are reads of an unwound item's value: a text that a `RETURN` or a `WITH` gives from an unwound parameter's item,
   or from another unwound list's (`UNWIND $rows AS r RETURN r.a`, `WITH r.a AS a`, `SET n.a = r.a RETURN r.a`), is
   read from the item's text, at about 1.3 times a plain read: 100,000 rows of `RETURN r.a` take about 870 ms, against
-  660 ms. Any other value is read as before, and so is a value of a map made of a node's properties and not unwound
-  (`WITH n {.a} AS m RETURN m.a`); after a write, which carries its rows on, such a value is read from the item's text too.
-  A pattern that matches on such a text (`MERGE (n:X {a: r.a})`) compares it as JSON, which Oracle refuses past about
-  32 KB (ORA-40180), leaving the session open.
+  660 ms. Any other value is read as before, and a value of a map made of a node's properties and not unwound (`WITH n
+  {.a} AS m RETURN m.a`) as the item on #531 below has it; after a write, which carries its rows on, such a value is
+  read from the item's text too. A pattern that matches on such a text (`MERGE (n:X {a: r.a})`) compares it as JSON, which Oracle
+  refuses past about 32 KB (ORA-40180), leaving the session open.
 - So are reads of a list's item by its place ([#388](https://github.com/liberation-data/drivine4j/issues/388)): an item
   read by index, by `head()` or `last()`, or after a slice, of a list `split` makes, a stored list, or one a `WITH`
   passes on (`split(n.bio, 'x')[0]`, `head(n.tags)`), is read from the list's text where it is a text, at about 1.4 to
@@ -304,7 +304,17 @@ declares the function itself.
   ([#459](https://github.com/liberation-data/drivine4j/issues/459)), wherever the `coalesce()` is (`coalesce($p.q,
   n.bio)`, `size(trim(coalesce(n.bio, '')))`, `SET n.a = coalesce(n.bio, '')`): a text of at most 4,000 bytes is read
   as a `VARCHAR2`, at no cost measured (20,000 rows take 72 ms either way), and a longer one through its text. Any
-  other value is read as before, and so is a value of a map (`coalesce(m.a, 'z')`).
+  other value is read as before. A value of a map (`coalesce(m.a, 'z')`) is read as the next item has it.
+- So are reads of a property of a node or a relationship that a function or an index gives, or of a map
+  ([#531](https://github.com/liberation-data/drivine4j/issues/531)): `head([n]).bio`, `last(ns).bio`, `[r][0].bio`,
+  `properties(n).bio`, `WITH properties(n) AS m RETURN m.bio`, wherever they are read (returned, passed on, measured,
+  searched, in a `WHERE` or an `ORDER BY`). They are read as JSON, as before, by a path that leaves out a text past
+  4,000 characters, at no cost measured (20,000 rows of `WITH properties(n) AS m RETURN m.bio` take 77 to 83 ms,
+  against 72 to 78 ms; 2,000 rows of `RETURN head([n]).bio` about 3.2 s either way), and such a text through its text.
+  A property of a node or a relationship that a pattern binds, and a value of an unwound item, are read as above.
+  Still not worked around: a map made of a long property and then read (`head([n {.bio}]).bio`), and `=` of a long
+  property with a value that may hold a null (`head([n]).bio = n.bio`), both still close the session, and so does a
+  long text in a map that is itself a property, returned as it is (`RETURN n.meta.bio`).
 - An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
   an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)

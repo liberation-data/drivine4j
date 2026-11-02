@@ -1744,6 +1744,101 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB that is a property of a node, a relationship or a map a function gives, on two rows, is read whole`() {
+        // On Oracle such a property was taken out as JSON, JSON_QUERY(value, '$.t' RETURNING JSON): a text past 32 KB so closed
+        // the session over two rows or more (ORA-03113, or ORA-00600 [17114], #531), as #255's did, on the first run of the
+        // statement or a later one. A property of a node a pattern binds was read apart already, and isn't here. A node of another
+        // label holds the same values, and is not read: reading the value twice keeps each label test.
+        clear()
+        val t0 = "a".repeat(40_000) + "0"
+        val t1 = "a".repeat(40_000) + "1"
+        // Of two bytes a letter: m is 4,000 bytes, a VARCHAR2's most, and m2 one letter past it.
+        val short = "e: '', f: 1.0, k: 5, l: ['a'], m: \$m, m2: \$m2"
+        query(
+            "CREATE (a:CyFn {i: 0, t: \$t0, day: \$t0, $short})-[:CY_FN {i: 0, t: \$t0}]->(b:CyFn {i: 1, t: \$t1, day: \$t1, $short})-[:CY_FN {i: 1, t: \$t1}]->(a), " +
+                "(:CyFnOther {i: 2, t: \$t1, day: \$t1, $short})-[:CY_FN {i: 2, t: \$t1}]->(b)",
+            mapOf("t0" to t0, "t1" to t1, "m" to "\u00e9".repeat(2000), "m2" to "\u00e9".repeat(2001)),
+        )
+        val o = "MATCH (n:CyFn) WITH n ORDER BY n.i"
+        val r = "MATCH (:CyFn)-[r:CY_FN]->(:CyFn) WITH r ORDER BY r.i"
+        val grouped = "MATCH (n:CyFn) WITH n.i AS i, collect(n) AS ns ORDER BY i"
+        fun each(value: Any?) = listOf(value, value)
+        val statements = listOf(
+            // The issue's, and a node a function or an index gives, returned, passed on, measured and searched.
+            "$o RETURN size(head([n]).t)" to each(40_001L),
+            "$o RETURN size(coalesce(head([n]).t, 'z'))" to each(40_001L),
+            "$o RETURN size(last([n]).t)" to each(40_001L),
+            "$o RETURN size([n][0].t)" to each(40_001L),
+            "$o RETURN head([n]).t" to listOf(t0, t1),
+            "$o RETURN [head([n]).t]" to listOf(listOf(t0), listOf(t1)),
+            "$o RETURN head([n]).t ENDS WITH '1'" to listOf(false, true),
+            "$o RETURN size(toLower(head([n]).t))" to each(40_001L),
+            "$o RETURN size(head([n]).t + 'z')" to each(40_002L),
+            "$o WITH head([n]).t AS t RETURN size(t)" to each(40_001L),
+            "$o WITH head([n]) AS h RETURN h.t" to listOf(t0, t1),
+            "$o WITH head([n]) AS h RETURN size(h.t)" to each(40_001L),
+            "$o WITH head([n]) AS h WHERE h.t ENDS WITH '1' RETURN h.i" to listOf(1L),
+            "$o WITH [n] AS ns RETURN size(ns[0].t)" to each(40_001L),
+            // Of a list collect() gives.
+            "$grouped RETURN size(head(ns).t)" to each(40_001L),
+            "$grouped RETURN size(last(ns).t)" to each(40_001L),
+            "$grouped RETURN size(ns[0].t)" to each(40_001L),
+            "MATCH (n:CyFn) WITH n.i AS i, size(head(collect(n)).t) AS s ORDER BY i RETURN s" to each(40_001L),
+            // Of a relationship.
+            "$r RETURN size(head([r]).t)" to each(40_001L),
+            "$r RETURN size(last([r]).t)" to each(40_001L),
+            "$r RETURN size([r][0].t)" to each(40_001L),
+            "MATCH (:CyFn)-[r:CY_FN]->(:CyFn) WITH r.i AS i, collect(r) AS rs ORDER BY i RETURN size(head(rs).t)" to each(40_001L),
+            // Of a map.
+            "$o RETURN properties(n).t" to listOf(t0, t1),
+            "$o WITH properties(n) AS m RETURN m.t" to listOf(t0, t1),
+            "$o RETURN size(head([properties(n)]).t)" to each(40_001L),
+            "$o RETURN size(coalesce(properties(n), {}).t)" to each(40_001L),
+            // Of a key that names a temporal value's field, which a map is read by its kind for.
+            "$o RETURN size(properties(n).day)" to each(40_001L),
+            "$o WITH properties(n) AS m RETURN m.day" to listOf(t0, t1),
+            // In a WHERE.
+            "$o WHERE size(head([n]).t) > 0 RETURN n.i" to listOf(0L, 1L),
+            "$o WHERE head([n]).t ENDS WITH '1' RETURN n.i" to listOf(1L),
+            "$o WHERE head([n]).t STARTS WITH 'a' RETURN n.i" to listOf(0L, 1L),
+            "$o WHERE last([n]).t CONTAINS '1' RETURN n.i" to listOf(1L),
+            "$o WHERE [n][0].t ENDS WITH '1' RETURN n.i" to listOf(1L),
+            "$o WHERE head([n]).t > 'a' RETURN n.i" to listOf(0L, 1L),
+            "$o WHERE head([n]).t IS NOT NULL RETURN n.i" to listOf(0L, 1L),
+            "$r WHERE size(head([r]).t) > 0 RETURN r.i" to listOf(0L, 1L),
+            // In an ORDER BY.
+            "MATCH (n:CyFn) RETURN n.i ORDER BY size(head([n]).t), n.i" to listOf(0L, 1L),
+            "MATCH (n:CyFn) RETURN n.i ORDER BY size(last([n]).t) DESC, n.i DESC" to listOf(1L, 0L),
+            // In a write.
+            "$o SET n.copy = head([n]).t RETURN size(n.copy)" to each(40_001L),
+            "$o SET n.copy = properties(n).t RETURN size(n.copy)" to each(40_001L),
+        )
+        onOneSession { query ->
+            // Oracle closed the session on the first run, or from the second on.
+            repeat(3) { run -> for ((cypher, expected) in statements) assertEquals(expected, query(cypher), "$cypher, run ${run + 1}") }
+            // A property of every other kind, and one that isn't there, is read as it was: a text at a VARCHAR2's most and past it too.
+            assertEquals(
+                each(listOf("", 1.0, 5L, listOf("a"), null, 2_000L, 2_001L)),
+                query("$o RETURN [head([n]).e, head([n]).f, [n][0].k, last([n]).l, head([n]).nope, size(head([n]).m), size(properties(n).m2)]"),
+            )
+            // And of a map the statement writes: a list of one item or of two is read whole, not as its items, and a map, a null and a quoted key as they were.
+            assertEquals(
+                each(listOf(listOf(5L), listOf("a", "b"), mapOf("b" to 1L), null, "q")),
+                query("$o WITH head([{l: [5], l2: ['a', 'b'], p: {b: 1}, z: null, `a b`: 'q', i: n.i}]) AS m RETURN [m.l, m.l2, m.p, m.z, m.`a b`]"),
+            )
+            // Not worked around: Oracle sorts JSON only up to about 32 KB, as with n.t. It refuses the statement (ORA-40180), and
+            // the session stays open for the statements after it.
+            val sorted = "MATCH (n:CyFn) RETURN n.i ORDER BY head([n]).t"
+            if (pm.type == DatabaseType.ORACLE) {
+                val refused = assertThrows<Exception> { query(sorted) }
+                assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { "ORA-40180" in it.message.orEmpty() }, refused.toString())
+                assertEquals(each(40_001L), query("$o RETURN size(head([n]).t)"))
+            } else assertEquals(listOf(0L, 1L), query(sorted))
+        }
+        clear()
+    }
+
+    @Test
     fun `a text past 32 KB that coalesce() gives from a property, on two rows, is read whole`() {
         // On Oracle an argument of coalesce() that is a property was taken out as JSON, JSON_QUERY(props, '$.a' RETURNING JSON):
         // a text past 32 KB so closed the session over two rows or more (ORA-03113, #459), as #255's did, on the first run of
