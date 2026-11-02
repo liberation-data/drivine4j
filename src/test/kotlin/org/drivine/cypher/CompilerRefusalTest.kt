@@ -137,6 +137,7 @@ class CompilerRefusalTest {
                 "RETURN toFloat(1) AND true" to "AND takes a truth value, not a float, as in Neo4j.",
                 "UNWIND ['a'] AS s RETURN s.x" to "A text has no properties.",
                 "RETURN 1 IN CASE WHEN true THEN 1.5 ELSE 2.5 END" to "IN takes a list, not a float, as in Neo4j.",
+                "WITH 1 AS x RETURN [1, 2][CASE x WHEN 1 THEN 1.5 END]" to "A list is indexed by an integer, not a float, as in Neo4j.",
             ).forEach { (cypher, message) ->
                 assertEquals(message, assertThrows<DrivineException>(cypher) { compiler().compile(cypher) }.message, cypher)
             }
@@ -147,6 +148,8 @@ class CompilerRefusalTest {
                 "UNWIND [1, null] AS x RETURN [1, 2][x]",
                 "UNWIND [1, 2.5] AS c RETURN range(0, c)",
                 "UNWIND [[1, 2]] AS l UNWIND [{a: 1}] AS m RETURN l[0], m.a",
+                // Arithmetic with a side that is no number, a text joined, is of no number known.
+                "RETURN {a1: 1}['a' + 1], {a: 1}['a' + '']",
             ).forEach { compiler().compile(it) }
         }
     }
@@ -165,6 +168,7 @@ class CompilerRefusalTest {
                 "UNWIND [1, 2.7] AS c RETURN left('hello', c)" to emptyMap(),
                 "UNWIND [2.7, null] AS c RETURN left('hello', c)" to emptyMap(),
                 "RETURN left('hello', CASE WHEN true THEN 2 ELSE 1.5 END), left('hello', CASE WHEN true THEN 2.5 ELSE null END)" to emptyMap(),
+                "WITH 1 AS x RETURN left('hello', CASE x WHEN 1 THEN 2.5 ELSE null END)" to emptyMap(),
                 "RETURN left('hello', abs(2.5)), left('hello', sign(2.5)), left('hello', 5 / 2), left('hello', 1 + 1)" to emptyMap(),
                 "RETURN left('hello', 1.5 + \$n)" to mapOf("n" to 1),
                 "MATCH (n) RETURN left('hello', n.f * 1.0)" to emptyMap(),
