@@ -67,6 +67,16 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a MERGE run again with its parameter bound to null fails, though it made a node with another value`() {
+        // #543: what the compiled MERGE tests depends on the value bound, so the same statement is compiled again for each.
+        val cypher = "MERGE (n:CyWrite {x: \$p}) RETURN n.x"
+        assertEquals(listOf(2L), query(cypher, mapOf("p" to 2L)))
+        assertFailsWith<Exception> { query(cypher, mapOf("p" to null)) }
+        assertEquals(listOf(2L), query(cypher, mapOf("p" to 2L)))
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
     fun `a write's rows group a key's value that is no null as before`() {
         // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
