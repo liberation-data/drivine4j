@@ -107,10 +107,12 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
-A value whose kind the statement fixes (a literal, a list or a map written, or a variable a `WITH` binds to one) is
-refused where an operator or a function takes another kind, as Neo4j refuses it when it plans the statement:
-`RETURN 123 AND true` fails with `AND takes a truth value, not an integer, as in Neo4j.`, and so do
-`WITH 123 AS x RETURN x.num` and `RETURN 1 IN 'foo'`. A step of 0 in `range()`, written or given, a parameter given as
+A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
+`toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
+takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes
+another kind, as Neo4j refuses it when it plans the statement: `RETURN 123 AND true` fails with
+`AND takes a truth value, not an integer, as in Neo4j.`, and so do `WITH 123 AS x RETURN x.num`, `RETURN 1 IN 'foo'` and
+`RETURN left('hello', toFloat(2))`. A step of 0 in `range()`, written or given, a parameter given as
 the index of a list or a map written that isn't indexed by its kind, as in `WITH [1] AS l RETURN l[$k]` given a text,
 and a map, or a list of maps or of lists, written in `SET`, are refused too, though Neo4j fails on them only when a row
 reaches them: such a statement is refused even where it would match nothing. A statement is compiled for each call,
