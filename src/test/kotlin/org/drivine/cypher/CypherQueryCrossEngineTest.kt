@@ -2090,6 +2090,34 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `NaN is in no list of given items, null where one is null, stored and given`() {
+        // On Oracle an IN of given items is decided between null and false as it compiles, its items compared by a plain
+        // equality (#475), which finds a BINARY_DOUBLE NaN equal to itself: NaN is equal to nothing (#409), so NaN IN [NaN] is
+        // false, and null beside a null. Postgres and SQLite store no NaN, so there it is only given.
+        clear()
+        try {
+            val p = mapOf("p" to Double.NaN, "l" to listOf(Double.NaN), "m" to listOf(Double.NaN, null), "k" to listOf(1.0, null))
+            assertEquals(
+                listOf(listOf(false, null, null, false, null, false, null)),
+                query("RETURN [\$p IN [\$p], \$p IN [\$p, null], 1 IN [\$p, null], 1 IN [\$p], \$p IN [1.0, null], \$p IN \$l, \$p IN \$m]", p),
+            )
+            assertEquals(listOf(0L), query("UNWIND [\$p] AS x WITH x WHERE x IN [\$p, 1.0] OR x IN \$l RETURN count(*)", p))
+            // Lists the statement makes that hold NaN, compared as a whole and item by item.
+            assertEquals(listOf(listOf(false, false, false)), query("RETURN [[\$p] = [\$p], [[\$p]] = [[\$p]], [\$p] IN [[\$p]]]", p))
+            if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) return
+            query("CREATE (:CyNanIn {a: \$p, l: [\$p, 1.0], k: 1}), (:CyNanIn {a: 1.0, l: [1.0], k: 2})", p)
+            assertEquals(
+                listOf(listOf(false, null, false, null, false), listOf(false, null, true, true, true)),
+                query("MATCH (n:CyNanIn) RETURN [n.a IN [\$p], n.a IN [\$p, null], n.a IN [1.0], n.a IN \$k, n.l IN [[\$p, 1.0], [1.0]]] ORDER BY n.k", p),
+            )
+            assertEquals(listOf(listOf(false, false), listOf(false, true)), query("MATCH (n:CyNanIn) RETURN [n.l = [\$p, 1.0], n.l = [1.0]] ORDER BY n.k", p))
+            assertEquals(listOf(0L), query("MATCH (n:CyNanIn) WHERE n.a IN \$l OR n.a IN [\$p] OR n.l = [\$p, 1.0] RETURN count(*)", p))
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
