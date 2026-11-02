@@ -158,16 +158,16 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Where the statement is given NaN or an infinity, or may work one out, NaN where either number is NaN, or where an infinity
-     * makes the result NaN, which SQLite gives as null: `∞ - ∞`, `∞ * 0`, `∞ / ∞`. A float divided by zero, which SQLite gives as
-     * null too, is NaN for zero, and else the infinity of the dividend's sign, as in Java (#408). Two integers are divided by
-     * [wholeQuotient], whose division by zero is null still (#201).
+     * makes the result NaN, which SQLite gives as null: `∞ - ∞`, `∞ * 0`, `∞ / ∞`. A number divided by a float zero, which SQLite
+     * gives as null too, is NaN for zero, and else the infinity of the dividend's sign, as in Java (#408). By an integer zero it is
+     * null still, as two integers are by [wholeQuotient] (#201), where Neo4j fails.
      */
     override fun arithmetic(a: String, b: String, operator: String): String {
         if (!nonFinite) return super.arithmetic(a, b, operator)
         return shared(a, b) { (x, y) ->
             val result = super.arithmetic(x, y, operator)
             val infinite = "(abs(${number(x)}) = $INFINITY OR abs(${number(y)}) = $INFINITY)" + if (operator == "/") " AND ${number(y)} <> 0" else ""
-            val byZero = if (operator != "/") "" else "WHEN ${typeOf(x)} = 'number' AND ${number(y)} = 0 THEN CASE WHEN ${number(x)} > 0 THEN json_quote($INFINITY) " +
+            val byZero = if (operator != "/") "" else "WHEN ${typeOf(x)} = 'number' AND ${number(y)} = 0 AND NOT ${integral(y)} THEN CASE WHEN ${number(x)} > 0 THEN json_quote($INFINITY) " +
                 "WHEN ${number(x)} < 0 THEN json_quote(-$INFINITY) ELSE $NAN_JSON END "
             "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR ($result IS NULL AND $infinite)) " +
                 "THEN $NAN_JSON ${byZero}ELSE $result END"
@@ -176,13 +176,14 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Where the statement is given NaN or an infinity, or may work one out, NaN where either number is NaN, the first is an
-     * infinity, or a float is taken by zero, as in Java, which SQLite gives as null (#408). Two integers by zero are null still.
+     * infinity, or a number is taken by a float zero, as in Java, which SQLite gives as null (#408). By an integer zero it is null
+     * still, where Neo4j fails.
      */
     override fun remainder(a: String, b: String): String {
         if (!nonFinite) return super.remainder(a, b)
         return shared(a, b) { (x, y) ->
             "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR abs(${number(x)}) = $INFINITY " +
-                "OR (${number(y)} = 0 AND NOT (${integral(x)} AND ${integral(y)}))) THEN $NAN_JSON ELSE ${super.remainder(x, y)} END"
+                "OR (${number(y)} = 0 AND NOT ${integral(y)})) THEN $NAN_JSON ELSE ${super.remainder(x, y)} END"
         }
     }
 

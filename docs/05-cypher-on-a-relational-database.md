@@ -137,14 +137,15 @@ variable bound as something else.
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
   total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store. A
-  float divided by zero is the NaN or infinity Neo4j gives on each (`0.0 / 0.0` is NaN, `1.0 / 0` an infinity), and a
-  float taken `%` by zero is NaN, but on Oracle, which gives the number taken, as its `MOD` does. Neo4j fails a division
-  by an integer zero but where both numbers are written in the statement (`1.0 / 0`): `$x / 0` and
-  `WITH 0 AS z RETURN 1.0 / z` fail there, where each SQL store gives the infinity. An integer divided or taken `%` by
-  zero fails, as on Neo4j, but is null on SQLite, and taken `%` is the number taken on Oracle. On Postgres, a statement
-  that writes and divides a float by zero fails, as its `jsonb` holds neither. `toFloat` reads a text that names NaN or
-  an infinity as Java does (`'NaN'`, `'-Infinity'`) on each SQL store, but is null in a statement that writes on
-  Postgres; Oracle reads `'nan'`, `'inf'` and `'INFINITY'` so too, where Neo4j gives null.
+  number divided by a float zero is the NaN or infinity Neo4j gives on each (`0.0 / 0.0` is NaN, `$x / 0.0` an
+  infinity), and taken `%` by one is NaN, but on Oracle, which gives the number taken, as its `MOD` does. Neo4j fails a
+  division or `%` by an integer zero, but where both numbers are written in the statement, which it works out before it
+  runs, as Java does: `1.0 / 0` and `1.0 / (1 - 1)` are an infinity there and on each SQL store, and `1 / 0` fails.
+  `$x / 0` and `WITH 0 AS z RETURN 1.0 / z` fail on Neo4j and Postgres, are null on SQLite, as an integer divided or taken
+  `%` by zero is there, and are the infinity on Oracle, which gives the number taken `%` by any zero. On Postgres, a
+  statement that writes and divides a float by zero fails, as its `jsonb` holds neither. `toFloat` reads a text that
+  names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`) on each SQL store, but is null in a statement that
+  writes on Postgres; Oracle reads `'nan'`, `'inf'` and `'INFINITY'` so too, where Neo4j gives null.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `%`,
   `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a

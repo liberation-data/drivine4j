@@ -3326,6 +3326,32 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * The divisor [b] of [binary], `/` or `%`, as a float where the statement may work NaN or an infinity out ([nonFinite]) and
+         * both sides are numbers worked out from numbers written in it alone, the dividend a float and the divisor an integer
+         * ([writtenNumber]): Neo4j's planner works those out before it runs, as Java does, so `1.0 / 0` is an infinity there,
+         * where a float divided by an integer 0 it runs fails (#408).
+         */
+        private fun divisor(binary: Expression.Binary, b: String) =
+            if (nonFinite && writtenNumber(binary.left) == Value.Known.FLOAT && writtenNumber(binary.right) == Value.Known.INTEGER) scalar(float(number(b))) else b
+
+        /** The kind of [expression] where it is a number worked out from numbers written in the statement alone (`1.0`, `-0`, `1 - 1`), as Java does. */
+        private fun writtenNumber(expression: Expression): Value.Known? = when (expression) {
+            is Expression.Literal -> Value.Known.of(expression.value)?.takeIf { it == Value.Known.INTEGER || it == Value.Known.FLOAT }
+            is Expression.Unary -> writtenNumber(expression.operand)?.takeIf { expression.operator == Expression.Unary.Operator.NEGATE }
+            is Expression.Binary -> {
+                val (left, right) = writtenNumber(expression.left) to writtenNumber(expression.right)
+                when {
+                    left == null || right == null -> null
+                    expression.operator == Operator.POWER -> Value.Known.FLOAT
+                    expression.operator in setOf(Operator.ADD, Operator.SUBTRACT, Operator.MULTIPLY, Operator.DIVIDE, Operator.MODULO) ->
+                        if (left == Value.Known.FLOAT || right == Value.Known.FLOAT) Value.Known.FLOAT else Value.Known.INTEGER
+                    else -> null
+                }
+            }
+            else -> null
+        }
+
+        /**
          * The kind of value [expression] is in [scope], where the statement writes it as one ([Value.Json.known]): a literal, a
          * negated number, a list or a map written, or a variable bound to one. Read from the statement alone, compiling nothing,
          * so a check may run before its operand is compiled. Null where the kind is left open, as it is for a property, a
@@ -3969,9 +3995,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.MULTIPLY -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "*") })
                 // A whole number divided by one is a whole number, as in Cypher.
                 Operator.DIVIDE -> Value.Json(
-                    shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
+                    shared(a, divisor(binary, b)) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
                 )
-                Operator.MODULO -> Value.Json(remainder(a, b))
+                Operator.MODULO -> Value.Json(remainder(a, divisor(binary, b)))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
                 Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
                 Operator.STARTS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> startsWith(x, y) } })

@@ -128,14 +128,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * As any store works it out, in `numeric`, and a quotient without the zeros `numeric`'s division leaves after its digits:
      * `4.0 / 2` is `2.0`, not `2.0000000000000000`. Postgres works a float out exactly, so a result may differ from a double's
      * in the last digits: `0.1 * 3` is `0.3`, where Cypher gives `0.30000000000000004` (#188). Where the statement may work NaN or
-     * an infinity out ([nonFinite]), a float divided by zero is one, as in Java: NaN for zero or NaN, else the infinity of the
-     * dividend's sign, where `numeric` fails (#408).
+     * an infinity out ([nonFinite]), a number divided by a float zero is one, as in Java: NaN for zero or NaN, else the infinity of
+     * the dividend's sign, where `numeric` fails (#408). A float zero has a scale, an integer none: by an integer zero it fails
+     * still, as on Neo4j.
      */
     override fun arithmetic(a: String, b: String, operator: String) = when {
         operator != "/" -> super.arithmetic(a, b, operator)
         !nonFinite -> scalar(float("(${number(a)} / ${number(b)})"))
         else -> scalar(float(shared(number(a), number(b)) { (x, y) ->
-            "CASE WHEN $y = 0 THEN CASE WHEN $x = 'NaN' OR $x = 0 THEN 'NaN'::numeric WHEN $x > 0 THEN 'Infinity'::numeric " +
+            "CASE WHEN $y = 0 AND scale($y) > 0 THEN CASE WHEN $x = 'NaN' OR $x = 0 THEN 'NaN'::numeric WHEN $x > 0 THEN 'Infinity'::numeric " +
                 "WHEN $x < 0 THEN '-Infinity'::numeric END ELSE $x / $y END"
         }))
     }
@@ -367,11 +368,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun idTokens(ids: String, key: String) = "CAST(regexp_replace(CAST($ids AS text), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}, 'g') AS jsonb)"
 
     /**
-     * Where the statement may work NaN or an infinity out ([nonFinite]), NaN for a float by zero, as in Java, where `numeric` fails:
-     * a float has a scale, an integer none, and NaN and the infinities none to read (#408). Two integers still fail, as on Neo4j.
+     * Where the statement may work NaN or an infinity out ([nonFinite]), NaN for a number by a float zero, as in Java, where `numeric`
+     * fails: a float has a scale, an integer none (#408). By an integer zero it fails still, as on Neo4j.
      */
     override fun modulo(a: String, b: String) = if (!nonFinite) "($a % $b)" else shared(a, b) { (x, y) ->
-        "CASE WHEN $y = 0 AND $x IS NOT NULL AND (COALESCE(scale($x), 1) > 0 OR scale($y) > 0) THEN 'NaN'::numeric ELSE $x % $y END"
+        "CASE WHEN $y = 0 AND $x IS NOT NULL AND scale($y) > 0 THEN 'NaN'::numeric ELSE $x % $y END"
     }
 
     override fun startsWith(a: String, b: String) = "starts_with($a, $b)"

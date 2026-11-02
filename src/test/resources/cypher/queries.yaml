@@ -2683,7 +2683,7 @@ cases:
         rows: [[{$float: "Infinity"}, {$float: "Infinity"}]]
 
   - name: "NaN worked out"
-    description: "0.0 / 0.0 is NaN and 1.0 / 0.0 an infinity, as Java has them, and so is a float taken % by zero, or a text toFloat reads as one: NaN is equal to nothing, itself included (drivine4j#409, drivine4j#408, drivine4j#545). An integer divided by zero fails."
+    description: "0.0 / 0.0 is NaN and 1.0 / 0.0 an infinity, as Java has them, and so is a number divided or taken % by a float zero, or a text toFloat reads as one: NaN is equal to nothing, itself included (drivine4j#409, drivine4j#408, drivine4j#545). A number divided or taken % by an integer zero fails, but where both are written in the statement (1.0 / 0), which Neo4j works out before it runs, as Java does."
     steps:
       - cypher: "RETURN [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0]"
         rows: [[{$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]]
@@ -2692,10 +2692,44 @@ cases:
         rows: [[false, true, false, false, false, false, true]]
       - cypher: "RETURN 0.0 / 0.0 IN [0.0 / 0.0, 's', null]"
         rows: [null]
-      - note: "A float zero worked out from the rows, and an integer divided by it. Neo4j fails a division by an integer zero, but where both numbers are written (1.0 / 0)."
+      - note: "A float zero worked out from the rows, and an integer divided by it."
         only: [neo4j, sql]
         cypher: "UNWIND [0.0, 2.0] AS z RETURN [1.0 / z, -1 / z, z / z]"
         rows: [[{$float: "Infinity"}, {$float: "-Infinity"}, {$float: "NaN"}], [0.5, -0.5, 1.0]]
+      - note: "A float zero given."
+        only: [neo4j, sql]
+        cypher: "RETURN [$x / $z, 1 / $z, 0 / $z, -$x / $z]"
+        parameters: {x: 3.0, z: 0.0}
+        rows: [[{$float: "Infinity"}, {$float: "Infinity"}, {$float: "NaN"}, {$float: "-Infinity"}]]
+      - note: "Numbers written in the statement alone, which Neo4j works out before it runs, as Java does: a float by the integer 0 is an infinity."
+        only: [neo4j, sql]
+        cypher: "RETURN [1.0 / 0, -1.0 / 0, 1.0 / -0, 1.0 / 0.0, (1.0 + 0) / 0, 1.0 / (1 - 1)]"
+        rows: [[{$float: "Infinity"}, {$float: "-Infinity"}, {$float: "Infinity"}, {$float: "Infinity"}, {$float: "Infinity"}, {$float: "Infinity"}]]
+      - note: "A float divided by an integer zero worked out as the statement runs fails, as on Neo4j. SQLite gives null, as for an integer divided by zero (drivine4j#554), and Oracle the infinity."
+        only: [neo4j, postgres]
+        cypher: "WITH 3.0 AS x RETURN x / 0"
+        error: true
+      - only: [neo4j, postgres]
+        cypher: "RETURN $x / 0"
+        parameters: {x: 3.0}
+        error: true
+      - only: [neo4j, postgres]
+        cypher: "RETURN 1.0 / $z"
+        parameters: {z: 0}
+        error: true
+      - only: [neo4j, postgres]
+        cypher: "WITH 0 AS z RETURN 1.0 / z"
+        error: true
+      - note: "Taken % by one: Oracle gives the number taken, as its MOD does."
+        only: [neo4j, postgres]
+        cypher: "RETURN 5.0 % $z"
+        parameters: {z: 0}
+        error: true
+      - note: "SQLite gives null for each, as for an integer divided by zero (drivine4j#554), where Neo4j fails."
+        only: [sqlite]
+        cypher: "WITH 3.0 AS x, 0 AS z RETURN [x / 0, $x / 0, 1.0 / $z, 1.0 / z, 5.0 % $z]"
+        parameters: {x: 3.0, z: 0}
+        rows: [[null, null, null, null, null]]
       - note: "Oracle gives the number taken % by zero, as its MOD does."
         only: [neo4j, postgres, sqlite]
         cypher: "RETURN [5.0 % 0, 0.0 % 0, 5 % 0.0, -5.5 % 0.0]"
