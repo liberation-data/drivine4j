@@ -2037,6 +2037,57 @@ cases:
           RETURN [a.name, length(p)] ORDER BY a.name
         rows: [["Hugo", null], ["Keanu", 1]]
 
+  - name: "A path a WITH passes on"
+    description: "A path a WITH passes on gives each row its own nodes and relationships when a later clause reads them."
+    steps:
+      - note: "Oracle gave every row the first row's nodes and relationships after the WITH (drivine4j#537)."
+        cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a RETURN a.name, [r IN relationships(p) | r.role] ORDER BY a.name"
+        rows: [["Carrie", ["Trinity"]], ["Keanu", ["Neo"]], ["Laurence", ["Morpheus"]]]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a ORDER BY a.name RETURN relationships(p)[0].role"
+        rows: ["Trinity", "Neo", "Morpheus"]
+      - cypher: "MATCH p = (a:Person)-[:KNOWS]->(:Person) WITH p, a ORDER BY a.name RETURN [x IN nodes(p) | x.name]"
+        rows: [["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - cypher: "MATCH p = (a:Person)-[:KNOWS]->(:Person) WITH p, a ORDER BY a.name RETURN nodes(p)[1].name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a.name AS name ORDER BY name RETURN [name, [r IN relationships(p) | r.role]]"
+        rows: [["Carrie", ["Trinity"]], ["Keanu", ["Neo"]], ["Laurence", ["Morpheus"]]]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a ORDER BY a.name RETURN [length(p), size(nodes(p)), head(nodes(p)).name, last(relationships(p)).role]"
+        rows: [[1, 2, "Carrie", "Trinity"], [1, 2, "Keanu", "Neo"], [1, 2, "Laurence", "Morpheus"]]
+      - note: "A WHERE on the WITH reads each row's path."
+        cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a WHERE relationships(p)[0].role = 'Neo' RETURN a.name"
+        rows: ["Keanu"]
+      - cypher: "MATCH p = (a:Person)-[:KNOWS]->(:Person) WITH p, a WITH p, a ORDER BY a.name RETURN [x IN nodes(p) | x.name]"
+        rows: [["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - note: "Variable-length paths."
+        cypher: "MATCH p = (a:Person)-[:KNOWS*]->(:Person) WITH p, a ORDER BY length(p), a.name RETURN [length(p), [x IN nodes(p) | x.name]]"
+        rows: [[1, ["Keanu", "Carrie"]], [1, ["Laurence", "Keanu"]], [2, ["Laurence", "Keanu", "Carrie"]]]
+      - cypher: "MATCH p = (:Person {name: 'Laurence'})-[:ACTED_IN*2]-(b:Person) WITH p, b ORDER BY b.name RETURN [[x IN nodes(p) | coalesce(x.name, x.title)], [r IN relationships(p) | r.role]]"
+        rows: [[["Laurence", "The Matrix", "Carrie"], ["Morpheus", "Trinity"]], [["Laurence", "The Matrix", "Keanu"], ["Morpheus", "Neo"]]]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a ORDER BY a.name DESC LIMIT 2 RETURN nodes(p)[0].name"
+        rows: ["Laurence", "Keanu"]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH * ORDER BY a.name RETURN relationships(p)[0].role"
+        rows: ["Trinity", "Neo", "Morpheus"]
+      - note: "A MATCH or an UNWIND after the WITH."
+        cypher: "MATCH p = (a:Person)-[:KNOWS]->(:Person) WITH p, a MATCH (a)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN [a.name, nodes(p)[1].name] ORDER BY a.name"
+        rows: [["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - cypher: "MATCH p = (a:Person)-[:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, a UNWIND relationships(p) AS r RETURN [a.name, r.role] ORDER BY a.name"
+        rows: [["Carrie", "Trinity"], ["Keanu", "Neo"], ["Laurence", "Morpheus"]]
+      - note: "A path an OPTIONAL MATCH finds, or not, passed on by a WITH."
+        cypher: "MATCH (a:Person) OPTIONAL MATCH p = (a)-[:KNOWS]->() WITH p, a ORDER BY a.name RETURN [x IN nodes(p) | x.name]"
+        rows: [null, null, ["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - note: "A WITH in a CALL's own query."
+        cypher: "MATCH (a:Person) CALL (a) { MATCH p = (a)-[:KNOWS]->() WITH p RETURN nodes(p)[1].name AS friend } RETURN [a.name, friend] ORDER BY a.name"
+        rows: [["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+
+  - name: "A path a lateral query finds"
+    description: "A path an OPTIONAL MATCH or a shortest path finds for each row of the query before it gives each row its own nodes."
+    steps:
+      - note: "Right on every store before drivine4j#537, and pinned with it."
+        cypher: "MATCH (a:Person) OPTIONAL MATCH p = (a)-[:KNOWS]->() RETURN [x IN nodes(p) | x.name] ORDER BY a.name"
+        rows: [null, null, ["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - cypher: "MATCH (a:Person), (b:Person) WHERE a <> b MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN [x IN nodes(p) | x.name] ORDER BY a.name, b.name"
+        rows: [["Keanu", "Carrie"], ["Laurence", "Keanu", "Carrie"], ["Laurence", "Keanu"]]
+
   - name: "Variable-length relationship variable"
     description: "A variable on a variable-length relationship is the list of its relationships."
     steps:

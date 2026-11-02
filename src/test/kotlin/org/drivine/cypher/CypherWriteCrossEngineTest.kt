@@ -58,6 +58,14 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a path a WITH passes on gives each row's write its own nodes and relationships`() {
+        // On Oracle, each row read the first row's path after the WITH (#537); the spec has these since v0.23.0, on its own graph.
+        query("CREATE (a:CyWrite {i: 0})-[:NEXT {i: 0}]->(b:CyWrite {i: 1})-[:NEXT {i: 1}]->(a)")
+        query("MATCH p = (a:CyWrite)-[:NEXT]->() WITH p, a SET a.r = relationships(p)[0].i, a.n = [x IN nodes(p) | x.i]")
+        assertEquals(listOf(listOf(0L, 0L, listOf(0L, 1L)), listOf(1L, 1L, listOf(1L, 0L))), query("MATCH (a:CyWrite) RETURN [a.i, a.r, a.n] ORDER BY a.i"))
+    }
+
+    @Test
     fun `CALLs that write, nested, give each row its own variables with the nodes they return`() {
         // Not in the spec yet: a caller row at each depth, merged with a node returned from below it.
         assertEquals(
