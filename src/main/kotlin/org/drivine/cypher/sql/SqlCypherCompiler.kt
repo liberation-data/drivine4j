@@ -2140,14 +2140,18 @@ abstract class SqlCypherCompiler(graph: String) {
          * another (#543). Only as it is made, as in Neo4j: a `MERGE` of no rows, or one that finds its pattern, does not fail.
          */
         private fun refuseUnmergeable(properties: Expression?, made: String) {
-            if (properties !is Expression.MapLiteral || properties.entries.isEmpty()) return
-            // Tested in one step, which numbers the first that fails: each is then raised where its number is found.
-            val refusals = properties.entries.flatMap { (key, _) ->
+            if (properties !is Expression.MapLiteral) return
+            // Tested in one step, which numbers the first that fails: each is then raised where its number is found. One the
+            // statement writes, or a parameter bound to a value other than NaN, is tested for neither, so is no cost.
+            val refusals = properties.entries.filterNot { (_, written) ->
+                present(written) && (written !is Expression.Parameter || (parameters.value(written.name) as? Number)?.toDouble()?.isNaN() != true)
+            }.flatMap { (key, _) ->
                 val value = propertyOf(VALUE, key)
                 listOfNotNull(isJsonNull(value) to "null", writtenNaN(value)?.let { it to "NaN" }).map { (test, what) ->
                     test to "Cannot merge the following $made because of $what property value for '$key'."
                 }
             }
+            if (refusals.isEmpty()) return
             val numbered = refusals.withIndex().joinToString(" ") { (i, refusal) -> "WHEN ${refusal.first} THEN ${i + 1}" }
             step(ProcedureStep.Select(COUNT, "CASE $numbered ELSE 0 END", ""))
             refusals.forEachIndexed { i, (_, message) -> branch("$COUNT = ${i + 1}") { step(ProcedureStep.Raise(message)) } }

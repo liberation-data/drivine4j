@@ -123,6 +123,11 @@ fails with `a is a node, and is used as a relationship: a variable is of one kin
 makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
 variable bound as something else.
 
+A `MERGE` fails where it would make a node or a relationship whose pattern gives a property that is null, as Neo4j
+fails it, since no `MERGE` would find it again: `MERGE (n:X {a: null})` fails with `Cannot merge the following node
+because of null property value for 'a'.`, wrapped as each store raises an error, and writes nothing. It fails only as
+a row makes it, so not over no rows. On Oracle, which stores NaN, so does one whose property is NaN.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.

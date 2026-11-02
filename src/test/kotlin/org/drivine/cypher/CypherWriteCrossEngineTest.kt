@@ -52,6 +52,21 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
+    fun `a MERGE that makes a null property fails with Neo4j's words, on the first row that makes one`() {
+        // #543: the spec says only that it fails, as each store wraps the message in its own; the words are Neo4j's, which names the pattern after them.
+        query("CREATE (:CyWrite {id: 1})")
+        for ((cypher, words) in listOf(
+            "UNWIND [2, null] AS v MERGE (:CyWrite {id: v})" to "Cannot merge the following node because of null property value for 'id'",
+            "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: s.none}]->(:CyWrite {id: 2})" to
+                "Cannot merge the following relationship because of null property value for 'x'",
+        )) {
+            val refused = assertFailsWith<Exception> { query(cypher) }
+            assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { words in it.message.orEmpty() }, refused.toString())
+        }
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
     fun `a write's rows group a key's value that is no null as before`() {
         // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))

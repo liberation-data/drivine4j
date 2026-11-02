@@ -817,6 +817,9 @@ cases:
         cypher: "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: null}]->(:CyWrite {id: 2})"
         error: true
       - except: [memgraph, falkordb, neptune]
+        cypher: "UNWIND [2, null] AS v MERGE (:CyWrite {id: v})"
+        error: true
+      - except: [memgraph, falkordb, neptune]
         cypher: "MATCH (s:CyWrite {id: 9}) MERGE (n:CyWrite {x: null}) RETURN n.x"
         rows: []
       - cypher: "MATCH (n) RETURN count(n)"
