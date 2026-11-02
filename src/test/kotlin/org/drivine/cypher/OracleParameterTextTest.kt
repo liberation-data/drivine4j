@@ -76,7 +76,7 @@ class OracleParameterTextTest {
         // parameters from the map its function is given, not from the text they are bound as.
         val given = mapOf("p" to mapOf("text" to "x", "l" to listOf(1)), "d" to LocalDate.of(2020, 1, 2))
         val read = OracleCypherCompiler("g").compile("RETURN [\$p.l.x, \$d.year]", given).sql
-        assertTrue(read.contains("JSON_QUERY(JSON_QUERY(\$_cy_p, '\$.l' RETURNING JSON), '\$.x' RETURNING JSON)") && read.contains("EXTRACT(YEAR FROM"), read)
+        assertTrue(read.contains("JSON_QUERY(JSON_QUERY(\$_cy_p, '\$.l' RETURNING JSON), '\$.x' RETURNING JSON)") && read.contains("JSON(\$_cy_d)"), read)
         val reduced = OracleCypherCompiler("g").compile("RETURN reduce(s = '', x IN [1, 2] | s + \$p.text)", given).sql
         assertTrue(reduced.contains("JSON_QUERY(JSON_QUERY(cy_context, '\$.\"\$p\"' RETURNING JSON), '\$.text' RETURNING JSON)") && !reduced.contains("JSON_QUERY(\$_cy_p, '\$.text'"), reduced)
     }

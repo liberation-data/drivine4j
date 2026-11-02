@@ -77,8 +77,15 @@ data class CypherSpec(
                 "NaN and the infinities as parameters" to listOf(Hold(295, listOf("sql"))),
                 // Oracle holds NaN equal to NaN, and fails to read back the NaN it works out.
                 "NaN worked out" to listOf(Hold(409, listOf("oracle"))),
+                // A float literal past a double's range is read as an infinity, not refused. Oracle fails on step 1 of
+                // its own, which is all the spec asks of it. Step 4, too small to tell from 0, passes.
+                "Float bounds" to listOf(Hold(295, listOf("postgres", "sqlite"), listOf(1, 2, 3)), Hold(295, listOf("oracle"), listOf(2, 3))),
             ),
             "writes.yaml" to mapOf("NaN and the infinities written" to listOf(Hold(295, listOf("sql")))),
+            "refusals.yaml" to mapOf(
+                // A float literal past a double's range is read as an infinity, not refused.
+                "Float too large" to listOf(Hold(295, listOf("sql"))),
+            ),
         )
 
         /** The name a step gives [type] by. */

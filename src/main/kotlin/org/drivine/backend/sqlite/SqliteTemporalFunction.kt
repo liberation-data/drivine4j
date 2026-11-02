@@ -29,6 +29,7 @@ import java.time.temporal.TemporalAdjusters
  *   date at its midnight, a time of day on 1970-01-01.
  * - `utc(text, kind)`: the moment the text is, in UTC; for a kind of no offset, its wall clock.
  * - `extract(timestamp, field)`: `YEAR`, `MONTH`, `DAY`, `HOUR` or `MINUTE` as a whole number, `SECOND` with its fraction.
+ * - `day_of_week(timestamp)`: the ISO day of the week, from 1 for Monday to 7.
  * - `add_months(timestamp, months)`: so many months later, a day past the month's end its last day.
  * - `add_time(timestamp, days, seconds)`: so many days and seconds later.
  * - `months_between(from, to)`: the whole months a calendar counts from one to the other, negative where `to` is before.
@@ -48,6 +49,7 @@ internal class SqliteTemporalFunction : Function() {
                 "local" -> result(SqliteTimestamps.write(local(value_text(1), Temporal.valueOf(value_text(2)))))
                 "utc" -> result(SqliteTimestamps.write(utc(value_text(1), Temporal.valueOf(value_text(2)))))
                 "extract" -> extract(clock(1), value_text(2))
+                "day_of_week" -> result(clock(1).dayOfWeek.value)
                 "add_months" -> result(SqliteTimestamps.write(clock(1).plusMonths(whole(2))))
                 "add_time" -> result(SqliteTimestamps.write(clock(1).plusDays(whole(2)).plus(micros(value_double(3)), ChronoUnit.MICROS)))
                 "months_between" -> result(ChronoUnit.MONTHS.between(clock(1), clock(2)))

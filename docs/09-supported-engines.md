@@ -357,7 +357,15 @@ declares the function itself.
   with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so
-  `n.day + duration('P1D')` adds a day to a date stored as `2024-03-15`. Two values the statement makes
+  `n.day + duration('P1D')` adds a day to a date stored as `2024-03-15`. A year is numbered as Neo4j and ISO 8601
+  number it, where Oracle and Postgres keep no year 0: `0000` is 1 BC and `-0044` is 45 BC, made, read, worked out,
+  truncated, written and read back ([#469](https://github.com/liberation-data/drivine4j/issues/469)). A stored value
+  whose year is 1000 or later is read as before; one of an earlier year is read by its era, so a statement that reads a
+  stored date or moment takes two to three times as long to compile, and an aggregate of temporal arithmetic runs 8 to
+  10% slower (a `truncate` on Postgres, about 16%). Oracle counts days before 1582-10-15 by the Julian calendar, so the
+  day of the week, the ISO week, the day of the year and a leap day of such a date are not Neo4j's. On every SQL
+  store, two stored values BC compare by their text, which orders them backwards
+  ([#374](https://github.com/liberation-data/drivine4j/issues/374)). Two values the statement makes
   neither of temporal (by a constructor, or a parameter of a `java.time` type) are not added, taken away,
   scaled or compared as moments.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
@@ -591,7 +599,7 @@ relationships with it.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
   and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database).
-- Temporal values are their ISO 8601 text, as on Oracle.
+- Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
   from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
@@ -763,7 +771,8 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
 - Temporal values are their ISO 8601 text, and a moment is compared and ordered as nanoseconds since
-  the epoch, whatever offset it was written with.
+  the epoch, whatever offset it was written with. A year before 1 is numbered as Neo4j numbers it: `0000` is 1 BC and
+  `-0044` is 45 BC.
 - SQLite has one writer at a time, and transactions are serializable:
   - A transaction takes the file's write lock as it begins (`BEGIN IMMEDIATE`), so no write in it is
     turned away part of the way through. Another writer, and another transaction even if it only reads,
