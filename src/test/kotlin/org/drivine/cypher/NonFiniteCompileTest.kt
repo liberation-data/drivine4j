@@ -73,6 +73,20 @@ class NonFiniteCompileTest {
     }
 
     @Test
+    fun `a MERGE fails as it makes a property that is null, or NaN on Oracle, which holds NaN, and a CREATE does not`() {
+        // #543: what each store gives is the spec's, whose stores wrap the message each in its own.
+        val cypher = "MATCH (s:A) MERGE (s)-[:R {y: s.y}]->(:B {x: \$p})"
+        val oracle = OracleCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql
+        assertTrue(oracle.contains("Cannot merge the following node because of NaN property value for ''x''."), oracle)
+        assertTrue(oracle.contains("Cannot merge the following relationship because of null property value for ''y''."), oracle)
+        for (sql in listOf(PostgresCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql, SqliteCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql)) {
+            assertTrue(sql.contains("because of null property value for"), sql)
+            assertFalse(sql.contains("because of NaN property value"), sql)
+        }
+        assertFalse(OracleCypherCompiler("g").compile("CREATE (:B {x: \$p})", mapOf("p" to 1.5)).sql.contains("Cannot merge"))
+    }
+
+    @Test
     fun `the numbers Postgres writes for NaN and the infinities are read back as them`() {
         assertTrue(PostgresCypherCompiler.read(BigDecimal("2e309").add(BigDecimal("0.5"))).isNaN())
         assertEquals(Double.POSITIVE_INFINITY, PostgresCypherCompiler.read(BigDecimal("1e309").add(BigDecimal("0.5"))))

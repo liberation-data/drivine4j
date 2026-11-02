@@ -119,6 +119,12 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun refuseNonFiniteWrite(parameters: Map<String, Any?>) {}
 
+    /**
+     * Whether the JSON [json], a value a write works out, is NaN: null where the store writes no NaN, as Postgres and SQLite
+     * refuse a write of one (see [refuseNonFiniteWrite]).
+     */
+    protected open fun writtenNaN(json: String): String? = null
+
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
@@ -2100,6 +2106,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                     null -> {
                         evaluate(VALUE, node.properties) { scope -> written(node.properties, scope) }
+                        if (merging) refuseUnmergeable(node.properties, "node")
                         execute(
                             "INSERT INTO $nodes (labels, props, stamp) VALUES (${literalJson(node.labels)}, ${stripNulls(unstamped(VALUE))}, ${stampOf(VALUE)}) RETURNING nid",
                             into = ID,
@@ -2121,9 +2128,29 @@ abstract class SqlCypherCompiler(graph: String) {
                         if (merging) ids[i] to ids[i + 1] else throw DrivineException("A relationship that CREATE makes has a direction.")
                 }
                 evaluate(VALUE, relationship.properties) { scope -> written(relationship.properties, scope) }
+                if (merging) refuseUnmergeable(relationship.properties, "relationship")
                 execute("INSERT INTO $edges (src, dst, type, props) VALUES ($src, $dst, ${literal(type)}, ${stripNulls(VALUE)}) RETURNING eid", into = ID)
                 made(relationship.variable, Kind.RELATIONSHIP)
             }
+        }
+
+        /**
+         * Fails the statement where a property in [properties], the map a `MERGE` makes a [made] with, now in [VALUE], is null or
+         * NaN, as Neo4j fails it: it is equal to nothing, so no `MERGE` would find what this one makes, and each would make
+         * another (#543). Only as it is made, as in Neo4j: a `MERGE` of no rows, or one that finds its pattern, does not fail.
+         */
+        private fun refuseUnmergeable(properties: Expression?, made: String) {
+            if (properties !is Expression.MapLiteral || properties.entries.isEmpty()) return
+            // Tested in one step, which numbers the first that fails: each is then raised where its number is found.
+            val refusals = properties.entries.flatMap { (key, _) ->
+                val value = propertyOf(VALUE, key)
+                listOfNotNull(isJsonNull(value) to "null", writtenNaN(value)?.let { it to "NaN" }).map { (test, what) ->
+                    test to "Cannot merge the following $made because of $what property value for '$key'."
+                }
+            }
+            val numbered = refusals.withIndex().joinToString(" ") { (i, refusal) -> "WHEN ${refusal.first} THEN ${i + 1}" }
+            step(ProcedureStep.Select(COUNT, "CASE $numbered ELSE 0 END", ""))
+            refusals.forEachIndexed { i, (_, message) -> branch("$COUNT = ${i + 1}") { step(ProcedureStep.Raise(message)) } }
         }
 
         /** The properties a pattern writes, as JSON: none where it gives none. */
