@@ -682,6 +682,27 @@ cases:
         error: true
       - cypher: "RETURN right(null, 2.7)"
         error: true
+      - note: "So is a float the statement makes: toFloat(), a function that gives a float, arithmetic of numbers with a float side, a CASE of floats, an UNWIND of a list of floats written, and a WITH that binds one."
+        cypher: "RETURN left('hello', toFloat(2))"
+        error: true
+      - cypher: "RETURN right('hello', round(2.7))"
+        error: true
+      - cypher: "RETURN left('hello', 1.5 + 1)"
+        error: true
+      - cypher: "RETURN substring('hello', 1, 2 ^ 1)"
+        error: true
+      - cypher: "RETURN left('hello', CASE WHEN true THEN 2.5 ELSE 1.5 END)"
+        error: true
+      - cypher: "UNWIND [2.7] AS c RETURN left('hello', c)"
+        error: true
+      - cypher: "WITH 2.7 AS c RETURN substring('hello', c)"
+        error: true
+      - cypher: "WITH toFloat(2) AS c RETURN left(null, c)"
+        error: true
+      - note: "A value that may be an integer or a float is taken, and a float cut toward zero: an item of a list of both, and a CASE of both. Memgraph and FalkorDB refuse a float."
+        only: [neo4j, sql]
+        cypher: "UNWIND [1, 2.7] AS c RETURN [left('hello', c), left('hello', CASE WHEN c > 2 THEN 2 ELSE 1.5 END), right('hello', abs(c))]"
+        rows: [["h", "h", "o"], ["he", "he", "lo"]]
       - note: "Below 0, written, bound or read from data, it fails."
         cypher: "RETURN left('hello', -1)"
         error: true

@@ -1301,12 +1301,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elementsOf(list, items, name))
-            // An item of a list that holds no null holds none, nor is JSON's null; of a list of texts, or of a text, is a text.
+            // An item of a list that holds no null holds none, nor is JSON's null; of a list of texts, or of a text, is a text. An item
+            // of a list written whose every item is of one known kind is of that kind, as Neo4j types it.
             select.bind(
                 unwind.variable,
                 Value.Json(
                     item(name), temporal = itemsOf(list), items = itemItemsOf(list), temporals = itemTemporalsOf(list), list = holdsLists(list), flat = isFlat(list),
                     text = holdsTexts(list) || isText(list), fromList = true, jsonNull = !isFlat(list),
+                    known = (unwind.list as? Expression.ListLiteral)?.items?.map { knownKind(it, select.scope) }?.distinct()?.singleOrNull(),
                 ),
             )
             select.order += itemNo(name) to false
@@ -3288,9 +3290,11 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The kind of value [expression] is in [scope], where the statement writes it as one ([Value.Json.known]): a literal, a
-         * negated number, a list or a map written, or a variable bound to one. Read from the statement alone, compiling nothing,
-         * so a check may run before its operand is compiled. Null where the kind is left open, as it is for a property, a
-         * parameter or a function's value: Neo4j checks those when the row is read.
+         * negated number, a list or a map written, or a variable bound to one. A function that gives a float ([FLOAT_FUNCTIONS])
+         * is a float, arithmetic of two numbers of known kinds is a float where either is one or for `^` and else an integer, and a
+         * `CASE` each of whose values is of one kind is of that kind. Read from the statement alone, compiling nothing, so a check
+         * may run before its operand is compiled. Null where the kind is left open, as it is for a property, a parameter, another
+         * function's value, or arithmetic with one: Neo4j checks those when the row is read.
          */
         private fun knownKind(expression: Expression, scope: Map<String, Value>): Value.Known? = when (expression) {
             is Expression.Literal -> Value.Known.of(expression.value)
@@ -3299,6 +3303,16 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.ListLiteral -> Value.Known.LIST
             is Expression.MapLiteral -> Value.Known.MAP
             is Expression.Variable -> (scope[expression.name] as? Value.Json)?.known
+            is Expression.Function -> Value.Known.FLOAT.takeIf { expression.name.lowercase() in FLOAT_FUNCTIONS }
+            is Expression.Binary -> if (expression.operator !in ARITHMETIC) null else listOf(knownKind(expression.left, scope), knownKind(expression.right, scope)).let { sides ->
+                when {
+                    !sides.all { it == Value.Known.INTEGER || it == Value.Known.FLOAT } -> null
+                    expression.operator == Operator.POWER || Value.Known.FLOAT in sides -> Value.Known.FLOAT
+                    else -> Value.Known.INTEGER
+                }
+            }
+            // A CASE with no ELSE gives null where no WHEN holds, and Neo4j types it by its values alone; a null written leaves it open.
+            is Expression.Case -> (expression.alternatives.map { it.second } + listOfNotNull(expression.otherwise)).map { knownKind(it, scope) }.distinct().singleOrNull()
             else -> null
         }
 
@@ -4713,9 +4727,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The start or length [what] of `substring()`, `left()` or `right()`, its argument [index], as a SQL whole number,
-         * as Neo4j reads it. A float written in the statement, even a whole one such as 2.0, is refused, whatever the
-         * text, as Neo4j refuses an argument it knows to be a float; one bound to a parameter or read from data is cut
-         * toward zero, as Neo4j cuts it: 2.7 is 2, and -0.5 is 0. A number then below 0 or past 2147483647 is refused
+         * as Neo4j reads it. A float the statement writes or makes ([Value.Json.known]), even a whole one such as 2.0 or
+         * `toFloat(2)`, is refused, whatever the text, as Neo4j refuses an argument it knows to be a float; one bound to a
+         * parameter or read from data is cut toward zero, as Neo4j cuts it: 2.7 is 2, and -0.5 is 0. A number then below 0
+         * or past 2147483647 is refused
          * where the text, [text] in SQL, is not null: when compiling, where the number and the text are given; and else
          * when the row is read, by [failure], on every store alike.
          */
@@ -4725,7 +4740,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val negated = count is Expression.Unary && count.operator == Expression.Unary.Operator.NEGATE
             val written = if (negated) (count as Expression.Unary).operand else count
             val given = given(written)
-            if (written is Expression.Literal && given is Double) throw DrivineException("${function.name}() takes an integer for its $what, not a float, as in Neo4j.")
+            if ((arguments[index] as? Value.Json)?.known == Value.Known.FLOAT) throw DrivineException("${function.name}() takes an integer for its $what, not a float, as in Neo4j.")
             if (given is Number) {
                 val cut = if (given is Long || given is Int) given.toLong() else kotlin.math.truncate(given.toDouble()).toLong()
                 val whole = if (negated) -cut else cut
@@ -5094,6 +5109,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The functions of one value a store writes ([function]) whose result is a text, or null: see [Value.Json.text]. */
         val TEXT_FUNCTIONS = setOf("tostring", "toupper", "tolower", "trim")
+
+        /** The functions whose value, null aside, is a float, whatever they are given, as Neo4j types them: see [Value.Json.known]. */
+        val FLOAT_FUNCTIONS = MATH_FUNCTIONS + setOf("tofloat", "tofloatornull", "round", "floor", "ceil", "atan2", "e", "pi", "rand")
+
+        /** The operators of arithmetic, whose value is a number where both operands are: see [Value.Json.known]. */
+        val ARITHMETIC = setOf(Operator.ADD, Operator.SUBTRACT, Operator.MULTIPLY, Operator.DIVIDE, Operator.MODULO, Operator.POWER)
 
         /** The functions whose value, null aside, is a number, a text, a truth value or a temporal value: no list or map. */
         val SCALAR_FUNCTIONS = setOf(

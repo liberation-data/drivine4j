@@ -125,6 +125,29 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a start or length that may be an integer, or whose kind is known only when the row is read, is compiled, as Neo4j runs it`() {
+        // #285: the spec's refusals hold a float the statement makes. Neo4j runs each of the first group, cutting a float toward
+        // zero: a parameter, a property, an item of a list of an integer and a float or a null, a CASE of an integer and a float
+        // or a null, a function that may give an integer, and integer division. Neo4j refuses the second group as of a kind it
+        // can't take, but the compiler leaves arithmetic with an open side, a list a WITH binds, an item of a list written and
+        // coalesce() of floats to the row.
+        listOf({ PostgresCypherCompiler("g") }, { OracleCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            listOf(
+                "RETURN [left('hello', \$f), right('hello', \$f), substring('hello', \$f, \$f)]" to mapOf("f" to 2.7),
+                "MATCH (n) RETURN left('hello', n.f), substring('hello', n.f)" to emptyMap(),
+                "UNWIND [1, 2.7] AS c RETURN left('hello', c)" to emptyMap(),
+                "UNWIND [2.7, null] AS c RETURN left('hello', c)" to emptyMap(),
+                "RETURN left('hello', CASE WHEN true THEN 2 ELSE 1.5 END), left('hello', CASE WHEN true THEN 2.5 ELSE null END)" to emptyMap(),
+                "RETURN left('hello', abs(2.5)), left('hello', sign(2.5)), left('hello', 5 / 2), left('hello', 1 + 1)" to emptyMap(),
+                "RETURN left('hello', 1.5 + \$n)" to mapOf("n" to 1),
+                "MATCH (n) RETURN left('hello', n.f * 1.0)" to emptyMap(),
+                "WITH [2.7] AS l UNWIND l AS c RETURN left('hello', c)" to emptyMap(),
+                "RETURN left('hello', [2.7][0]), left('hello', coalesce(2.5, 1.5))" to emptyMap(),
+            ).forEach { (cypher, parameters) -> compiler().compile(cypher, parameters) }
+        }
+    }
+
+    @Test
     fun `a variable used as two kinds, or made where it is bound already, is refused, as Neo4j refuses it`() {
         // Neo4j's VariableTypeConflict and VariableAlreadyBound: before, most were refused as not compiled yet ("bound before its
         // pattern", "a path is not a value"), and MATCH (a) CREATE (a) made nothing. The spec's refusals hold the rest.
