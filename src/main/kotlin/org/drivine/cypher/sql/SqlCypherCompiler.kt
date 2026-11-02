@@ -303,6 +303,13 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun coalescedProperty(props: String, key: String): String = nullIfJsonNull(propertyOf(props, key))
 
     /**
+     * The property [key] of [json], the properties of a node or a relationship a subquery reads from its row (`head([n]).a`,
+     * `[n][0].a`), or a map other than an unwound item (`properties(n).a`, `WITH properties(n) AS m RETURN m.a`): as
+     * [propertyOf] reads it, but on a store that must read such a property apart.
+     */
+    protected open fun valueProperty(json: String, key: String): String = propertyOf(json, key)
+
+    /**
      * The value at [keys], each of a map in the one before, in the row a write is making ([ROW]), where a statement of the
      * write reads it to work out what it writes: as [propertyOf] reads each key, but on a store that must read it apart.
      */
@@ -3339,19 +3346,37 @@ abstract class SqlCypherCompiler(graph: String) {
             return expression(expression, select.scope)
         }
 
+        /**
+         * The property [key] of [subject]. One of a node or a relationship a pattern binds is read as [propertyOf] reads it; one of a
+         * node or a relationship taken from a list by its place ([entityAt]), or of a map or a node's properties the statement works
+         * out, as [valueProperty] reads it, which on Oracle reads a long text through its text (#531), a temporal field's name
+         * among the keys too ([temporalField]). An unwound item's, which `JSON_TABLE` takes out, is read as [propertyOf] reads it.
+         */
         private fun property(subject: Value, key: String): Value = when (subject) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
-            is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
-            is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
+            is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOfRow(subject.props, key))
+            is Value.Relationship -> Value.Json(propertyOfRow(subject.props, key))
             // A value the statement writes as one of a kind other than a map has none, as Neo4j says when it plans the statement.
             is Value.Json -> subject.known?.takeIf { it != Value.Known.MAP }?.let { throw DrivineException("${it.noun.replaceFirstChar(Char::uppercase)} has no properties.") }
                 ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key, jsonNull = !subject.flat) }
-                ?: propertyOf(comparable(subject), key).let { taken ->
+                ?: mapProperty(subject, comparable(subject), key).let { taken ->
                     Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals, jsonNull = !subject.flat)
                 }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
         }
+
+        /**
+         * The property [key] of the node or the relationship whose properties are [props]: as [propertyOf] reads it where they are
+         * a column of its row, and as [valueProperty] reads it where a subquery reads them, as [entityAt] does.
+         */
+        private fun propertyOfRow(props: String, key: String) = if (COLUMN.matches(props)) propertyOf(props, key) else valueProperty(props, key)
+
+        /**
+         * The property [key] of [json], the value of [subject]: as [propertyOf] reads it where [subject] is an unwound item
+         * ([Value.Json.fromList]), which `JSON_TABLE` takes out, and as [valueProperty] reads it elsewhere.
+         */
+        private fun mapProperty(subject: Value.Json, json: String, key: String) = if (subject.fromList) propertyOf(json, key) else valueProperty(json, key)
 
         /**
          * The temporal kind the statement makes each of [values], as each is written and compiled, where it makes
@@ -3419,7 +3444,7 @@ abstract class SqlCypherCompiler(graph: String) {
             return Value.Json(shared(comparable(subject)) { (x) ->
                 val kinds = Temporal.entries.filter { temporals.field("NULL", it, key) != null }
                 val read = temporals.byKind(text(x), kinds) { kind, t -> scalar(temporals.field(t, kind, key)!!.sql) }
-                "CASE WHEN ${typeOf(x)} = 'string' THEN $read ELSE ${propertyOf(x, key)} END"
+                "CASE WHEN ${typeOf(x)} = 'string' THEN $read ELSE ${mapProperty(subject, x, key)} END"
             }, temporals = subject.temporals)
         }
 
@@ -4977,6 +5002,9 @@ abstract class SqlCypherCompiler(graph: String) {
          * before the point and one after it at least, and as many more as its shortest decimal has.
          */
         const val PLAIN_FLOAT = "FM9999990.0999999999999999999999"
+
+        /** A column of a row, `n1.props`, as a pattern binds a node's or a relationship's: see [propertyOfRow]. */
+        private val COLUMN = Regex("""\w+\.\w+""")
 
         /** How long a value [shared] binds may be written where it is read, in characters. */
         const val SHARED_ABOVE = 200
