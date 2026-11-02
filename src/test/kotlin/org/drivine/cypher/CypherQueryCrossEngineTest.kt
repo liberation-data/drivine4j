@@ -305,7 +305,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a path a WITH passes on gives each row its own nodes and relationships`() {
-        // Not in the spec yet: on Oracle, each row read the first row's path after the WITH (#537).
+        // On Oracle, each row read the first row's path after the WITH (#537); the spec has these since v0.23.0, on its own graph.
         clear()
         seed("CREATE (a:CyPa {i: 0})-[:CY_PA {i: 0}]->(b:CyPa {i: 1})-[:CY_PA {i: 1}]->(a)")
         val one = "MATCH p = (a:CyPa)-[:CY_PA]->(:CyPa)"
@@ -345,7 +345,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a path an OPTIONAL MATCH or a shortest path finds in a lateral query gives each row its own nodes`() {
-        // Not in the spec yet: the spec reads these paths on one row only (#537).
+        // Pinned with #537; the spec has these since v0.23.0, on its own graph.
         clear()
         seed("CREATE (a:CyPa {i: 0})-[:CY_PA {i: 0}]->(b:CyPa {i: 1})-[:CY_PA {i: 1}]->(a)")
         assertEquals(
