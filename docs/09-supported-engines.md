@@ -331,6 +331,11 @@ declares the function itself.
   the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the
   statement and not for each row, so `WHERE 'b' IN keys(n)` found nothing
   ([#433](https://github.com/liberation-data/drivine4j/issues/433)).
+- A `WITH` that passes a path on (`MATCH p = (a)-->() WITH p, a RETURN nodes(p)`) is kept apart from the query that
+  reads it, with the hint `NO_MERGE`. This works around Oracle merging the two: the subqueries that read the path's
+  nodes and relationships by the ids the `WITH` passes on then read one row's path on every row
+  ([#537](https://github.com/liberation-data/drivine4j/issues/537)). The plan gains a view and is otherwise the same,
+  and an order the `WITH` sorts by is kept: 3,000 rows of `WITH p, a ORDER BY a.i RETURN nodes(p)` take about 90 ms.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields

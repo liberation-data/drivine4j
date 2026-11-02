@@ -327,6 +327,7 @@ abstract class CypherQueryContract {
                 listOf(listOf(2L, listOf(0L, 1L, 0L), listOf(0L, 1L)), listOf(2L, listOf(1L, 0L, 1L), listOf(1L, 0L))),
             "MATCH p = (:CyPa {i: 0})-[:CY_PA*1..2]->() WITH p ORDER BY length(p) RETURN [length(p), [x IN nodes(p) | x.i]]" to
                 listOf(listOf(1L, listOf(0L, 1L)), listOf(2L, listOf(0L, 1L, 0L))),
+            "$one WITH p RETURN sum(last(nodes(p)).i * 10 + head(nodes(p)).i)" to listOf(11L),
             "$one WITH p, a, count(*) AS c ORDER BY a.i RETURN [c, [x IN nodes(p) | x.i]]" to listOf(listOf(1L, listOf(0L, 1L)), listOf(1L, listOf(1L, 0L))),
             "$one WITH DISTINCT p, a ORDER BY a.i RETURN relationships(p)[0].i" to listOf(0L, 1L),
             "$one WITH p, a ORDER BY a.i DESC LIMIT 1 RETURN nodes(p)[1].i" to listOf(0L),
