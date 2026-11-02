@@ -463,7 +463,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
      * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
      * so is an item of a list read by its place: see [listItem]; and so is a property that is an argument of `coalesce()`:
-     * see [coalescedProperty].
+     * see [coalescedProperty]; and so is a property of a value the statement works out, a node a function gives or a map: see
+     * [valueProperty].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -481,10 +482,11 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * JSON_VALUE(JSON_QUERY(n1.props, '$.a' RETURNING JSON), '$.type()') <> 'null' THEN JSON_QUERY(n1.props, '$.a' RETURNING
      * JSON) END`, a text past 32 KB closed the session over two rows or more (ORA-03113, and ORA-00600 `[kghfrempty:ds]` in
      * a write), on the first run of the statement or a later one: returned, passed on, measured, read by a text function,
-     * of a node or of a relationship, beside a variable-length walk and in a write. A property of anything but a node or a
-     * relationship a variable names (`coalesce(m.a, …)` of a map `m`) is read as before. The `CASE` on the property's kind,
-     * which made Oracle drop a label test where an item read a node's properties twice (see [itemProperty]), kept each one
-     * here, in a `WHERE` and beside another node's table (`CypherQueryContract`'s "a text past 32 KB that coalesce() gives").
+     * of a node or of a relationship, beside a variable-length walk and in a write. A property of a map, or of a node a
+     * function gives (`coalesce(m.a, …)`, `coalesce(head([n]).a, …)`), is read as [valueProperty] reads one, and one of an
+     * unwound item as before. The `CASE` on the property's kind, which made Oracle drop a label test where an item read a
+     * node's properties twice (see [itemProperty]), kept each one here, in a `WHERE` and beside another node's table
+     * (`CypherQueryContract`'s "a text past 32 KB that coalesce() gives").
      * [itemProperty]'s form alone cost about twice the read it replaced on short texts; a short text read as a `VARCHAR2`
      * costs none: 20,000 rows of `RETURN coalesce(${'$'}p.q, n.name)` took 72 ms either way, and of `RETURN
      * toLower(trim(coalesce(${'$'}p.q, n.name)))` 93 ms against 109 ms.
@@ -498,6 +500,36 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "CASE JSON_VALUE($p, ${OracleSql.path(key, ".type()")}) WHEN 'string' THEN COALESCE(JSON_SCALAR(JSON_VALUE($p, $path)), ${itemProperty(p, key)}) " +
             "WHEN 'null' THEN NULL ELSE JSON_QUERY($p, $path RETURNING JSON) END"
     }
+
+    /**
+     * A property of a value the statement works out, a node or a relationship a function or an index gives (`head([n]).a`,
+     * `[n][0].a`, `last(ns).a`) or a map (`properties(n).a`, `head([properties(n)]).a`): as JSON, as before, by a path whose
+     * filter leaves out a text past 4,000 characters, `'$.a?(@.type() != "string" || @.length() <= 4000)'`, and such a text
+     * through its text, as [itemProperty] reads it. Where the value is long, it is bound in a subquery, and the property read
+     * there by its own path.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#531), to be removed with it.** Taken out as JSON, `JSON_QUERY(value,
+     * '$.a' RETURNING JSON)`, a text past 32 KB closed the session over two rows or more (ORA-03113, or ORA-00600 `[17114]`),
+     * on the first run of the statement or a later one: returned, passed on, measured, searched, compared, in a `WHERE` and
+     * in an `ORDER BY`. A property of an unwound item, which `JSON_TABLE` takes out, is read as before, and so is a key of a
+     * map that is itself a property (`n.m.a`), which [direct] reads from the map where a text function, a measure or a
+     * comparison reads it; returned as it is, `RETURN n.m.a`, a text past 32 KB there still closes the session. So do a map
+     * made of a long property and then read (`head([n {.a}]).a`), and `=` of a long property with a value that may hold a
+     * null (`head([n]).a = n.a`), which takes the stored property out as JSON to compare it. Read by its kind, as
+     * [coalescedProperty] reads one, a property of a map a `WITH` passes on cost about 1.5 times the plain read on short
+     * texts, as the map was worked out again for each of the reads; read so, 20,000 rows of `WITH properties(n) AS m RETURN
+     * m.t` take as long as before.
+     *
+     * To remove it, delete this override with [itemProperty]'s, once an Oracle release no longer crashes on the repro in
+     * `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past 32 KB that is a property of a node,
+     * a relationship or a map a function gives" test still passes without it.
+     */
+    override fun valueProperty(json: String, key: String) =
+        if (propertyRead(json) != null) propertyOf(json, key)
+        else shared(json) { (x) ->
+            val short = OracleSql.path(key, "?(@.type() != \"string\" || @.length() <= $SHORT_TEXT)")
+            "COALESCE(JSON_QUERY($x, $short RETURNING JSON), ${itemProperty(x, key)})"
+        }
 
     /**
      * A value that a write takes from the row it is writing, to work out what it writes (`SET n.a = t.a`, `CREATE (:X {a:
@@ -533,7 +565,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * label test where it read a node's properties twice (see [itemProperty]), reads the item here, a column of the list it
      * is unwound from, and the labelled patterns beside it kept their tests (`CypherWriteContract`'s "an unwound item's text
      * … returned only for the nodes a labelled pattern matches"). So only a value read from such an item is read so (see
-     * [Value.Json.fromList]); a map made of a node's properties and not unwound (`WITH n {.a} AS m`, `properties(n)`) is read as before. It cost about
+     * [Value.Json.fromList]); a map made of a node's properties and not unwound (`WITH n {.a} AS m`, `properties(n)`) is read as [valueProperty] reads one. It cost about
      * 1.3 times the plain read on short values: 100,000 rows of `UNWIND ${'$'}items AS t RETURN t.a` took 860 to 880 ms against
      * 650 to 670 ms.
      *

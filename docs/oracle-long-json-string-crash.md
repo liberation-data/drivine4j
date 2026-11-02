@@ -184,4 +184,32 @@ END
 A text of at most 4,000 bytes is read as a `VARCHAR2`, and only a longer one (or an empty one, which a `VARCHAR2` holds
 as null) through its text, which alone cost about twice the plain read on short texts. Read so, 20,000 rows of
 `coalesce($p.q, n.name)` took as long as before, 72 ms. Drivine reads an argument of `coalesce()` so where it is a
-property of a node or a relationship (see `OracleCypherCompiler.coalescedProperty`); one of a map is read as before.
+property of a node or a relationship (see `OracleCypherCompiler.coalescedProperty`); one of a map is read as the next
+section has it.
+
+## A property of a value a statement works out
+
+The same crash comes from a text past 32 KB that is a property of a node or a relationship a function or an index gives,
+or of a map (liberation-data/drivine4j#531): `head([n]).a`, `last(collect(n)).a`, `[r][0].a` or `properties(n).a` took
+the property out of the value as JSON, `JSON_QUERY(value, '$.a' RETURNING JSON)`. Over two or more rows, it closed the
+session (ORA-03113, once ORA-00600 `[17114]`) on the first run of the statement or a later one: returned, passed on,
+measured, searched, compared with `<`, and in a `WHERE` and an `ORDER BY`. Read as JSON by a path whose filter leaves
+out a text past 4,000 characters, and such a text through its text, it ran clean in a fresh container, three runs each;
+where the value is long, Drivine binds it in a subquery and reads the property there:
+
+```sql
+COALESCE(JSON_QUERY(value, '$.a?(@.type() != "string" || @.length() <= 4000)' RETURNING JSON),
+         JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(value, KEEP '$.a') RETURNING CLOB EXTENDED),
+                         '$.a' RETURNING CLOB) EXTENDED))
+```
+
+Read by its kind instead, as an argument of `coalesce()` is above, it ran clean too, but cost about 1.5 times the
+plain read where the value is a map a `WITH` passes on: the map was worked out again for each read of it. Read by the
+filtered path, 20,000 rows of `WITH properties(n) AS m RETURN m.t` take as long as before. See
+`OracleCypherCompiler.valueProperty`. A property of a node or a relationship a pattern binds is read as before, and so
+is one of an unwound item, which `JSON_TABLE` takes out and which ran clean. Three shapes still crash and aren't worked
+around: a map made of a long property and then read (`head([n {.a}]).a`, `WITH n {.a} AS m RETURN size(m.a)`); `=`
+of a long property with a value that may hold a null (`head([n]).a = n.a`, `UNWIND [{a: 'x'}, {a: null}] AS r MATCH
+(n) WHERE r.a = n.a`), which takes the stored property out as JSON to compare it; and a long text in a map that is
+itself a property, returned as it is (`RETURN n.m.a`), which is taken out of the map as JSON. Measured, searched or
+compared (`size(n.m.a)`, `n.m.a ENDS WITH 'x'`), that one is read from the map as text and runs clean.
