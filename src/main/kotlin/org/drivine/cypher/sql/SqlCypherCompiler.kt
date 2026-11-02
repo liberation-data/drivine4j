@@ -1069,7 +1069,10 @@ abstract class SqlCypherCompiler(graph: String) {
             // from the query that reads it, where that query must not have it merged in: see `casesFirst`.
             val anew = with.projection.items.any { item -> holdsAnew(item.expression) }
             val sql = if (anew) once(projected.sql) else projected.sql
-            next.source("(\n${indent(if (apart) called(sql) else sql)}\n) $name")
+            // A path it passes on is kept apart too: Oracle merged the WITH's query into the one that reads it, and the
+            // subqueries that read a path's nodes and relationships by the ids in its columns read the first row's on every row (#537).
+            val passesPath = projected.scope.values.any { it is Value.Path }
+            next.source("(\n${indent(if (apart || passesPath) called(sql) else sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
             return with.where?.let { filtered(next, it) } ?: next
