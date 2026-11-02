@@ -1401,8 +1401,11 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         /** A property as [propertyOf] reads it, its properties and its path, a literal whose quotes are doubled: see [propertyRead]. */
         val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$(?:[^']|'')*') RETURNING JSON\)""")
 
-        /** A float [literalJson] writes: see [written]. */
-        private val WRITTEN_FLOAT = Regex("""JSON_SCALAR\(TO_BINARY_DOUBLE\('[^']*'\)\)""")
+        /**
+         * A float [literalJson] writes: see [written]. Not NaN, written for an item of a list the statement is given, which is
+         * equal to nothing, where Oracle's JSON finds it equal to itself: beside it the other side is tested for NaN (#409).
+         */
+        private val WRITTEN_FLOAT = Regex("""JSON_SCALAR\(TO_BINARY_DOUBLE\('(?!NaN')[^']*'\)\)""")
 
         /** A quoted SQL text, its quotes doubled: see [nanFree]. */
         private val QUOTED = Regex("'(?:[^']|'')*'")

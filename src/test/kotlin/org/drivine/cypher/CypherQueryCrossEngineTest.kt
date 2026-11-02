@@ -2104,6 +2104,11 @@ abstract class CypherQueryContract {
             assertEquals(listOf(0L), query("UNWIND [\$p] AS x WITH x WHERE x IN [\$p, 1.0] OR x IN \$l RETURN count(*)", p))
             // Lists the statement makes that hold NaN, compared as a whole and item by item.
             assertEquals(listOf(listOf(false, false, false)), query("RETURN [[\$p] = [\$p], [[\$p]] = [[\$p]], [\$p] IN [[\$p]]]", p))
+            // A list given that holds NaN and a null, compared item by item as the statement is compiled with it: NaN's pair is false.
+            assertEquals(
+                listOf(listOf(false, false, true, false)),
+                query("RETURN [[\$p, null] = \$m, \$m = \$m, \$m <> \$m, [[\$p], null] = \$n]", p + ("n" to listOf(listOf(Double.NaN), null))),
+            )
             if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) return
             query("CREATE (:CyNanIn {a: \$p, l: [\$p, 1.0], k: 1}), (:CyNanIn {a: 1.0, l: [1.0], k: 2})", p)
             assertEquals(
