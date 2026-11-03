@@ -119,19 +119,28 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun refuseNonFiniteWrite(parameters: Map<String, Any?>) {}
 
+    /**
+     * Whether a statement given no NaN or infinity, one that writes where [writes], is compiled as one given one ([nonFinite])
+     * where it may work one out ([worksOutNonFinite]): a float divided by zero, or `toFloat` of a text that names one. By default
+     * not: a store whose floats hold them works them out as any other.
+     */
+    protected open fun nonFiniteWorkedOut(writes: Boolean) = false
+
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
         VariableKinds.check(query)
         // An aggregate in a WHERE too.
         Aggregates(::isAggregate, ::children).check(query)
-        nonFinite = parameters.values.any { holdsNonFinite(it) }
+        val given = parameters.values.any { holdsNonFinite(it) }
+        val writes = query.unions.isEmpty() && query.clauses.any(::writes)
+        nonFinite = given || (nonFiniteWorkedOut(writes) && worksOutNonFinite(query, parameters))
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
-        if (query.clauses.none(::writes)) {
+        if (!writes) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
             return withFunctions(CompiledCypher(planned(writer.query(query)), writer.parameters.values, nonFinite))
         }
-        if (nonFinite) refuseNonFiniteWrite(parameters)
+        if (given) refuseNonFiniteWrite(parameters)
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
         val writer = Writer(
@@ -629,6 +638,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The remainder of the SQL numbers [a] and [b]. */
     protected abstract fun modulo(a: String, b: String): String
+
+    /** `a % b` of the JSON numbers [a] and [b], as JSON, by [modulo]. */
+    protected open fun remainder(a: String, b: String): String = scalar(modulo(number(a), number(b)))
 
     /** Whether the text [a] starts with the text [b]. */
     protected abstract fun startsWith(a: String, b: String): String
@@ -3319,6 +3331,32 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * The divisor [b] of [binary], `/` or `%`, as a float where the statement may work NaN or an infinity out ([nonFinite]) and
+         * both sides are numbers worked out from numbers written in it alone, the dividend a float and the divisor an integer
+         * ([writtenNumber]): Neo4j's planner works those out before it runs, as Java does, so `1.0 / 0` is an infinity there,
+         * where a float divided by an integer 0 it runs fails (#408).
+         */
+        private fun divisor(binary: Expression.Binary, b: String) =
+            if (nonFinite && writtenNumber(binary.left) == Value.Known.FLOAT && writtenNumber(binary.right) == Value.Known.INTEGER) scalar(float(number(b))) else b
+
+        /** The kind of [expression] where it is a number worked out from numbers written in the statement alone (`1.0`, `-0`, `1 - 1`), as Java does. */
+        private fun writtenNumber(expression: Expression): Value.Known? = when (expression) {
+            is Expression.Literal -> Value.Known.of(expression.value)?.takeIf { it == Value.Known.INTEGER || it == Value.Known.FLOAT }
+            is Expression.Unary -> writtenNumber(expression.operand)?.takeIf { expression.operator == Expression.Unary.Operator.NEGATE }
+            is Expression.Binary -> {
+                val (left, right) = writtenNumber(expression.left) to writtenNumber(expression.right)
+                when {
+                    left == null || right == null -> null
+                    expression.operator == Operator.POWER -> Value.Known.FLOAT
+                    expression.operator in setOf(Operator.ADD, Operator.SUBTRACT, Operator.MULTIPLY, Operator.DIVIDE, Operator.MODULO) ->
+                        if (left == Value.Known.FLOAT || right == Value.Known.FLOAT) Value.Known.FLOAT else Value.Known.INTEGER
+                    else -> null
+                }
+            }
+            else -> null
+        }
+
+        /**
          * The kind of value [expression] is in [scope], where the statement writes it as one ([Value.Json.known]): a literal, a
          * negated number, a list or a map written, or a variable bound to one. A function that gives a float ([FLOAT_FUNCTIONS])
          * is a float, arithmetic of two numbers of known kinds is a float where either is one or for `^` and else an integer, and a
@@ -3974,9 +4012,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.MULTIPLY -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "*") })
                 // A whole number divided by one is a whole number, as in Cypher.
                 Operator.DIVIDE -> Value.Json(
-                    shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
+                    shared(a, divisor(binary, b)) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
                 )
-                Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
+                Operator.MODULO -> Value.Json(remainder(a, divisor(binary, b)))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
                 Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
                 Operator.STARTS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> startsWith(x, y) } })
@@ -5468,8 +5506,44 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         fun textsIn(query: Query, texts: MutableSet<String>) = Texts(texts).query(query)
 
-        /** What [textsIn] adds each text to, [texts], as it reads a statement through. */
-        private class Texts(val texts: MutableSet<String>) {
+        /**
+         * Whether [query], with its parameters' values [parameters], may work NaN or an infinity out where it is given none: it
+         * divides, or takes `%` of, a value by one that is not a number other than 0, which a float divided by zero gives; or it
+         * takes `toFloat` of a value that is not a number, which a text that names one gives (`'NaN'`, `'-Infinity'`). Anywhere
+         * in it, as [textsIn] reads it through.
+         */
+        fun worksOutNonFinite(query: Query, parameters: Map<String, Any?>): Boolean {
+            fun given(expression: Expression): Any? = when (expression) {
+                is Expression.Literal -> expression.value
+                is Expression.Parameter -> parameters[expression.name]
+                is Expression.Unary -> if (expression.operator == Expression.Unary.Operator.NEGATE) given(expression.operand) else null
+                else -> null
+            }
+            fun nonZero(expression: Expression) = (given(expression) as? Number)?.toDouble()?.let { it != 0.0 } == true
+            fun known(expression: Expression): Boolean = expression is Expression.Literal || expression is Expression.Parameter ||
+                (expression is Expression.Unary && expression.operator == Expression.Unary.Operator.NEGATE && known(expression.operand))
+            fun number(expression: Expression) = known(expression) && (given(expression) as? String)?.let(::nonFiniteText) != true
+            var found = false
+            Texts(mutableSetOf()) { expression ->
+                found = found || when {
+                    expression is Expression.Binary && (expression.operator == Operator.DIVIDE || expression.operator == Operator.MODULO) -> !nonZero(expression.right)
+                    expression is Expression.Function && expression.name.lowercase() == "tofloat" -> expression.arguments.any { !number(it) }
+                    else -> false
+                }
+            }.query(query)
+            return found
+        }
+
+        /** Whether [text] names NaN or an infinity, as Java reads a double, which Neo4j's `toFloat` takes it as. */
+        fun nonFiniteText(text: String) = text.trim { it <= ' ' }.toDoubleOrNull()?.isFinite() == false
+
+        /** The texts `toFloat` takes as NaN, the infinity and the negative one, as Java reads them, spaces around them allowed. */
+        const val NAN_NAME = """^\s*[+-]?NaN\s*$"""
+        const val INFINITY_NAME = """^\s*\+?Infinity\s*$"""
+        const val NEGATIVE_INFINITY_NAME = """^\s*-Infinity\s*$"""
+
+        /** What [textsIn] adds each text to, [texts], as it reads a statement through, and what it gives each expression it reads, [read]. */
+        private class Texts(val texts: MutableSet<String>, val read: (Expression) -> Unit = {}) {
             fun text(text: String?) {
                 if (text != null) texts += text.substringBefore(' ')
             }
@@ -5537,6 +5611,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
 
             fun expression(expression: Expression?) {
+                if (expression != null) read(expression)
                 when (expression) {
                     null, Expression.CountStar -> {}
                     is Expression.Literal -> value(expression.value)

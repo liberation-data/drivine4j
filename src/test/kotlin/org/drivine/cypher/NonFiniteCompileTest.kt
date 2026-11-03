@@ -30,6 +30,39 @@ class NonFiniteCompileTest {
     }
 
     @Test
+    fun `a statement that may work NaN or an infinity out is compiled as one given one, and any other as it was`() {
+        // A float divided by zero or a text toFloat takes as NaN (#408, #545): decided as the statement is compiled.
+        fun postgres(cypher: String, parameters: Map<String, Any?> = emptyMap()) = PostgresCypherCompiler("g").compile(cypher, parameters).nonFinite
+        fun sqlite(cypher: String, parameters: Map<String, Any?> = emptyMap()) = SqliteCypherCompiler("g").compile(cypher, parameters).nonFinite
+        listOf(
+            "RETURN 0.0 / 0.0", "MATCH (n:A) RETURN n.x / n.y", "RETURN 5.0 % 0", "MATCH (n:A) WHERE n.x % n.y = 1 RETURN n",
+            "UNWIND [1, 0] AS z RETURN [x IN [1.0] | x / z]", "MATCH (n:A) RETURN toFloat(n.s)", "RETURN toFloat(' NaN ')",
+            "RETURN toFloat('-Infinity')", "CALL { MATCH (n:A) RETURN n.x / n.y AS q } RETURN q", "RETURN 1 AS x UNION RETURN 1.0 / 0 AS x",
+        ).forEach { cypher ->
+            assertTrue(postgres(cypher), cypher)
+            assertTrue(sqlite(cypher), cypher)
+        }
+        assertTrue(postgres("RETURN 1.0 / \$z", mapOf("z" to 0)))
+        assertTrue(postgres("RETURN toFloat(\$s)", mapOf("s" to "Infinity")))
+        listOf(
+            "RETURN 1.0 / 2", "RETURN 1.0 / -2.5", "MATCH (n:A) RETURN n.x / 3 + n.x % 2", "RETURN toFloat('1.5')", "RETURN toFloat(2)",
+            "RETURN toFloat(null)", "MATCH (n:A) WHERE n.x = 1 RETURN n.x * 2",
+        ).forEach { cypher ->
+            assertFalse(postgres(cypher), cypher)
+            assertFalse(sqlite(cypher), cypher)
+        }
+        assertFalse(postgres("RETURN [1.0 / \$z, toFloat(\$s)]", mapOf("z" to 4, "s" to "1e3")))
+        // A statement that writes on Postgres stores no such number, and fails as `numeric` does; SQLite stores an infinity.
+        assertFalse(postgres("MATCH (n:A) SET n.q = n.x / n.y"))
+        assertTrue(sqlite("MATCH (n:A) SET n.q = n.x / n.y"))
+        // The SQL of a statement that works none out is as it was.
+        val plain = PostgresCypherCompiler("g").compile("MATCH (n:A) WHERE n.x = \$x RETURN [n.x / 2, toFloat('3') > 1]", mapOf("x" to 1))
+        assertFalse(plain.sql.contains("2e309"), plain.sql)
+        // Oracle's floats hold them, so it compiles nothing more.
+        assertFalse(OracleCypherCompiler("g").compile("RETURN 0.0 / 0.0").nonFinite)
+    }
+
+    @Test
     fun `NaN and the infinities are bound as each store holds them, alone and in a list or a map`() {
         val given = mapOf("p" to Double.NaN, "l" to listOf(1.0, Double.POSITIVE_INFINITY), "m" to mapOf("x" to Double.NEGATIVE_INFINITY))
         val cypher = "RETURN [\$p, \$l, \$m]"
