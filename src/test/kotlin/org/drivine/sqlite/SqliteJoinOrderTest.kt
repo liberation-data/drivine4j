@@ -1,5 +1,7 @@
 package org.drivine.sqlite
 
+import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeAll
@@ -97,6 +99,15 @@ class SqliteJoinOrderTest {
         counts.forEach { (cypher, expected) ->
             assertEquals(expected, count(cypher), cypher)
             assertTrue("CROSS JOIN" !in compiled(cypher).sql, "$cypher is joined with CROSS JOIN:\n${compiled(cypher).sql}")
+        }
+    }
+
+    @Test
+    fun `Postgres and Oracle still join a step's sources with CROSS JOIN, which they reorder`() {
+        val cypher = "MATCH (n)-[r]->(m) RETURN count(*) AS c"
+        listOf(PostgresCypherCompiler(GRAPH), OracleCypherCompiler(GRAPH)).forEach { compiler ->
+            val sql = compiler.compile(cypher, emptyMap()).sql
+            assertTrue("CROSS JOIN" in sql && " ON TRUE" !in sql, "${compiler::class.simpleName}:\n$sql")
         }
     }
 
