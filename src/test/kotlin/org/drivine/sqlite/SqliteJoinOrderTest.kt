@@ -81,6 +81,25 @@ class SqliteJoinOrderTest {
         assertEquals(10L * 2, count(called))
     }
 
+    @Test
+    fun `a source after an OPTIONAL MATCH keeps its rows, its nulls and its list, and nothing is joined with CROSS JOIN`() {
+        val counts = mapOf(
+            // A MATCH after an OPTIONAL MATCH that finds nothing: the null row is kept, and a later source may be read before it.
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) WHERE m.k > 1000 MATCH (x) WHERE x.k = n.k RETURN count(*) AS c" to 10L,
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) MATCH (m)-[s]->(o) RETURN count(*) AS c" to 10L * 2 * 2,
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) WHERE m.k > 1000 MATCH (m)-[s]->(o) RETURN count(*) AS c" to 0L,
+            // A json_each whose argument reads a node an OPTIONAL MATCH bound, null or not.
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) UNWIND m.tags AS t RETURN count(*) AS c" to 10L * 2,
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) WHERE m.k > 1000 UNWIND m.tags AS t RETURN count(*) AS c" to 0L,
+            "MATCH (n) WHERE n.k < 10 OPTIONAL MATCH (n)-[r]->(m) WHERE m.k > 1000 UNWIND coalesce(m.tags, ['none']) AS t RETURN count(*) AS c" to 10L,
+            "MATCH (n) WHERE n.k < 10 CALL { WITH n MATCH (n)-[r]->(m) RETURN m } RETURN count(m) AS c" to 10L * 2,
+        )
+        counts.forEach { (cypher, expected) ->
+            assertEquals(expected, count(cypher), cypher)
+            assertTrue("CROSS JOIN" !in compiled(cypher).sql, "$cypher is joined with CROSS JOIN:\n${compiled(cypher).sql}")
+        }
+    }
+
     companion object {
         private const val GRAPH = "joinorder"
         private const val NODES = 2000L
