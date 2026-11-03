@@ -118,9 +118,9 @@ class CypherLowerCopies(
  * milliseconds while a property is asked after, on a schema connection of its own (see [CatalogReads]). Until a
  * read has come back, a property counts as not filled in, and the DSL lowercases the property itself,
  * which gives the same answer without the index. A record is never taken back: every save keeps the
- * copy in step, and `recreate`, or an `ensure` that makes the item anew, fills it in again where a
- * write that bypassed Drivine, or one made while the field was not `@CaseInsensitive`, left it out of
- * step.
+ * copy in step, and `recreate`, or an `ensure` that makes the item anew, fills it in again where
+ * Cypher or SQL of your own, which keeps no copy, or a save made while the field was not
+ * `@CaseInsensitive`, left it out of step.
  *
  * @param owner the auto-commit manager the copies are filled in and recorded through
  * @param query runs a statement on a schema connection of its own, binding nothing

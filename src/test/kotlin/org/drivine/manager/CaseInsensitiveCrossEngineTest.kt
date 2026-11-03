@@ -275,6 +275,44 @@ abstract class CaseInsensitiveContract {
     }
 
     @Test
+    fun `Cypher of your own keeps no copy, and one that sets the copy too, or a recreate after it, is found by a lookup`() {
+        val spec = RangeIndexSpec("CiRedone", "email", ignoreCase = true)
+        stateless.save(CiRedone("c1", "Ann@X.com"))
+        pm.indexes.ensure(spec)
+        fun found(email: String): Set<String> = stateless.loadAll(CiRedone::class.java, CiEmailQueryDsl.INSTANCE) {
+            where { query.email eqIgnoreCase email }
+        }.map { it.id }.toSet()
+        assertTrue(readsCopy(lookup(CiRedone::class.java, "ann@x.com")))
+
+        // Run as written, or translated to SQL, a write adds nothing: the copy is stale, or missing.
+        run("MATCH (n:CiRedone {id: 'c1'}) SET n.email = 'Anne@X.com'")
+        run("CREATE (:CiRedone {id: 'c2', email: 'Bob@X.com'})")
+        assertEquals(emptySet(), found("ANNE@x.com"))
+        assertEquals(setOf("c1"), found("ann@x.com"))
+        assertEquals(emptySet(), found("bob@x.com"))
+
+        // The documented workaround: the copy set in the same statement, in a SET of its own.
+        run("MATCH (n:CiRedone {id: 'c1'}) SET n.email = 'Cat@X.com' SET ${LowerCopies.setClause("n", "email")}")
+        run("CREATE (n:CiRedone {id: 'c3', email: 'Dan@X.com'}) SET ${LowerCopies.setClause("n", "email")}")
+        assertEquals(setOf("c1"), found("CAT@x.com"))
+        assertEquals(setOf("c3"), found("dan@X.COM"))
+
+        // A REMOVE of the property leaves the copy, so the node is found by its old value; the same SET after it removes the copy.
+        run("MATCH (n:CiRedone {id: 'c1'}) REMOVE n.email")
+        assertEquals("cat@x.com", copy("CiRedone", "c1"))
+        assertEquals(setOf("c1"), found("cat@x.com"))
+        run("MATCH (n:CiRedone {id: 'c3'}) REMOVE n.email SET ${LowerCopies.setClause("n", "email")}")
+        assertNull(copy("CiRedone", "c3"))
+        assertEquals(emptySet(), found("dan@x.com"))
+
+        // Or a recreate after the writes, which fills every copy of the label in again.
+        pm.indexes.recreate(spec)
+        assertEquals(setOf("c2"), found("BOB@x.com"))
+        assertNull(copy("CiRedone", "c1"))
+        assertEquals(emptySet(), found("cat@x.com"))
+    }
+
+    @Test
     fun `an index made anew fills the copies in again, which went out of step while the field was not CaseInsensitive`() {
         val spec = RangeIndexSpec("CiReturning", "email", ignoreCase = true)
         pm.indexes.drop(spec)
