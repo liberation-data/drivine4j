@@ -297,9 +297,19 @@ abstract class CaseInsensitiveContract {
         assertEquals(setOf("c1"), found("CAT@x.com"))
         assertEquals(setOf("c3"), found("dan@X.COM"))
 
+        // A REMOVE of the property leaves the copy, so the node is found by its old value; the same SET after it removes the copy.
+        run("MATCH (n:CiRedone {id: 'c1'}) REMOVE n.email")
+        assertEquals("cat@x.com", copy("CiRedone", "c1"))
+        assertEquals(setOf("c1"), found("cat@x.com"))
+        run("MATCH (n:CiRedone {id: 'c3'}) REMOVE n.email SET ${LowerCopies.setClause("n", "email")}")
+        assertNull(copy("CiRedone", "c3"))
+        assertEquals(emptySet(), found("dan@x.com"))
+
         // Or a recreate after the writes, which fills every copy of the label in again.
         pm.indexes.recreate(spec)
         assertEquals(setOf("c2"), found("BOB@x.com"))
+        assertNull(copy("CiRedone", "c1"))
+        assertEquals(emptySet(), found("cat@x.com"))
     }
 
     @Test
