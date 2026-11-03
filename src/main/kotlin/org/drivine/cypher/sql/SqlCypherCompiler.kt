@@ -4928,8 +4928,14 @@ abstract class SqlCypherCompiler(graph: String) {
     /** A node as JSON: its properties, its stamp among them, as drivine gives a node; null where there is no node. */
     protected abstract fun nodeJson(node: Value.Node): String
 
+    /**
+     * The join of [source] to the sources before it, with no condition of its own (its conditions are in the `WHERE`): a
+     * `CROSS JOIN`, which Postgres and Oracle reorder as they would any inner join. SQLite does not: see its compiler.
+     */
+    protected open fun crossJoin(source: String) = "CROSS JOIN $source"
+
     /** The rows a part of a statement reads: its sources and joins, its conditions, and the variables it binds. */
-    private class Select(private val outer: Map<String, Value>) {
+    private inner class Select(private val outer: Map<String, Value>) {
         val sources = mutableListOf<String>()
         val where = mutableListOf<String>()
         val bound = linkedMapOf<String, Value>()
@@ -4951,7 +4957,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         fun source(text: String) {
-            sources += if (sources.isEmpty()) "FROM $text" else "CROSS JOIN $text"
+            sources += if (sources.isEmpty()) "FROM $text" else crossJoin(text)
         }
 
         fun join(text: String) {
