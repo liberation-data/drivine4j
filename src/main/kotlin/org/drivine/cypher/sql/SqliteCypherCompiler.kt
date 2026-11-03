@@ -22,6 +22,8 @@ import java.math.RoundingMode
  *   rows are gathered as a JSON list of maps in a subquery, which may read the row it is in, and that list is joined
  *   with `json_each`, whose argument may read the row too. Each column is read back out of the map.
  * - **A list of ids** is text, each id between commas (`,1,2,`), as on Oracle.
+ * - **Sources are joined with `JOIN … ON TRUE`**, never `CROSS JOIN`, which SQLite takes as an order it must keep
+ *   ([crossJoin]): a step's two nodes would be paired before its relationship was read.
  *
  * A statement that writes is a procedure, as on the other stores, which a function Drivine registers carries out:
  * see [procedure].
@@ -299,12 +301,20 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun rowOrd(alias: String) = "($alias.key + 1)"
 
     /**
+     * A join SQLite may reorder: it reads `CROSS JOIN` as an order it must keep, so a step's two nodes would be scanned
+     * pair by pair before its relationship was read (drivine4j#571). A `json_each` whose argument reads a source before
+     * it is still read after that source, as its argument needs.
+     */
+    override fun crossJoin(source: String) = "JOIN $source ON TRUE"
+
+    /**
      * A JSON list of maps, a map for each row of [query], gathered in a subquery that may read the row it is in, and
-     * joined as `json_each` gives its items: SQLite joins no lateral query.
+     * joined as `json_each` gives its items: SQLite joins no lateral query. SQLite reads a `json_each` after the sources its
+     * argument reads, so the plain join [crossJoin] gives keeps that order.
      */
     override fun lateral(query: String, name: String, optional: Boolean, columns: List<Pair<String, Boolean>>): String {
         val rows = gathered(query, name, columns)
-        return if (optional) "LEFT JOIN $rows ON TRUE" else "CROSS JOIN $rows"
+        return if (optional) "LEFT JOIN $rows ON TRUE" else crossJoin(rows)
     }
 
     /** The rows of [query], of the columns [columns], as `json_each` gives the JSON list of maps they are gathered in, named [name]: see [lateral]. */
