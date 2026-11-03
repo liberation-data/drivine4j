@@ -28,12 +28,14 @@ package org.drivine.annotation
  * translates it to SQL, and adds nothing to it. Nor does SQL of your own. Such a write to the property
  * sets the copy too, in a `SET` of its own after the one that writes the property, or is followed by a
  * [org.drivine.schema.IndexManager.recreate] (or [org.drivine.schema.ConstraintManager.recreate]) of
- * the item that ignores case, which fills every copy of the label in again:
+ * the item that ignores case, which fills every copy of the label in again. Wrap the text in a
+ * [org.drivine.query.CypherStatement]: a plain string is Cypher to a graph engine but SQL to Postgres,
+ * Oracle and SQLite.
  *
  * ```kotlin
- * persistenceManager.execute(QuerySpecification.withStatement(
+ * persistenceManager.execute(QuerySpecification.withStatement(CypherStatement(
  *     "MATCH (a:Account {id: \$id}) SET a.email = \$email SET ${LowerCopies.setClause("a", "email")}"
- * ).bind(mapOf("id" to id, "email" to email)))
+ * )).bind(mapOf("id" to id, "email" to email)))
  * // or, after the writes:
  * persistenceManager.constraints.recreate(UniquenessConstraintSpec("Account", "email", ignoreCase = true))
  * ```
