@@ -814,3 +814,61 @@ cases:
       - only: [neo4j, oracle, sqlite]
         cypher: "MATCH (n:CyWrite) RETURN [min(n.b), max(n.b), sum(n.b), avg(n.b)]"
         rows: [[{$float: "-Infinity"}, {$float: "Infinity"}, {$float: "NaN"}, {$float: "NaN"}]]
+
+  - name: "MERGE of a null or NaN property"
+    description: "A MERGE fails where it makes a node or relationship whose pattern gives a property that is null or NaN, which is equal to nothing, which no MERGE would find again; over no rows it does not fail. ON CREATE SET and ON MATCH SET write NaN, and a list that holds NaN is merged, and made again each time."
+    steps:
+      - note: "A SQL store made a new node on every run (drivine4j#543)."
+        except: [neptune]
+        cypher: "MERGE (n:CyWrite {id: 1, x: null})"
+        error: true
+      - except: [neptune]
+        cypher: "MERGE (n:CyWrite {id: 1, x: $p})"
+        parameters: {p: null}
+        error: true
+      - cypher: "CREATE (:CyWrite {id: 1})"
+      - except: [neptune]
+        cypher: "MATCH (s:CyWrite {id: 1}) MERGE (n:CyWrite {x: s.none})"
+        error: true
+      - except: [neptune]
+        cypher: "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: null}]->(:CyWrite {id: 2})"
+        error: true
+      - except: [neptune]
+        cypher: "UNWIND [2, null] AS v MERGE (:CyWrite {id: v})"
+        error: true
+      - except: [neptune]
+        cypher: "MATCH (s:CyWrite {id: 9}) MERGE (n:CyWrite {x: null}) RETURN n.x"
+        rows: []
+      - cypher: "MATCH (n) RETURN count(n)"
+        rows: [1]
+      - only: [neo4j, oracle]
+        cypher: "MERGE (n:CyWrite {x: $p})"
+        parameters: {p: {$float: "NaN"}}
+        error: true
+      - only: [neo4j, oracle]
+        cypher: "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: $i - $i}]->(:CyWrite {id: 2})"
+        parameters: {i: {$float: "Infinity"}}
+        error: true
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (s:CyWrite {id: 1}) SET s.a = $i, s.b = -$i"
+        parameters: {i: {$float: "Infinity"}}
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (s:CyWrite {id: 1}) MERGE (n:CyWrite {x: s.a + s.b})"
+        error: true
+      - cypher: "MATCH (n) RETURN count(n)"
+        rows: [1]
+      - only: [neo4j, oracle]
+        cypher: "MERGE (n:CyWrite {id: 3}) ON CREATE SET n.x = $p RETURN n.x"
+        parameters: {p: {$float: "NaN"}}
+        rows: [{$float: "NaN"}]
+      - only: [neo4j, oracle]
+        cypher: "MERGE (n:CyWrite {id: 3}) ON MATCH SET n.y = $p RETURN [n.x, n.y]"
+        parameters: {p: {$float: "NaN"}}
+        rows: [[{$float: "NaN"}, {$float: "NaN"}]]
+      - only: [neo4j, oracle]
+        cypher: "UNWIND [1, 2] AS i MERGE (n:CyWrite {l: [$p]}) RETURN n.l"
+        parameters: {p: {$float: "NaN"}}
+        rows: [[{$float: "NaN"}], [{$float: "NaN"}]]
+      - only: [neo4j, oracle]
+        cypher: "MATCH (n:CyWrite) WHERE n.l IS NOT NULL RETURN count(n)"
+        rows: [2]
