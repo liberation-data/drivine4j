@@ -107,10 +107,17 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
-A value whose kind the statement fixes (a literal, a list or a map written, or a variable a `WITH` binds to one) is
-refused where an operator or a function takes another kind, as Neo4j refuses it when it plans the statement:
-`RETURN 123 AND true` fails with `AND takes a truth value, not an integer, as in Neo4j.`, and so do
-`WITH 123 AS x RETURN x.num` and `RETURN 1 IN 'foo'`. A step of 0 in `range()`, written or given, a parameter given as
+A statement is translated as written, and nothing is added to it. So a write of a
+[`@CaseInsensitive`](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case) property leaves the lowercased
+copy the object managers keep beside it as it was, on these stores as on the graph engines: set the copy in the same
+statement, or refill it afterwards ([how](09-supported-engines.md#cypher-of-your-own)).
+
+A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
+`toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
+takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes
+another kind, as Neo4j refuses it when it plans the statement: `RETURN 123 AND true` fails with
+`AND takes a truth value, not an integer, as in Neo4j.`, and so do `WITH 123 AS x RETURN x.num`, `RETURN 1 IN 'foo'` and
+`RETURN left('hello', toFloat(2))`. A step of 0 in `range()`, written or given, a parameter given as
 the index of a list or a map written that isn't indexed by its kind, as in `WITH [1] AS l RETURN l[$k]` given a text,
 and a map, or a list of maps or of lists, written in `SET`, are refused too, though Neo4j fails on them only when a row
 reaches them: such a statement is refused even where it would match nothing. A statement is compiled for each call,
@@ -128,6 +135,46 @@ fails it, since no `MERGE` would find it again: `MERGE (n:X {a: null})` fails wi
 because of null property value for 'a'.`, wrapped as each store raises an error, and writes nothing. It fails only as
 a row makes it, so not over no rows. On Oracle, which stores NaN, so does one whose property is NaN.
 
+### How complete is it?
+
+The [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) is openCypher's own test suite: 3,896
+scenarios, each a graph, a query, and the rows or the error the query must give.
+drivine4j runs all of them through its compiler on each store; the TypeScript and Python compilers follow it through
+the shared spec, though `truncate()` with a map of fields, which 221 of these scenarios call, is still to be ported to
+them ([drivine#442](https://github.com/liberation-data/drivine/issues/442),
+[drivine-python#265](https://github.com/liberation-data/drivine-python/issues/265)). The scores below are `main` on
+31 October 2026.
+
+| store | scenarios passed | of all 3,896 | leaving out the 583 refused on purpose |
+|---|---:|---:|---:|
+| Postgres | 2,905 | 74.6% | 87.7% |
+| Oracle | 2,887 | 74.1% | 87.1% |
+| SQLite | 2,869 | 73.6% | 86.6% |
+| Neo4j | 3,821 | 98.1% | (none refused) |
+
+The 583 refused on purpose are Cypher the compiler doesn't take yet, refused by name with a clear error: temporal values
+built from a week, a quarter or another date, a truncation that sets nanoseconds or a named time zone, `rand()`, a path
+as a value, and a few more.
+
+Most of the rest are not wrong answers. Of the 408 left on Postgres:
+
+- 172 are in openCypher's temporal features, which are being compiled now: 130 give another result, and 42 write a date
+  or a time in a form Drivine doesn't read yet, such as `2015-W30-2`, `20150721` or a named zone, and fail with an error
+  of Drivine's own.
+- 116 are about errors: 77 statements that run where the TCK expects an error, and 39 that Drivine fails where the TCK
+  expects rows.
+- 59 are steps the harness can't run through Drivine, such as a test procedure or a CSV file.
+- 53 give another result outside the temporal features, and 8 make the database fail.
+
+Oracle's and SQLite's are split alike. The comparison is lenient where Drivine's results are shaped differently from
+the TCK's: a node is compared by its properties, and any error meets an expected one. Counting an expected error only where Drivine
+raised it, before the database, Postgres passes 2,865, Oracle 2,852 and SQLite 2,862.
+
+Neo4j runs the same scenarios through the same harness and misses only the 59 it can't run and 16 where Neo4j itself
+differs from the TCK, so the harness is sound and the gap on the SQL stores is the compiler's. Every night the build
+holds each store to the scenarios it passed, one by one, so none can slip back unnoticed.
+[TCK.md](../TCK.md) has the method and how to run it.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
@@ -141,14 +188,21 @@ a row makes it, so not over no rows. On Oracle, which stores NaN, so does one wh
   double from the row where a long would overflow, so a sum that passes the range on the way and comes back into it,
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
   total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
-- Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store.
-  A float divided by zero fails on Postgres, gives null on SQLite, and on Oracle is the NaN or
-  infinity Neo4j gives.
+- Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store. A
+  number divided by a float zero is the NaN or infinity Neo4j gives on each (`0.0 / 0.0` is NaN, `$x / 0.0` an
+  infinity), and taken `%` by one is NaN, but on Oracle, which gives the number taken, as its `MOD` does. Neo4j fails a
+  division or `%` by an integer zero, but where both numbers are written in the statement, which it works out before it
+  runs, as Java does: `1.0 / 0` and `1.0 / (1 - 1)` are an infinity there and on each SQL store, and `1 / 0` fails.
+  `$x / 0` and `WITH 0 AS z RETURN 1.0 / z` fail on Neo4j and Postgres, are null on SQLite, as an integer divided or taken
+  `%` by zero is there, and are the infinity on Oracle, which gives the number taken `%` by any zero. On Postgres, a
+  statement that writes and divides a float by zero fails, as its `jsonb` holds neither. `toFloat` reads a text that
+  names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`) on each SQL store, but is null in a statement that
+  writes on Postgres; Oracle reads `'nan'`, `'inf'` and `'INFINITY'` so too, where Neo4j gives null.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `%`,
-  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN, and for an
-  infinity it gives null from `%`, the infinity from `^`, `abs`, `round` and `floor`, and fails from `sqrt`, `log` and
-  `exp`. Oracle stores them too. SQLite stores an infinity, and
+  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a
+  function of numbers, and for an infinity it gives the infinity from `^`, `abs`, `round` and `floor`, and fails from
+  `sqrt`, `log` and `exp`; its `%` gives NaN, as Neo4j does. Oracle stores them too. SQLite stores an infinity, and
   refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold

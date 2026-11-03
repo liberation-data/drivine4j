@@ -274,7 +274,11 @@ declares the function itself.
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
   are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
-  null, where Neo4j gives NaN or an infinity. A `MERGE` that would make a property NaN fails, as in Neo4j.
+  null, where Neo4j gives NaN or an infinity. A number taken `%` by zero is that number, as Oracle's `MOD` gives it,
+  where Neo4j gives NaN by a float zero and fails by an integer one. A float divided by an integer zero is an infinity,
+  where Neo4j fails but where both are written in the statement (`1.0 / 0`). `toFloat` reads `'nan'`, `'inf'` and
+  `'INFINITY'` as NaN and the infinities too, where Neo4j gives null. A `MERGE` that would make a property NaN fails, as
+  in Neo4j.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
@@ -339,6 +343,11 @@ declares the function itself.
   the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the
   statement and not for each row, so `WHERE 'b' IN keys(n)` found nothing
   ([#433](https://github.com/liberation-data/drivine4j/issues/433)).
+- A `WITH` that passes a path on (`MATCH p = (a)-->() WITH p, a RETURN nodes(p)`) is kept apart from the query that
+  reads it, with the hint `NO_MERGE`. This works around an Oracle bug, seen on 23.26.3: merged into that query, the
+  subqueries that read the path's nodes and relationships by the ids the `WITH` passes on read one row's path on every
+  row ([#537](https://github.com/liberation-data/drivine4j/issues/537)). The plan gains a view and is otherwise the same,
+  and an order the `WITH` sorts by is kept: 3,000 rows of `WITH p, a ORDER BY a.i RETURN nodes(p)` take about 90 ms.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
@@ -611,6 +620,16 @@ relationships with it.
 - `jsonb` holds no NaN or infinity. A statement given one as a parameter writes it as a number past any double's,
   and works with it as the float it is, as Neo4j does; the rows give it back as that float. A statement that writes
   and is given one is refused, rather than store that number.
+- A statement that reads and may work NaN or an infinity out is compiled the same way, decided as it is compiled: one
+  that divides or takes `%` by anything but a number other than 0 written in it or given, or takes `toFloat` of anything
+  but a number, or a text that names neither, written in it or given. So a number divided by a float zero is NaN or an
+  infinity, as on Neo4j (`0.0 / 0.0`, `$x / 0.0`), where `numeric` fails, and `toFloat('NaN')` is NaN. Such a
+  statement's SQL is longer (`RETURN n.x / n.y` about three times) and slower: over 20,000 nodes, `n.x / n.y` of the
+  2,000 a filter keeps takes about 1.8 times as long (18 ms against 10), and three values worked out from each node
+  about 3 times (226 ms against 75). Any other statement compiles exactly as before. A statement that writes and divides
+  a float by zero fails with `division by zero`, rather than store that number, and `toFloat` of a text that names NaN
+  or an infinity is null in it. A number divided by an integer zero fails, as on Neo4j, but where both are written in
+  the statement, which Neo4j works out before it runs, as Java does: `1.0 / 0` is an infinity.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -773,12 +792,16 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
   and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
   float. A `sum()` of integers that passes a long's range fails with `integer overflow`, where Neo4j gives a float.
-- An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one
-  as a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives
-  it back as NaN. A statement that writes and is given NaN is refused, rather than store that map, and one that writes
-  NaN it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A float divided by zero is still null. So
-  is NaN worked out from a stored infinity by a statement given no NaN or infinity (`n.inf - n.inf`, `n.inf * 0`),
-  where Neo4j gives NaN, but for the two infinities added with `+`, which give NaN.
+- An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one as
+  a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives it
+  back as NaN. A statement that writes and is given NaN is refused, rather than store that map, and one that writes NaN
+  it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A statement that may work NaN or an infinity
+  out, as on [Postgres](#postgres) (dividing or taking `%` by anything but a number other than 0, `toFloat` of a text),
+  is compiled as one given one: a number divided by a float zero is NaN or an infinity, as on Neo4j, and so is a float
+  by an integer zero where both are written in the statement (`1.0 / 0`); an infinity it works out is stored. A number
+  divided by any other integer zero is null, where Neo4j fails. NaN worked out from a stored infinity by any other
+  statement (`n.inf - n.inf`, `n.inf * 0`) is null, where Neo4j gives NaN, but for the two infinities added with `+`,
+  summed with `sum()` or averaged with `avg()`, which give NaN.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
@@ -956,14 +979,27 @@ data class Account(
 accounts.loadAll(Account::class.java, AccountQueryDsl.INSTANCE) { where { query.email eqIgnoreCase "Ann@Example.com" } }
 ```
 
-- **The copy.** Every save of the node also writes a lowercased copy of the property, under `__drivine.lower.<property>` (the property's stored name, so a `@GraphProperty` name is the one copied), beside the stamp. The database lowercases it, from the property as the save left it: `SET n.`__drivine.lower.email` = toLower(n.email)` on the graph engines, `LOWER` on Oracle, `lower` on Postgres, and on SQLite Drivine's own `drivine_lower`, which lowercases as Unicode does where SQLite's `lower` lowers only ASCII. A property with no value has no copy, and on Oracle neither has an empty text. `save`, `saveAll` (with `only` or `except` too), `create`, `patch`, `patchAll` and the deprecated `GraphObjectManager` all keep it in step. The copy is no part of whether a save changed the node: a save that leaves the property as it was gives no new stamp, and the Neo4j check of `update` and `save(edited, from)` does not compare it.
+- **The copy.** Every save of the node also writes a lowercased copy of the property, under `__drivine.lower.<property>` (the property's stored name, so a `@GraphProperty` name is the one copied), beside the stamp. The database lowercases it, from the property as the save left it: `SET n.`__drivine.lower.email` = toLower(n.email)` on the graph engines, `LOWER` on Oracle, `lower` on Postgres, and on SQLite Drivine's own `drivine_lower`, which lowercases as Unicode does where SQLite's `lower` lowers only ASCII. A property with no value has no copy, and on Oracle neither has an empty text. `save`, `saveAll` (with `only` or `except` too), `create`, `patch`, `patchAll`, the save of a view and the deprecated `GraphObjectManager` all keep it in step. Cypher you send yourself does not: see [below](#cypher-of-your-own). The copy is no part of whether a save changed the node: a save that leaves the property as it was gives no new stamp, and the Neo4j check of `update` and `save(edited, from)` does not compare it.
 - **Hidden.** A load does not read the copy, and a flat `@PropertyBag` never holds it: names beginning `__drivine.` are Drivine's.
 - **The index.** `@RangeIndex(ignoreCase = true)`, `@Unique(ignoreCase = true)` and Neo4j's `@TextIndex(ignoreCase = true)`, or `RangeIndexSpec(…, ignoreCase = true)`, `UniquenessConstraintSpec(…, ignoreCase = true)` and `TextIndexSpec(…, ignoreCase = true)`, are made over the copy and named `<Label>_<property>_ci_range` and so on, apart from an item over the property itself. A uniqueness constraint that ignores case refuses `A@x.com` beside `a@x.com`. The annotations are refused on a field that is not `@CaseInsensitive`, since no save would keep its copy. A spec of your own that ignores case should be over a `@CaseInsensitive` field for the same reason.
 - **Filling the copy in.** A node saved before the field was `@CaseInsensitive` has no copy. `ensure` of an item that ignores case first fills the copy in on every node of the label, ten thousand at a time, then records that it has: on the store's `DrivineStore` node on the graph engines (the list `lowered`, each entry `["<Label>","<property>"]`), and as a row of kind `LOWER_COPY` in `<graph>_schema` on Oracle, Postgres and SQLite. A recorded copy is not filled in again by an `ensure` that finds the item there; `recreate`, or an `ensure` that makes the item anew, fills it in again.
 - **The lookup.** Once the copy of a property is recorded for a label of the fragment, `eqIgnoreCase` and `containsIgnoreCase` on it compare with the copy, the value lowercased by the database too: `n.`__drivine.lower.email` = toLower($p)` (`= LOWER(…)` on Oracle, `= lower(…)` on Postgres, `= drivine_lower(…)` on SQLite). Until then they lowercase the property itself, as for any other field, and find the nodes saved before there were copies. A process learns of a copy another process recorded within a minute. This is a load's, a count's, a `deleteAll`'s, a grouped read's and a patch's condition on the root; a condition on a related node and the filter of a vector or full-text search lowercase the property itself, as does an empty value.
 - **Which index serves what.** On Neo4j a RANGE index over the copy serves equality and a prefix, and a TEXT index `CONTAINS`. On Memgraph and FalkorDB the index serves equality. On Oracle and Postgres the copy is in the range index over the label's nodes, as any property is, and on SQLite in a partial index of its own, as any property's range index is; an equality is read from it.
 - **FalkorDB makes no uniqueness constraint over the copy.** `GRAPH.CONSTRAINT` takes a property only by a plain name, and refuses one with a dot in it ([FalkorDB/FalkorDB#551](https://github.com/FalkorDB/FalkorDB/issues/551)). `ensure` of a constraint that ignores case throws a `DrivineException` there, before anything is filled in or made. A range index over the copy is made, and serves the lookup.
-- **Writes that bypass Drivine** (Cypher or SQL of your own) do not keep the copy in step: a node so written is missed by a lookup once the copy is recorded. So is one saved by a process whose fragment is not yet `@CaseInsensitive`, as while an upgrade rolls out. Write the copy as Drivine does, `SET ${LowerCopies.setClause("n", "email")}` in a `SET` of its own after the one that writes the property, or `recreate` the index to fill every copy in again.
+- <a id="cypher-of-your-own"></a>**Cypher of your own keeps no copy, on any store.** Drivine runs a statement you send as written on the graph engines, and on Oracle, Postgres and SQLite translates it to SQL and adds nothing to it. So a `SET`, `CREATE`, `MERGE` or `REMOVE` of the property leaves the copy as it was, or leaves the node without one, and so does SQL of your own. Once the copy is recorded, a lookup misses a node so written, or finds it by its old value. A node saved by a process whose fragment is not yet `@CaseInsensitive`, as while an upgrade rolls out, is missed the same way. Set the copy in the same statement, in a `SET` of its own after the one that writes the property, since an engine may read every value of one `SET` before it writes any. The same `SET` after a `REMOVE` of the property removes the copy.
+
+  ```cypher
+  MATCH (a:Account {id: $id})
+  SET a.email = $email
+  SET a.`__drivine.lower.email` = toLower(a.email)
+  ```
+
+  `LowerCopies.setClause("a", "email")` gives that last item. Or, after the writes, `recreate` the item that ignores case, which fills the copy in again on every node of the label:
+
+  ```kotlin
+  persistenceManager.indexes.recreate(RangeIndexSpec("Account", "email", ignoreCase = true))
+  persistenceManager.constraints.recreate(UniquenessConstraintSpec("Account", "email", ignoreCase = true))
+  ```
 - **A field that is no longer `@CaseInsensitive`** keeps its copies and its record. Nothing reads them: a lookup on the field lowercases the property itself again, and the copies are left as they were, harmless, and out of step once the property changes. Drop the index that ignored case, which the annotations no longer allow. Should the field be made `@CaseInsensitive` again, `ensure` its index before a lookup runs: the index is made anew, so the copies are filled in again. The record is still there, so a lookup reads the copies at once, stale until then.
 
 ### Relationships of a Runtime Type

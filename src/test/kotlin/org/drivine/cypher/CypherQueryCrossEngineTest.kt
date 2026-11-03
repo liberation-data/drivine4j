@@ -304,6 +304,61 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a path a WITH passes on gives each row its own nodes and relationships`() {
+        // On Oracle, each row read the first row's path after the WITH (#537); the spec has these since v0.23.0, on its own graph.
+        clear()
+        seed("CREATE (a:CyPa {i: 0})-[:CY_PA {i: 0}]->(b:CyPa {i: 1})-[:CY_PA {i: 1}]->(a)")
+        val one = "MATCH p = (a:CyPa)-[:CY_PA]->(:CyPa)"
+        val two = "MATCH p = (a:CyPa)-[:CY_PA*2]->()"
+        val cases = listOf(
+            "$one WITH p, a RETURN a.i, [r IN relationships(p) | r.i] ORDER BY a.i" to listOf(listOf(0L, listOf(0L)), listOf(1L, listOf(1L))),
+            "$one WITH p, a ORDER BY a.i RETURN relationships(p)[0].i" to listOf(0L, 1L),
+            "$one WITH p, a ORDER BY a.i RETURN [x IN nodes(p) | x.i]" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            "$one WITH p, a ORDER BY a.i RETURN nodes(p)[1].i" to listOf(1L, 0L),
+            "$one WITH p, a.i AS i ORDER BY i RETURN [i, [r IN relationships(p) | r.i]]" to listOf(listOf(0L, listOf(0L)), listOf(1L, listOf(1L))),
+            "$one WITH p, a ORDER BY a.i RETURN [length(p), size(nodes(p)), last(nodes(p)).i, head(relationships(p)).i]" to
+                listOf(listOf(1L, 2L, 1L, 0L), listOf(1L, 2L, 0L, 1L)),
+            "$one WITH p, a ORDER BY a.i RETURN any(x IN nodes(p) WHERE x.i = 1 AND x <> a)" to listOf(true, false),
+            "$one WITH p, a WHERE relationships(p)[0].i = 1 RETURN a.i" to listOf(1L),
+            "$one WITH p, a WITH p, a ORDER BY a.i RETURN [x IN nodes(p) | x.i]" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            "$one WITH nodes(p) AS ns, relationships(p) AS rs, a ORDER BY a.i RETURN [[x IN ns | x.i], rs[0].i]" to
+                listOf(listOf(listOf(0L, 1L), 0L), listOf(listOf(1L, 0L), 1L)),
+            "$two WITH p, a ORDER BY a.i RETURN [length(p), [x IN nodes(p) | x.i], [r IN relationships(p) | r.i]]" to
+                listOf(listOf(2L, listOf(0L, 1L, 0L), listOf(0L, 1L)), listOf(2L, listOf(1L, 0L, 1L), listOf(1L, 0L))),
+            "MATCH p = (:CyPa {i: 0})-[:CY_PA*1..2]->() WITH p ORDER BY length(p) RETURN [length(p), [x IN nodes(p) | x.i]]" to
+                listOf(listOf(1L, listOf(0L, 1L)), listOf(2L, listOf(0L, 1L, 0L))),
+            "$one WITH p RETURN sum(last(nodes(p)).i * 10 + head(nodes(p)).i)" to listOf(11L),
+            "$one WITH p, a, count(*) AS c ORDER BY a.i RETURN [c, [x IN nodes(p) | x.i]]" to listOf(listOf(1L, listOf(0L, 1L)), listOf(1L, listOf(1L, 0L))),
+            "$one WITH DISTINCT p, a ORDER BY a.i RETURN relationships(p)[0].i" to listOf(0L, 1L),
+            "$one WITH p, a ORDER BY a.i DESC LIMIT 1 RETURN nodes(p)[1].i" to listOf(0L),
+            "$one WITH p, a MATCH (a)<-[:CY_PA]-(z) RETURN [z.i, [x IN nodes(p) | x.i]] ORDER BY z.i" to listOf(listOf(0L, listOf(1L, 0L)), listOf(1L, listOf(0L, 1L))),
+            "$one WITH * ORDER BY a.i RETURN relationships(p)[0].i" to listOf(0L, 1L),
+            "$one WITH p, a UNWIND relationships(p) AS r RETURN [a.i, r.i] ORDER BY a.i" to listOf(listOf(0L, 0L), listOf(1L, 1L)),
+            "MATCH (a:CyPa) CALL (a) { MATCH p = (a)-[:CY_PA]->() WITH p RETURN nodes(p)[1].i AS j } RETURN j ORDER BY a.i" to listOf(1L, 0L),
+            "MATCH (a:CyPa) OPTIONAL MATCH p = (a)-[:CY_PA {i: 0}]->() WITH p, a ORDER BY a.i RETURN [x IN nodes(p) | x.i]" to listOf(listOf(0L, 1L), null),
+            // A variable-length relationship's list is no path, and a path a CALL returns is no WITH's: each row reads its own too.
+            "MATCH (a:CyPa)-[rs:CY_PA*2]->() WITH rs, a ORDER BY a.i RETURN [r IN rs | r.i]" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            "MATCH (a:CyPa) CALL (a) { MATCH p = (a)-[:CY_PA]->() RETURN p } RETURN [x IN nodes(p) | x.i] ORDER BY a.i" to listOf(listOf(0L, 1L), listOf(1L, 0L)),
+        )
+        cases.forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
+    }
+
+    @Test
+    fun `a path an OPTIONAL MATCH or a shortest path finds in a lateral query gives each row its own nodes`() {
+        // Pinned with #537; the spec has these since v0.23.0, on its own graph.
+        clear()
+        seed("CREATE (a:CyPa {i: 0})-[:CY_PA {i: 0}]->(b:CyPa {i: 1})-[:CY_PA {i: 1}]->(a)")
+        assertEquals(
+            listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            query("MATCH (a:CyPa) OPTIONAL MATCH p = (a)-[:CY_PA]->() RETURN [x IN nodes(p) | x.i] ORDER BY a.i"),
+        )
+        assertEquals(
+            listOf(listOf(0L, 1L), listOf(1L, 0L)),
+            query("MATCH (a:CyPa), (b:CyPa) WHERE a <> b MATCH p = shortestPath((a)-[:CY_PA*]->(b)) RETURN [x IN nodes(p) | x.i] ORDER BY a.i"),
+        )
+    }
+
+    @Test
     fun `randomUUID gives a new random version 4 UUID each time, in lower case, seldom sharing a long prefix with the one before`() {
         // Oracle's SYS_GUID() gave version 0 values that shared their first 12 characters, a counter changing (#401).
         val uuids = query("UNWIND range(1, 50) AS i RETURN randomUUID()").map { it as String }
@@ -3330,6 +3385,19 @@ class CypherQueryPostgresTest : CypherQueryContract() {
                     .bind(mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
             ),
         )
+    }
+
+    @Test
+    fun `a statement that writes and divides a float by zero fails, rather than store the number that stands for the infinity`() {
+        // `jsonb` holds no infinity, so a write is not compiled to work one out, and `numeric` fails the division (#408).
+        clear()
+        try {
+            val failure = assertThrows<Exception> { pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Dz {x: 1.0 / 0})"))) }
+            assertTrue(failure.message!!.contains("division by zero"), failure.message)
+            assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Dz) RETURN count(n)"))))
+        } finally {
+            clear()
+        }
     }
 }
 
