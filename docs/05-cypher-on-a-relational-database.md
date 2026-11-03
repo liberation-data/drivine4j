@@ -107,6 +107,11 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
+A statement is translated as written, and nothing is added to it. So a write of a
+[`@CaseInsensitive`](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case) property leaves the lowercased
+copy the object managers keep beside it as it was, on these stores as on the graph engines: set the copy in the same
+statement, or refill it afterwards ([how](09-supported-engines.md#cypher-of-your-own)).
+
 A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
 `toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
 takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes
