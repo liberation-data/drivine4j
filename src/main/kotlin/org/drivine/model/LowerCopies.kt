@@ -9,8 +9,10 @@ import org.drivine.schema.SchemaGrammar
  * `toLower` on the graph engines, `LOWER` on Oracle and Postgres, `drivine_lower` on SQLite. A lookup lowercases what it is
  * given the same way, so the copy and the value compared with it are lowercased alike.
  *
- * Every Drivine write of the node sets the copy from the property as stored once the write is done,
- * and removes it where the property has no value. The copy is not part of what tells whether a save
+ * Every write of the node by an object manager sets the copy from the property as stored once the
+ * write is done, and removes it where the property has no value. Cypher you send yourself does not, on
+ * any store, since Drivine runs it as written or translates it to SQL and adds nothing to it: write the
+ * copy in it with [setClause], or `recreate` the index that ignores case afterwards. The copy is not part of what tells whether a save
  * changed the node: a save that leaves the property as it was gives the node no new stamp, whether or
  * not the copy was already there.
  */

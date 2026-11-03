@@ -107,10 +107,17 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
-A value whose kind the statement fixes (a literal, a list or a map written, or a variable a `WITH` binds to one) is
-refused where an operator or a function takes another kind, as Neo4j refuses it when it plans the statement:
-`RETURN 123 AND true` fails with `AND takes a truth value, not an integer, as in Neo4j.`, and so do
-`WITH 123 AS x RETURN x.num` and `RETURN 1 IN 'foo'`. A step of 0 in `range()`, written or given, a parameter given as
+A statement is translated as written, and nothing is added to it. So a write of a
+[`@CaseInsensitive`](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case) property leaves the lowercased
+copy the object managers keep beside it as it was, on these stores as on the graph engines: set the copy in the same
+statement, or refill it afterwards ([how](09-supported-engines.md#cypher-of-your-own)).
+
+A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
+`toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
+takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes
+another kind, as Neo4j refuses it when it plans the statement: `RETURN 123 AND true` fails with
+`AND takes a truth value, not an integer, as in Neo4j.`, and so do `WITH 123 AS x RETURN x.num`, `RETURN 1 IN 'foo'` and
+`RETURN left('hello', toFloat(2))`. A step of 0 in `range()`, written or given, a parameter given as
 the index of a list or a map written that isn't indexed by its kind, as in `WITH [1] AS l RETURN l[$k]` given a text,
 and a map, or a list of maps or of lists, written in `SET`, are refused too, though Neo4j fails on them only when a row
 reaches them: such a statement is refused even where it would match nothing. A statement is compiled for each call,
@@ -122,6 +129,46 @@ A variable used as two kinds is refused too, as Neo4j refuses it: `MATCH (a)-[a]
 fails with `a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.` So is one a pattern
 makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
 variable bound as something else.
+
+### How complete is it?
+
+The [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) is openCypher's own test suite: 3,896
+scenarios, each a graph, a query, and the rows or the error the query must give.
+drivine4j runs all of them through its compiler on each store; the TypeScript and Python compilers follow it through
+the shared spec, though `truncate()` with a map of fields, which 221 of these scenarios call, is still to be ported to
+them ([drivine#442](https://github.com/liberation-data/drivine/issues/442),
+[drivine-python#265](https://github.com/liberation-data/drivine-python/issues/265)). The scores below are `main` on
+31 October 2026.
+
+| store | scenarios passed | of all 3,896 | leaving out the 583 refused on purpose |
+|---|---:|---:|---:|
+| Postgres | 2,905 | 74.6% | 87.7% |
+| Oracle | 2,887 | 74.1% | 87.1% |
+| SQLite | 2,869 | 73.6% | 86.6% |
+| Neo4j | 3,821 | 98.1% | (none refused) |
+
+The 583 refused on purpose are Cypher the compiler doesn't take yet, refused by name with a clear error: temporal values
+built from a week, a quarter or another date, a truncation that sets nanoseconds or a named time zone, `rand()`, a path
+as a value, and a few more.
+
+Most of the rest are not wrong answers. Of the 408 left on Postgres:
+
+- 172 are in openCypher's temporal features, which are being compiled now: 130 give another result, and 42 write a date
+  or a time in a form Drivine doesn't read yet, such as `2015-W30-2`, `20150721` or a named zone, and fail with an error
+  of Drivine's own.
+- 116 are about errors: 77 statements that run where the TCK expects an error, and 39 that Drivine fails where the TCK
+  expects rows.
+- 59 are steps the harness can't run through Drivine, such as a test procedure or a CSV file.
+- 53 give another result outside the temporal features, and 8 make the database fail.
+
+Oracle's and SQLite's are split alike. The comparison is lenient where Drivine's results are shaped differently from
+the TCK's: a node is compared by its properties, and any error meets an expected one. Counting an expected error only where Drivine
+raised it, before the database, Postgres passes 2,865, Oracle 2,852 and SQLite 2,862.
+
+Neo4j runs the same scenarios through the same harness and misses only the 59 it can't run and 16 where Neo4j itself
+differs from the TCK, so the harness is sound and the gap on the SQL stores is the compiler's. Every night the build
+holds each store to the scenarios it passed, one by one, so none can slip back unnoticed.
+[TCK.md](../TCK.md) has the method and how to run it.
 
 ### Where the stores differ
 

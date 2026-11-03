@@ -137,6 +137,21 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a path a WITH passes on gives each row its own nodes' stored dates, of a year BC too`() {
+        // #537: on Oracle, each row read the first row's path after the WITH; a stored year before 1000 is read by its era (#487).
+        query("CREATE (a:CyTemporal {id: 0, day: date('-0044-03-15')})-[:CY_NEXT]->(:CyTemporal {id: 1, day: date('2024-03-15')})-[:CY_NEXT]->(a)")
+        assertEquals(
+            listOf(listOf(listOf(-44L, 2024L), "2024-03-16", false), listOf(listOf(2024L, -44L), "-0044-03-16", true)),
+            query(
+                """
+                MATCH p = (a:CyTemporal)-[:CY_NEXT]->() WITH p, a ORDER BY a.id
+                RETURN [[x IN nodes(p) | x.day.year], toString(last(nodes(p)).day + duration('P1D')), last(nodes(p)).day < date('0001-01-01')]
+                """,
+            ),
+        )
+    }
+
+    @Test
     fun `a parameter of a time of day, a local or zoned moment, or a Date is a temporal value of its kind`() {
         val offset = java.time.ZoneOffset.ofHours(2)
         assertEquals(

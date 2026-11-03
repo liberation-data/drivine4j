@@ -59,8 +59,9 @@ sealed interface Value {
         val fromList: Boolean = false,
         /**
          * Where the statement writes it as a value of one kind, so that its kind is known when compiling, as Neo4j knows it
-         * when it plans the statement: a number, a text or a truth value written, a list or a map written, or a variable a
-         * `WITH` binds to one. Null where the statement leaves its kind open, as for a property or a parameter.
+         * when it plans the statement: a number, a text or a truth value written, a list or a map written, a function that gives
+         * a float, arithmetic of such numbers, a `CASE` of values of one such kind, an item unwound from a list written of them, or
+         * a variable a `WITH` binds to one. Null where the statement leaves its kind open, as for a property or a parameter.
          */
         val known: Known? = null,
         /**
