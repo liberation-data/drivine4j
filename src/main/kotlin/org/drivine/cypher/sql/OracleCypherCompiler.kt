@@ -687,10 +687,14 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         (listOf(hasLabel(labels, all.first())) + all.drop(1).map { OracleSql.holdsLabel(labels, it) }).joinToString(" AND ")
 
     /**
-     * The keys compared with `+ 0` on one side. Where a node is joined to a relationship's end by the edge table's foreign key,
-     * Oracle (23.26) drops that node from the join, and where another node's key is equal to its key, still reads the other node
-     * by the key of the node it dropped, and finds no row: `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q)` gave
-     * none. A key equal to an expression, not to a column, is not carried across the join, and [a] is still read by its key.
+     * The keys compared with `+ 0` on one side, for a node equal to a node and for the test beside `id(a) = id(b)`. Compared
+     * column to column, Oracle (23.26) rewrites the join and finds no row, in two ways. Where a node is joined to a
+     * relationship's end by the edge table's foreign key, it drops that node from the join, and still reads the other node by
+     * the key of the node it dropped: `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q)` gave none (#575). And it
+     * drops the later node's join on the primary key equal to a primary key, moving that node's label test onto the other
+     * node as the multivalue index's filter, row by row, which misses a node with more than one label:
+     * `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q` gave none (#576). A key equal to an expression, not to a column,
+     * is not carried across the join and can't eliminate it, and [a] is still read by its key.
      */
     override fun sameKey(a: String, b: String) = "$a = $b + 0"
 

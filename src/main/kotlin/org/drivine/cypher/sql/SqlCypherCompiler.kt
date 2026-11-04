@@ -390,7 +390,11 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected abstract fun keyValue(json: String): String
 
-    /** Whether the key columns [a] and [b], of two rows, hold the same key, as a test of the key beside `id(a) = id(b)`: see Oracle's. */
+    /**
+     * Whether the key columns [a] and [b], of two rows, hold the same key: a node equal to a node, and a test of the key
+     * beside `id(a) = id(b)`. A store whose planner rewrites a join on key = key into a wrong answer compares them in a form
+     * it can't rewrite: see Oracle's.
+     */
     protected open fun sameKey(a: String, b: String) = "$a = $b"
 
     /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
@@ -4238,7 +4242,8 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun equality(left: Value, right: Value, written: Expression? = null, plain: Boolean = true, stored: Boolean = true): String {
             (temporalBinary(Operator.EQUALS, left, right) as? Value.Bool)?.let { return it.sql }
-            if (left is Value.Node && right is Value.Node) return "${left.nid} = ${right.nid}"
+            // Through the store's key comparison: on Oracle, a plain `nid = nid` lets it drop the later node's join (#576).
+            if (left is Value.Node && right is Value.Node) return sameKey(left.nid, right.nid)
             if (left is Value.Relationship && right is Value.Relationship) return "${left.eid} = ${right.eid}"
             // A map or a list that holds a node or a relationship is equal where what it holds is, by identity.
             if ((left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null) {
