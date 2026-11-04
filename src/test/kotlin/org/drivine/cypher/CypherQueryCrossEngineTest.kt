@@ -113,6 +113,42 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an id compared where a WHERE nests, or with a value worked out, keeps the rows Cypher keeps`() {
+        // Not in the spec yet: beside drivine4j#575's test of the key, the comparison is still the one that keeps a row.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val keanu = query("MATCH (p:Person {name: 'Keanu'}) RETURN id(p)").single().let { (it as Number).toLong() }
+        val withNull = listOf(keanu, null)
+        val names = "RETURN p.name ORDER BY p.name"
+        fun rows(cypher: String, vararg parameters: Pair<String, Any?>) = query(cypher, mapOf(*parameters))
+        // OPTIONAL MATCH keeps the row, with a null, where the key is no node's.
+        assertEquals(
+            listOf(listOf("Carrie", "Keanu"), listOf("Hugo", "Keanu"), listOf("Keanu", null), listOf("Laurence", "Keanu")),
+            rows("MATCH (p:Person) OPTIONAL MATCH (q:Person) WHERE id(q) = \$id AND q.name <> p.name RETURN [p.name, q.name] ORDER BY p.name", "id" to keanu),
+        )
+        assertEquals(listOf("Keanu"), rows("MATCH (a:Person {name: 'Keanu'}) MATCH (p:Person) WHERE id(p) = id(a) + 0 $names"))
+        assertEquals(listOf("Keanu"), rows("WITH \$id AS x MATCH (p:Person) WHERE id(p) = toInteger(x) $names", "id" to keanu.toString()))
+        assertEquals(listOf(1L), rows("MATCH (p:Person) WITH min(id(p)) AS lo MATCH (q:Person) WHERE id(q) = lo RETURN count(q)"))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WITH p, count(*) AS c WHERE id(p) = \$id AND c = 1 $names", "id" to keanu))
+        // A list predicate's WHERE is read as a value: none() is null, and keeps no row, where the comparison is null.
+        assertEquals(emptyList(), rows("MATCH (p:Person) WHERE none(x IN \$ids WHERE id(p) = x) $names", "ids" to withNull))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE any(x IN \$ids WHERE id(p) = x) $names", "ids" to withNull))
+        assertEquals(listOf(0L, 1L, 0L, 0L), rows("MATCH (p:Person) RETURN size([x IN \$ids WHERE id(p) = x]) ORDER BY p.name DESC", "ids" to withNull))
+        assertEquals(
+            listOf("Carrie", "Hugo", "Laurence"),
+            rows("MATCH (p:Person) WHERE NOT EXISTS { MATCH (q:Person) WHERE id(q) = id(p) AND id(q) IN \$ids } $names", "ids" to listOf(keanu)),
+        )
+        assertEquals(listOf("Hugo", "Keanu"), rows("MATCH (p:Person) WHERE CASE WHEN id(p) IN \$ids THEN true ELSE p.name = 'Hugo' END $names", "ids" to withNull))
+        // Each row once, however often the list holds its id.
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [\$a, \$a, \$a] $names", "a" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to listOf(keanu, keanu, keanu.toDouble())))
+        listOf(-1L, -(keanu + 1).toDouble(), Long.MAX_VALUE, 1e30, true).forEach { id ->
+            assertEquals(emptyList(), rows("MATCH (p:Person) WHERE id(p) = \$id $names", "id" to id), "id(p) = $id")
+            assertEquals(emptyList(), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to listOf(id)), "id(p) IN [$id]")
+        }
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()

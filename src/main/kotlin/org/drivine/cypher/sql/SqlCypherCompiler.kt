@@ -4184,8 +4184,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * [within], an id's `IN` the list [list], with the test beside it that its [key] is the number an item is ([keyValue]): true
-         * wherever [within] is. Null is no item's key, so the test is false, not null, where an item is null and none is the id: it
-         * stands only where the row must pass the `IN`, and a row is kept where neither is true. A list of nodes, of temporal values or
+         * wherever [within] is. An item that is no number has a null key, so where none is the id the test is null, not false, as
+         * [within] is where the list holds a null: the two together keep the rows [within] keeps. A list of nodes, of temporal values or
          * of values that hold a node is compared otherwise, and has no such test.
          */
         private fun keyedIn(key: String, list: Value, within: String): String {
