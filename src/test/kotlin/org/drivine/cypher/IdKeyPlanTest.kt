@@ -145,9 +145,12 @@ abstract class IdKeyPlanContract {
     }
 
     @Test
-    fun `a node equal to a node read by its key is read by its key too, whichever side of the = it is on`() {
+    fun `a node equal to a node read by its key is read by its key too, whichever side of the = it is on`() = nodeEqualToKeyed(item)
+
+    /** That a node matched by [label], equal to one matched by it and read by its key, is read by its key too, whichever way round. */
+    protected fun nodeEqualToKeyed(label: String) {
         for (test in listOf("b = a", "a = b", "id(b) = id(a)", "id(a) = id(b)")) {
-            val statement = "MATCH (a$item) WHERE id(a) = \$id MATCH (b$item) WHERE $test RETURN b.k"
+            val statement = "MATCH (a$label) WHERE id(a) = \$id MATCH (b$label) WHERE $test RETURN b.k"
             assertKeyed(statement, mapOf("id" to id(5)), listOf(5L))
             val plan = plan(compiled(statement, mapOf("id" to id(5))))
             assertFalse(scansAny(plan, "node"), "$statement reads every node for b:\n$plan")
@@ -296,4 +299,11 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
     override fun scansAny(plan: String, table: String) = Regex("""TABLE ACCESS (STORAGE )?FULL\s*\|\s*${GRAPH.uppercase()}_${table.uppercase()}\b""").containsMatchIn(plan)
 
     override fun analyze() = OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE'); DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_EDGE'); END;")
+
+    /**
+     * With a label on each: `b`'s, tested so the index over labels can't answer it, has Oracle read `b` by its key, where it read
+     * that index for `b` once for `a`'s row (#578).
+     */
+    @Test
+    fun `a labelled node equal to a labelled node read by its key is read by its key too, whichever side of the = it is on`() = nodeEqualToKeyed(":Item")
 }

@@ -397,6 +397,14 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun sameKey(a: String, b: String) = "$a = $b"
 
+    /**
+     * Whether the labels [labels], a JSON list, hold each of [all], for a node read by its key: one whose key a condition every
+     * row must pass sets equal to the key of a node found some other way (see `Writer.readByKey`). As [hasLabels] tests them,
+     * where the store reads that node by its key anyway. A store whose planner reads the index over labels for each row of the
+     * other node instead, and filters it on the key, tests them in a form the index can't answer: see Oracle's.
+     */
+    protected open fun keyedLabels(labels: String, all: List<String>) = hasLabels(labels, all)
+
     /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
     protected abstract fun elements(json: String, alias: String): String
 
@@ -837,6 +845,9 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected class Walked(val source: String, val condition: String, val eids: String, val nids: String)
 
+    /** A test of a node's labels among a part's conditions: the entry of its `WHERE` at [at], that the labels [labels] hold each of [all]. */
+    private class LabelTest(val at: Int, val labels: String, val all: List<String>)
+
     /**
      * `reduce`: the JSON list [list] folded from [initial], the JSON each step gives of the value so far and
      * the item, as [step] writes it, as JSON; null where the list is. [name] names what the fold reads from.
@@ -1057,7 +1068,55 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun filtered(select: Select, where: Expression, anew: (Expression) -> Boolean = ::isAnew): Select {
             val (made, read) = anewBefore(select, listOf(where), whole = true, anew) ?: (select to listOf(where))
-            return made.also { it.where += condition(read.single(), it.scope) }
+            return made.also { filter(it, read.single()) }
+        }
+
+        /** The condition [where] among those [select]'s rows meet, and each node it sets equal to another read by its key: see [readByKey]. */
+        private fun filter(select: Select, where: Expression) {
+            val (sql, compared) = conditioned(where, select.scope)
+            select.where += sql
+            compared.anchors.filterTo(anchored, select::bindsNode)
+            readByKey(select, compared.pairs)
+        }
+
+        /**
+         * The keys of the nodes found by more than a key equal to another's: by a label, properties, a relationship they end, or
+         * their key compared with a value ([idEquality], [keyedIn]), each in the part that binds the node ([anchor]). Each key is
+         * a column of its own query, so this holds them for the whole statement.
+         */
+        private val anchored = mutableSetOf<String>()
+
+        /** The node whose key is [nid] found by more than its key, where [select] binds it: see [anchored]. */
+        private fun anchor(select: Select, nid: String) {
+            if (select.bindsNode(nid)) anchored += nid
+        }
+
+        /**
+         * Each node of [pairs], keys a condition [select]'s rows must pass sets equal (`a = b`, `id(a) = id(b)`), tested for
+         * its labels as [keyedLabels] tests a node read by its key, where it is the later of the two [select] binds and tests
+         * for labels, or the one of them it does where the other is [anchored]. On Oracle (23.26) the test of a label the index
+         * over labels answers had `MATCH (a:Big) MATCH (b:Big) WHERE a = b` read that index for each row of `a`, and filter it on
+         * the key, rather than read `b` by its primary key: 1.5 s over 4,000 nodes, growing with their square (#578). The earlier
+         * node keeps its test, so the index still finds it; a node equal to one found by nothing else keeps its test too, as
+         * there the index is the only way in: `MATCH (a) MATCH (b:Rare) WHERE a = b` would read every node for `b`. Either test
+         * keeps the same rows: only the plan changes.
+         *
+         * The test is written again in place, not written so as it is first added, as it is added with its pattern, before the
+         * `WHERE` that compares the keys is read; [Select.labelTest] keeps where it stands. A comparison under `NOT`, beside an
+         * `OR`, or read as a value is no key the row is found by, and leaves the test as it is ([conjoining]).
+         */
+        private fun readByKey(select: Select, pairs: List<Pair<String, String>>) {
+            for ((x, y) in pairs) {
+                if (x == y) continue
+                val (atX, atY) = select.labelled(x) to select.labelled(y)
+                val keyed = when {
+                    atX != null && atY != null -> if (atX > atY) x else y
+                    atX != null -> x.takeIf { y in anchored }
+                    atY != null -> y.takeIf { x in anchored }
+                    else -> null
+                } ?: continue
+                select.relabel(keyed, ::keyedLabels)
+            }
         }
 
         /** The rows [select] reads with a UUID made for each, in a `WITH *` of its own, and its variable's name, which is no variable of the statement's: see `project`. */
@@ -1451,8 +1510,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                     else -> throw DrivineException("${node.variable} is not a node, and is used as one in a pattern.")
                 }
-                if (node.labels.isNotEmpty()) select.where += hasLabels(value.labels, node.labels)
+                if (node.labels.isNotEmpty()) select.labelTest(value, node.labels, hasLabels(value.labels, node.labels))
                 node.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
+                if (node.labels.isNotEmpty() || node.properties != null) anchor(select, value.nid)
                 value
             }
             pattern.relationships.forEachIndexed { i, relationship ->
@@ -1476,6 +1536,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 relationship.variable?.let { select.bind(it, value) }
                 val from = bound[i].nid
                 val to = bound[i + 1].nid
+                anchor(select, from)
+                anchor(select, to)
                 select.where += when (relationship.direction) {
                     RelationshipPattern.Direction.OUTGOING -> "${value.src} = $from AND ${value.dst} = $to"
                     RelationshipPattern.Direction.INCOMING -> "${value.dst} = $from AND ${value.src} = $to"
@@ -1510,7 +1572,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // Its ends named, to find the shortest between each two of them where they were not bound before it.
             val ends = listOf(pattern.nodes.first().variable ?: SHORTEST_FROM, pattern.nodes.last().variable ?: SHORTEST_TO)
             pattern(inner, pattern.copy(nodes = listOf(pattern.nodes.first().copy(variable = ends[0]), pattern.nodes.last().copy(variable = ends[1])), shortest = null), hops)
-            where?.let { inner.where += condition(it, inner.scope) }
+            where?.let { filter(inner, it) }
             val found = inner.bound.filterKeys { it !in select.scope && it !in setOf(SHORTEST_FROM, SHORTEST_TO) }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
             val length = number(idCount(hops.single().eids))
             val (from, to) = ends.map { (inner.scope.getValue(it) as Value.Node).nid }
@@ -2045,7 +2107,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         clause is Clause.With && rebound -> having(clause).let { (with, hidden) ->
                             withHaving(select, with.copy(where = null), emptyMap(), apart = false).also { w ->
                                 bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
-                                with.where?.let { w.where += condition(it, w.scope) }
+                                with.where?.let { filter(w, it) }
                                 hidden.forEach { w.bound.remove(it) }
                             }
                         }
@@ -3104,16 +3166,34 @@ abstract class SqlCypherCompiler(graph: String) {
          * [where], a condition that keeps the rows it is true of, as SQL: within it, a comparison whose truth is all a `WHERE` reads
          * (one of its conditions joined by `AND` or `OR`) may be false where Cypher's is null, as neither keeps a row.
          */
-        fun condition(where: Expression, scope: Map<String, Value>): String {
+        fun condition(where: Expression, scope: Map<String, Value>): String = conditioned(where, scope).first
+
+        /** [condition], with the [ComparedKeys] it compares where the row must pass the comparison: its own, not a subquery's within it. */
+        private fun conditioned(where: Expression, scope: Map<String, Value>): Pair<String, ComparedKeys> {
+            val outer = comparedKeys
+            comparedKeys = ComparedKeys()
             filtering = true
             conjoining = true
             return try {
-                bool(expression(where, scope))
+                bool(expression(where, scope)) to comparedKeys
             } finally {
                 filtering = false
                 conjoining = false
+                comparedKeys = outer
             }
         }
+
+        /**
+         * The keys a condition compares where a row must pass the comparison ([conjoining]): [pairs] of keys it sets equal, and
+         * [anchors], keys it compares with a value. See [readByKey].
+         */
+        private inner class ComparedKeys {
+            val pairs = mutableListOf<Pair<String, String>>()
+            val anchors = mutableListOf<String>()
+        }
+
+        /** The [ComparedKeys] of the condition being compiled. */
+        private var comparedKeys = ComparedKeys()
 
         /** Whether the expression being compiled is read by a `WHERE` for its truth alone: see [condition]. */
         private var filtering = false
@@ -3298,7 +3378,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.PatternComprehension -> {
                 val inner = Select(scope)
                 patterns(inner, listOf(expression.pattern))
-                expression.where?.let { inner.where += condition(it, inner.scope) }
+                expression.where?.let { filter(inner, it) }
                 val projected = expression(expression.projection, inner.scope)
                 // A body that reads no variable of the pattern's own, `[(p)-->() | p.name]`, is worked out for each of the pattern's
                 // rows in a derived table, and gathered from there: an aggregate that reads only the row's columns is an aggregate of
@@ -3412,7 +3492,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun exists(patterns: List<Pattern>, where: Expression?, scope: Map<String, Value>): Value.Bool {
             val inner = Select(scope)
             patterns(inner, patterns)
-            where?.let { inner.where += condition(it, inner.scope) }
+            where?.let { filter(inner, it) }
             return Value.Bool("EXISTS (${(listOf("SELECT 1") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")})")
         }
 
@@ -4082,6 +4162,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     val equal = (if (plain) null else givenItemwise(binary.left, left, binary.right, right))
                         ?: equality(left, right, binary.right, plain, stored(binary.left, scope))
                     val keyed = if (conjunct && binary.operator == Operator.EQUALS) idEquality(binary, left, right, scope) else null
+                    // A node equal to a node, where the row must pass that, may be read by its key: see [readByKey].
+                    if (conjunct && binary.operator == Operator.EQUALS && left is Value.Node && right is Value.Node) comparedKeys.pairs += left.nid to right.nid
                     Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "NOT ($equal)" else keyed?.let { "($it AND $equal)" } ?: equal)
                 }
                 // Values of two kinds are not ordered, as in Cypher: the comparison is null. Two lists are, item by item.
@@ -4207,15 +4289,15 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * The key test to stand beside [binary], an equality of [left] and [right] where one side is an id ([idKey]): the two keys
          * the same ([sameKey]), where both are, or the key and the number the other side is ([keyValue]). Null where neither side is an id, or the other is no
-         * JSON value, which is no number.
+         * JSON value, which is no number. Each is noted in [comparedKeys], for [readByKey].
          */
         private fun idEquality(binary: Expression.Binary, left: Value, right: Value, scope: Map<String, Value>): String? {
             val (a, b) = idKey(binary.left, scope) to idKey(binary.right, scope)
             fun keyed(key: String, other: Value) = (other as? Value.Json)?.takeIf(::plainJson)?.let { "$key = ${keyValue(comparable(it))}" }
             return when {
-                a != null && b != null -> sameKey(a, b)
-                a != null -> keyed(a, right)
-                b != null -> keyed(b, left)
+                a != null && b != null -> sameKey(a, b).also { comparedKeys.pairs += a to b }
+                a != null -> keyed(a, right)?.also { comparedKeys.anchors += a }
+                b != null -> keyed(b, left)?.also { comparedKeys.anchors += b }
                 else -> null
             }
         }
@@ -4228,6 +4310,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun keyedIn(key: String, list: Value, within: String): String {
             if (list !is Value.Json || !plainJson(list)) return within
+            comparedKeys.anchors += key
             val i = alias("k")
             return "($key IN (SELECT ${keyValue(item(i))} FROM ${elementsOf(list, comparable(list), i)}) AND $within)"
         }
@@ -5143,6 +5226,26 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun bind(variable: String, value: Value) {
             bound[variable] = value
+        }
+
+        /** The tests of its [where] of the labels of each node, by the node's key, in the order they were added: see [relabel]. */
+        private val labelTests = mutableMapOf<String, MutableList<LabelTest>>()
+
+        /** The test [test], of [node]'s labels holding each of [all], among its conditions, kept where [relabel] finds it. */
+        fun labelTest(node: Value.Node, all: List<String>, test: String) {
+            labelTests.getOrPut(node.nid) { mutableListOf() } += LabelTest(where.size, node.labels, all)
+            where += test
+        }
+
+        /** Whether the node whose key is [nid] is bound here, not in a part around it. */
+        fun bindsNode(nid: String) = bound.values.any { it is Value.Node && it.nid == nid }
+
+        /** Where the node whose key is [nid], bound here, is first tested for its labels among its conditions; null where it is not. */
+        fun labelled(nid: String): Int? = labelTests[nid]?.first()?.at?.takeIf { bindsNode(nid) }
+
+        /** Each test of the labels of the node whose key is [nid] written again, as [test] gives it for its labels and those it tests. */
+        fun relabel(nid: String, test: (String, List<String>) -> String) {
+            labelTests[nid]?.forEach { where[it.at] = test(it.labels, it.all) }
         }
 
         fun source(text: String) {

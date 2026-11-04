@@ -203,6 +203,42 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a node with a label set equal to a node found before it keeps the rows Cypher keeps, in each form`() {
+        // Not in the spec yet: on Oracle the later node's labels are tested by their text, for it to be read by its key (drivine4j#578).
+        clear()
+        seed("CREATE (a:CyKey:CyOther {k: 1}), (b:CyKey:CyOther {k: 2}), (c:CyKey {k: 3}), (d:CyOther {k: 4}), (d)-[:CY_KEY]->(a), (d)-[:CY_KEY]->(c)")
+        fun count(statement: String) = query(statement).single().let { (it as Number).toLong() }
+        val m = "MATCH (a:CyKey) MATCH (b:CyKey)"
+        for (test in listOf("a = b", "b = a", "id(b) = id(a)", "id(a) = id(b)", "a = b AND b.k > 0")) {
+            assertEquals(3L, count("$m WHERE $test RETURN count(*)"), test)
+        }
+        assertEquals(3L, count("MATCH (a:CyKey), (b:CyKey) WHERE a = b RETURN count(*)"))
+        assertEquals(listOf(1L), query("MATCH (a:CyKey) WHERE a.k = 1 MATCH (b:CyKey) WHERE a = b RETURN b.k"))
+        assertEquals(listOf(1L), query("MATCH (a:CyKey {k: 1}) MATCH (b:CyKey) WHERE a = b RETURN b.k"))
+        assertEquals(2L, count("$m WHERE a = b AND b.k > 1 RETURN count(*)"))
+        // A label the other node doesn't carry, one of two, and two.
+        assertEquals(2L, count("MATCH (a:CyKey) MATCH (b:CyOther) WHERE a = b RETURN count(*)"))
+        assertEquals(2L, count("MATCH (a:CyKey) MATCH (b:CyKey:CyOther) WHERE b = a RETURN count(*)"))
+        assertEquals(2L, count("MATCH (a:CyKey:CyOther) MATCH (b:CyKey:CyOther) WHERE a = b RETURN count(*)"))
+        assertEquals(0L, count("MATCH (a:CyKey) MATCH (b:CyNone) WHERE a = b RETURN count(*)"))
+        assertEquals(2L, count("MATCH (x)-[:CY_KEY]->(a) MATCH (b:CyKey) WHERE a = b RETURN count(*)"))
+        assertEquals(1L, count("MATCH (x)-[:CY_KEY]->(a) MATCH (b:CyOther) WHERE a = b RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 2L), listOf(3L, null)),
+            query("MATCH (a:CyKey) OPTIONAL MATCH (b:CyOther) WHERE a = b RETURN [a.k, b.k] ORDER BY a.k"),
+        )
+        assertEquals(2L, count("MATCH (a:CyKey) WHERE EXISTS { MATCH (b:CyOther) WHERE a = b } RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L), listOf(3L, 0L)),
+            query("MATCH (a:CyKey) RETURN a.k AS k, COUNT { MATCH (b:CyOther) WHERE b = a } AS c ORDER BY k"),
+        )
+        // Under NOT, beside an OR, or to a node found by nothing else: the test stands as it was.
+        assertEquals(6L, count("$m WHERE NOT a = b RETURN count(*)"))
+        assertEquals(5L, count("$m WHERE a = b OR b.k = 1 RETURN count(*)"))
+        assertEquals(3L, count("MATCH (a) MATCH (b:CyKey) WHERE a = b RETURN count(*)"))
+    }
+
+    @Test
     fun `a node OPTIONAL MATCH finds none, compared to a node, is null, as a value and as a test`() {
         // Beside "A node equal to one matched before it": Oracle's key comparison, both ways round, is null where either key is (drivine4j#576).
         clear()

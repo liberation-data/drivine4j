@@ -700,6 +700,16 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      */
     override fun sameKey(a: String, b: String) = "($a = $b + 0 AND $b = $a + 0)"
 
+    /**
+     * Each label by the labels' text ([OracleSql.holdsLabel]), the form for a node found some other way, which the index over
+     * labels can't answer. With the first in the index's form ([hasLabels]), Oracle (23.26) read that index again for each row
+     * of the node the key is equal to, and filtered it on the key, rather than read the one row by the primary key, whichever
+     * way round [sameKey] writes the comparison: `MATCH (a:Big) MATCH (b:Big) WHERE a = b` took 406 ms over 2,000 nodes and
+     * 1,537 ms over 4,000, and about 2 ms and 3 ms in this form (#578). A hint naming the key's index did as well, but names
+     * the node's alias in the query block that reads it, which a statement's subqueries and `WITH`s move.
+     */
+    override fun keyedLabels(labels: String, all: List<String>) = all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }
+
     /** A number, as the key's `NUMBER`; anything else, or a number past one, null. */
     override fun keyValue(json: String) = "JSON_VALUE($json, '\$' RETURNING NUMBER NULL ON ERROR)"
 
