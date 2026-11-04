@@ -137,7 +137,10 @@ where Neo4j fails.
 A variable used as two kinds is refused too, as Neo4j refuses it: `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`
 fails with `a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.` So is one a pattern
 makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
-variable bound as something else.
+variable bound as something else. A pattern used as an expression, which tests for a match and binds nothing, is
+refused where it names a variable not bound before it, as Neo4j refuses it: `MATCH (n) WHERE (n)-[r]->() RETURN n`
+fails with `r is not defined: a pattern used as an expression binds no new variable, as in Neo4j. …`, where
+`EXISTS { (n)-[r]->() }` may bind one. So is `size()` of a pattern, `size((a)-->())`: `COUNT { … }` counts its matches.
 
 A `MERGE` fails where it would make a node or a relationship whose pattern gives a property that is null, as Neo4j
 fails it, since no `MERGE` would find it again: `MERGE (n:X {a: null})` fails with `Cannot merge the following node
