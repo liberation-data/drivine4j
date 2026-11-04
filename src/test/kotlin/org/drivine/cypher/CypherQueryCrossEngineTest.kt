@@ -375,6 +375,13 @@ abstract class CypherQueryContract {
             ),
             // Walked from its far node, the only one pinned.
             "MATCH (m:CyUn)-[:CY_UN*1]-(:CyUn {k: 3}) RETURN m.k" to listOf(2L),
+            // A quantified path pattern's step, of one hop or two, no relationship twice in it.
+            "MATCH (:CyUn {k: 1}) ((x)-[:CY_UN]-(y)){1} (m) RETURN m.k ORDER BY m.k" to listOf(1L, 2L, 2L),
+            "MATCH (:CyUn {k: 3}) ((x)-[:CY_UN]-(y)-[:CY_UN]-(z)){1} (m) RETURN m.k ORDER BY m.k" to listOf(1L, 1L),
+            // In a subquery, a pattern predicate and an OPTIONAL MATCH.
+            "MATCH (n:CyUn) RETURN [n.k, COUNT { (n)-[:CY_UN]-() }] ORDER BY n.k" to listOf(listOf(1L, 3L), listOf(2L, 3L), listOf(3L, 1L)),
+            "MATCH (n:CyUn) WHERE (n)-[:CY_UN]-(:CyUn {k: 3}) RETURN n.k" to listOf(2L),
+            "MATCH (n:CyUn) OPTIONAL MATCH (n)-[:CY_UN {i: 4}]-(m) RETURN [n.k, m.k] ORDER BY n.k" to listOf(listOf(1L, null), listOf(2L, 3L), listOf(3L, 2L)),
         )
         cases.forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
     }

@@ -27,6 +27,8 @@ class UndirectedJoinTest {
         "MATCH (n {k: 1})-[*1..3]-(m) RETURN m",
         "MATCH p = (n)-[:KNOWS*1..2]-(m) RETURN nodes(p), relationships(p)",
         "MATCH (m)-[*1..2]-(n {k: 1}) RETURN m",
+        "MATCH (n {k: 1}) ((x)-[:KNOWS]-(y)-[]-(z)){1,2} (m) RETURN m",
+        "MATCH (a {k: 1}), (b {k: 2}) MATCH p = shortestPath((a)-[*]-(b)) RETURN nodes(p)",
     )
 
     /**
