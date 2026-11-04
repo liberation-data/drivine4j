@@ -187,6 +187,37 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a node with a label compared to one matched before it, other than by =, keeps the rows Cypher keeps`() {
+        // Not in the spec yet: the forms beside "A node equal to one matched before it" that compare the two nodes' keys too,
+        // through the store's comparison of two keys, which on Oracle keeps the later node's join (drivine4j#576).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val q = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q)"
+        assertEquals(listOf("Hugo", "Keanu", "Laurence"), query("$q MATCH (c:Person) WHERE c <> q RETURN c.name ORDER BY c.name"))
+        for (test in listOf("NOT c <> q", "c IN [q]", "[c] = [q]", "{x: c} = {x: q}", "CASE c WHEN q THEN true ELSE false END")) {
+            assertEquals(listOf("Carrie"), query("$q MATCH (c:Person) WHERE $test RETURN c.name"), test)
+        }
+        assertEquals(listOf("Carrie"), query("$q OPTIONAL MATCH (c:Person) WHERE c = q RETURN c.name"))
+        assertEquals(listOf("Carrie"), query("$q WHERE EXISTS { MATCH (c:Person) WHERE c = q } RETURN q.name"))
+        assertEquals(listOf(1L), query("$q RETURN COUNT { MATCH (c:Person) WHERE c = q }"))
+    }
+
+    @Test
+    fun `a node OPTIONAL MATCH finds none, compared to a node, is null, as a value and as a test`() {
+        // Beside "A node equal to one matched before it": Oracle's key comparison, both ways round, is null where either key is (drivine4j#576).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val q = "MATCH (q:Person {name: 'Carrie'}) OPTIONAL MATCH (x:Nope)"
+        assertEquals(
+            listOf(listOf(null, null, null, null, null, null, true, true)),
+            query("$q RETURN [x = q, q = x, x <> q, NOT x = q, x = x, x IN [q], (x = q) IS NULL, coalesce(x = q, true)]"),
+        )
+        assertEquals(emptyList(), query("$q WITH q, x WHERE x = q OR NOT x = q RETURN q.name"))
+        assertEquals(listOf("Carrie"), query("$q WITH q, x WHERE (x = q) IS NULL RETURN q.name"))
+        assertEquals(listOf(listOf(4L, 12L)), query("MATCH (a:Person), (b:Person) RETURN [count(CASE WHEN a = b THEN 1 END), count(CASE WHEN NOT a = b THEN 1 END)]"))
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
