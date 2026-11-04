@@ -687,6 +687,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         (listOf(hasLabel(labels, all.first())) + all.drop(1).map { OracleSql.holdsLabel(labels, it) }).joinToString(" AND ")
 
     /**
+     * The keys compared with `+ 0` on one side. Where a node is joined to a relationship's end by the edge table's foreign key,
+     * Oracle (23.26) drops that node from the join, and where another node's key is equal to its key, still reads the other node
+     * by the key of the node it dropped, and finds no row: `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q)` gave
+     * none. A key equal to an expression, not to a column, is not carried across the join, and [a] is still read by its key.
+     */
+    override fun sameKey(a: String, b: String) = "$a = $b + 0"
+
+    /** A number, as the key's `NUMBER`; anything else, or a number past one, null. */
+    override fun keyValue(json: String) = "JSON_VALUE($json, '\$' RETURNING NUMBER NULL ON ERROR)"
+
+    /**
      * A list that holds a subquery is read from a lateral view first, [listView]: a subquery in `JSON_TABLE`'s argument
      * reads no table beside it in the `FROM`.
      */
