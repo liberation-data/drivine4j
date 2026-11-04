@@ -120,6 +120,9 @@ class OracleNodeEqualityPlanTest {
         assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q RETURN c.name", listOf("Carrie"))
         assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE q = c RETURN c.name", listOf("Carrie"))
         assertJoined("MATCH (p {name: 'Keanu'})<-[:KNOWS]-(q) MATCH (c:Person) WHERE c = q RETURN c.name", listOf("Laurence"))
+        assertJoined("MATCH (p:Person {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q RETURN c.name", listOf("Carrie"))
+        assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q), (c:Person) WHERE c = q RETURN c.name", listOf("Carrie"))
+        assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q) RETURN c.name", listOf("Carrie"))
     }
 
     companion object {

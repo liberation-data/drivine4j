@@ -203,6 +203,21 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a node OPTIONAL MATCH finds none, compared to a node, is null, as a value and as a test`() {
+        // Beside "A node equal to one matched before it": Oracle's key comparison, both ways round, is null where either key is (drivine4j#576).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val q = "MATCH (q:Person {name: 'Carrie'}) OPTIONAL MATCH (x:Nope)"
+        assertEquals(
+            listOf(listOf(null, null, null, null, null, null, true, true)),
+            query("$q RETURN [x = q, q = x, x <> q, NOT x = q, x = x, x IN [q], (x = q) IS NULL, coalesce(x = q, true)]"),
+        )
+        assertEquals(emptyList(), query("$q WITH q, x WHERE x = q OR NOT x = q RETURN q.name"))
+        assertEquals(listOf("Carrie"), query("$q WITH q, x WHERE (x = q) IS NULL RETURN q.name"))
+        assertEquals(listOf(listOf(4L, 12L)), query("MATCH (a:Person), (b:Person) RETURN [count(CASE WHEN a = b THEN 1 END), count(CASE WHEN NOT a = b THEN 1 END)]"))
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
