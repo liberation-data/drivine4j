@@ -715,6 +715,13 @@ class OracleCypherCompiler(
     override fun sameKey(a: String, b: String) = "($a = $b + 0 AND $b = $a + 0)"
 
     /**
+     * The key with `+ 0`, as [sameKey] has it: Oracle (23.26) unnests `nid IN (SELECT n1.nid FROM <nodes> n1 WHERE <label test>)`
+     * into the table itself, the label test answered by the multivalue index, and finds no row, so `MATCH (g:Gone) DETACH
+     * DELETE g` deleted nothing, and a `COUNT(*)` of the same found none (#587). The key of an expression is not rewritten so.
+     */
+    override fun inKey(key: String) = "$key + 0"
+
+    /**
      * Each label by the labels' text ([OracleSql.holdsLabel]), the form for a node found some other way, which the index over
      * labels can't answer. With the first in the index's form ([hasLabels]), Oracle (23.26) read that index again for each row
      * of the node the key is equal to, and filtered it on the key, rather than read the one row by the primary key, whichever
@@ -1399,7 +1406,6 @@ class OracleCypherCompiler(
         "    $ID NUMBER;",
         "    $COUNT NUMBER;",
         "    $FOUND BOOLEAN;",
-        "    $DOOMED JSON;",
         "    $CURSOR SYS_REFCURSOR;",
         "    ${OracleTemporalSql.NOW} TIMESTAMP;",
     ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } + listOf(

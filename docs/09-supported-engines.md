@@ -346,6 +346,10 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   Oracle dropped the later node's join and tested its label in a form that misses a node with more than one label, or
   read the other node by the key of a node it had dropped, and gave no rows
   ([#575](https://github.com/liberation-data/drivine4j/issues/575), [#576](https://github.com/liberation-data/drivine4j/issues/576)).
+- A compiled `DELETE` that reads the ids it deletes from its match (`DELETE FROM … WHERE nid IN (SELECT n1.nid + 0 …)`)
+  reads the key with `+ 0`. This works around an Oracle rewrite of the same family, seen on 23.26: Oracle unnested
+  `nid IN (SELECT n1.nid FROM <nodes> n1 WHERE <label test>)` into the table itself and found no rows, so
+  `MATCH (g:Gone) DETACH DELETE g` deleted nothing ([#587](https://github.com/liberation-data/drivine4j/issues/587)).
 - A compiled node with a label whose key a `WHERE` sets equal to another node's (`a = b`, `id(b) = id(a)`, as a
   condition the row must pass, not under `NOT` or beside an `OR`) tests its labels by their text, which the index over
   labels can't answer, where the other node is found by a label, properties, a relationship or its id: Oracle then reads

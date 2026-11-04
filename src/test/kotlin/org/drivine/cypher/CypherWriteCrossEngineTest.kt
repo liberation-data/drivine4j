@@ -398,6 +398,155 @@ abstract class CypherWriteContract {
             ),
         )
     }
+
+    /** Four nodes, `k` 1 to 4: 1, 2 and 3 in a ring of relationships `i` 1 to 3, 1 with a loop `i` 4 too, and 4 with no relationship. */
+    private fun ring() = query(
+        "CREATE (a:CyWrite {k: 1}), (b:CyWrite {k: 2}), (c:CyWrite {k: 3}), (:CyWrite {k: 4}), " +
+            "(a)-[:R {i: 1}]->(b), (b)-[:R {i: 2}]->(c), (c)-[:R {i: 3}]->(a), (a)-[:R {i: 4}]->(a)",
+    )
+
+    private fun ks() = query("MATCH (n:CyWrite) RETURN n.k ORDER BY n.k")
+
+    private fun rs() = query("MATCH ()-[r]->() RETURN r.i ORDER BY r.i")
+
+    @Test
+    fun `a DETACH DELETE deletes each node once, however many rows match it, with its relationships`() {
+        // #587: the nodes of all the rows are deleted at once. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (n:CyWrite)-[]-() DETACH DELETE n, n")
+        assertEquals(listOf(4L), ks())
+        assertEquals(emptyList(), rs())
+        // A node read by its label alone: on Oracle the delete's subquery over the node table found none (#587).
+        query("MATCH (n:CyWrite) DETACH DELETE n")
+        assertEquals(emptyList(), ks())
+        ring()
+        query("MATCH (n) DETACH DELETE n")
+        assertEquals(listOf(0L, 0L), listOf(query("MATCH (n) RETURN count(n)").single(), query("MATCH ()-[r]->() RETURN count(r)").single()))
+    }
+
+    @Test
+    fun `the rows after a DETACH DELETE are those it matched, with what was read before it`() {
+        // #587: a value worked out before the delete is read after it, and a row is given for each match. The rows are Neo4j's (2026.10).
+        ring()
+        assertEquals(listOf(1L, 1L, 2L, 3L), query("MATCH (n:CyWrite)-[r]->() WITH n, n.k AS k DETACH DELETE n RETURN k ORDER BY k"))
+        assertEquals(listOf(4L), ks())
+        assertEquals(listOf(1L), query("MATCH (n:CyWrite) DETACH DELETE n RETURN count(*)"))
+        assertEquals(emptyList(), ks())
+    }
+
+    @Test
+    fun `a DETACH DELETE after a WITH that orders and limits deletes the nodes it keeps, and an optional match's null is no node`() {
+        // #587: the nodes are read from the WITH's rows. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (n:CyWrite) WITH n ORDER BY n.k DESC LIMIT 2 DETACH DELETE n")
+        assertEquals(listOf(1L, 2L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH (n:CyWrite {k: 2}) OPTIONAL MATCH (n)-[:NONE]->(m) DETACH DELETE m")
+        assertEquals(listOf(1L, 2L), ks())
+        query("OPTIONAL MATCH ()-[r:NONE]->() DELETE r")
+        assertEquals(listOf(1L, 4L), rs())
+    }
+
+    @Test
+    fun `a DETACH DELETE that reads its ids from a match of two nodes deletes only the node the match binds`() {
+        // #587: the delete's subquery reads the node table twice, a property of each two ways, as #415's did. The rows are Neo4j's (2026.10).
+        query("CREATE (:CyWrite:N1 {k: 1, n: 1}), (:CyWrite:N2 {k: 2, n: 2})")
+        query("MATCH (a:N1), (b:N2) WHERE a.n + b.n > 0 AND a.n - b.n < 5 DETACH DELETE a")
+        assertEquals(listOf(2L), ks())
+        query("CREATE (:CyWrite:N1 {k: 3, n: 1})-[:R {i: 1}]->(:CyWrite:N2 {k: 4, n: 2})")
+        query("MATCH (a:N1)-[r]->(b:N2) WHERE a.n + b.n > 0 AND a.n - b.n < 5 DELETE r")
+        assertEquals(emptyList(), rs())
+        assertEquals(listOf(2L, 3L, 4L), ks())
+    }
+
+    @Test
+    fun `a DELETE of relationships deletes each once, one found both ways round included`() {
+        // #587: the relationships of all the rows are deleted at once. The rows are Neo4j's (2026.10).
+        ring()
+        assertEquals(listOf(5L), query("MATCH (:CyWrite)-[r]-(:CyWrite) WHERE r.i <> 2 DELETE r RETURN count(*)"))
+        assertEquals(listOf(2L), rs())
+        query("MATCH ()-[r]->() DELETE r")
+        assertEquals(emptyList(), rs())
+        assertEquals(listOf(1L, 2L, 3L, 4L), ks())
+    }
+
+    @Test
+    fun `a DELETE of nodes fails where one keeps a relationship no row deletes, and deletes nothing, and deletes them where the rows delete them all`() {
+        // #587: the nodes are deleted once every row's relationships are. The rows are Neo4j's (2026.10).
+        ring()
+        // Node 1 keeps the relationship from 3.
+        assertFailsWith<Exception> { query("MATCH (a:CyWrite {k: 1})-[r]->() DELETE r, a") }
+        assertEquals(listOf(1L, 2L, 3L, 4L), ks())
+        assertEquals(listOf(1L, 2L, 3L, 4L), rs())
+        // Each row deletes one of node 1's relationships, and node 1 is deleted once.
+        query("MATCH (a:CyWrite {k: 1})-[r]-() DELETE r, a")
+        assertEquals(listOf(2L, 3L, 4L), ks())
+        assertEquals(listOf(2L), rs())
+        // A node on each row of a cross product, deleted once.
+        query("MATCH (a:CyWrite {k: 4}), (b:CyWrite) DELETE a")
+        assertEquals(listOf(2L, 3L), ks())
+    }
+
+    @Test
+    fun `a DETACH DELETE beside a DELETE in one statement, in a CALL and in a FOREACH, deletes what Neo4j does`() {
+        // #587: in a CALL { … } and a FOREACH, each row is written alone. The rows are Neo4j's (2026.10).
+        ring()
+        // The relationship from 1 to 2 goes with node 1, and the DELETE after it finds it gone.
+        query("MATCH (a:CyWrite {k: 1})-[r]->(:CyWrite {k: 2}) DETACH DELETE a DELETE r")
+        assertEquals(listOf(2L, 3L, 4L), ks())
+        assertEquals(listOf(2L), rs())
+        assertEquals(listOf(2L), query("MATCH (n:CyWrite) WHERE n.k > 2 CALL (n) { DETACH DELETE n } RETURN count(*)"))
+        assertEquals(listOf(2L), ks())
+        query("CREATE (:CyWrite {k: 5})-[:R {i: 5}]->(:CyWrite {k: 6})")
+        query("MATCH (n:CyWrite) WITH collect(n) AS ns FOREACH (n IN ns | DETACH DELETE n)")
+        assertEquals(emptyList(), ks())
+        assertEquals(emptyList(), rs())
+    }
+
+    @Test
+    fun `a DELETE of an optional match's variable, null on some rows, deletes those of the rest, and one of no rows deletes nothing`() {
+        // #587: a null id is in the set a DELETE reads, and deletes nothing. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (a:CyWrite) OPTIONAL MATCH (a)-[r:R]->(:CyWrite {k: 2}) DELETE r")
+        assertEquals(listOf(2L, 3L, 4L), rs())
+        query("MATCH (a:CyWrite) OPTIONAL MATCH (a)-[:R]->(m:CyWrite {k: 3}) DETACH DELETE m")
+        assertEquals(listOf(1L, 2L, 4L), ks())
+        assertEquals(listOf(4L), rs())
+        // Node 4 has no relationship, so its row's is null.
+        query("MATCH (a:CyWrite) WHERE a.k IN [1, 4] OPTIONAL MATCH (a)-[r]-() DELETE r, a")
+        assertEquals(listOf(2L), ks())
+        assertEquals(emptyList(), rs())
+        query("MATCH (n:None) DELETE n")
+        assertEquals(listOf(0L), query("MATCH (n:None) DETACH DELETE n RETURN count(*)"))
+        assertEquals(listOf(2L), ks())
+    }
+
+    @Test
+    fun `the rows a DELETE leaves are written by the clauses after it, and a DELETE in a FOREACH deletes each item alone`() {
+        // #587: a DELETE leaves its rows as they were. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (n:CyWrite) WHERE n.k > 2 DETACH DELETE n WITH count(*) AS c CREATE (:CyWrite {k: 10 + c})")
+        assertEquals(listOf(1L, 2L, 12L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH (a:CyWrite {k: 1})-[r]-() WITH a, collect(r) AS rs FOREACH (r IN rs | DELETE r) WITH a DELETE a")
+        assertEquals(listOf(2L, 12L), ks())
+        assertEquals(emptyList(), rs())
+    }
+
+    @Test
+    fun `a DELETE that ends the statement after a write deletes what the rows the write left hold`() {
+        // #587: the delete reads its ids from the rows the write put back, each node or relationship joined from its table. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (n:CyWrite) WHERE n.k > 2 SET n.gone = true DETACH DELETE n")
+        assertEquals(listOf(1L, 2L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH (a:CyWrite {k: 1}) CREATE (a)-[:R {i: 9}]->(c:CyWrite {k: 9}) DETACH DELETE c")
+        assertEquals(listOf(1L, 2L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH ()-[r]->() SET r.x = 1 DELETE r")
+        assertEquals(emptyList(), rs())
+        assertEquals(listOf(1L, 2L), ks())
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {
