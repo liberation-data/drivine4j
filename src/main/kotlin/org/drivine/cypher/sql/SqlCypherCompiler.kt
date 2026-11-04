@@ -2226,7 +2226,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val ids = pattern.nodes.map { node ->
                 when (node.variable?.let { kinds[it] }) {
                     Kind.NODE -> {
-                        if (node.labels.isNotEmpty() || node.properties != null) {
+                        if (node.labels.isNotEmpty() || node.mapped) {
                             throw DrivineException("${node.variable} is bound already, so a CREATE or MERGE makes no node of it with labels or properties.")
                         }
                         idOf(ROW, key(node.variable!!))

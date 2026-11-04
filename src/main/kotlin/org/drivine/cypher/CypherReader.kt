@@ -299,7 +299,7 @@ object CypherReader {
         context.oC_Variable()?.let(::name),
         context.oC_NodeLabels()?.let(::labels).orEmpty(),
         context.oC_Properties()?.let(::properties),
-    )
+    ).also { it.mapped = context.oC_Properties() != null }
 
     private fun relationship(context: OC_RelationshipPatternContext): RelationshipPattern {
         val left = context.oC_LeftArrowHead() != null

@@ -219,7 +219,7 @@ internal object VariableKinds {
                 scope[variable] = Kind.NODE
                 return@forEach
             }
-            if (!foreach && (node.labels.isNotEmpty() || node.properties != null)) {
+            if (!foreach && (node.labels.isNotEmpty() || node.mapped)) {
                 throw DrivineException("$variable is bound already, so a CREATE or MERGE makes no node of it with labels or properties.")
             }
             if (pattern.relationships.isEmpty()) {

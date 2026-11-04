@@ -39,6 +39,22 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a CREATE or MERGE of a node bound already with an empty map of properties is refused, as Neo4j refuses it`() {
+        // #583 reads {} as no properties, but Neo4j (2026.10) still refuses it here: "Can't create node `a` with labels or properties here."
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            listOf(
+                "MATCH (a) CREATE (a {})-[:R]->(b)",
+                "MATCH (a) MERGE (a {})-[:R]->(b)",
+                "MATCH (a) FOREACH (x IN [1] | CREATE (a {})-[:R]->(b))",
+            ).forEach { cypher ->
+                val refused = assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message!!
+                assertEquals("a is bound already, so a CREATE or MERGE makes no node of it with labels or properties.", refused)
+            }
+            compiler.compile("MATCH (a) CREATE (a)-[:R {}]->(b {})")
+        }
+    }
+
+    @Test
     fun `round() compiles a precision below 0 or past 2147483647, written, negated or given, to fail on the row that rounds a number by it`() {
         // Neo4j reads the precision only when it rounds (#305), so none is refused when compiling, in both forms.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
