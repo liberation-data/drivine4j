@@ -1,6 +1,5 @@
 package org.drivine.cypher
 
-import org.drivine.backend.oracle.OracleSql
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
@@ -87,20 +86,7 @@ class OracleNodeEqualityPlanTest {
     private fun query(statement: String): List<Any?> = cypher.query(QuerySpecification.withStatement(CypherStatement(statement)))
 
     /** The plan Oracle makes for [compiled] with its outline, its values written in as literals, explained and read in one block. */
-    private fun plan(compiled: CompiledCypher): String {
-        val sql = compiled.parameters.entries.sortedByDescending { it.key.length }
-            .fold(compiled.sql) { text, (name, value) -> text.replace("\$$name", if (value == null) "NULL" else OracleSql.literal(value.toString())) }
-        val block = """
-            DECLARE
-                v_plan SYS_REFCURSOR;
-            BEGIN
-                EXECUTE IMMEDIATE ${OracleSql.text("EXPLAIN PLAN FOR $sql")};
-                OPEN v_plan FOR SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY(format => 'BASIC +OUTLINE'));
-                DBMS_SQL.RETURN_RESULT(v_plan);
-            END;
-        """.trimIndent()
-        return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
-    }
+    private fun plan(compiled: CompiledCypher) = OracleTestDatabase.plan(pm, compiled.sql, compiled.parameters, "BASIC +OUTLINE")
 
     /** That [statement] gives [expected], and that Oracle keeps the join of `c`, the later of the two nodes compared. */
     private fun assertJoined(statement: String, expected: List<Any?>) {

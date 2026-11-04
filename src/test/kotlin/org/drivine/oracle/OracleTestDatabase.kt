@@ -1,6 +1,7 @@
 package org.drivine.oracle
 
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleSql
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
@@ -42,6 +43,25 @@ object OracleTestDatabase {
 
     /** Runs each statement on its own, committed as it runs. */
     fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(it.trimIndent())) }
+
+    /**
+     * The plan Oracle makes for [sql] on [pm], its [parameters] written in as literals so that the plan is the one for them,
+     * shown in the [format] `DBMS_XPLAN.DISPLAY` takes. Explained and read in one block, so on one session.
+     */
+    fun plan(pm: NonTransactionalPersistenceManager, sql: String, parameters: Map<String, Any?>, format: String): String {
+        val literal = parameters.entries.sortedByDescending { it.key.length }
+            .fold(sql) { text, (name, value) -> text.replace("\$$name", if (value == null) "NULL" else OracleSql.literal(value.toString())) }
+        val block = """
+            DECLARE
+                v_plan SYS_REFCURSOR;
+            BEGIN
+                EXECUTE IMMEDIATE ${OracleSql.text("EXPLAIN PLAN FOR $literal")};
+                OPEN v_plan FOR SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY(format => '$format'));
+                DBMS_SQL.RETURN_RESULT(v_plan);
+            END;
+        """.trimIndent()
+        return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
+    }
 
     /** A manager for the graph [graph], with its tables made. */
     fun graphManager(graph: String, registry: SubtypeRegistry = SubtypeRegistry()): NonTransactionalPersistenceManager =

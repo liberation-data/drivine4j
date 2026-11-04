@@ -4,7 +4,6 @@ import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
-import org.drivine.backend.oracle.OracleSql
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.oracle.OracleTestDatabase
@@ -270,20 +269,7 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
     override fun compiled(cypher: String, parameters: Map<String, Any?>) = OracleCypherCompiler(GRAPH).compile(cypher, parameters)
 
     /** The plan Oracle makes for [compiled], its values written in as literals, explained and read in one block, so on one session. */
-    override fun plan(compiled: CompiledCypher): String {
-        val sql = compiled.parameters.entries.sortedByDescending { it.key.length }
-            .fold(compiled.sql) { text, (name, value) -> text.replace("\$$name", if (value == null) "NULL" else OracleSql.literal(value.toString())) }
-        val block = """
-            DECLARE
-                v_plan SYS_REFCURSOR;
-            BEGIN
-                EXECUTE IMMEDIATE ${OracleSql.text("EXPLAIN PLAN FOR $sql")};
-                OPEN v_plan FOR SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY(format => 'BASIC +PREDICATE'));
-                DBMS_SQL.RETURN_RESULT(v_plan);
-            END;
-        """.trimIndent()
-        return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
-    }
+    override fun plan(compiled: CompiledCypher) = OracleTestDatabase.plan(pm, compiled.sql, compiled.parameters, "BASIC +PREDICATE")
 
     /**
      * The key read, by its index or as the key of a join: over a graph this small, Oracle, which takes a `JSON_TABLE` to give
