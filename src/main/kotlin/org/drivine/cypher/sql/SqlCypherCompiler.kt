@@ -762,9 +762,41 @@ abstract class SqlCypherCompiler(graph: String) {
     protected fun leaves(edge: String, direction: RelationshipPattern.Direction, at: String): Pair<String, String> = when (direction) {
         RelationshipPattern.Direction.OUTGOING -> "$edge.src = $at" to "$edge.dst"
         RelationshipPattern.Direction.INCOMING -> "$edge.dst = $at" to "$edge.src"
-        // Either way, and a relationship from a node to itself once.
-        RelationshipPattern.Direction.EITHER -> "($edge.src = $at OR $edge.dst = $at)" to "CASE WHEN $edge.src = $at THEN $edge.dst ELSE $edge.src END"
+        // Either way, and a relationship from a node to itself once: read from [bothWays], or with an OR.
+        RelationshipPattern.Direction.EITHER ->
+            if (undirectedBothWays) "$edge.a = $at AND ${selfLoopOnce(edge)}" to "$edge.b"
+            else "($edge.src = $at OR $edge.dst = $at)" to "CASE WHEN $edge.src = $at THEN $edge.dst ELSE $edge.src END"
     }
+
+    /**
+     * Whether a relationship of either direction is read from [bothWays] and joined on equalities, or from the
+     * relationship table with an OR across its two directions. Postgres and Oracle read it both ways round (#570).
+     * SQLite plans the OR itself, probing the index on each end, and keeps it: see its compiler.
+     */
+    protected open val undirectedBothWays: Boolean = true
+
+    /** The rows a relationship row of [direction] is read from: [bothWays] for either way where [undirectedBothWays], else the relationship table. */
+    protected fun edgesFor(direction: RelationshipPattern.Direction): String =
+        if (direction == RelationshipPattern.Direction.EITHER && undirectedBothWays) bothWays else edges
+
+    /**
+     * The relationship rows read both ways round, for a relationship of either direction: each row once with its ends
+     * `a` and `b` as it is stored, `back` 0, and once the other way round, `back` 1. Its `src` and `dst` stay the stored
+     * ones, so the relationship keeps the direction it was written in. A step then joins on `a` and `b` with
+     * equalities, which a store can hash or index, where an OR across the two directions left Postgres comparing every
+     * pair of nodes, and Oracle reading every relationship at each step of a walk. A step reads it with [selfLoopOnce].
+     */
+    protected val bothWays: String
+        get() = "(SELECT eid, src, dst, type, props, src AS a, dst AS b, 0 AS back FROM $edges" +
+            " UNION ALL SELECT eid, src, dst, type, props, dst AS a, src AS b, 1 AS back FROM $edges)"
+
+    /**
+     * That a row [edge] of [bothWays] is a relationship from a node to itself only once, read as it is stored. It is a
+     * condition of the join, not a `WHERE` of the second half, for Postgres pushes a join's equality on `a` into the
+     * halves, and reads each by its index, only where neither half has a `WHERE` of its own: with one, it read the
+     * whole table twice at each step of a walk, ten times slower than the OR (#570).
+     */
+    protected fun selfLoopOnce(edge: String) = "($edge.back = 0 OR $edge.src <> $edge.dst)"
 
     /**
      * The joins of a walk's step from the node whose id is [at]: each hop's relationship, and each node a condition
@@ -776,7 +808,7 @@ abstract class SqlCypherCompiler(graph: String) {
         walk.nodes.first()?.let { joins += "JOIN $nodes $it ON $it.nid = $at" }
         walk.hops.forEachIndexed { i, hop ->
             val (join, far) = leaves(hop.edge, hop.direction, reached.lastOrNull() ?: at)
-            joins += "JOIN $edges ${hop.edge} ON $join"
+            joins += "JOIN ${edgesFor(hop.direction)} ${hop.edge} ON $join"
             reached += far
             walk.nodes[i + 1]?.let { joins += "JOIN $nodes $it ON $it.nid = $far" }
         }
@@ -1425,7 +1457,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 if (relationship.variable != null && select.scope[relationship.variable] != null) unsupported("A relationship variable bound before its pattern")
                 val name = alias("e")
-                select.source("$edges $name")
+                select.source("${edgesFor(relationship.direction)} $name")
                 val value = Value.Relationship("$name.eid", "$name.src", "$name.dst", "$name.type", "$name.props")
                 relationship.variable?.let { select.bind(it, value) }
                 val from = bound[i].nid
@@ -1433,8 +1465,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 select.where += when (relationship.direction) {
                     RelationshipPattern.Direction.OUTGOING -> "${value.src} = $from AND ${value.dst} = $to"
                     RelationshipPattern.Direction.INCOMING -> "${value.dst} = $from AND ${value.src} = $to"
-                    // Either way, and a relationship from a node to itself once.
-                    RelationshipPattern.Direction.EITHER -> "((${value.src} = $from AND ${value.dst} = $to) OR (${value.dst} = $from AND ${value.src} = $to))"
+                    // Either way, and a relationship from a node to itself once: read from [bothWays], or with an OR.
+                    RelationshipPattern.Direction.EITHER ->
+                        if (undirectedBothWays) "$name.a = $from AND $name.b = $to AND ${selfLoopOnce(name)}"
+                        else "((${value.src} = $from AND ${value.dst} = $to) OR (${value.dst} = $from AND ${value.src} = $to))"
                 }
                 types(value.type, relationship.types)?.let { select.where += it }
                 relationship.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }

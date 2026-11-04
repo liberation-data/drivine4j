@@ -24,6 +24,8 @@ import java.math.RoundingMode
  * - **A list of ids** is text, each id between commas (`,1,2,`), as on Oracle.
  * - **Sources are joined with `JOIN … ON TRUE`**, never `CROSS JOIN`, which SQLite takes as an order it must keep
  *   ([crossJoin]): a step's two nodes would be paired before its relationship was read.
+ * - **A relationship of either direction** is joined with an OR across its two directions, which SQLite probes by
+ *   index, not read both ways round as on Postgres and Oracle ([undirectedBothWays]).
  *
  * A statement that writes is a procedure, as on the other stores, which a function Drivine registers carries out:
  * see [procedure].
@@ -333,6 +335,14 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * it is still read after that source, as its argument needs.
      */
     override fun crossJoin(source: String) = "JOIN $source ON TRUE"
+
+    /**
+     * A relationship of either direction keeps its OR across the two directions here, which SQLite plans as a
+     * `MULTI-INDEX OR`, probing the index on each end. Read both ways round, as on Postgres and Oracle (#570), SQLite
+     * builds an index over all of it for each statement: at 20,000 nodes a walk from 20 of them took 59 ms, against
+     * 9.5 ms with the OR, and a single step 66 ms against 30.
+     */
+    override val undirectedBothWays = false
 
     /**
      * A JSON list of maps, a map for each row of [query], gathered in a subquery that may read the row it is in, and

@@ -344,6 +344,49 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a relationship of either direction is found each way round, and one from a node to itself once`() {
+        // On Postgres and Oracle it reads the relationships both ways round and joins on equalities, where it joined with an OR (#570).
+        clear()
+        seed(
+            "CREATE (a:CyUn {k: 1}), (b:CyUn {k: 2}), (c:CyUn {k: 3}), " +
+                "(a)-[:CY_UN {i: 1}]->(b), (b)-[:CY_UN {i: 2}]->(a), (a)-[:CY_UN {i: 3}]->(a), (b)-[:CY_UN {i: 4}]->(c)",
+        )
+        val cases = listOf(
+            "MATCH (n:CyUn)-[r:CY_UN]-(m) RETURN [r.i, n.k, m.k, type(r)] ORDER BY r.i, n.k" to listOf(
+                listOf(1L, 1L, 2L, "CY_UN"), listOf(1L, 2L, 1L, "CY_UN"),
+                listOf(2L, 1L, 2L, "CY_UN"), listOf(2L, 2L, 1L, "CY_UN"),
+                listOf(3L, 1L, 1L, "CY_UN"),
+                listOf(4L, 2L, 3L, "CY_UN"), listOf(4L, 3L, 2L, "CY_UN"),
+            ),
+            "MATCH (:CyUn)-[:CY_UN]-() RETURN count(*)" to listOf(7L),
+            "MATCH (a:CyUn {k: 1}), (b:CyUn {k: 2}) MATCH (a)-[r:CY_UN]-(b) RETURN r.i ORDER BY r.i" to listOf(1L, 2L),
+            "MATCH (a:CyUn {k: 1})-[r:CY_UN]-(a) RETURN r.i" to listOf(3L),
+            // Its stored direction still reads as stored: the one undirected step found, then matched directed.
+            "MATCH (:CyUn {k: 3})-[r:CY_UN]-(b) WITH r.i AS i MATCH (s)-[:CY_UN {i: i}]->(e) RETURN [i, s.k, e.k]" to listOf(listOf(4L, 2L, 3L)),
+            // A variable-length walk: each step either way, a relationship from a node to itself once.
+            "MATCH (n:CyUn {k: 1})-[:CY_UN*1..2]-(m) RETURN m.k ORDER BY m.k" to listOf(1L, 1L, 1L, 2L, 2L, 2L, 2L, 3L, 3L),
+            "MATCH (:CyUn)-[:CY_UN*1]-() RETURN count(*)" to listOf(7L),
+            "MATCH (a:CyUn {k: 1})-[:CY_UN*1]-(a) RETURN count(*)" to listOf(1L),
+            "MATCH p = (:CyUn {k: 3})-[:CY_UN*1..2]-() RETURN [[x IN nodes(p) | x.k], [r IN relationships(p) | r.i]] " +
+                "ORDER BY length(p), last(relationships(p)).i" to listOf(
+                listOf(listOf(3L, 2L), listOf(4L)),
+                listOf(listOf(3L, 2L, 1L), listOf(4L, 1L)),
+                listOf(listOf(3L, 2L, 1L), listOf(4L, 2L)),
+            ),
+            // Walked from its far node, the only one pinned.
+            "MATCH (m:CyUn)-[:CY_UN*1]-(:CyUn {k: 3}) RETURN m.k" to listOf(2L),
+            // A quantified path pattern's step, of one hop or two, no relationship twice in it.
+            "MATCH (:CyUn {k: 1}) ((x)-[:CY_UN]-(y)){1} (m) RETURN m.k ORDER BY m.k" to listOf(1L, 2L, 2L),
+            "MATCH (:CyUn {k: 3}) ((x)-[:CY_UN]-(y)-[:CY_UN]-(z)){1} (m) RETURN m.k ORDER BY m.k" to listOf(1L, 1L),
+            // In a subquery, a pattern predicate and an OPTIONAL MATCH.
+            "MATCH (n:CyUn) RETURN [n.k, COUNT { (n)-[:CY_UN]-() }] ORDER BY n.k" to listOf(listOf(1L, 3L), listOf(2L, 3L), listOf(3L, 1L)),
+            "MATCH (n:CyUn) WHERE (n)-[:CY_UN]-(:CyUn {k: 3}) RETURN n.k" to listOf(2L),
+            "MATCH (n:CyUn) OPTIONAL MATCH (n)-[:CY_UN {i: 4}]-(m) RETURN [n.k, m.k] ORDER BY n.k" to listOf(listOf(1L, null), listOf(2L, 3L), listOf(3L, 2L)),
+        )
+        cases.forEach { (cypher, rows) -> assertEquals(rows, query(cypher), cypher) }
+    }
+
+    @Test
     fun `a path an OPTIONAL MATCH or a shortest path finds in a lateral query gives each row its own nodes`() {
         // Pinned with #537; the spec has these since v0.23.0, on its own graph.
         clear()

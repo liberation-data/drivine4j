@@ -103,6 +103,27 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a relationship found either way round is set and deleted, one from a node to itself once`() {
+        // On Postgres and Oracle the write's MATCH reads the relationships both ways round (#570). The rows are Neo4j's.
+        query("CREATE (a:CyWrite {k: 1}), (b:CyWrite {k: 2}), (a)-[:UN {i: 1}]->(b), (b)-[:UN {i: 2}]->(a), (a)-[:UN {i: 3}]->(a)")
+        assertEquals(listOf(1L, 2L, 3L), query("MATCH (:CyWrite {k: 1})-[r:UN]-() SET r.seen = true RETURN r.i ORDER BY r.i"))
+        assertEquals(listOf(1L, 1L, 2L, 2L, 3L), query("MATCH (:CyWrite)-[r:UN]-() WHERE r.seen RETURN r.i ORDER BY r.i"))
+        query("MATCH (:CyWrite {k: 2})-[r:UN]-(:CyWrite {k: 1}) DELETE r")
+        assertEquals(listOf(listOf(3L, true)), query("MATCH ()-[r:UN]->() RETURN [r.i, r.seen]"))
+    }
+
+    @Test
+    fun `a MERGE either way finds one stored the other way round, one from a node to itself once, and fails as it makes a null property`() {
+        // #570 with #543: the MERGE's match reads the relationships both ways round on Postgres and Oracle; only what it makes is refused.
+        query("CREATE (a:CyWrite {k: 1}), (b:CyWrite {k: 2}), (b)-[:UN {i: 1}]->(a), (a)-[:UN {i: 2}]->(a)")
+        assertEquals(listOf(1L), query("MATCH (a:CyWrite {k: 1}), (b:CyWrite {k: 2}) MERGE (a)-[r:UN {i: 1}]-(b) ON MATCH SET r.seen = true RETURN r.i"))
+        assertEquals(listOf(2L), query("MATCH (a:CyWrite {k: 1}) MERGE (a)-[r:UN]-(a) ON MATCH SET r.seen = true RETURN r.i"))
+        val refused = assertFailsWith<Exception> { query("MATCH (a:CyWrite {k: 1}), (b:CyWrite {k: 2}) MERGE (a)-[:UN {i: a.none}]-(b)") }
+        assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { "Cannot merge the following relationship because of null property value for 'i'" in it.message.orEmpty() }, refused.toString())
+        assertEquals(listOf(listOf(1L, true), listOf(2L, true)), query("MATCH ()-[r:UN]->() RETURN [r.i, r.seen] ORDER BY r.i"))
+    }
+
+    @Test
     fun `CALLs that write, nested, give each row its own variables with the nodes they return`() {
         // Not in the spec yet: a caller row at each depth, merged with a node returned from below it.
         assertEquals(
