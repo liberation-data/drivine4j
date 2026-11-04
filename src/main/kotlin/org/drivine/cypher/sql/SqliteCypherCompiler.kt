@@ -561,7 +561,7 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     private companion object {
         /** The variables of a procedure: see [SqlCypherCompiler.ROWS] and the rest. */
-        val VARIABLES = setOf(PARAMS, ROWS, OUT, ROW, VALUE, ID, COUNT, FOUND, DOOMED) + (1..NESTING).flatMap { listOf("$SAVED$it", "$GATHERED$it", "$CALLER$it") }
+        val VARIABLES = setOf(PARAMS, ROWS, OUT, ROW, VALUE, ID, COUNT, FOUND) + (1..NESTING).flatMap { listOf("$SAVED$it", "$GATHERED$it", "$CALLER$it") }
 
         /** The records of a procedure's loops, whose `item` a step reads. */
         val RECORDS = setOf(RECORD, MATCHED)

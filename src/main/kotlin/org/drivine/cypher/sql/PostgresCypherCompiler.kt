@@ -570,7 +570,6 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $ID bigint;",
             "    $COUNT bigint;",
             "    $FOUND boolean;",
-            "    $DOOMED jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
         ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;", "    $CALLER$it jsonb;") } + listOf(
