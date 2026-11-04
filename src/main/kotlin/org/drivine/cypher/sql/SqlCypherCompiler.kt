@@ -2866,10 +2866,14 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** Whether [shared] binds a value in what [work] compiles, the names it takes and the functions it declares given back. */
+        /**
+         * Whether [shared] binds a value in what [work] compiles, the names it takes, the functions it declares and the nodes it notes
+         * as [anchored] given back: a name taken again later may be another node's, found by nothing but its key.
+         */
         private fun binds(work: () -> Unit): Boolean {
             val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
             val wasFunctions = functions.size
+            val wasAnchored = anchored.toSet()
             try {
                 work()
                 return sharedBindings > wasBindings
@@ -2878,6 +2882,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 shares = wasShares
                 sharedBindings = wasBindings
                 functions.subList(wasFunctions, functions.size).clear()
+                anchored.retainAll(wasAnchored)
             }
         }
 

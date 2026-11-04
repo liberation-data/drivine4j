@@ -97,6 +97,7 @@ class NodeEqualityTest {
         assertKeyedLabels("MATCH (a:Big) OPTIONAL MATCH (b:Big) WHERE a = b RETURN count(b)")
         assertKeyedLabels("MATCH (a:Big) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)")
         assertKeyedLabels("MATCH (a:Big) RETURN COUNT { MATCH (b:Big) WHERE b = a }")
+        assertKeyedLabels("MATCH (a:Big) RETURN [(x)-[:R]->(b:Big) WHERE b = a | b.k]")
         assertKeyedLabels("MATCH (a:Big:Other) MATCH (b:Big:Other) WHERE a = b RETURN count(*)", listOf("Big", "Other"))
         // The earlier node found by its properties, a relationship it ends, or its id, with no label.
         assertKeyedLabels("MATCH (a {k: 1}) MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
@@ -118,6 +119,10 @@ class NodeEqualityTest {
         assertScannedLabels("MATCH (a) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)", 1)
         // Passed through a WITH, the earlier node is a column of that query, whose finding the condition doesn't see.
         assertScannedLabels("MATCH (a:Big) WITH a MATCH (b:Big) WHERE a = b RETURN count(*)")
+        // An aggregate's argument compiled first only to see whether it binds a value: what it finds by a label, in the names it
+        // takes, doesn't make the node an argument compiled before it takes under the same name found by more than its key. Each
+        // EXISTS is written twice, for its count to be of the values that aren't null.
+        assertScannedLabels("MATCH (z) RETURN count(EXISTS { MATCH (u) MATCH (v:Big) WHERE u = v }) AS c, count(EXISTS { MATCH (p:Big) }) AS d", 4)
         // A node equal to itself is the only node there is.
         assertScannedLabels("MATCH (a:Big) WHERE a = a RETURN count(*)", 1)
     }
