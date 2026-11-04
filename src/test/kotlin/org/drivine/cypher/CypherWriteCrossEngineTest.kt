@@ -532,6 +532,21 @@ abstract class CypherWriteContract {
         assertEquals(listOf(2L, 12L), ks())
         assertEquals(emptyList(), rs())
     }
+
+    @Test
+    fun `a DELETE that ends the statement after a write deletes what the rows the write left hold`() {
+        // #587: the delete reads its ids from the rows the write put back, each node or relationship joined from its table. The rows are Neo4j's (2026.10).
+        ring()
+        query("MATCH (n:CyWrite) WHERE n.k > 2 SET n.gone = true DETACH DELETE n")
+        assertEquals(listOf(1L, 2L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH (a:CyWrite {k: 1}) CREATE (a)-[:R {i: 9}]->(c:CyWrite {k: 9}) DETACH DELETE c")
+        assertEquals(listOf(1L, 2L), ks())
+        assertEquals(listOf(1L, 4L), rs())
+        query("MATCH ()-[r]->() SET r.x = 1 DELETE r")
+        assertEquals(emptyList(), rs())
+        assertEquals(listOf(1L, 2L), ks())
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {
