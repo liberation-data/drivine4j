@@ -479,6 +479,8 @@ class CypherWriteOracleTest : CypherWriteContract() {
         try {
             assertEquals(listOf(listOf(false, "null")), query(write))
             assertEquals(listOf(listOf("null", "null")), query("WITH [null] AS a, [1] AS b, [null] AS c RETURN [coalesce(a = b, 'null'), coalesce(a = c, 'null')]"))
+            // The store keeps its era functions (drivine#572): a statement that calls them too is compiled again to call them and not nulls_equal.
+            assertEquals(listOf(listOf(false, "-0044-03-16")), query("CREATE (n:CyWrite {day: date('-0044-03-15') + duration('P1D')}) WITH n, [null] AS a, [1] AS b RETURN [coalesce(a = b, 'null'), toString(n.day)]"))
             OracleGraph(graph).ensure(noFunction)
             assertEquals(listOf(listOf("null", "null")), query(write))
         } finally {

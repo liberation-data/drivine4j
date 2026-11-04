@@ -50,12 +50,14 @@ class CompiledSizeTest {
     @Test
     fun `a truncation with fields of a truncation with fields compiles to a statement that writes the text of its fields once`() {
         // #469: the text a truncation makes of its fields is read twice to number its year as the store does. Written out
-        // twice, four nested compiled to about 18,000 characters on Oracle and Postgres; bound once, to about 9,000.
+        // twice, four nested compiled to about 18,000 characters on Oracle and Postgres; bound once, to about 9,000. On
+        // Oracle the store's era function (drivine#572) reads the text once, so nothing binds it, and the statement is a little
+        // longer: about 12,700, which Oracle ran in 15 seconds, where the 9,500 written inline had not been planned in 15 minutes.
         fun truncated(times: Int) =
             "RETURN " + "datetime.truncate('second', ".repeat(times) + "datetime('2017-10-11T12:31:14+01:00')" + ", {hour: 3})".repeat(times) + ".hour"
         compilers.forEach { compiler ->
             val (two, four) = listOf(2, 4).map { compiler.compile(truncated(it)).sql.length }
-            assertTrue(four < 12_000, "${compiler::class.simpleName}: $four characters")
+            assertTrue(four < 13_000, "${compiler::class.simpleName}: $four characters")
             assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
         }
     }

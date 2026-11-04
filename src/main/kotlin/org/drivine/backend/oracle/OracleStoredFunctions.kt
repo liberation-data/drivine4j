@@ -9,8 +9,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Whether a session may call the functions a graph's store keeps beside its tables (see [OracleGraph.functions]). A store
- * made by an earlier version has none until the graph is ensured again, and a user who may not make a function
- * (`CREATE PROCEDURE`) has none at all: a Cypher statement is then compiled to call none, and says so once for each graph.
+ * made by an earlier version lacks those added since until the graph is ensured again, and a user who may not make a function
+ * (`CREATE PROCEDURE`) has none at all: a Cypher statement is then compiled to call none of those it lacks, and says so
+ * once for each graph and function.
  *
  * Asked only by a statement that would call one. A session that may call it is remembered for the database, its user and
  * the graph, for as long as the JVM runs: a function dropped after that is not noticed, and a statement that calls it fails
@@ -22,13 +23,13 @@ internal object OracleStoredFunctions {
 
     private val logger = LoggerFactory.getLogger(OracleStoredFunctions::class.java)
 
-    /** The database, user and graph of each session found to call the function. */
+    /** The function, and the database, user and graph, of each session found to call it. */
     private val callable: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-    /** The database, user and graph of each session found to call none, and when ([clock]) to ask again. */
+    /** The function, and the database, user and graph, of each session found to call none, and when ([clock]) to ask again. */
     private val absent: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
 
-    /** The database, user and graph of each session that was said to have no function. */
+    /** The function, and the database, user and graph, of each session that was said to have none. */
     private val warned: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** How long a session found to call no function is taken to call none before it is asked again. */
@@ -53,13 +54,38 @@ internal object OracleStoredFunctions {
      * @throws SQLException where calling it fails for any reason but there being no function it may call
      */
     fun nullsEqual(connection: Connection, graph: String): Boolean {
-        val key = "${connection.metaData.url}|${connection.metaData.userName}|$graph"
+        val name = OracleCypherCompiler.nullsEqualName(graph)
+        return callable(connection, graph, name, "SELECT $name(JSON('[1]'), JSON('[1]')) FROM DUAL") {
+            "Until the graph is ensured by such a user, a Cypher statement that writes, or the step of a reduce(), compares two " +
+                "lists or maps that hold a null and differ as JSON as false, where Cypher may give null."
+        }
+    }
+
+    /**
+     * Whether [connection] may call both the functions the graph [graph] renumbers a year that may be BC by, as [nullsEqual]
+     * asks of its own. They are asked of together, as a statement that calls either is compiled to call neither where the
+     * session may not call one: the graph is made with both at once, and a store that has neither gives the same rows,
+     * planned more slowly. They are asked of apart from [nullsEqual]'s, which a store made by a version before them has.
+     *
+     * @throws SQLException where calling them fails for any reason but there being no function it may call
+     */
+    fun era(connection: Connection, graph: String): Boolean {
+        val era = OracleCypherCompiler.eraName(graph)
+        val eraDate = OracleCypherCompiler.eraDateName(graph)
+        return callable(connection, graph, "$era and $eraDate", "SELECT $era('0000-01-01'), $eraDate('-0001-01-01') FROM DUAL") {
+            "Until the graph is ensured by such a user, Oracle takes longer to plan a Cypher statement that reads or writes " +
+                "a date or a moment whose year may be before 1000; it gives the same rows."
+        }
+    }
+
+    /** Whether [connection] may call [name], the function or functions of [graph] that [query] calls, saying [lost] once where it may not. */
+    private fun callable(connection: Connection, graph: String, name: String, query: String, lost: () -> String): Boolean {
+        val key = "$name|${connection.metaData.url}|${connection.metaData.userName}|$graph"
         if (key in callable) return true
         val now = clock()
         if (absent[key]?.let { now - it < 0 } == true) return false
-        val name = OracleCypherCompiler.nullsEqualName(graph)
         val found = try {
-            connection.prepareStatement("SELECT $name(JSON('[1]'), JSON('[1]')) FROM DUAL").use { statement -> statement.executeQuery().use { it.next() } }
+            connection.prepareStatement(query).use { statement -> statement.executeQuery().use { it.next() } }
         } catch (e: SQLException) {
             if (e.errorCode !in NO_FUNCTION) throw e
             false
@@ -73,10 +99,8 @@ internal object OracleStoredFunctions {
         if (!found && warned.add(key)) {
             logger.warn(
                 "The Oracle graph '{}' has no function {}, which the graph is made with where its user may make a function " +
-                    "(CREATE PROCEDURE, which the RESOURCE role grants). Until the graph is ensured by such a user, a Cypher statement " +
-                    "that writes, or the step of a reduce(), compares two lists or maps that hold a null and differ as JSON as false, " +
-                    "where Cypher may give null.",
-                graph, name,
+                    "(CREATE PROCEDURE, which the RESOURCE role grants). {}",
+                graph, name, lost(),
             )
         }
         return found
