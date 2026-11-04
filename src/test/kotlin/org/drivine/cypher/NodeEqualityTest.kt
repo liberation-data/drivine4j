@@ -125,6 +125,8 @@ class NodeEqualityTest {
         assertScannedLabels("MATCH (a:Big), (b:Big) RETURN count(CASE WHEN a = b THEN 1 END)")
         // Found by nothing but the key: the index over labels is the way in, to b, and the earlier node is read by its key.
         assertScannedLabels("MATCH (a) MATCH (b:Big) WHERE a = b RETURN count(*)", 1)
+        // An empty map of properties finds a node by nothing, as no map does (#583).
+        assertScannedLabels("MATCH (a {}) MATCH (b:Big) WHERE a = b RETURN count(*)", 1)
         assertScannedLabels("MATCH (a) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)", 1)
         // Passed through a WITH, the earlier node is a column of that query, whose finding the condition doesn't see.
         assertScannedLabels("MATCH (a:Big) WITH a MATCH (b:Big) WHERE a = b RETURN count(*)")
