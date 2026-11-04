@@ -139,11 +139,14 @@ class OracleNamesTest {
         val functionsChecked = ensuring.indexOf("SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = 'MYGRAPH_NULLS_EQUAL' AND status = 'VALID';")
         assertTrue(functionsChecked > ensuring.lastIndexOf("make(${OracleSql.literal(graph.ddl.last())});"), ensuring)
         assertTrue(ensuring.contains("PRAGMA EXCEPTION_INIT(e_denied, -1031);"))
-        assertEquals(listOf("myGraph_nulls_equal"), graph.functions.map { it.substringAfter("FUNCTION ").substringBefore('(') })
-        for (statement in graph.functions) {
+        val names = listOf("myGraph_nulls_equal", "myGraph_era", "myGraph_era_date")
+        assertEquals(names, graph.functions.map { it.substringAfter("FUNCTION ").substringBefore('(') })
+        // Each is looked for, and made, on its own: a store an earlier version made may have one and not the others.
+        for ((name, statement) in names.zip(graph.functions)) {
             assertTrue(statement.startsWith("CREATE OR REPLACE FUNCTION "), statement)
+            val checked = ensuring.indexOf("SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${name.uppercase()}' AND status = 'VALID';")
             val wrapped = ensuring.indexOf("BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(statement)}; EXCEPTION WHEN e_denied THEN NULL; END;")
-            assertTrue(wrapped > functionsChecked, "wraps: $statement")
+            assertTrue(checked >= functionsChecked && wrapped > checked, "wraps: $statement")
         }
         assertEquals(graph.functions.size, Regex("BEGIN EXECUTE IMMEDIATE ").findAll(ensuring).count())
         // Nothing in the block is read as a parameter: the JSON paths are inside literals.

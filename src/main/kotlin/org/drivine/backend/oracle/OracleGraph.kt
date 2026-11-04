@@ -68,8 +68,26 @@ internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
      */
     val nullsEqual: String = OracleCypherCompiler.nullsEqualName(name)
 
-    /** What makes [nullsEqual]: safe to run again. */
-    val functions: List<String> = listOf("CREATE OR REPLACE ${OracleCypherCompiler.nullsEqualFunction(nullsEqual)}")
+    /**
+     * The functions a compiled Cypher statement renumbers a year that may be BC by, as it reads an ISO text ([era]) and as
+     * it writes one ([eraDate]): each reads its text once, where the SQL it stands for read it three or four times, which
+     * Oracle took far longer to plan (see `OracleTemporalSql.era`). Drivine for TypeScript and for Python make them byte
+     * for byte alike.
+     */
+    val era: String = OracleCypherCompiler.eraName(name)
+
+    /** See [era]. */
+    val eraDate: String = OracleCypherCompiler.eraDateName(name)
+
+    /** Each function the store keeps beside the graph's tables, by name, and what makes it: safe to run again. */
+    private val made: Map<String, String> = linkedMapOf(
+        nullsEqual to OracleCypherCompiler.nullsEqualFunction(nullsEqual),
+        era to OracleCypherCompiler.eraFunction(era),
+        eraDate to OracleCypherCompiler.eraDateFunction(eraDate),
+    ).mapValues { (_, function) -> "CREATE OR REPLACE $function" }
+
+    /** What makes [nullsEqual], [era] and [eraDate]: safe to run again. */
+    val functions: List<String> = made.values.toList()
 
     /**
      * The block that makes the store when it is not there, and does nothing when it is. The
@@ -83,9 +101,9 @@ internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
      * Oracle's DDL does not wait for a lock unless the session is told to, and telling it would outlast
      * the block on a pooled connection.
      *
-     * The [functions] are made where they are not there, or not valid, so a store an earlier version made gains them. A user
-     * who may not make a function (`ORA-01031`: making one takes `CREATE PROCEDURE`, which the `RESOURCE` role grants) still
-     * has the store made: a statement then compares as it would without them (see `JdbcConnection`).
+     * Each of the [functions] is made where it is not there, or not valid, so a store an earlier version made gains those it
+     * lacks. A user who may not make a function (`ORA-01031`: making one takes `CREATE PROCEDURE`, which the `RESOURCE` role
+     * grants) still has the store made: a statement then calls none of those it lacks (see `JdbcConnection`).
      */
     val ensuring: String = """
         DECLARE
@@ -115,10 +133,14 @@ internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
             IF v_made = 0 THEN
         ${ddl.joinToString("\n") { "        make(${OracleSql.literal(it)});" }}
             END IF;
-            SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${nullsEqual.uppercase()}' AND status = 'VALID';
-            IF v_made = 0 THEN
-        ${functions.joinToString("\n") { "        BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(it)}; EXCEPTION WHEN e_denied THEN NULL; END;" }}
-            END IF;
+${made.entries.joinToString("\n") { (function, making) ->
+            listOf(
+                "SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${function.uppercase()}' AND status = 'VALID';",
+                "IF v_made = 0 THEN",
+                "    BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(making)}; EXCEPTION WHEN e_denied THEN NULL; END;",
+                "END IF;",
+            ).joinToString("\n") { "            $it" }
+        }}
         END;
     """.trimIndent()
 

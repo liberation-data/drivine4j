@@ -1,5 +1,6 @@
 package org.drivine.cypher
 
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.connection.DatabaseType
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.connection.Neo4jConnectionProvider
@@ -91,6 +92,19 @@ abstract class CypherTemporalContract {
         assertEquals(
             listOf(listOf("-0044-03-16", -44L, "-0043-03-15T12:00:00+02:00", true)),
             query("MATCH (n:CyTemporal) RETURN [toString(n.day + duration('P1D')), n.day.year, toString(n.at + duration('P1Y')), n.day < date('0001-01-01')]"),
+        )
+    }
+
+    @Test
+    fun `a year before 1 is numbered as Neo4j numbers it in a statement that writes, and in the step of a reduce`() {
+        // drivine#572: on Oracle, a block's queries and a reduce's own function call the store's era functions too.
+        assertEquals(
+            listOf(listOf("-0044-03-16", -44L, "0001-01-01")),
+            query("CREATE (n:CyTemporal {id: 'w', day: date('-0044-03-15') + duration('P1D')}) RETURN [toString(n.day), n.day.year, toString(date('0000-12-31') + duration('P1D'))]"),
+        )
+        assertEquals(
+            listOf("-0044-03-16,0001-01-01,0500-03-16,"),
+            query("RETURN reduce(s = '', d IN [date('-0044-03-15'), date('0000-12-31'), date('0500-03-15')] | s + toString(d + duration('P1D')) + ',')"),
         )
     }
 
@@ -496,6 +510,39 @@ class CypherTemporalOracleTest : CypherTemporalContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = OracleTestDatabase.clear(manager)
+}
+
+/**
+ * The same on a store without the functions that renumber a year BC (see `OracleGraph.era`), as one an earlier version
+ * made, or whose user may not make a function, has: each statement is compiled to renumber it inline, and gives the same
+ * rows (drivine#572).
+ */
+@OracleTests
+class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
+    private val graph = "cy_no_era"
+
+    private val manager = OracleTestDatabase.graphManager(graph).also { manager ->
+        // Its provider makes the graph's functions before its first connection: they are dropped after it.
+        manager.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        OracleTestDatabase.drop("FUNCTION ${OracleGraph(graph).era}", "FUNCTION ${OracleGraph(graph).eraDate}")
+    }
+
+    override val pm: PersistenceManager get() = manager
+
+    override fun clear() = OracleTestDatabase.clear(manager)
+
+    @Test
+    fun `a statement that would call the era functions and nulls_equal is compiled to call only nulls_equal`() {
+        // The store keeps nulls_equal and not the era functions: a write that compares [null] with [1] gives null, as Cypher does.
+        assertEquals(
+            listOf(listOf("null", "-0044-03-16")),
+            manager.query(
+                QuerySpecification.withStatement(
+                    CypherStatement("CREATE (n:CyTemporal {id: 'm', day: date('-0044-03-15') + duration('P1D')}) WITH n, [null] AS a, [1] AS b RETURN [coalesce(a = b, 'null'), toString(n.day)]"),
+                ),
+            ),
+        )
+    }
 }
 
 class CypherTemporalSqliteTest : CypherTemporalContract() {
