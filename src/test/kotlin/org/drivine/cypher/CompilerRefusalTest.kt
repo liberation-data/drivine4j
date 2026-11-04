@@ -67,6 +67,13 @@ class CompilerRefusalTest {
                 "MATCH (n) WHERE (n)-[r:REL*0..2]->(a {num: 5}) RETURN n" to "r",
                 "MATCH (n) WHERE (n)-->(a) RETURN n" to "a",
                 "MATCH (n) WHERE NOT (n)-[:R]->(:C)<-[s:R]-(n) RETURN n" to "s",
+                // Checked on Neo4j: within a pattern comprehension's or a COUNT { }'s WHERE, past a WITH that drops it, and
+                // in a CALL that imports it not; and in size(), before size() of a pattern is.
+                "MATCH (n) RETURN [(n)-->(b) WHERE (b)-->(c) | b]" to "c",
+                "MATCH (n) WHERE COUNT { (n)-->(m) WHERE (m)-->(z) } > 0 RETURN n" to "z",
+                "MATCH (n)-->(m) WITH n MATCH (x) WHERE (x)-->(m) RETURN x" to "m",
+                "MATCH (n) CALL () { MATCH (m) WHERE (n)-->(m) RETURN m } RETURN m" to "n",
+                "MATCH (n) RETURN size((n)-[r]->())" to "r",
             ).forEach { (cypher, variable) ->
                 val refused = assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message!!
                 assertEquals(
@@ -83,6 +90,14 @@ class CompilerRefusalTest {
                 "MATCH (n) WITH n WHERE (n)-->() RETURN n",
                 "MATCH (n) RETURN [(n)-->(b) WHERE (b)-->() | b]",
                 "MATCH (n) WHERE EXISTS { (n)-->(a) WHERE (a)-->() } RETURN n",
+                "MATCH (n) WHERE COUNT { (n)-->(m) WHERE (m)-->(n) } > 0 RETURN n",
+                "MATCH (n) OPTIONAL MATCH (n)-->(m) WHERE (m)-->(n) RETURN n",
+                "MATCH (n) WITH collect(n) AS l MATCH (m) WHERE any(x IN l WHERE (m)-->(x)) RETURN m",
+                "MATCH (n) WITH collect(n) AS l RETURN [x IN l WHERE (x)-->() | x]",
+                "MATCH (n) UNWIND [n] AS x MATCH (m) WHERE (m)-->(x) RETURN m",
+                "MATCH (n) CALL (n) { MATCH (m) WHERE (n)-->(m) RETURN m } RETURN m",
+                "MATCH (n) CALL { WITH n MATCH (m) WHERE (n)-->(m) RETURN m } RETURN m",
+                "MATCH (n) RETURN CASE WHEN (n)-->() THEN 1 ELSE 0 END, (n)-->() AS has ORDER BY (n)-->()",
             ).forEach { cypher -> compiler.compile(cypher) }
         }
     }

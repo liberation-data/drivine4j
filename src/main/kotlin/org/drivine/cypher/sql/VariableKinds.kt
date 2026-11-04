@@ -274,8 +274,8 @@ internal object VariableKinds {
             }
             is Expression.Slice -> listOfNotNull(expression.subject, expression.from, expression.to).forEach { expression(it, scope) }
             is Expression.Function -> {
-                function(expression, scope)
                 expression.arguments.forEach { expression(it, scope) }
+                function(expression, scope)
             }
             is Expression.Case -> {
                 listOfNotNull(expression.subject, expression.otherwise).forEach { expression(it, scope) }
@@ -335,7 +335,8 @@ internal object VariableKinds {
 
     /**
      * A function of a variable whose kind it does not take, as Neo4j refuses it: `size()` of a path, and `size()` of a
-     * pattern, `size((a)-->())` (Neo4j's 42I52).
+     * pattern, `size((a)-->())` (Neo4j's 42I52). Read after its arguments, so a pattern there that names a new variable is
+     * refused for that first, as Neo4j does.
      */
     private fun function(function: Expression.Function, scope: Scope) {
         if (function.name.equals("size", ignoreCase = true) && function.arguments.singleOrNull() is Expression.PatternPredicate) {
