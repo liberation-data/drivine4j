@@ -66,6 +66,21 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `an empty map of properties in a pattern reads as none, as every node and relationship meets it`() {
+        // Read as a map, it compiled to no test at all, an empty WHERE or a dangling AND on the SQL stores (drivine4j#583).
+        for ((empty, without) in listOf(
+            "MATCH (a {}) RETURN a" to "MATCH (a) RETURN a",
+            "MATCH (a:X {})-[r:R {}]->(b {}) RETURN r" to "MATCH (a:X)-[r:R]->(b) RETURN r",
+            "MATCH (a)-[:R*1..2 {}]->(b) RETURN b" to "MATCH (a)-[:R*1..2]->(b) RETURN b",
+            "MATCH (a) WHERE EXISTS { (a)-[:R {}]->({}) } RETURN a" to "MATCH (a) WHERE EXISTS { (a)-[:R]->() } RETURN a",
+            "MERGE (a:X {}) CREATE (a)-[:R {}]->(:Y {})" to "MERGE (a:X) CREATE (a)-[:R]->(:Y)",
+        )) assertEquals(CypherReader.read(without), CypherReader.read(empty), empty)
+        // A map with a key, and a parameter's map, are still read as they are.
+        val properties = (CypherReader.read("MATCH (a {k: 1}), (b \$p) RETURN a").clauses.first() as Clause.Match).patterns.map { it.nodes.single().properties }
+        assertTrue(properties[0] is Expression.MapLiteral && properties[1] is Expression.Parameter, properties.toString())
+    }
+
+    @Test
     fun `a relationship reads its direction, alternatives and range`() {
         val match = CypherReader.read("MATCH (a)<-[r:KNOWS|LIKES*1..3]-(b)-[*2]->(c)-[*..4]-(d)-[*]-(e) RETURN a").clauses.first() as Clause.Match
         val (first, second, third, fourth) = match.patterns.single().relationships

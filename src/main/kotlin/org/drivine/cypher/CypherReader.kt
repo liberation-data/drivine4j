@@ -299,7 +299,7 @@ object CypherReader {
         context.oC_Variable()?.let(::name),
         context.oC_NodeLabels()?.let(::labels).orEmpty(),
         context.oC_Properties()?.let(::properties),
-    )
+    ).also { it.mapped = context.oC_Properties() != null }
 
     private fun relationship(context: OC_RelationshipPatternContext): RelationshipPattern {
         val left = context.oC_LeftArrowHead() != null
@@ -335,8 +335,13 @@ object CypherReader {
         }
     }
 
-    private fun properties(context: OC_PropertiesContext): Expression =
-        context.oC_MapLiteral()?.let(::map) ?: parameter(context.oC_Parameter())
+    /**
+     * A pattern's properties: a map of them, or a parameter's map. An empty map is read as none, as every node and relationship
+     * meets it, so a store compiles `(a {})` as it compiles `(a)`, and not to a test with nothing in it (#583).
+     */
+    private fun properties(context: OC_PropertiesContext): Expression? =
+        context.oC_MapLiteral()?.let(::map)?.takeUnless { it.entries.isEmpty() }
+            ?: context.oC_Parameter()?.let(::parameter)
 
     // ----- Expressions -----
 

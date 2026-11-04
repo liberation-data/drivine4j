@@ -251,6 +251,33 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an empty map of properties in a pattern matches as the pattern without it`() {
+        // Not in the spec yet: {} is met by every node and relationship, so the SQL stores compile it as no properties (drivine4j#583).
+        clear()
+        seed("CREATE (a:CyEm {k: 1})-[:CY_EM {w: 1}]->(b:CyEm {k: 2})-[:CY_EM]->(c {k: 3})")
+        for ((empty, without) in listOf(
+            "MATCH (a {}) RETURN a.k ORDER BY a.k" to "MATCH (a) RETURN a.k ORDER BY a.k",
+            "MATCH (a:CyEm {}) RETURN a.k ORDER BY a.k" to "MATCH (a:CyEm) RETURN a.k ORDER BY a.k",
+            "MATCH (a)-[r:CY_EM {}]->(b {}) RETURN [a.k, b.k] ORDER BY a.k" to "MATCH (a)-[r:CY_EM]->(b) RETURN [a.k, b.k] ORDER BY a.k",
+            "MATCH (a {k: 1})-[:CY_EM*1..2 {}]->(b) RETURN b.k ORDER BY b.k" to "MATCH (a {k: 1})-[:CY_EM*1..2]->(b) RETURN b.k ORDER BY b.k",
+            "MATCH (a {k: 1})-[:CY_EM*1..2]->(b {}) RETURN b.k ORDER BY b.k" to "MATCH (a {k: 1})-[:CY_EM*1..2]->(b) RETURN b.k ORDER BY b.k",
+            "MATCH (a {k: 1}) ((x {})-[:CY_EM {}]->(y)){1,2} (b) RETURN b.k ORDER BY b.k" to
+                "MATCH (a {k: 1}) ((x)-[:CY_EM]->(y)){1,2} (b) RETURN b.k ORDER BY b.k",
+            "MATCH (a:CyEm) WHERE EXISTS { (a)-[:CY_EM {}]->({}) } RETURN a.k ORDER BY a.k" to
+                "MATCH (a:CyEm) WHERE EXISTS { (a)-[:CY_EM]->() } RETURN a.k ORDER BY a.k",
+        )) {
+            val rows = query(without)
+            assertTrue(rows.isNotEmpty(), without)
+            assertEquals(rows, query(empty), empty)
+        }
+        // Written, {} sets nothing and MERGE finds what is there.
+        query("MERGE (n:CyEm {}) RETURN count(n)")
+        assertEquals(listOf(2L), query("MATCH (n:CyEm) RETURN count(n)"))
+        query("CREATE (:CyEmNew {})")
+        assertEquals(listOf(emptyList<String>()), query("MATCH (n:CyEmNew) RETURN keys(n)"))
+    }
+
+    @Test
     fun `a node OPTIONAL MATCH finds none, compared to a node, is null, as a value and as a test`() {
         // Beside "A node equal to one matched before it": Oracle's key comparison, both ways round, is null where either key is (drivine4j#576).
         clear()
