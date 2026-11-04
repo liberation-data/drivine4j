@@ -102,6 +102,7 @@ class NodeEqualityTest {
         assertKeyedLabels("MATCH (a {k: 1}) MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
         assertKeyedLabels("MATCH (x)-[:R]->(a) MATCH (b:Big) WHERE a = b RETURN count(*)", earlierScanned = false)
         assertKeyedLabels("MATCH (a) WHERE id(a) = \$id MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
+        assertKeyedLabels("MATCH (a) WHERE \$id = id(a) MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
         assertKeyedLabels("MATCH (a), (b:Big) WHERE id(a) IN [1, 2] AND id(b) = id(a) RETURN b", earlierScanned = false)
     }
 
@@ -117,6 +118,8 @@ class NodeEqualityTest {
         assertScannedLabels("MATCH (a) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)", 1)
         // Passed through a WITH, the earlier node is a column of that query, whose finding the condition doesn't see.
         assertScannedLabels("MATCH (a:Big) WITH a MATCH (b:Big) WHERE a = b RETURN count(*)")
+        // A node equal to itself is the only node there is.
+        assertScannedLabels("MATCH (a:Big) WHERE a = a RETURN count(*)", 1)
     }
 
     @Test
