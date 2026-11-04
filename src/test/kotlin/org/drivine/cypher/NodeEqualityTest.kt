@@ -108,6 +108,12 @@ class NodeEqualityTest {
         // The node found by its properties bound after the node with the label: that node, the earlier, is read by its key.
         val later = OracleCypherCompiler("g").compile("MATCH (b:Big) MATCH (a {k: 1}) WHERE a = b RETURN b").sql
         assertTrue(OracleSql.holdsLabel("n1.labels", "Big") in later && "JSON_EXISTS(n1.labels" !in later, later)
+        // Three nodes set equal in a chain, either order: each after the first is read by its key, the first through the index.
+        for (test in listOf("a = b AND b = c", "c = b AND b = a")) {
+            val chain = OracleCypherCompiler("g").compile("MATCH (a:Big) MATCH (b:Big) MATCH (c:Big) WHERE $test RETURN count(*)").sql
+            assertTrue("JSON_EXISTS(n1.labels" in chain && "JSON_EXISTS(n2.labels" !in chain && "JSON_EXISTS(n3.labels" !in chain, "$test\n$chain")
+            listOf("n2", "n3").forEach { assertTrue(OracleSql.holdsLabel("$it.labels", "Big") in chain, "$test\n$chain") }
+        }
     }
 
     @Test
