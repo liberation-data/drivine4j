@@ -71,14 +71,7 @@ data class CypherSpec(
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
          * taken out when the fix lands.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            "writes.yaml" to mapOf(
-                "MERGE of a null or NaN property" to listOf(
-                    Hold(543, listOf("postgres", "sqlite"), listOf(1, 2, 4, 5, 6, 8, 13)),
-                    Hold(543, listOf("oracle"), listOf(1, 2, 4, 5, 6, 8, 9, 10, 12, 13)),
-                ),
-            ),
-        )
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()

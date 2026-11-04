@@ -52,6 +52,43 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
+    fun `a MERGE that makes a null property fails with Neo4j's words, on the first row that makes one`() {
+        // #543: the spec says only that it fails, as each store wraps the message in its own; the words are Neo4j's, which names the pattern after them.
+        query("CREATE (:CyWrite {id: 1})")
+        for ((cypher, words) in listOf(
+            "UNWIND [2, null] AS v MERGE (:CyWrite {id: v})" to "Cannot merge the following node because of null property value for 'id'",
+            "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: s.none}]->(:CyWrite {id: 2})" to
+                "Cannot merge the following relationship because of null property value for 'x'",
+        )) {
+            val refused = assertFailsWith<Exception> { query(cypher) }
+            assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { words in it.message.orEmpty() }, refused.toString())
+        }
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
+    fun `a MERGE run again with its parameter bound to null fails, though it made a node with another value`() {
+        // #543: what the compiled MERGE tests depends on the value bound, so the same statement is compiled again for each.
+        val cypher = "MERGE (n:CyWrite {x: \$p}) RETURN n.x"
+        assertEquals(listOf(2L), query(cypher, mapOf("p" to 2L)))
+        assertFailsWith<Exception> { query(cypher, mapOf("p" to null)) }
+        assertEquals(listOf(2L), query(cypher, mapOf("p" to 2L)))
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
+    fun `a MERGE that works its property out as NaN fails and writes nothing`() {
+        // #543 with #563: NaN worked out in the statement, by a float divided by zero or toFloat of Java's name for it, as Neo4j gives it.
+        query("CREATE (:CyWrite {id: 1, zero: 0.0})")
+        for (cypher in listOf(
+            "MERGE (n:CyWrite {id: 2, x: 0.0 / 0.0})",
+            "MERGE (n:CyWrite {id: 2, x: toFloat('NaN')})",
+            "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: s.zero / s.zero}]->(:CyWrite {id: 2})",
+        )) assertFailsWith<Exception>(cypher) { query(cypher) }
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
     fun `a write's rows group a key's value that is no null as before`() {
         // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
