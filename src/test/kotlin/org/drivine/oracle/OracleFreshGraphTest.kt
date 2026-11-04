@@ -44,7 +44,7 @@ class OracleFreshGraphTest {
         // is had first, so the graph is dropped after it, and what is asked here finds no tables, as it
         // would through a provider of the application's own.
         manager.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
-        OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${graph}_nulls_equal")
+        OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${graph}_nulls_equal", "FUNCTION ${graph}_era", "FUNCTION ${graph}_era_date")
     }
 
     @Test
@@ -85,6 +85,51 @@ class OracleFreshGraphTest {
     }
 
     @Test
+    fun `the graph is made with the functions a Cypher statement renumbers a year BC by`() {
+        // drivine#572: each reads its text once, where the SQL it stands for read it three or four times.
+        OracleGraph(graph).ensure(manager)
+        val era = OracleGraph(graph).era
+        val eraDate = OracleGraph(graph).eraDate
+        val read = listOf("'0000-03-15'", "'-0044-03-15T12:00:00'", "'0999-12-31'", "'2024-03-15'", "NULL").joinToString(" || ',' || ") { "NVL($era($it), 'null')" }
+        val written = listOf("'-0001-03-15'", "'-0045-03-15T12:00:00'", "'0999-12-31'", "'2024-03-15'", "NULL").joinToString(" || ',' || ") { "NVL($eraDate($it), 'null')" }
+        assertEquals(
+            listOf("-0001-03-15,-0045-03-15T12:00:00,0999-12-31,2024-03-15,null", "0000-03-15,-0044-03-15T12:00:00,0999-12-31,2024-03-15,null"),
+            manager.query(QuerySpecification.withStatement("SELECT $read AS r FROM DUAL UNION ALL SELECT $written FROM DUAL")),
+        )
+    }
+
+    @Test
+    fun `a store an earlier version made gains the functions it lacks when the graph is ensured`() = withSession("fresh_upgrade") { connection ->
+        // A store made before drivine#572 has its nulls_equal and not the era functions: ensured, it gains them, and keeps the other.
+        val g = "fresh_upgrade"
+        val ensuring = NonTransactionalPersistenceManager(
+            JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
+        )
+        OracleGraph(g).ensure(ensuring)
+        OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).era}", "FUNCTION ${OracleGraph(g).eraDate}")
+        assertFalse(OracleStoredFunctions.era(connection, g))
+        assertTrue(OracleStoredFunctions.nullsEqual(connection, g))
+        OracleGraph(g).ensure(ensuring)
+        assertTrue(OracleStoredFunctions.era(connection, g))
+        fun made() = connection.createStatement().use { s ->
+            s.executeQuery("SELECT LISTAGG(object_name, ',') WITHIN GROUP (ORDER BY object_name) FROM user_objects WHERE object_type = 'FUNCTION' AND status = 'VALID' AND object_name LIKE 'FRESH\\_UPGRADE\\_%' ESCAPE '\\'")
+                .use { it.next(); it.getString(1) }
+        }
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL", made())
+        // One of the two missing is made on its own; asked of together, the two are callable once both are there.
+        OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).eraDate}")
+        OracleGraph(g).ensure(ensuring)
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL", made())
+    }
+
+    @Test
+    fun `a session that may call only one of the era functions is taken to call neither`() = withSession("fresh_half") { connection ->
+        val g = "fresh_half"
+        connection.createStatement().use { it.execute(OracleGraph(g).functions[1]) }
+        assertFalse(OracleStoredFunctions.era(connection, g))
+    }
+
+    @Test
     fun `a function of the graph's name that is not valid is made again`() {
         val f = OracleGraph(graph).nullsEqual
         OracleTestDatabase.run("BEGIN EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION $f RETURN NUMBER IS BEGIN RETURN nope; END;'; EXCEPTION WHEN OTHERS THEN NULL; END;")
@@ -112,6 +157,9 @@ class OracleFreshGraphTest {
             fun query(cypher: String) = restricted.query(QuerySpecification.withStatement(CypherStatement(cypher)))
             assertEquals(listOf(listOf(false, "null")), query("CREATE (n:CyWrite) WITH n, [null] AS a, [1] AS b, [null] AS c RETURN [coalesce(a = b, 'null'), coalesce(a = c, 'null')]"))
             assertEquals(listOf(listOf("null", "null")), query("WITH [null] AS a, [1] AS b, [null] AS c RETURN [coalesce(a = b, 'null'), coalesce(a = c, 'null')]"))
+            // A year BC is renumbered inline, as before the store kept its era functions (drivine#572).
+            assertEquals(listOf(listOf("0000-12-31", "-0044-03-16", -44L)), query("RETURN [toString(date('0001-01-01') - duration('P1D')), toString(date('-0044-03-15') + duration('P1D')), date('-0044-03-15').year]"))
+            assertEquals(listOf("-0044-03-16"), query("CREATE (n:CyTemporal {day: date('-0044-03-15') + duration('P1D')}) RETURN toString(n.day)"))
         } finally {
             provider.end()
             asSystem("DROP USER IF EXISTS $user CASCADE")
@@ -120,13 +168,14 @@ class OracleFreshGraphTest {
 
     /** A connection of the test user's own, as a statement's session is, and [graph]'s function made by nothing. */
     private fun withSession(graph: String, block: (java.sql.Connection) -> Unit) {
-        OracleTestDatabase.drop("FUNCTION ${OracleGraph(graph).nullsEqual}")
+        val functions = OracleGraph(graph).let { listOf(it.nullsEqual, it.era, it.eraDate) }.map { "FUNCTION $it" }.toTypedArray()
+        OracleTestDatabase.drop(*functions)
         val clock = OracleStoredFunctions.clock
         try {
             DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword()).use(block)
         } finally {
             OracleStoredFunctions.clock = clock
-            OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${OracleGraph(graph).nullsEqual}")
+            OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", *functions)
         }
     }
 
@@ -135,7 +184,7 @@ class OracleFreshGraphTest {
         // #270: a store without the function would otherwise pay a query and a second compile on every statement.
         val g = "fresh_absent"
         assertFalse(OracleStoredFunctions.nullsEqual(connection, g))
-        connection.createStatement().use { it.execute(OracleGraph(g).functions.single()) }
+        connection.createStatement().use { it.execute(OracleGraph(g).functions.first()) }
         assertFalse(OracleStoredFunctions.nullsEqual(connection, g), "a session found to call none is remembered")
         val now = System.nanoTime()
         OracleStoredFunctions.clock = { now + OracleStoredFunctions.ABSENT_FOR.toNanos() + 1 }

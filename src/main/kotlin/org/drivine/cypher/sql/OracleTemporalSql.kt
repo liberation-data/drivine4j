@@ -5,11 +5,24 @@ package org.drivine.cypher.sql
  * and has no time of day apart from a day, so a time of day is read on 1970-01-01. Its intervals keep months
  * apart from days. `ADD_MONTHS` and `MONTHS_BETWEEN` take the last day of a month to the last day of another,
  * where Cypher keeps the day of the month, so months are added and counted from the first of the month.
+ *
+ * @param procedural whether the statement is a block, which reads its own clock
+ * @param storedEra the graph whose store keeps the functions [era] and [date] call (see `OracleCypherCompiler.eraFunction`),
+ * or null where it may keep none: then each renumbers a year BC inline
+ * @param callsStored called where [era] or [date] calls one of the store's functions
  */
 class OracleTemporalSql(
     shared: (List<String>, (List<String>) -> String) -> String,
     private val procedural: () -> Boolean,
+    storedEra: String? = null,
+    private val callsStored: () -> Unit = {},
 ) : TemporalSql(shared) {
+
+    /** The store's function [era] calls, where it keeps one. */
+    private val storedEraText = storedEra?.let(OracleCypherCompiler::eraName)
+
+    /** The store's function [date] calls, where it keeps one. */
+    private val storedEraDate = storedEra?.let(OracleCypherCompiler::eraDateName)
 
     override fun local(text: String, kind: Temporal) = when (kind) {
         Temporal.DATE -> "TO_TIMESTAMP(${eraOf(text)}, 'SYYYY-MM-DD')"
@@ -28,10 +41,20 @@ class OracleTemporalSql(
 
     /**
      * Oracle numbers a year BC from -1, with no year 0, in ISO text as in its own: so 1 BC, the year `0000`, is `-0001`,
-     * and 45 BC, the year `-0044`, is `-0045`. See [bcOnly].
+     * and 45 BC, the year `-0044`, is `-0045`. See [bcOnly]. Where the store keeps it, a function does that, the text
+     * written once: the test and the regular expression wrote it four times, and Oracle's hard parse of a statement grows
+     * with each copy, to over a minute for a subquery's temporal arithmetic (drivine#572). A function a query declares,
+     * `WITH FUNCTION`, would add its own compile to every such statement's parse, and runs in no block, nor a reduce's step.
      */
-    override fun era(text: String) = shared(listOf(text)) { (t) ->
-        bcOnly(t, "ASCII($t) < $BC_BELOW", "REGEXP_REPLACE($t, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR($t, '^-?[0-9]{4}')) - 1, 'FM0000'))")
+    override fun era(text: String): String {
+        if (storedEraText != null) {
+            if (readsAd(text)) return text
+            callsStored()
+            return "$storedEraText($text)"
+        }
+        return shared(listOf(text)) { (t) ->
+            bcOnly(t, "ASCII($t) < $BC_BELOW", "REGEXP_REPLACE($t, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR($t, '^-?[0-9]{4}')) - 1, 'FM0000'))")
+        }
     }
 
     /**
@@ -44,12 +67,21 @@ class OracleTemporalSql(
         else -> "TO_NUMBER(REGEXP_SUBSTR($text, '^-?[0-9]+'))"
     }
 
-    /** Where it may be BC ([bcOnly]), `SYYYY` writes a year with its sign, as Oracle numbers it. */
-    override fun date(timestamp: String, then: String) = bcOnly(
-        timestamp, "$timestamp < TIMESTAMP '0001-01-01 00:00:00'",
-        "REGEXP_REPLACE(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')), '^-[0-9]{4}', TO_CHAR(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000'))",
-        super.date(timestamp, then),
-    )
+    /**
+     * Where it may be BC ([bcOnly]), `SYYYY` writes a year with its sign, as Oracle numbers it. Where the store keeps it, a
+     * function renumbers it, the timestamp written once (see [era]).
+     */
+    override fun date(timestamp: String, then: String): String {
+        if (storedEraDate != null && !readsAd(timestamp)) {
+            callsStored()
+            return "$storedEraDate(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')))"
+        }
+        return bcOnly(
+            timestamp, "$timestamp < TIMESTAMP '0001-01-01 00:00:00'",
+            "REGEXP_REPLACE(LTRIM(TO_CHAR($timestamp, 'SYYYY-MM-DD$then')), '^-[0-9]{4}', TO_CHAR(EXTRACT(YEAR FROM $timestamp) + 1, 'FM0000'))",
+            super.date(timestamp, then),
+        )
+    }
 
     /**
      * The clock as a query starts. A block reads it once, into its variable [NOW], where each statement of the block

@@ -131,18 +131,21 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
     }
 
     /**
-     * A store an earlier version made has its tables and not the function a compiled Cypher statement compares values
-     * that may hold a null by: a provider's first connection makes it, and a session found to call none is asked again.
+     * A store an earlier version made has its tables and not the functions a compiled Cypher statement compares values
+     * that may hold a null, and renumbers a year BC, by: a provider's first connection makes them, and a session found to
+     * call none is asked again.
      */
     @Test
-    fun `a store with its tables and not its function gains the function on a provider's first connection`() {
+    fun `a store with its tables and not its functions gains them on a provider's first connection`() {
         open().connect().release()
         DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), user, PASSWORD).use { session ->
-            session.createStatement().use { it.execute("DROP FUNCTION drivine_nulls_equal") }
+            session.createStatement().use { s -> listOf("drivine_nulls_equal", "drivine_era", "drivine_era_date").forEach { s.execute("DROP FUNCTION $it") } }
             assertFalse(OracleStoredFunctions.nullsEqual(session, "drivine"))
+            assertFalse(OracleStoredFunctions.era(session, "drivine"))
 
             open().connect().release()
             assertTrue(OracleStoredFunctions.nullsEqual(session, "drivine"), "asked again once the provider has ensured the graph")
+            assertTrue(OracleStoredFunctions.era(session, "drivine"), "asked again once the provider has ensured the graph")
         }
     }
 

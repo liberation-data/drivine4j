@@ -30,8 +30,14 @@ import java.util.IdentityHashMap
  *
  * @param nullsEqualStored whether two values that may hold a null are compared by the function the store keeps
  * beside the graph's tables, [nullsEqualName]: see [nullsEqual].
+ * @param eraStored whether a text or a timestamp whose year may be BC is renumbered by the functions the store keeps beside
+ * the graph's tables, [eraName] and [eraDateName]: see [OracleTemporalSql.era].
  */
-class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean = true) : SqlCypherCompiler(graph) {
+class OracleCypherCompiler(
+    graph: String,
+    private val nullsEqualStored: Boolean = true,
+    eraStored: Boolean = true,
+) : SqlCypherCompiler(graph) {
 
     /** The function the store keeps that compares two values that may hold a null: see [nullsEqual]. */
     private val storedNullsEqual = nullsEqualName(graph)
@@ -41,6 +47,14 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * user who may not make a function, does not have: compiled again with `nullsEqualStored = false`, it calls none.
      */
     var callsStoredNullsEqual = false
+        private set
+
+    /**
+     * Whether the statement compiled calls [eraName]'s or [eraDateName]'s function, which a store made by an earlier
+     * version, or by a user who may not make a function, does not have: compiled again with `eraStored = false`, it calls
+     * neither, and renumbers a year BC inline, as it gives the same rows but takes Oracle longer to plan.
+     */
+    var callsStoredEra = false
         private set
 
     override fun literalJson(value: Any?) =
@@ -1192,7 +1206,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
     }
 
-    override val temporalSql = OracleTemporalSql(sharedList) { procedural }
+    override val temporalSql = OracleTemporalSql(sharedList, { procedural }, if (eraStored) graph else null) { callsStoredEra = true }
 
     /**
      * Oracle merges a view of no table into the subquery that reads it, and where that subquery is bound in
@@ -1528,6 +1542,56 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** The function the store keeps beside the graph [graph]'s tables that compares two values that may hold a null: see [nullsEqual]. */
         internal fun nullsEqualName(graph: String) = "${graph}_nulls_equal"
+
+        /** The function the store keeps beside the graph [graph]'s tables that renumbers the year of an ISO text as Oracle does: see [eraFunction]. */
+        internal fun eraName(graph: String) = "${graph}_era"
+
+        /** The function the store keeps beside the graph [graph]'s tables that renumbers the year Oracle writes as ISO 8601 does: see [eraDateFunction]. */
+        internal fun eraDateName(graph: String) = "${graph}_era_date"
+
+        /**
+         * The function [name], which gives the ISO 8601 text `t` of a date or a moment whose year may be BC as Oracle numbers
+         * that year, with no year 0: the year `0000` (1 BC) as `-0001`, and `-0044` (45 BC) as `-0045`. Any other text, and
+         * null, it gives as it is. A text whose first character's code is below [TemporalSql.BC_BELOW] starts with `-` or `0`,
+         * as one with a year BC does. See `OracleTemporalSql.era`, which calls it where the store keeps it: the text is
+         * written once, where the test and the regular expression it stands for wrote it four times, and Oracle's hard parse
+         * of a statement grows with each copy (drivine#572).
+         *
+         * The store's copy is part of the store layout the three libraries share (see AGENTS.md), as [nullsEqualFunction]'s
+         * is: it is `CREATE OR REPLACE ` and this text with [name] as [eraName] gives it, the graph's name as written and then
+         * `_era`, its lines joined by `\n` with no newline after the last. Changing a byte of it changes the layout for all
+         * three, so it changes in all three together.
+         */
+        internal fun eraFunction(name: String): String = listOf(
+            "FUNCTION $name(t VARCHAR2) RETURN VARCHAR2 DETERMINISTIC IS",
+            "BEGIN",
+            "    IF ASCII(t) < ${TemporalSql.BC_BELOW} THEN",
+            "        RETURN REGEXP_REPLACE(t, '^(-[0-9]{4}|0000)', TO_CHAR(TO_NUMBER(REGEXP_SUBSTR(t, '^-?[0-9]{4}')) - 1, 'FM0000'));",
+            "    END IF;",
+            "    RETURN t;",
+            "END;",
+        ).joinToString("\n")
+
+        /**
+         * The function [name], which gives the text `t` that `LTRIM(TO_CHAR(…, 'SYYYY-MM-DD…'))` writes of a timestamp,
+         * its year numbered as ISO 8601 numbers it where it is BC: Oracle's `-0001` (1 BC) as `0000`, and `-0045` (45 BC) as
+         * `-0044`. Any other text, and null, it gives as it is. See `OracleTemporalSql.date`, which calls it where the store
+         * keeps it: the timestamp is written once, where the test and the regular expression it stands for wrote it three times.
+         *
+         * The store's copy is part of the store layout the three libraries share (see AGENTS.md), as [nullsEqualFunction]'s
+         * is: it is `CREATE OR REPLACE ` and this text with [name] as [eraDateName] gives it, the graph's name as written and
+         * then `_era_date`, its lines joined by `\n` with no newline after the last. Changing a byte of it changes the layout
+         * for all three, so it changes in all three together.
+         */
+        internal fun eraDateFunction(name: String): String = listOf(
+            "FUNCTION $name(t VARCHAR2) RETURN VARCHAR2 DETERMINISTIC IS",
+            "BEGIN",
+            "    IF SUBSTR(t, 1, 1) = '-' THEN",
+            "        RETURN TO_CHAR(TO_NUMBER(SUBSTR(t, 1, 5)) + 1, 'FM0000') || SUBSTR(t, 6);",
+            "    END IF;",
+            "    RETURN t;",
+            "END;",
+        ).joinToString("\n")
 
         /**
          * The function [name], which compares two JSON values as Cypher compares values that may hold a null: 1 where

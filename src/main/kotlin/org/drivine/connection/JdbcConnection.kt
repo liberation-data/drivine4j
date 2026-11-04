@@ -153,8 +153,11 @@ class JdbcConnection(
     private fun oracleCompiled(cypher: String, parameters: Map<String, Any?>): CompiledCypher {
         val compiler = OracleCypherCompiler(graphName)
         val compiled = compiler.compile(cypher, parameters)
-        if (!compiler.callsStoredNullsEqual || OracleStoredFunctions.nullsEqual(connection, graphName)) return compiled
-        return OracleCypherCompiler(graphName, nullsEqualStored = false).compile(cypher, parameters)
+        // Each is asked of apart: a store an earlier version made may have the one and not the others.
+        val nullsEqual = !compiler.callsStoredNullsEqual || OracleStoredFunctions.nullsEqual(connection, graphName)
+        val era = !compiler.callsStoredEra || OracleStoredFunctions.era(connection, graphName)
+        if (nullsEqual && era) return compiled
+        return OracleCypherCompiler(graphName, nullsEqualStored = nullsEqual, eraStored = era).compile(cypher, parameters)
     }
 
     /** Binds [value] to the marker at [index], counted from one. */
