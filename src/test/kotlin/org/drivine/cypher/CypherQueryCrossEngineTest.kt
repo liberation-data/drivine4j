@@ -146,6 +146,11 @@ abstract class CypherQueryContract {
             rows("MATCH (p:Person) WHERE NOT EXISTS { MATCH (q:Person) WHERE id(q) = id(p) AND id(q) IN \$ids } $names", "ids" to listOf(keanu)),
         )
         assertEquals(listOf("Hugo", "Keanu"), rows("MATCH (p:Person) WHERE CASE WHEN id(p) IN \$ids THEN true ELSE p.name = 'Hugo' END $names", "ids" to withNull))
+        // A subquery of the row's own on the other side, alone or in the list: Keanu's count is 1, and 0 is no node's id.
+        val knowsCarrie = "COUNT { (p)-[:KNOWS]->(:Person {name: 'Carrie'}) } * \$id"
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) = $knowsCarrie $names", "id" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [$knowsCarrie, null] $names", "id" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [$knowsCarrie, 'x'] $names", "id" to keanu))
         // Each row once, however often the list holds its id.
         assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [\$a, \$a, \$a] $names", "a" to keanu))
         assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to listOf(keanu, keanu, keanu.toDouble())))
