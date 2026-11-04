@@ -105,6 +105,13 @@ abstract class CypherQueryContract {
             rows("MATCH (p:Person)-[:ACTED_IN]->(m) WHERE id(p) = \$id RETURN m.title ORDER BY m.title", "id" to keanu),
         )
         assertEquals(listOf("Carrie"), rows("MATCH (p:Person {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q) RETURN c.name"))
+        assertEquals(listOf("Carrie"), rows("MATCH (p:Person {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(q) = id(c) RETURN c.name"))
+        assertEquals(listOf("The Matrix"), rows("MATCH (:Person)-[r:ACTED_IN]->() MATCH (p:Person)-[s:ACTED_IN]->(m) WHERE id(r) = \$id AND id(s) = id(r) RETURN m.title", "id" to role))
+        // Written in the statement, as a whole number, a float or one with an exponent.
+        listOf("$keanu", "$keanu.0", "${keanu}e0", "${keanu * 10}e-1").forEach { id ->
+            assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) = $id $names"), "id(p) = $id")
+        }
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [${keanu}e0, $carrie, 'x'] $names"))
         // As a value, the comparison is Cypher's: true, false or null.
         assertEquals(
             listOf(listOf("Carrie", false, true), listOf("Hugo", false, null), listOf("Keanu", true, true), listOf("Laurence", false, null)),

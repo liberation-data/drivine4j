@@ -101,6 +101,10 @@ abstract class IdKeyPlanContract {
         assertKeyed("MATCH (n$item) WHERE n.k >= 0 AND id(n) = \$id AND n.k < 100 RETURN n.k", mapOf("id" to id(5)), listOf(5L))
         // 5.0 is equal to 5, as in Cypher.
         assertKeyed("MATCH (n$item) WHERE id(n) = \$id RETURN n.k", mapOf("id" to id(5).toDouble()), listOf(5L))
+        // Written in the statement, with an exponent too.
+        assertKeyed("MATCH (n$item) WHERE id(n) = ${id(5)} RETURN n.k", emptyMap(), listOf(5L))
+        assertKeyed("MATCH (n$item) WHERE id(n) = ${id(5)}e0 RETURN n.k", emptyMap(), listOf(5L))
+        assertKeyed("MATCH (n$item) WHERE id(n) IN [${id(3)}, ${id(4)}e0] RETURN n.k ORDER BY n.k", emptyMap(), listOf(3L, 4L))
     }
 
     @Test
