@@ -19,8 +19,8 @@ import kotlin.test.assertTrue
 
 /**
  * A node equal to a node is their keys compared, through the store's own comparison of two keys. On Oracle that is `+ 0`
- * on one side: compared column to column, Oracle 23 dropped the later node's join and tested its label in a form that
- * misses a node with more than one label, so `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q` gave no rows (#576).
+ * on one side, both ways round, so either is read by its key: compared column to column, Oracle 23 dropped the later
+ * node's join and tested its label in a form that misses a node with more than one label, so `MATCH (p)-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q` gave no rows (#576).
  */
 class NodeEqualityTest {
 
@@ -28,11 +28,11 @@ class NodeEqualityTest {
     private val earlier = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE q = c RETURN c.name"
 
     @Test
-    fun `on Oracle, a node equal to a node compares the keys with + 0 on one side`() {
+    fun `on Oracle, a node equal to a node compares the keys with + 0 on one side, both ways round`() {
         val sql = OracleCypherCompiler("g").compile(later).sql
-        assertTrue("n4.nid = n2.nid + 0" in sql, sql)
+        assertTrue("(n4.nid = n2.nid + 0 AND n2.nid = n4.nid + 0)" in sql, sql)
         val other = OracleCypherCompiler("g").compile(earlier).sql
-        assertTrue("n2.nid = n4.nid + 0" in other, other)
+        assertTrue("(n2.nid = n4.nid + 0 AND n4.nid = n2.nid + 0)" in other, other)
     }
 
     @Test

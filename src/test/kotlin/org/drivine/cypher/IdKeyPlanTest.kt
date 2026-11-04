@@ -18,6 +18,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -44,6 +45,9 @@ abstract class IdKeyPlanContract {
 
     /** Whether [plan] reads every row of the table [table]. */
     abstract fun scans(plan: String, table: String): Boolean
+
+    /** Whether [plan] reads every row of the table [table] for some node, though it reads another by its key. */
+    open fun scansAny(plan: String, table: String) = scans(plan, table)
 
     /**
      * The label the statements match their nodes by, which every node carries. Oracle reads a label from the index over
@@ -139,6 +143,16 @@ abstract class IdKeyPlanContract {
         assertKeyed("MATCH ()-[r]->() WHERE elementId(r) IN \$ids RETURN r.k ORDER BY r.k", mapOf("ids" to listOf(edgeIds.getValue(3), edgeIds.getValue(4))), listOf(3L, 4L), table = "edge")
         assertKeyed("MATCH (a$item)-[r]->(b) WHERE id(a) = \$id RETURN b.k", mapOf("id" to id(5)), listOf(6L))
         assertKeyed("MATCH (a$item) WHERE id(a) = \$id MATCH (b) WHERE id(b) = id(a) RETURN b.k", mapOf("id" to id(5)), listOf(5L))
+    }
+
+    @Test
+    fun `a node equal to a node read by its key is read by its key too, whichever side of the = it is on`() {
+        for (test in listOf("b = a", "a = b", "id(b) = id(a)", "id(a) = id(b)")) {
+            val statement = "MATCH (a$item) WHERE id(a) = \$id MATCH (b$item) WHERE $test RETURN b.k"
+            assertKeyed(statement, mapOf("id" to id(5)), listOf(5L))
+            val plan = plan(compiled(statement, mapOf("id" to id(5))))
+            assertFalse(scansAny(plan, "node"), "$statement reads every node for b:\n$plan")
+        }
     }
 
     @Test
@@ -289,8 +303,11 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
 
     /** A scan of the table, or of an index, that reads no row by its key: each row is compared with each id. */
     override fun scans(plan: String, table: String) =
-        (Regex("""TABLE ACCESS (STORAGE )?FULL\s*\|\s*${GRAPH.uppercase()}_${table.uppercase()}\b""").containsMatchIn(plan) ||
+        (scansAny(plan, table) ||
             Regex("""INDEX (FULL|FAST FULL|RANGE) SCAN""").containsMatchIn(plan)) && !readsByKey(plan, table)
+
+    /** A scan of the table, beside a read of another node by its key or not. */
+    override fun scansAny(plan: String, table: String) = Regex("""TABLE ACCESS (STORAGE )?FULL\s*\|\s*${GRAPH.uppercase()}_${table.uppercase()}\b""").containsMatchIn(plan)
 
     override fun analyze() = OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE'); DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_EDGE'); END;")
 }
