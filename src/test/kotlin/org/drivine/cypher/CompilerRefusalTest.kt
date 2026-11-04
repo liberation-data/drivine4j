@@ -55,6 +55,57 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a pattern used as an expression that names a variable not bound is refused, as Neo4j refuses it`() {
+        // Neo4j (2026.x): 42N29 "Pattern expressions are not allowed to introduce new variables: `r`." The TCK's Pattern1 [10].
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            listOf(
+                "MATCH (n) WHERE (n)-[r]->(a) RETURN n" to "r",
+                "MATCH (n) WHERE (n)-[r]->() RETURN n" to "r",
+                "MATCH (n) WHERE ()-[r]->() RETURN n" to "r",
+                "MATCH (n) WHERE (n)<-[r {}]-(a) RETURN n" to "r",
+                "MATCH (n) WHERE (n)-[r {}]-(a) RETURN n" to "r",
+                "MATCH (n) WHERE (n)-[r:REL*0..2]->(a {num: 5}) RETURN n" to "r",
+                "MATCH (n) WHERE (n)-->(a) RETURN n" to "a",
+                "MATCH (n) WHERE NOT (n)-[:R]->(:C)<-[s:R]-(n) RETURN n" to "s",
+            ).forEach { (cypher, variable) ->
+                val refused = assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message!!
+                assertEquals(
+                    "$variable is not defined: a pattern used as an expression binds no new variable, as in Neo4j. Bind it in a MATCH, or test the pattern with EXISTS { … }.",
+                    refused,
+                )
+            }
+            // Neo4j takes these: each variable of the pattern is bound, or the pattern names none, or binds its own.
+            listOf(
+                "MATCH (n), (m) WHERE (n)-->(m) RETURN n",
+                "MATCH (n) WHERE (n)-->(:L) RETURN n",
+                "MATCH (n) WHERE (n)-[:R]->() RETURN n",
+                "MATCH (n) WHERE ()-->() RETURN n",
+                "MATCH (n) WITH n WHERE (n)-->() RETURN n",
+                "MATCH (n) RETURN [(n)-->(b) WHERE (b)-->() | b]",
+                "MATCH (n) WHERE EXISTS { (n)-->(a) WHERE (a)-->() } RETURN n",
+            ).forEach { cypher -> compiler.compile(cypher) }
+        }
+    }
+
+    @Test
+    fun `size() of a pattern is refused, as Neo4j refuses it, for COUNT { }`() {
+        // Neo4j (2026.x): 42I52 "... It can no longer be used inside the function size(), an alternative is to replace size() with COUNT {}." The TCK's List6 [6].
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            listOf(
+                "MATCH (a) RETURN size((a)-->())",
+                "MATCH (a), (b), (c) RETURN size(()--())",
+                "MATCH (a), (b), (c) RETURN size((a)<--(a {}))",
+                "MATCH (a), (b), (c) RETURN size((a)-[:REL]->(:C)<-[:REL]-(a {num: 5}))",
+                "MATCH (a), (b), (c) RETURN size(()-[:REL*0..2]->()<-[:REL]-(:A {num: 5}))",
+            ).forEach { cypher ->
+                val refused = assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message!!
+                assertEquals("size() takes a list or a text, not a pattern, as in Neo4j: COUNT { … } counts a pattern's matches.", refused)
+            }
+            compiler.compile("MATCH (a) RETURN COUNT { (a)-->() }")
+        }
+    }
+
+    @Test
     fun `round() compiles a precision below 0 or past 2147483647, written, negated or given, to fail on the row that rounds a number by it`() {
         // Neo4j reads the precision only when it rounds (#305), so none is refused when compiling, in both forms.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->

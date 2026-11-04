@@ -274,8 +274,8 @@ internal object VariableKinds {
             }
             is Expression.Slice -> listOfNotNull(expression.subject, expression.from, expression.to).forEach { expression(it, scope) }
             is Expression.Function -> {
-                expression.arguments.forEach { expression(it, scope) }
                 function(expression, scope)
+                expression.arguments.forEach { expression(it, scope) }
             }
             is Expression.Case -> {
                 listOfNotNull(expression.subject, expression.otherwise).forEach { expression(it, scope) }
@@ -309,7 +309,10 @@ internal object VariableKinds {
                 expression.where?.let { expression(it, inner) }
                 expression(expression.projection, inner)
             }
-            is Expression.PatternPredicate -> matched(expression.pattern, scope.copy(), within = true)
+            is Expression.PatternPredicate -> {
+                predicated(expression.pattern, scope)
+                matched(expression.pattern, scope.copy(), within = true)
+            }
             is Expression.Exists -> {
                 val inner = scope.copy()
                 expression.patterns.forEach { matched(it, inner, within = true) }
@@ -319,8 +322,25 @@ internal object VariableKinds {
         }
     }
 
-    /** A function of a variable whose kind it does not take, as Neo4j refuses it: `size()` of a path. */
+    /**
+     * A pattern used as an expression, `WHERE (n)-[r]->(a)`, that names a variable not bound in [scope]: Neo4j refuses it
+     * (its 42N29), as such a pattern only tests for a match, and binds nothing.
+     */
+    private fun predicated(pattern: Pattern, scope: Scope) {
+        val names = pattern.nodes.indices.flatMap { i -> listOfNotNull(pattern.nodes[i].variable, pattern.relationships.getOrNull(i)?.variable) }
+        names.firstOrNull { scope[it] == null }?.let {
+            throw DrivineException("$it is not defined: a pattern used as an expression binds no new variable, as in Neo4j. Bind it in a MATCH, or test the pattern with EXISTS { … }.")
+        }
+    }
+
+    /**
+     * A function of a variable whose kind it does not take, as Neo4j refuses it: `size()` of a path, and `size()` of a
+     * pattern, `size((a)-->())` (Neo4j's 42I52).
+     */
     private fun function(function: Expression.Function, scope: Scope) {
+        if (function.name.equals("size", ignoreCase = true) && function.arguments.singleOrNull() is Expression.PatternPredicate) {
+            throw DrivineException("size() takes a list or a text, not a pattern, as in Neo4j: COUNT { … } counts a pattern's matches.")
+        }
         val argument = (function.arguments.singleOrNull() as? Expression.Variable)?.let { scope[it.name] } ?: return
         if (function.name.equals("size", ignoreCase = true) && argument == Kind.PATH) {
             throw DrivineException("size() takes a list or a text, not a path, as in Neo4j: length() takes a path.")
