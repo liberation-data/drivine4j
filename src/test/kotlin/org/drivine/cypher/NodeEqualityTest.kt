@@ -105,6 +105,9 @@ class NodeEqualityTest {
         assertKeyedLabels("MATCH (a) WHERE id(a) = \$id MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
         assertKeyedLabels("MATCH (a) WHERE \$id = id(a) MATCH (b:Big) WHERE a = b RETURN b", earlierScanned = false)
         assertKeyedLabels("MATCH (a), (b:Big) WHERE id(a) IN [1, 2] AND id(b) = id(a) RETURN b", earlierScanned = false)
+        // The node found by its properties bound after the node with the label: that node, the earlier, is read by its key.
+        val later = OracleCypherCompiler("g").compile("MATCH (b:Big) MATCH (a {k: 1}) WHERE a = b RETURN b").sql
+        assertTrue(OracleSql.holdsLabel("n1.labels", "Big") in later && "JSON_EXISTS(n1.labels" !in later, later)
     }
 
     @Test

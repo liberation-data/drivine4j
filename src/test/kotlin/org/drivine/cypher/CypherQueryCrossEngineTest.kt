@@ -223,6 +223,18 @@ abstract class CypherQueryContract {
         assertEquals(0L, count("MATCH (a:CyKey) MATCH (b:CyNone) WHERE a = b RETURN count(*)"))
         assertEquals(2L, count("MATCH (x)-[:CY_KEY]->(a) MATCH (b:CyKey) WHERE a = b RETURN count(*)"))
         assertEquals(1L, count("MATCH (x)-[:CY_KEY]->(a) MATCH (b:CyOther) WHERE a = b RETURN count(*)"))
+        // The other node found by its properties or its id alone, before or after the node with the label.
+        assertEquals(listOf(1L), query("MATCH (a {k: 1}) MATCH (b:CyKey) WHERE a = b RETURN b.k"))
+        assertEquals(0L, count("MATCH (b:CyOther) MATCH (a {k: 3}) WHERE a = b RETURN count(*)"))
+        assertEquals(listOf(4L), query("MATCH (b:CyOther) MATCH (a {k: 4}) WHERE b = a RETURN b.k"))
+        val id = { k: Int -> query("MATCH (n {k: $k}) RETURN id(n)").single() }
+        assertEquals(listOf(1L), query("MATCH (a) WHERE id(a) = \$id MATCH (b:CyKey) WHERE a = b RETURN b.k", mapOf("id" to id(1))))
+        assertEquals(emptyList(), query("MATCH (a) WHERE id(a) = \$id MATCH (b:CyKey) WHERE a = b RETURN b.k", mapOf("id" to id(4))))
+        assertEquals(listOf(1L), query("MATCH (a), (b:CyKey) WHERE id(a) IN \$ids AND id(b) = id(a) RETURN b.k", mapOf("ids" to listOf(id(1), id(4)))))
+        assertEquals(
+            listOf(listOf(1L, listOf(4L)), listOf(2L, emptyList<Long>()), listOf(3L, listOf(4L))),
+            query("MATCH (a:CyKey) RETURN [a.k, [(x)-[:CY_KEY]->(b:CyKey) WHERE b = a | x.k]] ORDER BY a.k"),
+        )
         assertEquals(
             listOf(listOf(1L, 1L), listOf(2L, 2L), listOf(3L, null)),
             query("MATCH (a:CyKey) OPTIONAL MATCH (b:CyOther) WHERE a = b RETURN [a.k, b.k] ORDER BY a.k"),
