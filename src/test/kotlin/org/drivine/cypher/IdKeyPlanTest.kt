@@ -142,6 +142,15 @@ abstract class IdKeyPlanContract {
     }
 
     @Test
+    fun `an id compared across a relationship of either direction, read both ways round, reads its key`() {
+        // Postgres and Oracle read such a relationship from both halves of a UNION ALL (#570): its eid is the halves', each read by its key.
+        assertKeyed("MATCH (a$item)-[r]-(b) WHERE id(a) = \$id RETURN b.k ORDER BY b.k", mapOf("id" to id(5)), listOf(4L, 6L))
+        assertKeyed("MATCH ()-[r]-() WHERE id(r) = \$id RETURN r.k", mapOf("id" to edgeIds.getValue(3)), listOf(3L, 3L), table = "edge")
+        assertKeyed("MATCH ()-[r]-() WHERE id(r) IN \$ids RETURN r.k ORDER BY r.k", mapOf("ids" to listOf(edgeIds.getValue(3), edgeIds.getValue(4))), listOf(3L, 3L, 4L, 4L), table = "edge")
+        assertKeyed("MATCH (a$item) WHERE id(a) = \$id MATCH (a)-[]-(b) MATCH (c) WHERE id(c) = id(b) RETURN c.k ORDER BY c.k", mapOf("id" to id(5)), listOf(4L, 6L))
+    }
+
+    @Test
     fun `under NOT, beside an OR, or as a value, the comparison stands alone, and gives what it gave`() {
         assertUnkeyed("MATCH (n$item) WHERE NOT id(n) = \$id RETURN count(n)", mapOf("id" to id(5)), listOf(NODES - 1))
         assertUnkeyed("MATCH (n$item) WHERE NOT id(n) IN \$ids RETURN count(n)", mapOf("ids" to listOf(id(5), null)), listOf(0L))
@@ -271,8 +280,9 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
         val key = if (table == "node") "NID" else "EID"
         // A node read by the key a relationship's end gives is no key the statement compares. Where the statement reads no
         // more of a node than its key, Oracle drops it, and reads the relationship's end by the key compared, through its index.
+        // Within a half of a relationship read both ways round (#570), the key is named with no table's.
         return plan.lines().any { line ->
-            (Regex("""access\(.*"\w+"\."$key"""").containsMatchIn(line) && !Regex(""""\."(SRC|DST)"""").containsMatchIn(line)) ||
+            (Regex("""access\(.*"$key"""").containsMatchIn(line) && !Regex(""""\."(SRC|DST)"""").containsMatchIn(line)) ||
                 (table == "node" && Regex("""access\("\w+"\."(SRC|DST)"=JSON_VALUE""").containsMatchIn(line))
         }
     }

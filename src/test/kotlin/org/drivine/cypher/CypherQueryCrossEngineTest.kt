@@ -161,6 +161,32 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an id compared across a relationship of either direction keeps the rows Cypher keeps, one from a node to itself once`() {
+        // Not in the spec yet: drivine4j#575's test of the key beside an id read from #570's relationships both ways round.
+        clear()
+        seed(
+            "CREATE (a:CyUn {k: 1}), (b:CyUn {k: 2}), (c:CyUn {k: 3}), " +
+                "(a)-[:CY_UN {i: 1}]->(b), (b)-[:CY_UN {i: 2}]->(a), (a)-[:CY_UN {i: 3}]->(a), (b)-[:CY_UN {i: 4}]->(c)",
+        )
+        val node = query("MATCH (n:CyUn) RETURN [n.k, id(n)]").associate { row -> (row as List<*>).let { (it[0] as Number).toLong() to (it[1] as Number).toLong() } }
+        val edge = query("MATCH ()-[r:CY_UN]->() RETURN [r.i, id(r)]").associate { row -> (row as List<*>).let { (it[0] as Number).toLong() to (it[1] as Number).toLong() } }
+        fun rows(cypher: String, vararg parameters: Pair<String, Any?>) = query(cypher, mapOf(*parameters))
+        val step = "MATCH (n:CyUn)-[r:CY_UN]-(m)"
+        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 2L), listOf(3L, 1L)), rows("$step WHERE id(n) = \$id RETURN [r.i, m.k] ORDER BY r.i", "id" to node.getValue(1).toDouble()))
+        assertEquals(listOf(listOf(4L, 2L)), rows("$step WHERE id(m) IN \$ids RETURN [r.i, n.k]", "ids" to listOf(node.getValue(3), "x", null)))
+        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 1L)), rows("$step WHERE id(r) = \$id RETURN [n.k, m.k] ORDER BY n.k", "id" to edge.getValue(1)))
+        assertEquals(listOf(listOf(1L, 1L)), rows("$step WHERE id(r) = \$id RETURN [n.k, m.k]", "id" to edge.getValue(3)))
+        assertEquals(listOf(3L), rows("$step WHERE id(n) = id(m) RETURN r.i"))
+        assertEquals(listOf(3L), rows("$step WHERE id(m) = id(n) AND id(n) = \$id RETURN r.i", "id" to node.getValue(1)))
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L), listOf(4L, 3L)),
+            rows("MATCH (:CyUn {k: 2})-[r:CY_UN]-(m) MATCH (x:CyUn) WHERE id(x) = id(m) RETURN [r.i, x.k] ORDER BY r.i"),
+        )
+        assertEquals(listOf(4L), rows("MATCH (:CyUn)-[r:CY_UN]-() MATCH ()-[s:CY_UN]-() WHERE id(r) = \$id AND id(s) = id(r) RETURN count(*)", "id" to edge.getValue(1)))
+        assertEquals(listOf(1L, 1L, 2L), rows("MATCH (n:CyUn)-[:CY_UN*1..2]-(m) WHERE id(n) = \$id RETURN m.k ORDER BY m.k", "id" to node.getValue(3)))
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
