@@ -28,6 +28,16 @@ sealed interface ProcedureStep {
     /** The statement [statement], which writes; with [into], the value of the column it returns set to that variable. */
     data class Execute(val statement: String, val into: String?) : ProcedureStep
 
+    /**
+     * [list] made an empty list of the rows a write keeps, in the store's own kind of list, which [Keep] adds a row to in
+     * a time that does not grow with the list: read as a JSON list at the end, by `SqlCypherCompiler.keptRows`. A row
+     * appended to a JSON list copied the list, so a loop over many rows grew with their square (#588).
+     */
+    data class Kept(val list: String) : ProcedureStep
+
+    /** The JSON [item] kept after the rows of [list], a list [Kept] made. */
+    data class Keep(val list: String, val item: String) : ProcedureStep
+
     /** The rows of [query], whose one column is `result`, returned as the statement's rows. */
     data class Return(val query: String) : ProcedureStep
 }

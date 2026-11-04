@@ -54,6 +54,13 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the statement is a procedure, which declares no function of its own a query of it may call. */
     protected var procedural = false
 
+    /**
+     * How deep the procedure is in loops that write a `FOREACH` or a `CALL { … }` for each row alone: [ROWS] then holds
+     * that row, or the few a write of it left. A store whose planner can't tell how many rows [ROWS] holds is told there:
+     * see Oracle's [elements].
+     */
+    protected var rowAlone = 0
+
     /** The functions a query of the statement calls, which it declares before it: see [declare]. */
     private val functions = mutableListOf<String>()
 
@@ -972,9 +979,30 @@ abstract class SqlCypherCompiler(graph: String) {
             is ProcedureStep.If -> listOf(line("IF ${step.condition} THEN")) + statements(step.body, depth + 1) + line("END IF;")
             is ProcedureStep.Raise -> listOf(line(raise(step.message)))
             is ProcedureStep.Execute -> listOf(line("${step.statement}${step.into?.let { " INTO $it" }.orEmpty()};"))
+            is ProcedureStep.Kept -> listOf(line("${step.list} := ${emptyKept()};"))
+            is ProcedureStep.Keep -> listOf(line(keep(step.list, step.item)))
             is ProcedureStep.Return -> returnRows(planned(step.query)).map(::line)
         }
     }
+
+    /** The lists [program] keeps rows in, made by a [ProcedureStep.Kept]: each is declared, of the store's type for them, where it is one. */
+    protected fun keptLists(program: List<ProcedureStep>): Set<String> = program.flatMapTo(linkedSetOf()) { step ->
+        when (step) {
+            is ProcedureStep.Kept -> setOf(step.list)
+            is ProcedureStep.Loop -> keptLists(step.body)
+            is ProcedureStep.If -> keptLists(step.body)
+            else -> emptySet()
+        }
+    }
+
+    /** A list of rows a write keeps, empty, in a procedural language: see [ProcedureStep.Kept]. */
+    protected open fun emptyKept(): String = throw UnsupportedOperationException("This store writes its procedure in no procedural language.")
+
+    /** The statement of a procedural language that keeps the JSON [item] after the rows of [list]: see [ProcedureStep.Keep]. */
+    protected open fun keep(list: String, item: String): String = throw UnsupportedOperationException("This store writes its procedure in no procedural language.")
+
+    /** The rows kept in [list], a list [ProcedureStep.Kept] made, as a JSON list. */
+    protected abstract fun keptRows(list: String): String
 
     /** The statements of a procedural language that return the rows of the query [query], whose one column is `result`: see [statements]. */
     protected open fun returnRows(query: String): List<String> = throw UnsupportedOperationException("This store writes its procedure in no procedural language.")
@@ -2046,7 +2074,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** One write: made for each row of [ROWS] in turn, and the rows it leaves put back there; a `DELETE` over all of them at once, see [delete]. */
         private fun write(clause: Clause) {
             if (clause is Clause.Delete) return delete(clause)
-            assign(OUT, literalJson(emptyList<Any>()))
+            step(ProcedureStep.Kept(OUT))
             val r = alias("r")
             loop(RECORD, "SELECT ${named(item(r), "item")} FROM ${elements(ROWS, r)} ORDER BY ${itemNo(r)}") {
                 let(ROW, "$RECORD.item")
@@ -2067,7 +2095,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     else -> error("${clause::class.simpleName} reads")
                 }
             }
-            let(ROWS, OUT)
+            let(ROWS, keptRows(OUT))
         }
 
         /**
@@ -2084,14 +2112,14 @@ abstract class SqlCypherCompiler(graph: String) {
             if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
             ret?.let { r -> redeclared(r.projection.items.map { it.name }, kinds.keys) }
             val kept = "$SAVED${++nesting}"
-            val gathered = "$GATHERED$nesting"
+            val gathered = "$RETURNED$nesting"
             val caller = "$CALLER$nesting"
             val before = LinkedHashMap(kinds)
             val carriedBefore = HashMap(carried)
             val returnedKinds = linkedMapOf<String, Kind>()
             val returnedCarried = hashMapOf<String, Value.Json>()
             let(kept, ROWS)
-            if (ret != null) assign(gathered, literalJson(emptyList<Any>()))
+            if (ret != null) step(ProcedureStep.Kept(gathered))
             // Only what the call imports is seen in it: any other name in it is a new variable, as in Cypher (#410).
             val imported = VariableKinds.imports(call, call.query.clauses, before.keys)
             val clauses = imported(call, imported)
@@ -2125,20 +2153,19 @@ abstract class SqlCypherCompiler(graph: String) {
                     val returned = kinds.filterKeys { it !in before }
                     returnedKinds.putAll(returned)
                     returnedCarried.putAll(carried.filterKeys { it in returned })
-                    val (g, a, b) = listOf(alias("g"), alias("g"), alias("g"))
+                    val b = alias("g")
                     val row = comparable(
                         Value.Json(jsonObject(before.keys.map { key(it) to propertyOf(caller, key(it)) } + returned.keys.map { key(it) to propertyOf(item(b), key(it)) }), ordered = true)
                     )
-                    val both = "SELECT 1 AS part, ${named(itemNo(a), "item_no")}, ${named(item(a), "item")} FROM ${elements(gathered, a)} " +
-                        "UNION ALL SELECT 2 AS part, ${named(itemNo(b), "item_no")}, $row AS item FROM ${elements(ROWS, b)}"
-                    step(ProcedureStep.Select(gathered, comparable(Value.Json(aggregateList("$g.item", "$g.part, $g.item_no"), ordered = true)), " FROM ($both) $g"))
+                    // Each kept in turn, as a write keeps its rows: gathered again with those before, each row copied them all (#588).
+                    loop(RECORD, "SELECT $row AS item FROM ${elements(ROWS, b)} ORDER BY ${itemNo(b)}") { step(ProcedureStep.Keep(gathered, "$RECORD.item")) }
                 }
             }
             if (ret == null) {
                 let(ROWS, kept)
                 restore(before, carriedBefore)
             } else {
-                let(ROWS, gathered)
+                let(ROWS, keptRows(gathered))
                 restore(before + returnedKinds, carriedBefore + returnedCarried)
             }
             unread = null
@@ -2154,7 +2181,12 @@ abstract class SqlCypherCompiler(graph: String) {
             loop(RECORD, "SELECT ${named(item(r), "item")} FROM ${elements(rows, r)} ORDER BY ${itemNo(r)}") {
                 assign(ROWS, appended(literalJson(emptyList<Any>()), "$RECORD.item"))
                 unread = null
-                body()
+                rowAlone++
+                try {
+                    body()
+                } finally {
+                    rowAlone--
+                }
             }
         }
 
@@ -2217,7 +2249,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** The row in [ROW] kept, as a row of what the write leaves. */
-        private fun keep() = assign(OUT, appended(OUT, ROW))
+        private fun keep() = step(ProcedureStep.Keep(OUT, ROW))
 
         /**
          * Makes [pattern] for the row in [ROW]: each node not bound before it, and each relationship, with the
@@ -5384,7 +5416,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The rows, a JSON list of maps, each variable a row holds at its key. */
         const val ROWS = "cy_rows"
 
-        /** The rows a write leaves, as it makes them. */
+        /** The rows a write leaves, as it makes them: a list of the store's that keeps them, [ProcedureStep.Kept]. */
         const val OUT = "cy_out"
 
         /** The row a write is making, a JSON map. */
@@ -5409,8 +5441,8 @@ abstract class SqlCypherCompiler(graph: String) {
         const val SAVED = "cy_saved"
 
         /**
-         * The rows a `CALL { … }` that writes and returns gives, or the rows and items a `FOREACH` writes for, each
-         * one alone, followed by its depth, from 1 to [NESTING].
+         * The rows and items a `FOREACH` writes for, each one alone, followed by its depth, from 1 to [NESTING]: those a
+         * `CALL { … }` gives are [RETURNED].
          */
         const val GATHERED = "cy_gathered"
 
@@ -5419,6 +5451,12 @@ abstract class SqlCypherCompiler(graph: String) {
          * each row it gives is that row with what it returns, whatever the call bound to the row's names inside it.
          */
         const val CALLER = "cy_caller"
+
+        /**
+         * The rows a `CALL { … }` that writes and returns gives, kept as a write keeps its rows ([ProcedureStep.Kept]),
+         * followed by its depth, from 1 to [NESTING].
+         */
+        const val RETURNED = "cy_returned"
 
         /** The names of a shortest path's ends where its pattern gives none, which no statement can write unquoted: see [Writer.shortest]. */
         const val SHORTEST_FROM = " shortest from"

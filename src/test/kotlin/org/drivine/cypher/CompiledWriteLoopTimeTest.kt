@@ -1,0 +1,147 @@
+package org.drivine.cypher
+
+import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
+import org.drivine.query.CypherStatement
+import org.drivine.query.QuerySpecification
+import org.drivine.sqlite.SqliteTestDatabase
+import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
+
+/**
+ * A compiled write that loops over its rows takes time in proportion to them (#588). Each row the loop kept was appended
+ * to a JSON list of the rows it leaves, which copied the list, so ten times the rows took about a hundred times as long:
+ * `MATCH (n) SET n.x = 1` over 40,000 nodes took 130 s on Postgres. Each write is timed over [SMALL] rows and [LARGE],
+ * ten times as many, and the large run must take less than [RATIO] times the small one, or [FLOOR_MS] where that is
+ * more: a ratio, so a slower CI runner, which is slower at both, passes alike.
+ */
+abstract class CompiledWriteLoopTimeContract {
+
+    abstract val pm: NonTransactionalPersistenceManager
+
+    abstract fun clear()
+
+    private fun query(cypher: String, n: Int): List<Any?> =
+        pm.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(mapOf("n" to n)))
+
+    private fun count(cypher: String) = pm.query(QuerySpecification.withStatement(CypherStatement(cypher))).single()
+
+    /** The writes timed, each with what it leaves for [n] rows, read back after it. */
+    private val writes: List<Triple<String, String, (Int) -> List<Any?>>> = listOf(
+        Triple("CREATE", "UNWIND range(1, \$n) AS i CREATE (:CyLoop {i: i})", { n -> listOf(n.toLong()) }),
+        Triple("SET", "MATCH (n:CyLoop) SET n.x = n.i", { n -> listOf(n.toLong()) }),
+        Triple("REMOVE", "MATCH (n:CyLoop) REMOVE n.x", { _ -> listOf(0L) }),
+        Triple("MERGE", "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF]->(n)", { n -> listOf(n.toLong()) }),
+        Triple("CALL", "MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)", { n -> listOf(n.toLong()) }),
+    )
+
+    /** What each write left, read back: the nodes, those with x, the relationships, and those with y. */
+    private val checks = listOf(
+        "MATCH (n:CyLoop) RETURN count(n)",
+        "MATCH (n:CyLoop) WHERE n.x IS NOT NULL RETURN count(n)",
+        "MATCH (n:CyLoop) WHERE n.x IS NOT NULL RETURN count(n)",
+        "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) RETURN count(r)",
+        "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)",
+    )
+
+    /** The milliseconds each write took over [n] rows. */
+    private fun timed(n: Int): List<Long> {
+        clear()
+        return writes.mapIndexed { i, (name, cypher, expected) ->
+            val start = System.nanoTime()
+            val rows = query(cypher, n)
+            val ms = (System.nanoTime() - start) / 1_000_000
+            if (name == "CALL") assertEquals(expected(n), rows, "$name over $n rows")
+            assertEquals(expected(n), listOf(count(checks[i])), "$name over $n rows, read back")
+            ms
+        }
+    }
+
+    @Test
+    fun `a write over ten times the rows takes about ten times as long, not a hundred`() {
+        val small = timed(SMALL)
+        val large = timed(LARGE)
+        val report = writes.indices.joinToString("; ") { "${writes[it].first} ${small[it]} ms over $SMALL rows, ${large[it]} ms over $LARGE" }
+        println("${this::class.simpleName}: $report")
+        val slow = writes.indices.filter { large[it] > maxOf(RATIO * small[it], FLOOR_MS) }
+        if (slow.isNotEmpty()) fail("Grew faster than the rows: ${slow.joinToString { writes[it].first }}. $report")
+    }
+
+    private companion object {
+        const val SMALL = 2_000
+        const val LARGE = 20_000
+
+        /** Linear is about 10, and was 50 to 100 when each row copied the list. */
+        const val RATIO = 30L
+
+        /** Where the small run is short, its fixed costs, and a CI runner's jitter, are much of it: the large one gets this at least. */
+        const val FLOOR_MS = 3_000L
+    }
+}
+
+@PostgresTests
+class CompiledWriteLoopTimePostgresTest : CompiledWriteLoopTimeContract() {
+    override val pm = PostgresTestDatabase.graphManager("cy_loop")
+
+    override fun clear() = PostgresTestDatabase.clear(pm)
+}
+
+@OracleTests
+class CompiledWriteLoopTimeOracleTest : CompiledWriteLoopTimeContract() {
+    override val pm = OracleTestDatabase.graphManager("cy_loop")
+
+    override fun clear() = OracleTestDatabase.clear(pm)
+}
+
+class CompiledWriteLoopTimeSqliteTest : CompiledWriteLoopTimeContract() {
+    override val pm = SqliteTestDatabase.graphManager("cy_loop")
+
+    override fun clear() = SqliteTestDatabase.clear(pm)
+}
+
+/**
+ * On Oracle, a query that reads the rows of a `CALL { … }` or a `FOREACH` written for each row alone is planned for one row
+ * of them, `CARDINALITY(r 1)` in its own query's hint: Oracle estimated 8,168 rows of the `JSON_TABLE`, and read every node
+ * by a hash join for each row (#588). A query of the statement's rows, before or after the loop, is planned as it was.
+ */
+class OracleOneRowPlanTest {
+
+    private fun compiled(cypher: String) = OracleCypherCompiler("g").compile(cypher).sql
+
+    private fun hinted(sql: String) = Regex("""SELECT /\*\+ [^*]*CARDINALITY\((r\d+) 1\)[^*]*\*/""").findAll(sql).map { it.groupValues[1] }.toList()
+
+    @Test
+    fun `a CALL's projection of each row reads it as one row, in the query that reads it`() {
+        val sql = compiled("MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)")
+        val projection = Regex("""SELECT /\*\+ CARDINALITY\((r\d+) 1\) \*/ JSON\(JSON_QUERY\(JSON_SERIALIZE\(JSON_TRANSFORM\(n\d+\.props, KEEP '\$\.i'\)[^\n]*\n\s*r\d+\.item_no AS o1\n\s*FROM JSON_TABLE\(cy_rows, '\$\[\*]' COLUMNS \(item_no FOR ORDINALITY, item JSON PATH '\$'\)\) (r\d+)\n""")
+        val found = projection.find(sql)
+        assertTrue(found != null && found.groupValues[1] == found.groupValues[2], sql)
+        // The loop over the call's rows, and the query of all the statement's rows after it, read them as before.
+        assertTrue("FOR cy_record IN (SELECT r2.item FROM JSON_TABLE(cy_saved1," in sql, sql)
+        assertTrue(Regex("""OPEN cy_cursor FOR\n\s*SELECT p\d+\.c1 AS result""").containsMatchIn(sql), sql)
+        assertEquals(hinted(sql).size, hinted(sql).toSet().size, sql)
+    }
+
+    @Test
+    fun `a text before the rows read, with a bracket, a quote or SELECT in it, is read past to the query's own SELECT`() {
+        val plain = hinted(compiled("MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN toString(n.i) AS j } RETURN j"))
+        val sql = compiled("MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN toString(n.i) + ') SELECT \\'(' AS j } RETURN j")
+        assertTrue(") SELECT ''(" in sql, sql)
+        assertEquals(plain.size, hinted(sql).size, sql)
+    }
+
+    @Test
+    fun `a FOREACH's rows read alone are one row, and a statement with neither is planned as it was`() {
+        assertTrue(hinted(compiled("UNWIND [1, 2] AS k FOREACH (x IN [k] | CREATE (:CyWrite {f: x})) RETURN k")).isNotEmpty())
+        for (cypher in listOf("UNWIND range(1, 3) AS i CREATE (:CyLoop {i: i})", "MATCH (n:CyLoop) SET n.x = n.i RETURN n.x", "MATCH (n:CyLoop) RETURN n.i")) {
+            val sql = compiled(cypher)
+            assertTrue("CARDINALITY" !in sql, "$cypher: $sql")
+        }
+    }
+}

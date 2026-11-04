@@ -494,8 +494,13 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         is ProcedureStep.If -> sql("if", "SELECT CASE WHEN ${step.condition} THEN 1 ELSE 0 END") + ("body" to step.body.map(::step))
         is ProcedureStep.Raise -> mapOf("op" to "raise", "message" to step.message)
         is ProcedureStep.Execute -> sql("execute", step.statement) + ("variable" to step.into)
+        is ProcedureStep.Kept -> mapOf("op" to "kept", "variable" to step.list)
+        is ProcedureStep.Keep -> sql("keep", "SELECT ${step.item}") + ("variable" to step.list)
         is ProcedureStep.Return -> sql("return", step.query)
     }
+
+    /** The function keeps the rows in a list of its own, and binds it as the JSON list it is where a step reads it: see `SqliteCypherFunction`. */
+    override fun keptRows(list: String) = list
 
     /** The step [op] of the SQL [sql], each variable it reads a numbered parameter, and the variables, in the parameters' order. */
     private fun sql(op: String, sql: String): Map<String, Any?> {
@@ -561,7 +566,7 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     private companion object {
         /** The variables of a procedure: see [SqlCypherCompiler.ROWS] and the rest. */
-        val VARIABLES = setOf(PARAMS, ROWS, OUT, ROW, VALUE, ID, COUNT, FOUND) + (1..NESTING).flatMap { listOf("$SAVED$it", "$GATHERED$it", "$CALLER$it") }
+        val VARIABLES = setOf(PARAMS, ROWS, OUT, ROW, VALUE, ID, COUNT, FOUND) + (1..NESTING).flatMap { listOf("$SAVED$it", "$GATHERED$it", "$CALLER$it", "$RETURNED$it") }
 
         /** The records of a procedure's loops, whose `item` a step reads. */
         val RECORDS = setOf(RECORD, MATCHED)
