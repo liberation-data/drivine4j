@@ -187,6 +187,22 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a node with a label compared to one matched before it, other than by =, keeps the rows Cypher keeps`() {
+        // Not in the spec yet: the forms beside "A node equal to one matched before it" that compare the two nodes' keys too,
+        // through the store's comparison of two keys, which on Oracle keeps the later node's join (drivine4j#576).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val q = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q)"
+        assertEquals(listOf("Hugo", "Keanu", "Laurence"), query("$q MATCH (c:Person) WHERE c <> q RETURN c.name ORDER BY c.name"))
+        for (test in listOf("NOT c <> q", "c IN [q]", "[c] = [q]", "{x: c} = {x: q}", "CASE c WHEN q THEN true ELSE false END")) {
+            assertEquals(listOf("Carrie"), query("$q MATCH (c:Person) WHERE $test RETURN c.name"), test)
+        }
+        assertEquals(listOf("Carrie"), query("$q OPTIONAL MATCH (c:Person) WHERE c = q RETURN c.name"))
+        assertEquals(listOf("Carrie"), query("$q WHERE EXISTS { MATCH (c:Person) WHERE c = q } RETURN q.name"))
+        assertEquals(listOf(1L), query("$q RETURN COUNT { MATCH (c:Person) WHERE c = q }"))
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()

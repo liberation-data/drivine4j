@@ -338,6 +338,11 @@ declares the function itself.
   another node's table the query lost that node's label and property tests, giving rows its pattern doesn't have and
   values of the wrong node, or crashing the session (ORA-03113)
   ([#415](https://github.com/liberation-data/drivine4j/issues/415)). A query of one table carries no hint.
+- A compiled node compared with a node (`c = q`, `c <> q`, `c IN [q]`), or an id with an id (`id(c) = id(q)`), compares
+  their keys with `+ 0` on one side, `n4.nid = n2.nid + 0`. This works around Oracle rewrites, seen on 23.26.3, of a key
+  equal to a key: Oracle dropped the later node's join and tested its label in a form that misses a node with more than
+  one label, or read the other node by the key of a node it had dropped, and gave no rows
+  ([#575](https://github.com/liberation-data/drivine4j/issues/575), [#576](https://github.com/liberation-data/drivine4j/issues/576)).
 - A list worked out on each row by a subquery (`keys(n)`, `[i IN range(1, k) | i]`, `[(p)-->(q) | q.name]`) is read
   from a derived table inside a lateral view. This works around an Oracle bug, seen on 23.26.3: a subquery that reads
   the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the

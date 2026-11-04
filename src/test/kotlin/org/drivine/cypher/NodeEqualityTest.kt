@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -32,6 +33,23 @@ class NodeEqualityTest {
         assertTrue("n4.nid = n2.nid + 0" in sql, sql)
         val other = OracleCypherCompiler("g").compile(earlier).sql
         assertTrue("n2.nid = n4.nid + 0" in other, other)
+    }
+
+    @Test
+    fun `on Oracle, a node compared to a node by NOT =, IN, a list, CASE or in a subquery compares the keys with + 0 too`() {
+        val q = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q)"
+        for (statement in listOf(
+            "$q MATCH (c:Person) WHERE c <> q RETURN c.name",
+            "$q MATCH (c:Person) WHERE c IN [q] RETURN c.name",
+            "$q MATCH (c:Person) WHERE [c] = [q] RETURN c.name",
+            "$q MATCH (c:Person) WHERE CASE c WHEN q THEN true ELSE false END RETURN c.name",
+            "$q OPTIONAL MATCH (c:Person) WHERE c = q RETURN c.name",
+            "$q WHERE EXISTS { MATCH (c:Person) WHERE c = q } RETURN q.name",
+        )) {
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertTrue(Regex("""n\d+\.nid = n\d+\.nid \+ 0""").containsMatchIn(sql), "$statement\n$sql")
+            assertFalse(Regex("""n\d+\.nid = n\d+\.nid(?! \+ 0)""").containsMatchIn(sql), "$statement\n$sql")
+        }
     }
 
     @Test
@@ -84,12 +102,16 @@ class OracleNodeEqualityPlanTest {
         return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
     }
 
-    /** That [statement] gives [expected], and that Oracle keeps the join of `c`, compiled as `n4`. */
+    /** That [statement] gives [expected], and that Oracle keeps the join of `c`, the later of the two nodes compared. */
     private fun assertJoined(statement: String, expected: List<Any?>) {
-        val plan = plan(OracleCypherCompiler(GRAPH).compile(statement))
+        val compiled = OracleCypherCompiler(GRAPH).compile(statement)
+        val compared = assertNotNull(Regex("""\b(n(\d+))\.nid = (n(\d+))\.nid \+ 0""").find(compiled.sql), "No node equal to a node in:\n${compiled.sql}")
+        val c = listOf(compared.groupValues[1] to compared.groupValues[2], compared.groupValues[3] to compared.groupValues[4])
+            .maxBy { it.second.toInt() }.first.uppercase()
+        val plan = plan(compiled)
         println("$statement\n$plan\n")
         assertTrue("Outline Data" in plan, plan)
-        assertFalse(Regex("""ELIMINATE_JOIN\([^)]*"N4"""").containsMatchIn(plan), "$statement eliminates c's join:\n$plan")
+        assertFalse(Regex("""ELIMINATE_JOIN\([^)]*"$c"""").containsMatchIn(plan), "$statement eliminates c's join:\n$plan")
         assertEquals(expected, query(statement), statement)
     }
 
