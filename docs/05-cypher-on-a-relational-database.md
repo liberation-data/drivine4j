@@ -133,7 +133,9 @@ variable bound as something else.
 A `MERGE` fails where it would make a node or a relationship whose pattern gives a property that is null, as Neo4j
 fails it, since no `MERGE` would find it again: `MERGE (n:X {a: null})` fails with `Cannot merge the following node
 because of null property value for 'a'.`, wrapped as each store raises an error, and writes nothing. It fails only as
-a row makes it, so not over no rows. On Oracle, which stores NaN, so does one whose property is NaN.
+a row makes it, so not over no rows. On Oracle, which stores NaN, so does one whose property is NaN. On
+[Postgres](09-supported-engines.md#postgres) and [SQLite](09-supported-engines.md#sqlite), which store no NaN, such a
+`MERGE` fails too, as any write of NaN does there, with other words.
 
 ### How complete is it?
 

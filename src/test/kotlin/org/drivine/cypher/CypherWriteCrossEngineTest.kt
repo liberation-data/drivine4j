@@ -77,6 +77,18 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a MERGE that works its property out as NaN fails and writes nothing`() {
+        // #543 with #563: NaN worked out in the statement, by a float divided by zero or toFloat of Java's name for it, as Neo4j gives it.
+        query("CREATE (:CyWrite {id: 1, zero: 0.0})")
+        for (cypher in listOf(
+            "MERGE (n:CyWrite {id: 2, x: 0.0 / 0.0})",
+            "MERGE (n:CyWrite {id: 2, x: toFloat('NaN')})",
+            "MATCH (s:CyWrite {id: 1}) MERGE (s)-[:R {x: s.zero / s.zero}]->(:CyWrite {id: 2})",
+        )) assertFailsWith<Exception>(cypher) { query(cypher) }
+        assertEquals(listOf(1L), query("MATCH (n) RETURN count(n)"))
+    }
+
+    @Test
     fun `a write's rows group a key's value that is no null as before`() {
         // #500: the spec holds a map's null and a missing key, grouped as one null and kept once. The rows are Neo4j's (2026.10).
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: 1}] AS r CREATE (:CyWrite {b: 9}) RETURN r.a AS a, count(*) AS c"))
