@@ -106,6 +106,35 @@ class NonFiniteCompileTest {
     }
 
     @Test
+    fun `a MERGE fails as it makes a property that is null, or NaN on Oracle, which holds NaN, and a CREATE does not`() {
+        // #543: what each store gives is the spec's, whose stores wrap the message each in its own.
+        val cypher = "MATCH (s:A) MERGE (s)-[:R {y: s.y}]->(:B {x: s.x})"
+        val oracle = OracleCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql
+        assertTrue(oracle.contains("Cannot merge the following node because of NaN property value for ''x''."), oracle)
+        assertTrue(oracle.contains("Cannot merge the following relationship because of null property value for ''y''."), oracle)
+        for (sql in listOf(PostgresCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql, SqliteCypherCompiler("g").compile(cypher, mapOf("p" to 1.5)).sql)) {
+            assertTrue(sql.contains("because of null property value for"), sql)
+            assertFalse(sql.contains("because of NaN property value"), sql)
+        }
+        assertFalse(OracleCypherCompiler("g").compile("CREATE (:B {x: \$p})", mapOf("p" to 1.5)).sql.contains("Cannot merge"))
+    }
+
+    @Test
+    fun `a MERGE tests no property it writes, or is given as other than NaN, as it makes it`() {
+        // Neither can be null or NaN, so the MERGE costs what it did before #543.
+        val cypher = "MERGE (n:B {id: 1, l: [1], x: \$p})"
+        for (compiler in listOf(OracleCypherCompiler("g"), PostgresCypherCompiler("g"), SqliteCypherCompiler("g"))) {
+            val sql = compiler.compile(cypher, mapOf("p" to 1.5)).sql
+            assertFalse(sql.contains("Cannot merge"), sql)
+        }
+        val nan = OracleCypherCompiler("g").compile(cypher, mapOf("p" to Double.NaN)).sql
+        assertTrue(nan.contains("Cannot merge the following node because of NaN property value for ''x''."), nan)
+        assertFalse(nan.contains("value for ''id''"), nan)
+        val unbound = OracleCypherCompiler("g").compile(cypher, mapOf("p" to null)).sql
+        assertTrue(unbound.contains("Cannot merge the following node because of null property value for ''x''."), unbound)
+    }
+
+    @Test
     fun `the numbers Postgres writes for NaN and the infinities are read back as them`() {
         assertTrue(PostgresCypherCompiler.read(BigDecimal("2e309").add(BigDecimal("0.5"))).isNaN())
         assertEquals(Double.POSITIVE_INFINITY, PostgresCypherCompiler.read(BigDecimal("1e309").add(BigDecimal("0.5"))))

@@ -881,6 +881,9 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     /** Whether the JSON [json] is NaN: a `BINARY_DOUBLE` that is. */
     private fun isNaN(json: String) = shared(json) { (x) -> "(${kind(x)} = 'double' AND JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) IS NAN)" }
 
+    /** Oracle's JSON holds NaN, which a write may store. */
+    override fun writtenNaN(json: String) = isNaN(json)
+
     /**
      * Whether the JSON [json] is or holds NaN, at any depth: a list or a map by its text as extended JSON writes it, where a
      * double is `{"${'$'}numberDouble": "Nan"}`, which no text it holds can hold unescaped. Oracle's JSON path walks no list

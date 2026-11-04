@@ -277,7 +277,8 @@ declares the function itself.
   null, where Neo4j gives NaN or an infinity. A number taken `%` by zero is that number, as Oracle's `MOD` gives it,
   where Neo4j gives NaN by a float zero and fails by an integer one. A float divided by an integer zero is an infinity,
   where Neo4j fails but where both are written in the statement (`1.0 / 0`). `toFloat` reads `'nan'`, `'inf'` and
-  `'INFINITY'` as NaN and the infinities too, where Neo4j gives null.
+  `'INFINITY'` as NaN and the infinities too, where Neo4j gives null. A `MERGE` that would make a property NaN fails, as
+  in Neo4j.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
