@@ -16,7 +16,8 @@ import kotlin.test.assertTrue
  * written by fails here, clearly, and not as a test that times out. Renumbered inline, with a test and a regular
  * expression that wrote each value three or four times, the min and max of a collected list of moments took 4.7 seconds
  * of Oracle's hard parse, a moment two `CALL`s deep 72 seconds, and a truncation four deep was not planned in ten minutes
- * (drivine#572). The store's era functions (see `OracleGraph.era`) took them to 1.1, 28 and 16 seconds.
+ * (drivine#572). The store's era functions (see `OracleGraph.era`) took them to 1.1, 28 and 16 seconds on a fast machine,
+ * and a CI runner takes about twice as long: the bounds leave room for that.
  *
  * The time is the session's `parse time cpu` in `v$sesstat`, which the test user may not read, so the system user reads
  * it; each statement is new to Oracle (a comment that no other has), so it is parsed hard.
@@ -67,8 +68,9 @@ class OracleEraParseTest {
     }
 
     @Test
-    fun `a moment two CALLs deep is planned well within a minute`() {
-        // 28 seconds measured; 72 renumbered inline, so the bound is under twice what it takes, not three times.
+    fun `a moment two CALLs deep is planned in a minute and a half`() {
+        // 28 seconds on a fast machine, 51 on a CI runner; 72 renumbered inline on a fast machine. A fallback to inline SQL
+        // is caught by `parsed`'s check that the statement calls the era functions, and by ZLS_BOUND.
         val (ms, rows) = parsed(
             "MATCH (n:CyTemporal) CALL { WITH n CALL { WITH n RETURN n.day + duration('P1D') AS e } RETURN e AS d } RETURN (d + duration('P1D')).day",
         )
@@ -77,7 +79,7 @@ class OracleEraParseTest {
     }
 
     @Test
-    fun `a truncation with fields four deep is planned within a minute`() {
+    fun `a truncation with fields four deep is planned in a minute and a half`() {
         // 16 seconds measured; renumbered inline it was still being planned after ten minutes, and 8.4 seconds before drivine#487.
         val (ms, rows) = parsed(
             "RETURN " + "datetime.truncate('second', ".repeat(4) + "datetime('2017-10-11T12:31:14+01:00')" + ", {hour: 3})".repeat(4) + ".hour",
@@ -88,7 +90,7 @@ class OracleEraParseTest {
 
     private companion object {
         const val ZLS_BOUND = 3_500L
-        const val CALL_BOUND = 50_000L
-        const val TRUNC_BOUND = 60_000L
+        const val CALL_BOUND = 90_000L
+        const val TRUNC_BOUND = 90_000L
     }
 }
