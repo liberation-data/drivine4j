@@ -13,6 +13,7 @@ import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.drivine.test.SqlCypherFixtures
 import org.drivine.test.OracleTestContainer
+import java.sql.DriverManager
 
 /**
  * Marks a test class that needs an Oracle database. They run only with `ORACLE_TESTS=true`: the
@@ -62,6 +63,25 @@ object OracleTestDatabase {
         """.trimIndent()
         return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
     }
+
+    /**
+     * The plan of the statement the session [sid] ran last, as the child cursor that ran it holds it, shown in the [format]
+     * `DBMS_XPLAN.DISPLAY_CURSOR` takes. Read as `system`, as the test user reads no `V$` view: a plan Oracle made again
+     * on a later run, from what an earlier run found (statistics feedback), is a child of its own.
+     */
+    fun lastPlan(sid: String, format: String): String =
+        DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), "system", OracleTestContainer.PASSWORD).use { admin ->
+            val (sqlId, child) = admin.prepareStatement("SELECT prev_sql_id, prev_child_number FROM v\$session WHERE sid = ?").use { statement ->
+                statement.setInt(1, sid.toInt())
+                statement.executeQuery().use { row -> check(row.next()) { "No session $sid." }; row.getString(1) to row.getInt(2) }
+            }
+            admin.prepareStatement("SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(?, ?, ?))").use { statement ->
+                statement.setString(1, sqlId)
+                statement.setInt(2, child)
+                statement.setString(3, format)
+                statement.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getString(1) else null }.joinToString("\n") }
+            }
+        }
 
     /** A manager for the graph [graph], with its tables made. */
     fun graphManager(graph: String, registry: SubtypeRegistry = SubtypeRegistry()): NonTransactionalPersistenceManager =
