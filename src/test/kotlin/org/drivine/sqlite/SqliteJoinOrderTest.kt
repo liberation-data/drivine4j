@@ -72,6 +72,18 @@ class SqliteJoinOrderTest {
     }
 
     @Test
+    fun `an undirected step and walk scan no pair of nodes, and give each relationship each way round`() {
+        // SQLite keeps the OR across the two directions, which it probes by index, where Postgres and Oracle read both ways round (#570).
+        val step = "MATCH (n)-[r]-(m) RETURN count(*) AS c"
+        assertNoNodePairs(step, plan(step))
+        assertEquals(EDGES * 2, count(step), "no relationship goes from a node to itself")
+        val walk = "MATCH (n)-[*1..2]-(m) RETURN count(*) AS c"
+        assertNoNodePairs(walk, plan(walk))
+        val walked = assertTimeout(Duration.ofSeconds(20)) { count(walk) }
+        assertEquals(EDGES * 2 + EDGES * 2 * 3, walked, "each node has four relationships, so three more from each node a step reaches")
+    }
+
+    @Test
     fun `a json_each that reads an earlier source's column is still read after it`() {
         val cypher = "MATCH (n)-[r]->(m) UNWIND n.tags AS t WITH t WHERE t = 'even' RETURN count(*) AS c"
         assertEquals(EDGES / 2, count(cypher))
