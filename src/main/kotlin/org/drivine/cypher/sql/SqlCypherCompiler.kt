@@ -383,6 +383,16 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun indexedEquality(property: String, value: String): String? = null
 
+    /**
+     * The JSON value [json] as a node's or a relationship's key column compares with it: the number it is, a whole one where
+     * the store's key holds no other, or null where it is no number. A test of the key that stands beside an id's comparison
+     * reads it, so the store reads the row by its primary key (see [Writer.idKey]).
+     */
+    protected abstract fun keyValue(json: String): String
+
+    /** Whether the key columns [a] and [b], of two rows, hold the same key, as a test of the key beside `id(a) = id(b)`: see Oracle's. */
+    protected open fun sameKey(a: String, b: String) = "$a = $b"
+
     /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
     protected abstract fun elements(json: String, alias: String): String
 
@@ -3092,10 +3102,12 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         fun condition(where: Expression, scope: Map<String, Value>): String {
             filtering = true
+            conjoining = true
             return try {
                 bool(expression(where, scope))
             } finally {
                 filtering = false
+                conjoining = false
             }
         }
 
@@ -3106,18 +3118,32 @@ abstract class SqlCypherCompiler(graph: String) {
         private var filtered = false
 
         /**
+         * Whether the expression being compiled is one a row must pass to be kept: the `WHERE` [condition] itself, or one of its
+         * conditions joined by `AND` alone. A test beside such a one, true wherever it is, may stand by it ([idKey]).
+         */
+        private var conjoining = false
+
+        /** Whether the expression [evaluate] has begun is one a row must pass to be kept, as [conjoining] said as it began. */
+        private var conjoined = false
+
+        /**
          * The value [expression] gives in [scope]: see [evaluate]. Marked [Value.Json.flat] where it is known to hold no null in a list or a map,
          * and with its [Value.Json.known] kind where the statement writes it as a value of one.
          */
         fun expression(expression: Expression, scope: Map<String, Value>): Value {
             val outer = filtering
+            val conjunct = conjoining
             // Only a condition joined by AND or OR is read for its truth alone: NOT, a CASE or a function reads null apart from false.
             filtering = outer && expression is Expression.Binary && (expression.operator == Operator.AND || expression.operator == Operator.OR)
             filtered = outer
+            // And only one joined by AND must itself be true for the row to be kept: beside an OR, another may keep it.
+            conjoining = conjunct && expression is Expression.Binary && expression.operator == Operator.AND
+            conjoined = conjunct
             val evaluated = try {
                 evaluate(expression, scope)
             } finally {
                 filtering = outer
+                conjoining = conjunct
             }
             val value = if (evaluated is Value.Json && evaluated.known == null) knownKind(expression, scope)?.let { evaluated.copy(known = it) } ?: evaluated else evaluated
             return when {
@@ -4015,6 +4041,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         private fun binary(binary: Expression.Binary, scope: Map<String, Value>): Value {
             val filter = filtered
+            val conjunct = conjoined
             if (binary.operator == Operator.AND || binary.operator == Operator.OR || binary.operator == Operator.XOR) {
                 listOf(binary.left, binary.right).forEach { requireCondition(it, scope, binary.operator.name) }
                 val left = bool(expression(binary.left, scope))
@@ -4031,8 +4058,15 @@ abstract class SqlCypherCompiler(graph: String) {
             if (binary.operator == Operator.IN) knownKind(binary.right, scope)?.takeIf { it != Value.Known.LIST }?.let { kind ->
                 throw DrivineException("IN takes a list, not ${kind.noun}, as in Neo4j.")
             }
+            // An id in a list written or given, where the row must pass that, is tested by its key beside: see [idKey]. A list
+            // read from the store or worked out may be no list, whose items no store's elements of it would read as Cypher does.
+            val written = binary.right is Expression.ListLiteral || (binary.right as? Expression.Parameter)?.let { parameterTree(it.name)?.isArray } == true
+            val keyIn = idKey(binary.left, scope)?.takeIf { conjunct && binary.operator == Operator.IN && written }
             if (binary.operator == Operator.EQUALS || binary.operator == Operator.NOT_EQUALS || binary.operator == Operator.IN) {
-                itemwise(binary, scope)?.let { return Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "(NOT $it)" else it) }
+                itemwise(binary, scope)?.let { within ->
+                    val keyed = keyIn?.let { keyedIn(it, expression(binary.right, scope), within) } ?: within
+                    return Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "(NOT $within)" else keyed)
+                }
             }
             val (left, right) = compared(expression(binary.left, scope), expression(binary.right, scope), binary)
             temporalBinary(binary.operator, left, right)?.let { return it }
@@ -4043,7 +4077,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     val plain = plain(binary.left, binary.right, left, right, scope)
                     val equal = (if (plain) null else givenItemwise(binary.left, left, binary.right, right))
                         ?: equality(left, right, binary.right, plain, stored(binary.left, scope))
-                    Value.Bool(if (binary.operator == Operator.EQUALS) equal else "NOT ($equal)")
+                    val keyed = if (conjunct && binary.operator == Operator.EQUALS) idEquality(binary, left, right, scope) else null
+                    Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "NOT ($equal)" else keyed?.let { "($it AND $equal)" } ?: equal)
                 }
                 // Values of two kinds are not ordered, as in Cypher: the comparison is null. Two lists are, item by item.
                 Operator.LESS_THAN, Operator.GREATER_THAN, Operator.LESS_THAN_OR_EQUAL, Operator.GREATER_THAN_OR_EQUAL -> {
@@ -4081,7 +4116,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
                 Operator.MODULO -> Value.Json(remainder(a, divisor(binary, b)))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
-                Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
+                Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter).let { within -> keyIn?.let { keyedIn(it, right, within) } ?: within })
                 Operator.STARTS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> startsWith(x, y) } })
                 // A pattern is short: only the text is read as a long one where it is.
                 Operator.MATCHES -> Value.Bool(texts(a) { (x) -> matches(x, text(b)) })
@@ -4145,6 +4180,52 @@ abstract class SqlCypherCompiler(graph: String) {
                 return comparable(Value.Json("(SELECT $items FROM ${temporalElements(list, e)})", ordered = true))
             }
             "CASE WHEN ${typeOf(x)} = 'array' THEN ${over(x, depth)} END"
+        }
+
+        /**
+         * The key column [expression] reads, where it is the id of a node or a relationship in [scope], `id(n)` or `elementId(n)`:
+         * its `nid` or `eid`. The id is JSON, and compared as JSON gives Cypher's answer for a float, a text, a list or null, but no
+         * store's primary key answers that comparison, so `WHERE id(n) = $id` read every node, and an `UNWIND` of ids every node
+         * for each (drivine4j#575). Where the row must pass the comparison ([conjoining]), a test of the key stands beside it:
+         * true wherever the comparison is, as an id is equal only to the number it is, so the two keep the rows the comparison keeps,
+         * and the store reads them by the key.
+         */
+        private fun idKey(expression: Expression, scope: Map<String, Value>): String? {
+            val function = expression as? Expression.Function ?: return null
+            if (function.distinct || function.name.lowercase() !in setOf("id", "elementid")) return null
+            return when (val subject = (function.arguments.singleOrNull() as? Expression.Variable)?.let { scope[it.name] }) {
+                is Value.Node -> subject.nid
+                is Value.Relationship -> subject.eid
+                else -> null
+            }
+        }
+
+        /**
+         * The key test to stand beside [binary], an equality of [left] and [right] where one side is an id ([idKey]): the two keys
+         * the same ([sameKey]), where both are, or the key and the number the other side is ([keyValue]). Null where neither side is an id, or the other is no
+         * JSON value, which is no number.
+         */
+        private fun idEquality(binary: Expression.Binary, left: Value, right: Value, scope: Map<String, Value>): String? {
+            val (a, b) = idKey(binary.left, scope) to idKey(binary.right, scope)
+            fun keyed(key: String, other: Value) = (other as? Value.Json)?.takeIf(::plainJson)?.let { "$key = ${keyValue(comparable(it))}" }
+            return when {
+                a != null && b != null -> sameKey(a, b)
+                a != null -> keyed(a, right)
+                b != null -> keyed(b, left)
+                else -> null
+            }
+        }
+
+        /**
+         * [within], an id's `IN` the list [list], with the test beside it that its [key] is the number an item is ([keyValue]): true
+         * wherever [within] is. An item that is no number has a null key, so where none is the id the test is null, not false, as
+         * [within] is where the list holds a null: the two together keep the rows [within] keeps. A list of nodes, of temporal values or
+         * of values that hold a node is compared otherwise, and has no such test.
+         */
+        private fun keyedIn(key: String, list: Value, within: String): String {
+            if (list !is Value.Json || !plainJson(list)) return within
+            val i = alias("k")
+            return "($key IN (SELECT ${keyValue(item(i))} FROM ${elementsOf(list, comparable(list), i)}) AND $within)"
         }
 
         /**

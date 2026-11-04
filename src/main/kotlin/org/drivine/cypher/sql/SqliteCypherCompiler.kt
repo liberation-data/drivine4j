@@ -131,6 +131,9 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "${SqliteSql.propertyText(it.groupValues[1], it.groupValues[2])} = (CASE json_type($value) WHEN 'text' THEN $value ->> '$' ELSE $value END)"
         }
 
+    /** SQLite compares an `INTEGER PRIMARY KEY` with a float by its value, so `5.0` reads the row whose key is `5`. */
+    override fun keyValue(json: String) = shared(json) { (x) -> "(CASE WHEN json_type($x) IN ('integer', 'real') THEN $x ->> '\$' END)" }
+
     override fun elements(json: String, alias: String) = "json_each($json) AS $alias"
 
     /** `json_each` gives a string, a number or a truth value as the SQL value it is, and a list or a map as JSON. */

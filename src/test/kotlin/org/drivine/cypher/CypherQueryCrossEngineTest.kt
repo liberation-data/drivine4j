@@ -74,6 +74,119 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an id compared with a float, a text, null, a list or an item keeps the rows Cypher keeps, under NOT and OR too`() {
+        // Not in the spec yet: a node's id is the store's own. A SQL store tests the key beside the comparison, where the
+        // row must pass it, so it reads the row by its primary key (drivine4j#575); the rows are the comparison's.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val ids = query("MATCH (p:Person) RETURN [p.name, id(p)]").associate { row -> (row as List<*>).let { it[0] as String to (it[1] as Number).toLong() } }
+        val (keanu, carrie, laurence) = listOf("Keanu", "Carrie", "Laurence").map(ids::getValue)
+        val role = query("MATCH (:Person {name: 'Laurence'})-[r:ACTED_IN]->() RETURN id(r)").single().let { (it as Number).toLong() }
+        val mixed = listOf(keanu.toDouble(), "x", null, carrie, listOf(laurence), mapOf("id" to laurence), laurence + 0.5)
+        val names = "RETURN p.name ORDER BY p.name"
+        fun rows(cypher: String, vararg parameters: Pair<String, Any?>) = query(cypher, mapOf(*parameters))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) = \$id $names", "id" to keanu.toDouble()))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE \$id = id(p) AND p.born > 0 $names", "id" to keanu))
+        listOf(keanu.toString(), null, listOf(keanu), keanu + 0.5).forEach { id ->
+            assertEquals(emptyList(), rows("MATCH (p:Person) WHERE id(p) = \$id $names", "id" to id), "id(p) = $id")
+        }
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to mixed))
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [\$a, null, 'x', \$b] $names", "a" to keanu.toDouble(), "b" to carrie))
+        assertEquals(listOf("Carrie", "Keanu"), rows("UNWIND \$ids AS i MATCH (p:Person) WHERE id(p) = i $names", "ids" to mixed))
+        assertEquals(listOf("Carrie", "Hugo", "Laurence"), rows("MATCH (p:Person) WHERE NOT id(p) = \$id $names", "id" to keanu.toDouble()))
+        // Null for every other person, as the list holds a null: NOT keeps none.
+        assertEquals(emptyList(), rows("MATCH (p:Person) WHERE NOT id(p) IN \$ids $names", "ids" to mixed))
+        assertEquals(listOf("Hugo", "Laurence"), rows("MATCH (p:Person) WHERE NOT id(p) IN \$ids $names", "ids" to listOf(keanu, carrie, "x")))
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) = \$id OR p.name = 'Carrie' $names", "id" to keanu))
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) = \$id OR id(p) IN \$ids $names", "id" to "x", "ids" to mixed))
+        assertEquals(listOf("The Matrix"), rows("MATCH (p:Person)-[r:ACTED_IN]->(m) WHERE id(r) = \$id RETURN m.title", "id" to role.toDouble()))
+        assertEquals(
+            listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"),
+            rows("MATCH (p:Person)-[:ACTED_IN]->(m) WHERE id(p) = \$id RETURN m.title ORDER BY m.title", "id" to keanu),
+        )
+        assertEquals(listOf("Carrie"), rows("MATCH (p:Person {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q) RETURN c.name"))
+        assertEquals(listOf("Carrie"), rows("MATCH (p:Person {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(q) = id(c) RETURN c.name"))
+        assertEquals(listOf("The Matrix"), rows("MATCH (:Person)-[r:ACTED_IN]->() MATCH (p:Person)-[s:ACTED_IN]->(m) WHERE id(r) = \$id AND id(s) = id(r) RETURN m.title", "id" to role))
+        // Written in the statement, as a whole number, a float or one with an exponent.
+        listOf("$keanu", "$keanu.0", "${keanu}e0", "${keanu * 10}e-1").forEach { id ->
+            assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) = $id $names"), "id(p) = $id")
+        }
+        assertEquals(listOf("Carrie", "Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [${keanu}e0, $carrie, 'x'] $names"))
+        // As a value, the comparison is Cypher's: true, false or null.
+        assertEquals(
+            listOf(listOf("Carrie", false, true), listOf("Hugo", false, null), listOf("Keanu", true, true), listOf("Laurence", false, null)),
+            rows("MATCH (p:Person) RETURN [p.name, id(p) = \$id, id(p) IN \$ids] ORDER BY p.name", "id" to keanu.toDouble(), "ids" to mixed),
+        )
+    }
+
+    @Test
+    fun `an id compared where a WHERE nests, or with a value worked out, keeps the rows Cypher keeps`() {
+        // Not in the spec yet: beside drivine4j#575's test of the key, the comparison is still the one that keeps a row.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val keanu = query("MATCH (p:Person {name: 'Keanu'}) RETURN id(p)").single().let { (it as Number).toLong() }
+        val withNull = listOf(keanu, null)
+        val names = "RETURN p.name ORDER BY p.name"
+        fun rows(cypher: String, vararg parameters: Pair<String, Any?>) = query(cypher, mapOf(*parameters))
+        // OPTIONAL MATCH keeps the row, with a null, where the key is no node's.
+        assertEquals(
+            listOf(listOf("Carrie", "Keanu"), listOf("Hugo", "Keanu"), listOf("Keanu", null), listOf("Laurence", "Keanu")),
+            rows("MATCH (p:Person) OPTIONAL MATCH (q:Person) WHERE id(q) = \$id AND q.name <> p.name RETURN [p.name, q.name] ORDER BY p.name", "id" to keanu),
+        )
+        assertEquals(listOf("Keanu"), rows("MATCH (a:Person {name: 'Keanu'}) MATCH (p:Person) WHERE id(p) = id(a) + 0 $names"))
+        assertEquals(listOf("Keanu"), rows("WITH \$id AS x MATCH (p:Person) WHERE id(p) = toInteger(x) $names", "id" to keanu.toString()))
+        assertEquals(listOf(1L), rows("MATCH (p:Person) WITH min(id(p)) AS lo MATCH (q:Person) WHERE id(q) = lo RETURN count(q)"))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WITH p, count(*) AS c WHERE id(p) = \$id AND c = 1 $names", "id" to keanu))
+        // A list predicate's WHERE is read as a value: none() is null, and keeps no row, where the comparison is null.
+        assertEquals(emptyList(), rows("MATCH (p:Person) WHERE none(x IN \$ids WHERE id(p) = x) $names", "ids" to withNull))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE any(x IN \$ids WHERE id(p) = x) $names", "ids" to withNull))
+        assertEquals(listOf(0L, 1L, 0L, 0L), rows("MATCH (p:Person) RETURN size([x IN \$ids WHERE id(p) = x]) ORDER BY p.name DESC", "ids" to withNull))
+        assertEquals(
+            listOf("Carrie", "Hugo", "Laurence"),
+            rows("MATCH (p:Person) WHERE NOT EXISTS { MATCH (q:Person) WHERE id(q) = id(p) AND id(q) IN \$ids } $names", "ids" to listOf(keanu)),
+        )
+        assertEquals(listOf("Hugo", "Keanu"), rows("MATCH (p:Person) WHERE CASE WHEN id(p) IN \$ids THEN true ELSE p.name = 'Hugo' END $names", "ids" to withNull))
+        // A subquery of the row's own on the other side, alone or in the list: Keanu's count is 1, and 0 is no node's id.
+        val knowsCarrie = "COUNT { (p)-[:KNOWS]->(:Person {name: 'Carrie'}) } * \$id"
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) = $knowsCarrie $names", "id" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [$knowsCarrie, null] $names", "id" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [$knowsCarrie, 'x'] $names", "id" to keanu))
+        // Each row once, however often the list holds its id.
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN [\$a, \$a, \$a] $names", "a" to keanu))
+        assertEquals(listOf("Keanu"), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to listOf(keanu, keanu, keanu.toDouble())))
+        listOf(-1L, -(keanu + 1).toDouble(), Long.MAX_VALUE, 1e30, true).forEach { id ->
+            assertEquals(emptyList(), rows("MATCH (p:Person) WHERE id(p) = \$id $names", "id" to id), "id(p) = $id")
+            assertEquals(emptyList(), rows("MATCH (p:Person) WHERE id(p) IN \$ids $names", "ids" to listOf(id)), "id(p) IN [$id]")
+        }
+    }
+
+    @Test
+    fun `an id compared across a relationship of either direction keeps the rows Cypher keeps, one from a node to itself once`() {
+        // Not in the spec yet: drivine4j#575's test of the key beside an id read from #570's relationships both ways round.
+        clear()
+        seed(
+            "CREATE (a:CyUn {k: 1}), (b:CyUn {k: 2}), (c:CyUn {k: 3}), " +
+                "(a)-[:CY_UN {i: 1}]->(b), (b)-[:CY_UN {i: 2}]->(a), (a)-[:CY_UN {i: 3}]->(a), (b)-[:CY_UN {i: 4}]->(c)",
+        )
+        val node = query("MATCH (n:CyUn) RETURN [n.k, id(n)]").associate { row -> (row as List<*>).let { (it[0] as Number).toLong() to (it[1] as Number).toLong() } }
+        val edge = query("MATCH ()-[r:CY_UN]->() RETURN [r.i, id(r)]").associate { row -> (row as List<*>).let { (it[0] as Number).toLong() to (it[1] as Number).toLong() } }
+        fun rows(cypher: String, vararg parameters: Pair<String, Any?>) = query(cypher, mapOf(*parameters))
+        val step = "MATCH (n:CyUn)-[r:CY_UN]-(m)"
+        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 2L), listOf(3L, 1L)), rows("$step WHERE id(n) = \$id RETURN [r.i, m.k] ORDER BY r.i", "id" to node.getValue(1).toDouble()))
+        assertEquals(listOf(listOf(4L, 2L)), rows("$step WHERE id(m) IN \$ids RETURN [r.i, n.k]", "ids" to listOf(node.getValue(3), "x", null)))
+        assertEquals(listOf(listOf(1L, 2L), listOf(2L, 1L)), rows("$step WHERE id(r) = \$id RETURN [n.k, m.k] ORDER BY n.k", "id" to edge.getValue(1)))
+        assertEquals(listOf(listOf(1L, 1L)), rows("$step WHERE id(r) = \$id RETURN [n.k, m.k]", "id" to edge.getValue(3)))
+        assertEquals(listOf(3L), rows("$step WHERE id(n) = id(m) RETURN r.i"))
+        assertEquals(listOf(3L), rows("$step WHERE id(m) = id(n) AND id(n) = \$id RETURN r.i", "id" to node.getValue(1)))
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L), listOf(4L, 3L)),
+            rows("MATCH (:CyUn {k: 2})-[r:CY_UN]-(m) MATCH (x:CyUn) WHERE id(x) = id(m) RETURN [r.i, x.k] ORDER BY r.i"),
+        )
+        assertEquals(listOf(4L), rows("MATCH (:CyUn)-[r:CY_UN]-() MATCH ()-[s:CY_UN]-() WHERE id(r) = \$id AND id(s) = id(r) RETURN count(*)", "id" to edge.getValue(1)))
+        assertEquals(listOf(1L, 1L, 2L), rows("MATCH (n:CyUn)-[:CY_UN*1..2]-(m) WHERE id(n) = \$id RETURN m.k ORDER BY m.k", "id" to node.getValue(3)))
+    }
+
+    @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
         // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
