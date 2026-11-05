@@ -15,7 +15,7 @@ import kotlin.random.Random
 
 /**
  * What a full-text search costs over a label of 10,000 and of 100,000 nodes, on each SQL store (drivine4j#604): BM25 reads
- * every node of the label once more, for each term's rarity and the texts' average length. Synthetic texts of 20 to 200
+ * every node of the label once more, for its count of nodes and the texts' average length. Synthetic texts of 20 to 200
  * words, drawn from 5,000 words by Zipf's law, so a few words are in most texts and most in few. Run by hand, with
  * `FULLTEXT_COST_TESTS=true`: it prints the times, and asserts nothing of them.
  */
