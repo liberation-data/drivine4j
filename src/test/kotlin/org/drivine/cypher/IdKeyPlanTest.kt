@@ -48,10 +48,7 @@ abstract class IdKeyPlanContract {
     /** Whether [plan] reads every row of the table [table] for some node, though it reads another by its key. */
     open fun scansAny(plan: String, table: String) = scans(plan, table)
 
-    /**
-     * The label the statements match their nodes by, which every node carries. Oracle reads a label from the index over
-     * labels before any key, `nid = 6` written included, so its statements match no label, and show the key read.
-     */
+    /** The label the statements match their nodes by, which every node carries, beside another. */
     open val item = ":Item"
 
     /** Gathers the store's statistics of the graph's tables, where it plans by them. */
@@ -66,7 +63,7 @@ abstract class IdKeyPlanContract {
     @BeforeAll
     fun seed() {
         org.drivine.test.SqlCypherFixtures.clear(pm)
-        query("UNWIND range(0, ${NODES - 1}) AS k CREATE (:Item {k: k})")
+        query("UNWIND range(0, ${NODES - 1}) AS k CREATE (:Item:Other {k: k})")
         ids = query("MATCH (n:Item) RETURN [n.k, id(n)]").associate { row -> (row as List<*>).let { (it[0] as Number).toLong() to (it[1] as Number).toLong() } }
         // A relationship from each of the first nodes to the next, each found by its id.
         val pairs = (0L until EDGES).map { k -> listOf(k, id(k), id(k + 1)) }
@@ -75,10 +72,10 @@ abstract class IdKeyPlanContract {
         analyze()
     }
 
-    private fun query(statement: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
+    protected fun query(statement: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         cypher.query(QuerySpecification.withStatement(CypherStatement(statement)).bind(parameters))
 
-    private fun id(k: Long) = ids.getValue(k)
+    protected fun id(k: Long) = ids.getValue(k)
 
     /** That [statement] gives [expected], and that the store's plan reads [table] by its key and scans no row of it. */
     private fun assertKeyed(statement: String, parameters: Map<String, Any?>, expected: List<Any?>, table: String = "node") {
@@ -265,7 +262,6 @@ class PostgresIdKeyPlanTest : IdKeyPlanContract() {
 
 @OracleTests
 class OracleIdKeyPlanTest : IdKeyPlanContract() {
-    override val item = ""
     override val pm by lazy { OracleTestDatabase.graphManager(GRAPH) }
     override val cypher by lazy { OracleTestDatabase.fixtures(pm) }
 
@@ -301,9 +297,55 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
     override fun analyze() = OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE'); DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_EDGE'); END;")
 
     /**
-     * With a label on each: `b`'s, tested so the index over labels can't answer it, has Oracle read `b` by its key, where it read
-     * that index for `b` once for `a`'s row (#578).
+     * A node of a label, found by its id: Oracle read every node of the label through the index over labels, and the key only as
+     * a filter on each, and, for an `UNWIND` of ids, that index once for each id (#580). Each is read by its primary key.
      */
     @Test
-    fun `a labelled node equal to a labelled node read by its key is read by its key too, whichever side of the = it is on`() = nodeEqualToKeyed(":Item")
+    fun `a labelled node found by its id is read by its primary key, not through the index over labels`() {
+        val hundred = mapOf("ids" to (0L until 100L).map { id(it * 7) })
+        for ((statement, parameters) in listOf(
+            "MATCH (n:Item) WHERE id(n) = \$id RETURN n.k" to mapOf("id" to id(4000)),
+            "MATCH (n:Item:Other) WHERE elementId(n) = \$id RETURN n.k" to mapOf("id" to id(4000)),
+            "MATCH (n:Item) WHERE id(n) IN \$ids RETURN count(*)" to hundred,
+            "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i RETURN count(*)" to hundred,
+            "MATCH (a:Item) WHERE a.k < 50 MATCH (n:Item) WHERE id(n) = a.k + ${id(0)} RETURN count(*)" to emptyMap(),
+        )) {
+            val plan = plan(compiled(statement, parameters))
+            println("$statement\n$plan\n")
+            assertTrue("INDEX UNIQUE SCAN" in plan, "$statement reads no node by its key:\n$plan")
+            assertFalse(OracleRelationshipLabelPlanTest.multiValueUnderLoop(plan), "$statement reads the index over labels once for each id:\n$plan")
+        }
+    }
+
+    /** A node found by its id, its labels tested by their text, is still left out where it lacks a label the pattern names (#580). */
+    @Test
+    fun `a node found by its id without a label the pattern names is no row`() {
+        val ids = mapOf("id" to id(5), "ids" to listOf(id(5), id(6)))
+        for ((statement, expected) in listOf(
+            "MATCH (n:Gone) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Item:Gone) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Ite) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Gone) WHERE id(n) IN \$ids RETURN n.k" to emptyList(),
+            "UNWIND \$ids AS i MATCH (n:Gone) WHERE id(n) = i RETURN n.k" to emptyList(),
+            "UNWIND \$ids AS i MATCH (n:Other:Item) WHERE id(n) = i RETURN n.k ORDER BY n.k" to listOf(5L, 6L),
+        )) {
+            assertTrue("INSTR(" in compiled(statement, ids).sql, statement)
+            assertEquals(expected, query(statement, ids), statement)
+        }
+    }
+
+    /** A statement that writes reads its rows, and a `DELETE` its ids, with the labels so tested, and the hint (#580). */
+    @Test
+    fun `a labelled node found by its id in a statement that writes is found, and written`() {
+        val ids = mapOf("ids" to listOf(id(3), id(4)))
+        try {
+            query("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i SET n.seen = true", ids)
+            assertEquals(listOf(3L, 4L), query("MATCH (n:Item) WHERE n.seen = true RETURN n.k ORDER BY n.k"))
+        } finally {
+            query("MATCH (n:Item) WHERE n.seen = true REMOVE n.seen")
+        }
+        val gone = query("CREATE (a:Gone:Other {k: -1}), (b:Gone:Other {k: -2}), (a)-[:R]->(b) RETURN [id(a), id(b)]").single() as List<*>
+        query("UNWIND \$ids AS i MATCH (n:Gone) WHERE id(n) = i DETACH DELETE n", mapOf("ids" to gone))
+        assertEquals(listOf(0L), query("MATCH (n:Gone) RETURN count(n)"))
+    }
 }

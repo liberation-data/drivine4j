@@ -81,7 +81,7 @@ class GroupedLabelsTest {
             "MATCH (n:Movie) RETURN count(n)",
             "MATCH (p:Person) WITH p MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN m.title",
             "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 3 MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN m.title",
-            "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WITH m, count(p) AS c RETURN m.title, c",
+            "MATCH (m:Movie) WITH m, count(*) AS c RETURN m.title, c",
         )) {
             val sql = oracle(cypher)
             val (index, text) = tests(sql, "Movie")
