@@ -109,6 +109,9 @@ class KeyedLabelTest {
         // An UNWIND beside an id compared with something else.
         val beside = oracle("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = \$id RETURN count(*)")
         assertFalse("CARDINALITY(u1" in beside, beside)
+        // An UNWIND's item a relationship's id is set equal to: no node is read by it, so no hint.
+        val relationship = oracle("UNWIND \$ids AS i MATCH (:Item)-[r:R]->(:Item) WHERE id(r) = i RETURN count(*)")
+        assertFalse("CARDINALITY(u1" in relationship, relationship)
     }
 
     @Test
