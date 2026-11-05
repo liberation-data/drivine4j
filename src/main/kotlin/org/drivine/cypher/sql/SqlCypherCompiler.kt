@@ -70,6 +70,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun planned(query: String): String = query
 
     /**
+     * The query a `DELETE` reads the ids it deletes from, [query], a subquery of the match itself in the `DELETE`'s `IN`, as
+     * [planned] gives it: a store whose planner fails on such a subquery is told more: see Oracle's.
+     */
+    protected open fun deletedIds(query: String): String = planned(query)
+
+    /**
      * Whether a value's identity is carried out of a query as a column of its own (see [Value.Json.identity]): not where the
      * queries of a `UNION` in `CALL { … }` would give different columns, which compare by their properties instead.
      */
@@ -2448,8 +2454,8 @@ abstract class SqlCypherCompiler(graph: String) {
             val variable = delete.expressions.map { (it as? Expression.Variable)?.name ?: return false }.distinct().singleOrNull() ?: return false
             val read = (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }
             when (val target = select.scope[variable]) {
-                is Value.Node -> if (delete.detach) deleteIds(null, planned("SELECT ${inKey(target.nid)} AS id$read"), detach = true) else return false
-                is Value.Relationship -> deleteIds(planned("SELECT ${inKey(target.eid)} AS id$read"), null, detach = delete.detach)
+                is Value.Node -> if (delete.detach) deleteIds(null, deletedIds("SELECT ${inKey(target.nid)} AS id$read"), detach = true) else return false
+                is Value.Relationship -> deleteIds(deletedIds("SELECT ${inKey(target.eid)} AS id$read"), null, detach = delete.detach)
                 else -> return false
             }
             return true

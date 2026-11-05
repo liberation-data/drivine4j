@@ -80,6 +80,38 @@ class SetBasedDeleteTest {
     fun `on Oracle a DELETE that reads its match reads the key with + 0, which Oracle does not unnest into a wrong answer`() {
         assertTrue(Regex("DELETE FROM g_node WHERE nid IN \\(SELECT n\\d+\\.nid \\+ 0 AS id").containsMatchIn(OracleCypherCompiler("g").compile("MATCH (g:Gone) DETACH DELETE g").sql))
         assertTrue(Regex("DELETE FROM g_edge WHERE eid IN \\(SELECT (/\\*\\+ [^*]*\\*/ )?e\\d+\\.eid \\+ 0 AS id").containsMatchIn(OracleCypherCompiler("g").compile("MATCH ()-[r:R]->() DELETE r").sql))
+        for (compiler in listOf(PostgresCypherCompiler("g"), SqliteCypherCompiler("g"))) {
+            val sql = compiler.compile("MATCH (g:Gone) DETACH DELETE g").sql
+            assertTrue(Regex("DELETE FROM g_node WHERE nid IN \\(SELECT n\\d+\\.nid AS id").containsMatchIn(sql), "${compiler::class.simpleName}: $sql")
+        }
+    }
+
+    @Test
+    fun `on Oracle a DELETE that reads its match tests labels by their text, in a LATERAL's query too, which the index over labels does not answer`() {
+        // Planned with the index over labels, Oracle crashed the session (ORA-07445 in qjsnmvFindOpt) after rolled-back deletes of the label (#595).
+        fun subquery(cypher: String) = OracleCypherCompiler("g").compile(cypher).sql.substringAfter(" WHERE ").substringAfter("IN (SELECT ")
+        for (cypher in listOf(
+            "MATCH (a:X) OPTIONAL MATCH (a)-[r:R]->(:X {k: 2}) DELETE r",
+            "MATCH (a:X) OPTIONAL MATCH (a)-[:R]->(m:X {k: 3}) DETACH DELETE m",
+            "MATCH (g:Gone:Also) DETACH DELETE g",
+        )) {
+            val read = subquery(cypher)
+            assertFalse(Regex("JSON_EXISTS\\([\\w.]+\\.labels").containsMatchIn(read), "$cypher: $read")
+            assertTrue(Regex("INSTR\\(',' \\|\\| LTRIM\\(RTRIM\\(JSON_SERIALIZE\\(n\\d+\\.labels\\)").containsMatchIn(read), "$cypher: $read")
+        }
+        assertEquals(2, Regex("JSON_SERIALIZE\\(n\\d+\\.labels\\)").findAll(subquery("MATCH (a:X) OPTIONAL MATCH (a)-[r:R]->(:X {k: 2}) DELETE r")).count())
+        // A label that SQL and JSON quote, or with a space, a backslash before a line break, or past ASCII, is looked for as itself.
+        for (label in listOf("it's \"x\\", "a \\\nb é")) {
+            val read = subquery("MATCH (g:`$label`) DETACH DELETE g")
+            val alias = Regex("JSON_SERIALIZE\\((n\\d+\\.labels)\\)").find(read)!!.groupValues[1]
+            assertTrue(org.drivine.backend.oracle.OracleSql.holdsLabel(alias, label) in read, read)
+        }
+        // A string of the statement's that reads as the test is a string still.
+        val read = subquery("MATCH (g:Gone) WHERE g.s = \"JSON_EXISTS(n1.labels, '\$[*]?(@ == \\\"Y\\\")')\" DETACH DELETE g")
+        assertEquals(1, Regex("JSON_EXISTS\\(n1\\.labels").findAll(read).count(), read)
+        assertFalse(org.drivine.backend.oracle.OracleSql.holdsLabel("n1.labels", "Y") in read, read)
+        // A read that deletes nothing keeps the test the index answers.
+        assertTrue("JSON_EXISTS(" in OracleCypherCompiler("g").compile("MATCH (g:Gone) RETURN g.k").sql)
     }
 
     @Test
