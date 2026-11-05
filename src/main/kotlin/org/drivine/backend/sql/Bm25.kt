@@ -41,7 +41,7 @@ internal object Bm25 {
      *
      * Only the candidates that hold a scoring term are counted. Every node that holds a term is one of them, so the count
      * of those that hold it, each term's rarity, is a window aggregate over them, and exact. The label's count of nodes and
-     * their average length are one plain read of [label], with no term matched. Then the nodes that lack a required term,
+     * their average length are plain reads of [label], with no term matched. Then the nodes that lack a required term,
      * or hold an excluded one, are left out: they still count among those that hold the terms they do.
      */
     fun ranked(candidates: String, label: String, nodes: String, query: TextQuery, sql: Dialect): String {
@@ -52,10 +52,13 @@ internal object Bm25 {
         val counts = query.scored.zip(tf) + query.required.zip(required) + query.excluded.zip(excluded)
         val select = (listOf("s.nid", "${sql.length("s.text")} AS len") + counts.map { (term, name) -> "${sql.count("s.text", term)} AS $name" }).joinToString(", ")
         val counted = Query(select, Derived(candidates, "s"), listOf(query.scored.joinToString(" OR ", "(", ")") { sql.holds("s.text", it) }))
-        val figures = Query("${sql.real("COUNT(*)")} AS n, ${sql.real("AVG(${sql.length("l.text")})")} AS avglen", Derived(label, "l"))
+        // Each a subquery of its own, which no row is passed to, so a store works it out once. Joined beside the candidates,
+        // Postgres read the label again for each candidate where it guessed there were few: 55 s for a rare word at 100,000.
+        fun figure(of: String) = Query(sql.real(of), Derived(label, "l")).nested()
         val weighed = Query(
-            (listOf("h.*", "t.n", "t.avglen") + tf.zip(df).map { (t, d) -> "SUM(CASE WHEN h.$t > 0 THEN 1 ELSE 0 END) OVER () AS $d" }).joinToString(", "),
-            Beside(Derived(counted.text(), "h"), Derived(figures.text(), "t")),
+            (listOf("h.*", "${figure("COUNT(*)")} AS n", "${figure("AVG(${sql.length("l.text")})")} AS avglen") +
+                tf.zip(df).map { (t, d) -> "SUM(CASE WHEN h.$t > 0 THEN 1 ELSE 0 END) OVER () AS $d" }).joinToString(", "),
+            Derived(counted.text(), "h"),
         )
         val score = score(tf.zip(df).map { (t, d) -> "w.$t" to "w.$d" }, "w.n", "w.len", "NULLIF(w.avglen, 0)", sql.ln)
         val scored = Query("w.nid, ${sql.real(score)} AS score", Derived(weighed.text(), "w"), required.map { "w.$it > 0" } + excluded.map { "w.$it = 0" })
