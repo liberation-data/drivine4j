@@ -736,6 +736,19 @@ class OracleCypherCompiler(
         all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }.also { keyed += it }
 
     /**
+     * Each label by the labels' text ([OracleSql.holdsLabel]), which the index over labels can't answer, for a node a `MATCH`
+     * finds after a `WITH` that groups its rows. Answered by that index, Oracle (23.26) sometimes crashed the session building
+     * the cursor (ORA-00600 `[QJSNMV_GET_MVI_MD:2]`, ORA-03113 to the client), after planning, as it put the label test it had
+     * rewritten onto the index's column back as it was: `MATCH (p:Person)-[r:ACTED_IN]->() WITH p, collect(DISTINCT [r]) AS l,
+     * count(DISTINCT [r]) AS n MATCH (p)-[r2:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN …` (#601, #320,
+     * liberation-data/drivine#620); after a rolled-back delete of nodes of the label it crashed in the same index as a
+     * `DELETE`'s read did (ORA-07445 `[qjsnmvFindOpt()+16]`, #597). The nodes before the `WITH` keep the index's form. Such a
+     * node is mostly found from a node the `WITH` passed on, by its key, so only a node found by its label and nothing else is
+     * read without the index.
+     */
+    override fun groupedLabels(labels: String, all: List<String>) = all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }
+
+    /**
      * Each test of a node's labels [keyedLabels] wrote. Kept as text, and looked for in the query [planned] is given, so a
      * trial compile that writes one and is thrown away, or a step of a procedure that holds none, is planned as before.
      */

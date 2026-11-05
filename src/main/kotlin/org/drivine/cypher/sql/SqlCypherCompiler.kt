@@ -424,6 +424,13 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun keyedLabels(labels: String, all: List<String>) = hasLabels(labels, all)
 
+    /**
+     * Whether the labels [labels], a JSON list, hold each of [all], for a node a `MATCH` finds after a `WITH` that groups its
+     * rows (see [Select.afterGrouping]): one read beside the grouped rows, which the query can't merge into its own. As
+     * [hasLabels] tests them. A store whose planner fails on that shape tests them otherwise: see Oracle's.
+     */
+    protected open fun groupedLabels(labels: String, all: List<String>) = hasLabels(labels, all)
+
     /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
     protected abstract fun elements(json: String, alias: String): String
 
@@ -1132,6 +1139,12 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * The keys of the nodes a pattern found after a `WITH` that groups its rows ([Select.afterGrouping]): a label a condition
+         * tests of one is tested as its pattern's are, by [groupedLabels]. A node the `WITH` passed on is not among them.
+         */
+        private val grouped = mutableSetOf<String>()
+
+        /**
          * Each node of [pairs], keys a condition [select]'s rows must pass sets equal (`a = b`, `id(a) = id(b)`), tested for
          * its labels as [keyedLabels] tests a node read by its key, where it is the later of the two [select] binds and tests
          * for labels, or the one of them it does where the other is [anchored]. On Oracle (23.26) the test of a label the index
@@ -1228,6 +1241,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val name = alias("w")
             val next = Select(outer)
             next.walks = select.walks
+            next.afterGrouping = select.afterGrouping || with.projection.distinct || with.projection.items.any { contains(it.expression, ::isAggregate) }
             // A value made anew for each row is one value however often the clauses after read it: see [once]. Kept apart
             // from the query that reads it, where that query must not have it merged in: see `casesFirst`.
             val anew = with.projection.items.any { item -> holdsAnew(item.expression) }
@@ -1546,11 +1560,17 @@ abstract class SqlCypherCompiler(graph: String) {
                     null -> {
                         val name = alias("n")
                         select.source("$nodes $name")
-                        Value.Node("$name.nid", "$name.labels", "$name.props", "$name.stamp").also { value -> node.variable?.let { select.bind(it, value) } }
+                        Value.Node("$name.nid", "$name.labels", "$name.props", "$name.stamp").also { value ->
+                            node.variable?.let { select.bind(it, value) }
+                            if (select.afterGrouping) grouped += value.nid
+                        }
                     }
                     else -> throw DrivineException("${node.variable} is not a node, and is used as one in a pattern.")
                 }
-                if (node.labels.isNotEmpty()) select.labelTest(value, node.labels, hasLabels(value.labels, node.labels))
+                if (node.labels.isNotEmpty()) {
+                    val test = if (select.afterGrouping) groupedLabels(value.labels, node.labels) else hasLabels(value.labels, node.labels)
+                    select.labelTest(value, node.labels, test)
+                }
                 node.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
                 if (node.labels.isNotEmpty() || node.properties != null) anchor(select, value.nid)
                 value
@@ -3324,7 +3344,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
             is Expression.Property -> inParameter(expression)?.let { Value.Json(it, jsonNull = true) } ?: property(expression(expression.subject, scope), expression.key)
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
-                is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
+                is Value.Node -> Value.Bool("(${if (subject.nid in grouped) groupedLabels(subject.labels, expression.labels) else hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
             }
             is Expression.ListLiteral -> {
@@ -5296,6 +5316,12 @@ abstract class SqlCypherCompiler(graph: String) {
          * then bound in no subquery (see `project`).
          */
         var walks = false
+
+        /**
+         * Whether it reads the rows of a `WITH` that groups them, as one that aggregates or is `DISTINCT` does, or of a `WITH`
+         * that reads those: a node a pattern finds here is then tested for its labels as [groupedLabels] tests them.
+         */
+        var afterGrouping = false
 
         /** The order its rows are read in, where it has one: each term, and whether it descends. */
         val order = mutableListOf<Pair<String, Boolean>>()
