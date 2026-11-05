@@ -1266,6 +1266,21 @@ class OracleCypherCompiler(
         else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $hints */ ")
     }
 
+    /**
+     * Each label test of a node's labels the index over labels would answer ([hasLabel]) written by the labels' text instead
+     * ([OracleSql.holdsLabel]), in each query of the subquery, a `LATERAL`'s too. Oracle (23.26) crashed the session (ORA-07445
+     * `[qjsnmvFindOpt()+16] [SIGSEGV]`, in the multivalue index over labels; ORA-03113 to the client) planning `DELETE FROM
+     * <edges> WHERE eid IN (SELECT … FROM <nodes> n1 LEFT JOIN LATERAL (… <nodes> n2 …) …)` of `MATCH (a:X) OPTIONAL MATCH
+     * (a)-[r:R]->(:X {k: 2}) DELETE r`, and the `DETACH DELETE m` of `OPTIONAL MATCH (a)-[:R]->(m:X {k: 3})` alike, where
+     * transactions that deleted and read nodes of the label had rolled back (#595). Off the index it ran clean; with
+     * `NO_ADAPTIVE_PLAN` (already the session's) or `NO_INDEX` on the outer node alone it crashed as often. The subquery
+     * then reads the outer node's table whole, once, and the lateral's node by its key.
+     */
+    override fun deletedIds(query: String): String =
+        super.deletedIds(query).replace(INDEXED_LABEL) { m ->
+            OracleSql.holdsLabel(m.groupValues[1], m.groupValues[2].replace("''", "'").replace(Regex("""\\(.)"""), "$1"))
+        }
+
     /** A read of the graph's node or relationship table: see [planned]. */
     private val graphTable = Regex("\\b(?:${Regex.escape(nodes)}|${Regex.escape(edges)}) \\w")
 
@@ -1518,6 +1533,12 @@ class OracleCypherCompiler(
 
         /** The hint that plans a statement without statistics feedback: see [planned]. */
         internal const val NO_FEEDBACK = "OPT_PARAM('_optimizer_use_feedback' 'false')"
+
+        /**
+         * A test of a column of labels, `n1.labels`, as [hasLabel] writes it, `JSON_EXISTS(n1.labels, '$[*]?(@ == "X")')`,
+         * and the label, written as JSON writes a string and then as SQL quotes one: see [deletedIds].
+         */
+        private val INDEXED_LABEL = Regex("""JSON_EXISTS\(([\w.]+\.labels), '\$\[\*\]\?\(@ == "((?:[^"\\]|\\.)*)"\)'\)""")
 
         /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
         private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")

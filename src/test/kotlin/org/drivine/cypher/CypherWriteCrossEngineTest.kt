@@ -1,11 +1,16 @@
 package org.drivine.cypher
 
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.connection.ConnectionProvider
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.oracle.OracleTestDatabase
@@ -17,6 +22,8 @@ import org.drivine.query.QuerySpecification
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
+import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -38,6 +45,9 @@ abstract class CypherWriteContract {
 
     /** Removes the graph the tests wrote. */
     abstract fun clear()
+
+    /** The provider of connections to [pm]'s store, for a test that runs statements in a transaction of its own. */
+    abstract fun connections(): ConnectionProvider
 
     /** Whether the statement under test is compiled to SQL: what only compiling refuses is asked of it alone. */
     open val compiles: Boolean = false
@@ -475,7 +485,8 @@ abstract class CypherWriteContract {
         // #587: the nodes are deleted once every row's relationships are. The rows are Neo4j's (2026.10).
         ring()
         // Node 1 keeps the relationship from 3.
-        assertFailsWith<Exception> { query("MATCH (a:CyWrite {k: 1})-[r]->() DELETE r, a") }
+        val refused = assertFailsWith<Exception> { query("MATCH (a:CyWrite {k: 1})-[r]->() DELETE r, a") }
+        assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { "still has relationships" in it.message.orEmpty() }, refused.toString())
         assertEquals(listOf(1L, 2L, 3L, 4L), ks())
         assertEquals(listOf(1L, 2L, 3L, 4L), rs())
         // Each row deletes one of node 1's relationships, and node 1 is deleted once.
@@ -501,6 +512,28 @@ abstract class CypherWriteContract {
         query("MATCH (n:CyWrite) WITH collect(n) AS ns FOREACH (n IN ns | DETACH DELETE n)")
         assertEquals(emptyList(), ks())
         assertEquals(emptyList(), rs())
+    }
+
+    @Test
+    fun `a DELETE in a transaction that rolls back is undone, and reads within it what the DELETE left`() {
+        // Oracle crashed the session planning the DELETE's subquery of its match again after such a transaction (#595).
+        val provider = connections()
+        val registry = DatabaseRegistry(DataSourceMap(mutableMapOf())).also { it.register(provider) }
+        val holder = TransactionContextHolder(registry)
+        val tpm = PersistenceManagerFactory(registry, holder).get(provider.name, PersistenceManagerType.TRANSACTIONAL)
+        fun inside(cypher: String) = tpm.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        ring()
+        val seen = Transactions(holder).transaction(rollback = true) {
+            inside("MATCH (n:CyWrite) WHERE n.k > 2 DETACH DELETE n")
+            inside("MATCH (:CyWrite)-[r {i: 1}]->() DELETE r")
+            listOf(inside("MATCH (n:CyWrite) RETURN n.k ORDER BY n.k"), inside("MATCH (:CyWrite)-[r]->() RETURN r.i ORDER BY r.i"))
+        }
+        assertEquals(listOf(listOf(1L, 2L), listOf(4L)), seen)
+        assertEquals(listOf(1L, 2L, 3L, 4L), ks())
+        assertEquals(listOf(1L, 2L, 3L, 4L), rs())
+        // Planned again after the rollback, Oracle crashed the session on this delete where it read the index over labels (#595).
+        query("MATCH (a:CyWrite) OPTIONAL MATCH (a)-[r:R]->(:CyWrite {k: 2}) DELETE r")
+        assertEquals(listOf(2L, 3L, 4L), rs())
     }
 
     @Test
@@ -576,6 +609,8 @@ class CypherWriteNeo4jTest : CypherWriteContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = manager.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+
+    override fun connections(): ConnectionProvider = provider
 }
 
 @PostgresTests
@@ -587,6 +622,8 @@ class CypherWritePostgresTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = PostgresTestDatabase.clear(manager)
+
+    override fun connections() = PostgresTestDatabase.connections(manager)
 
     @Test
     fun `a write in a transaction rolled back leaves nothing, and runs again after`() {
@@ -616,6 +653,8 @@ class CypherWriteOracleTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    override fun connections() = OracleTestDatabase.connections(manager)
 
     @Test
     fun `a store without the function that compares values holding a null compares them as before, until the graph is ensured again`() {
@@ -844,6 +883,8 @@ class CypherWriteSqliteTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = SqliteTestDatabase.clear(manager)
+
+    override fun connections() = SqliteTestDatabase.connections(manager)
 
     @Test
     fun `a write in a transaction rolled back leaves nothing, and a write that fails leaves nothing of what it wrote`() {

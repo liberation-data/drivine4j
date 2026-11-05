@@ -350,6 +350,12 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   reads the key with `+ 0`. This works around an Oracle rewrite of the same family, seen on 23.26: Oracle unnested
   `nid IN (SELECT n1.nid FROM <nodes> n1 WHERE <label test>)` into the table itself and found no rows, so
   `MATCH (g:Gone) DETACH DELETE g` deleted nothing ([#587](https://github.com/liberation-data/drivine4j/issues/587)).
+  That subquery also tests each node's labels by their text, which the index over labels can't answer, in a `LATERAL`'s
+  query too: planned with the index, Oracle crashed the session (ORA-03113, with ORA-07445 `[qjsnmvFindOpt()+16]` in the
+  alert log) on `MATCH (a:X) OPTIONAL MATCH (a)-[r:R]->(:X {k: 2}) DELETE r`, and on the `DETACH DELETE` of an optional
+  match's node, after transactions that deleted and read nodes of the label had rolled back. The hint `NO_ADAPTIVE_PLAN`
+  did not prevent it. The subquery then reads the node table whole, once
+  ([#595](https://github.com/liberation-data/drivine4j/issues/595), [drivine#612](https://github.com/liberation-data/drivine/issues/612)).
 - A compiled node with a label whose key a `WHERE` sets equal to another node's (`a = b`, `id(b) = id(a)`, as a
   condition the row must pass, not under `NOT` or beside an `OR`) tests its labels by their text, which the index over
   labels can't answer, where the other node is found by a label, properties, a relationship or its id: Oracle then reads
