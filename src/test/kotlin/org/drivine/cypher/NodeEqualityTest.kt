@@ -161,6 +161,16 @@ class NodeEqualityTest {
         // With a test of the labels as keyedLabels writes it, beside the JSON table transformation's hint, and on its own.
         val both = OracleCypherCompiler("g").compile("MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*)").sql
         assertTrue(both.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM ${OracleCypherCompiler.NO_FEEDBACK} */ "), both)
+        // Read by its key in one query of a UNION, or in an EXISTS subquery: the statement's outermost query holds the hint, once.
+        for (statement in listOf(
+            "MATCH (n:Small) RETURN count(*) AS c UNION ALL MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*) AS c",
+            "MATCH (n:Small) RETURN count(*) AS c UNION MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*) AS c",
+            "MATCH (a:Big) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)",
+        )) {
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertTrue("INSTR(" in sql, "$statement\n$sql")
+            assertPlannedWithoutFeedback(sql, "$statement\n$sql")
+        }
         // A label in the labels' text form that keyedLabels didn't write, as a node's second label is tested.
         listOf(
             "MATCH (n:Big) RETURN count(*)",
