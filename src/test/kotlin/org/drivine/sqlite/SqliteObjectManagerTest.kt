@@ -694,7 +694,11 @@ class SqliteObjectManagerTest {
             )
         )
 
-        assertEquals(listOf("a1" to 1.0, "a2" to 0.5), stateless.loadMatching(ArticleNode::class.java, "graph", 10, 0.0).map { it.value.id to it.score })
+        // Scored by BM25 (drivine4j#604): the text that holds the word twice first, the best scoring one, the other below it.
+        val graph = stateless.loadMatching(ArticleNode::class.java, "graph", 10, 0.0)
+        assertEquals(listOf("a1", "a2"), graph.map { it.value.id })
+        assertEquals(1.0, graph[0].score, 1e-9)
+        assertTrue(graph[1].score > 0.0 && graph[1].score < 1.0, graph.toString())
         assertEquals(listOf("a1"), stateless.loadMatching(ArticleNode::class.java, "graph -soup", 10, 0.0).map { it.value.id })
         assertEquals(listOf("a3"), stateless.loadMatching(ArticleNode::class.java, "école", 10, 0.0).map { it.value.id })
         assertEquals(setOf("a1", "a2", "a3"), stateless.loadMatching(ArticleNode::class.java, "graph*", 10, 0.0).map { it.value.id }.toSet())
