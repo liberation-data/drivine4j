@@ -145,8 +145,11 @@ internal object SqliteSql {
      * them, in lower case, by the function [SqliteLowerFunction] registers: SQLite's own `lower` lowers
      * only ASCII.
      */
-    fun searchedText(alias: String, keys: List<String>): String =
-        "${SqliteFunctions.LOWER}(${keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }})"
+    fun searchedText(alias: String, keys: List<String>): String = "${SqliteFunctions.LOWER}(${joinedText(alias, keys)})"
+
+    /** [searchedText] before it is lowered: what a full-text search measures a text's length by (drivine4j#604). */
+    fun joinedText(alias: String, keys: List<String>): String =
+        keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }
 
     /** The columns a row of a node has, which every row source of a node gives. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp")

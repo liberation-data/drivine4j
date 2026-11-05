@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.Bm25
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.backend.sql.TextQuery
@@ -555,19 +556,30 @@ internal class OracleSelect(
     }
 
     /**
-     * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
-     * against the best of them, so the best scores one. Every node of the label is read.
+     * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
+     * scores one, as Postgres scores them. Every node of the label is read, and a term's rarity, and the average length a
+     * text's is weighed against, are over them all.
      *
      * Each term is counted on its own. Counting them as the rows of one bound array, in a subquery
      * the statement names twice, gave wrong counts on Oracle 23.26: every position of the text.
      */
     fun matching(keys: List<String>, query: TextQuery): String {
-        val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
-        val occurrences = query.scored.joinToString(" + ") { "REGEXP_COUNT(s.text, ${scope.bound(it)})" }
-        val conditions = query.required.map { "REGEXP_COUNT(s.text, ${scope.bound(it)}) > 0" } + query.excluded.map { "REGEXP_COUNT(s.text, ${scope.bound(it)}) = 0" }
-        val texts = Query("${OracleSql.columns("c")}, $text AS text", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!))
-        val counted = Query("${OracleSql.columns("s")}, $occurrences AS score", Derived(texts.text(), "s"), conditions)
-        return Query("${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score", Derived(counted.text(), "h"), listOf("h.score > 0")).text()
+        val values = keys.map { "JSON_VALUE(c.props, ${path(it)} RETURNING CLOB)" }
+        val text = values.joinToString(" || ' ' || ") { "LOWER($it)" }
+        val len = "NVL(LENGTH(${values.joinToString(" || ' ' || ")}), 0)"
+        return Bm25.ranked(
+            Query("c.nid, $text AS text, $len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
+            Query("$len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
+            graph.nodes, query,
+            Bm25.Dialect(
+                // The row of the node table is joined back, whose document is made as the graph's vertex makes it.
+                columns = { "$it.nid, $it.labels, $it.props, $it.stamp, ${OracleSql.transform(it)} AS doc" },
+                count = { text, term -> "REGEXP_COUNT($text, ${scope.bound(term)})" },
+                holds = { text, term -> "REGEXP_LIKE($text, ${scope.bound(term)})" },
+                ln = { "LN($it)" },
+                real = { it },
+            ),
+        )
     }
 
     /**

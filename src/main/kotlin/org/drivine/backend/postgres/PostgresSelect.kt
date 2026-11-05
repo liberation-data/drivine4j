@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.backend.sql.Bm25
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.annotation.Direction
@@ -461,32 +462,38 @@ internal class PostgresSelect(
     }
 
     /**
-     * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
-     * against the best of them, so the best scores one. Each term is a regular expression that matches
-     * it as a whole word, counted as Oracle counts it without a text index, so the two score alike.
-     * With [indexed], the nodes are first narrowed to those whose text holds every word of some scoring
-     * term, which the trigram index of a full-text index answers (see [PostgresSchemaGrammar]): a node
-     * that does not cannot match the term, and scores nothing, so the answer is the same.
+     * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
+     * scores one. Each term is a regular expression that matches it as a whole word, counted as Oracle counts it without a text
+     * index, so the two score alike. A term's rarity, and the average length a text's is weighed against, are over every node
+     * of the label.
+     *
+     * With [indexed], the nodes counted are first narrowed to those whose text holds every word of some scoring term, which the
+     * trigram index of a full-text index answers (see [PostgresSchemaGrammar]): a node that does not cannot match the term, so
+     * every node that holds a term is still counted, and the scores are the same. Only the label's count of nodes and their
+     * average length are read from every node of it.
      */
     fun matching(keys: List<String>, query: TextQuery, indexed: Boolean = false): String {
         val text = PostgresSql.searchedText("c", keys)
-        fun count(pattern: String) = "(SELECT count(*) FROM regexp_matches(s.text, ${PostgresSql.text(scope.bound(pattern))}, 'g'))"
+        val len = "length(${PostgresSql.joinedText("c", keys)})"
+        val labelled = listOfNotNull(PostgresSql.hasLabels("c", rootLabels()))
         // A node that matches a term holds each of its words: what the trigram index answers is whether it holds them.
         val narrowed = if (indexed) {
             listOf(query.scoredWords.joinToString(" OR ", "(", ")") { words -> words.joinToString(" AND ", "(", ")") { "$text LIKE ${PostgresSql.text(scope.bound("%${likeText(it)}%"))}" } })
         } else {
             emptyList()
         }
-        val texts = Query("${PostgresSql.columns("c")}, $text AS text", Table(graph.nodes, "c"), listOfNotNull(PostgresSql.hasLabels("c", rootLabels())) + narrowed)
-        val counted = Query(
-            "${PostgresSql.columns("s")}, ${query.scored.joinToString(" + ") { count(it) }} AS score",
-            Derived(texts.text(), "s"),
-            query.required.map { "${count(it)} > 0" } + query.excluded.map { "${count(it)} = 0" },
+        return Bm25.ranked(
+            Query("c.nid, $text AS text, $len AS len", Table(graph.nodes, "c"), labelled + narrowed).text(),
+            Query("$len AS len", Table(graph.nodes, "c"), labelled).text(),
+            graph.nodes, query,
+            Bm25.Dialect(
+                columns = PostgresSql::columns,
+                count = { text, term -> "(SELECT count(*) FROM regexp_matches($text, ${PostgresSql.text(scope.bound(term))}, 'g'))" },
+                holds = { text, term -> "$text ~ ${PostgresSql.text(scope.bound(term))}" },
+                ln = { "ln($it)" },
+                real = { "CAST($it AS double precision)" },
+            ),
         )
-        return Query(
-            "${PostgresSql.columns("h")}, CAST(h.score AS double precision) / MAX(h.score) OVER () AS score",
-            Derived(counted.text(), "h"), listOf("h.score > 0"),
-        ).text()
     }
 
     /** [word] as text a `LIKE` pattern matches as it is: its own `%`, `_` and backslash taken as themselves. */
