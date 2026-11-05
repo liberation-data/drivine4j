@@ -117,9 +117,10 @@ row must pass a comparison of one by `=` or `IN`, as a `WHERE` or one of its con
 the store reads the row by that key: `MATCH (n) WHERE id(n) = $id`, `MATCH (n) WHERE id(n) IN $ids` and
 `UNWIND $ids AS i MATCH (n) WHERE id(n) = i` read a row for each id, not every node for each. The comparison is still
 Cypher's, so `5.0` is the id `5`, and a text, a list or null is no id. Under `NOT`, beside an `OR`, or as a value
-(`RETURN id(n) = $id`), it reads every row it compares, as an expression of a property does. Oracle may still read
-the nodes of a label the pattern names (`MATCH (n:Person) WHERE id(n) = $id`) by the index over labels, as it does for
-a key written in SQL, `nid = 6`; without the label it reads the key.
+(`RETURN id(n) = $id`), it reads every row it compares, as an expression of a property does. On Oracle a node of a
+label the pattern names (`MATCH (n:Person) WHERE id(n) = $id`) found so tests its labels in a form the index over labels
+can't answer, so Oracle reads it by the key too, not every node of the label
+([details](09-supported-engines.md#oracle)).
 
 A `DELETE` deletes the nodes and relationships of all its rows at once, a statement for each table, not one for each
 row: the relationships first, then the nodes, a node's relationships going with it where it is `DETACH`. One that ends

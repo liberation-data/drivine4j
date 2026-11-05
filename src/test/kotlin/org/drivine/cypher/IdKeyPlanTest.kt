@@ -72,7 +72,7 @@ abstract class IdKeyPlanContract {
         analyze()
     }
 
-    private fun query(statement: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
+    protected fun query(statement: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         cypher.query(QuerySpecification.withStatement(CypherStatement(statement)).bind(parameters))
 
     protected fun id(k: Long) = ids.getValue(k)
@@ -315,5 +315,20 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
             assertTrue("INDEX UNIQUE SCAN" in plan, "$statement reads no node by its key:\n$plan")
             assertFalse(OracleRelationshipLabelPlanTest.multiValueUnderLoop(plan), "$statement reads the index over labels once for each id:\n$plan")
         }
+    }
+
+    /** A statement that writes reads its rows, and a `DELETE` its ids, with the labels so tested, and the hint (#580). */
+    @Test
+    fun `a labelled node found by its id in a statement that writes is found, and written`() {
+        val ids = mapOf("ids" to listOf(id(3), id(4)))
+        try {
+            query("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i SET n.seen = true", ids)
+            assertEquals(listOf(3L, 4L), query("MATCH (n:Item) WHERE n.seen = true RETURN n.k ORDER BY n.k"))
+        } finally {
+            query("MATCH (n:Item) WHERE n.seen = true REMOVE n.seen")
+        }
+        val gone = query("CREATE (a:Gone:Other {k: -1}), (b:Gone:Other {k: -2}), (a)-[:R]->(b) RETURN [id(a), id(b)]").single() as List<*>
+        query("UNWIND \$ids AS i MATCH (n:Gone) WHERE id(n) = i DETACH DELETE n", mapOf("ids" to gone))
+        assertEquals(listOf(0L), query("MATCH (n:Gone) RETURN count(n)"))
     }
 }

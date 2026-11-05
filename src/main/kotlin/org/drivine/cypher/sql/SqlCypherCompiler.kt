@@ -1166,18 +1166,23 @@ abstract class SqlCypherCompiler(graph: String) {
          * growing with edges × nodes (drivine4j#581). The earlier end keeps its test, so the index still finds it, as
          * [readByKey] keeps the earlier of two nodes set equal. Where the later end's label is the rarer, that end is found by a
          * scan of the nodes, once, not through the index: the time is still linear. A walk of many relationships, or a
-         * relationship from a node to itself, leaves the tests as they are.
+         * relationship from a node to itself, leaves the tests as they are. Where only the later end is given properties
+         * ([given] says which), it is the one the pattern starts from best, and keeps its test, and the earlier is read by its key:
+         * `MATCH (a:Big)<-[:R]-(x:Small {s: 7})` took 15 ms over 8,000 edges keyed the other way round, a scan of every node
+         * for `x`, and 5 ms so; `MATCH (x:Small {s: 7})-[:R]->(a:Big)` takes 4.
          *
          * With [both], for a relationship of either direction read from both halves of a `UNION ALL` ([bothWays]), each end is
          * tested so: Oracle reads the halves first, and found the earlier end through the index once for each edge, 2.6 s over the
          * same 8,000 edges; with both read by their keys, 12 ms, and 14 ms where one end's label is rare.
          */
-        private fun keyedEnd(select: Select, from: String, to: String, both: Boolean) {
+        private fun keyedEnd(select: Select, from: String, to: String, both: Boolean, given: Pair<Boolean, Boolean>) {
             if (from == to) return
             val (atFrom, atTo) = select.labelled(from) to select.labelled(to)
             if (atFrom == null || atTo == null) return
+            val (later, earlier) = if (atFrom > atTo) from to to else to to from
+            val laterGiven = if (later == from) given.first && !given.second else given.second && !given.first
             if (both) listOf(from, to).forEach { select.relabel(it, ::keyedLabels) }
-            else select.relabel(if (atFrom > atTo) from else to, ::keyedLabels)
+            else select.relabel(if (laterGiven) earlier else later, ::keyedLabels)
         }
 
         /** The rows [select] reads with a UUID made for each, in a `WITH *` of its own, and its variable's name, which is no variable of the statement's: see `project`. */
@@ -1610,7 +1615,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 types(value.type, relationship.types)?.let { select.where += it }
                 relationship.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
-                keyedEnd(select, from, to, both = relationship.direction == RelationshipPattern.Direction.EITHER && undirectedBothWays)
+                keyedEnd(
+                    select, from, to, both = relationship.direction == RelationshipPattern.Direction.EITHER && undirectedBothWays,
+                    given = (pattern.nodes[i].properties != null) to (pattern.nodes[i + 1].properties != null),
+                )
                 hops += Hop(value.eid, false, relationship.types, ids(to))
             }
             pattern.variable?.let { variable ->
@@ -2005,7 +2013,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 key(variable) to held(value)
             }
             val list = comparable(Value.Json(aggregateList(jsonObject(entries), orderOf(select)), ordered = true))
-            step(ProcedureStep.Select(ROWS, list, (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }))
+            // Its hints ([Select.head]) stand before the list: the step is written `SELECT <list> INTO …`.
+            step(ProcedureStep.Select(ROWS, select.head(list).removePrefix("SELECT "), (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }))
         }
 
         /** A value as a row holds it: a node or a relationship as its id, anything else as JSON. */
@@ -2505,8 +2514,8 @@ abstract class SqlCypherCompiler(graph: String) {
             val variable = delete.expressions.map { (it as? Expression.Variable)?.name ?: return false }.distinct().singleOrNull() ?: return false
             val read = (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }
             when (val target = select.scope[variable]) {
-                is Value.Node -> if (delete.detach) deleteIds(null, deletedIds("SELECT ${inKey(target.nid)} AS id$read"), detach = true) else return false
-                is Value.Relationship -> deleteIds(deletedIds("SELECT ${inKey(target.eid)} AS id$read"), null, detach = delete.detach)
+                is Value.Node -> if (delete.detach) deleteIds(null, deletedIds(select.head("${inKey(target.nid)} AS id") + read), detach = true) else return false
+                is Value.Relationship -> deleteIds(deletedIds(select.head("${inKey(target.eid)} AS id") + read), null, detach = delete.detach)
                 else -> return false
             }
             return true

@@ -90,6 +90,14 @@ class KeyedLabelTest {
             val sql = oracle(statement)
             assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u1 ${OracleCypherCompiler.FEW_ROWS}\) \*/ """).containsMatchIn(sql), "$statement\n$sql")
         }
+        // A statement that writes reads its rows in a step of its own, and a DELETE its ids in a subquery: each keeps the hint.
+        for (statement in listOf(
+            "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i SET n.seen = true",
+            "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i DETACH DELETE n",
+        )) {
+            val sql = oracle(statement)
+            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u1 ${OracleCypherCompiler.FEW_ROWS}\) """).containsMatchIn(sql), "$statement\n$sql")
+        }
         // An UNWIND beside an id compared with something else.
         val beside = oracle("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = \$id RETURN count(*)")
         assertFalse("CARDINALITY(u1" in beside, beside)
@@ -106,6 +114,15 @@ class KeyedLabelTest {
             assertTrue(indexed(sql, "n1"), "$statement\n$sql")
             assertKeyed(sql, later, listOf(if (statement.indexOf("Big") > statement.indexOf("Small")) "Big" else "Small"), "$statement\n$sql")
         }
+        // The later end alone given properties is where the pattern starts best: it keeps its test, and the earlier is keyed.
+        for (statement in listOf("MATCH (a:Big)<-[:R]-(x:Small {s: 7}) RETURN count(*)", "MATCH (a:Big)-[:R]->(x:Small {s: 7}) RETURN count(*)")) {
+            val sql = oracle(statement)
+            assertTrue(indexed(sql, "n2"), "$statement\n$sql")
+            assertKeyed(sql, "n1", listOf("Big"), "$statement\n$sql")
+        }
+        val bothGiven = oracle("MATCH (a:Big {j: 1})<-[:R]-(x:Small {s: 7}) RETURN count(*)")
+        assertTrue(indexed(bothGiven, "n1"), bothGiven)
+        assertKeyed(bothGiven, "n2", listOf("Small"), bothGiven)
         // Either direction, read from both halves of a UNION ALL: both ends.
         val either = oracle("MATCH (x:Small)-[:R]-(a:Big) RETURN count(*)")
         assertKeyed(either, "n1", listOf("Small"), either)
@@ -190,6 +207,22 @@ class OracleRelationshipLabelPlanTest {
             OracleTestDatabase.clear(pm(size))
             query(size, "UNWIND range(1, $size) AS s CREATE (x:Small {s: s}) WITH x UNWIND range(1, $PER) AS j CREATE (x)-[:R]->(:Big {j: j})")
             OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${graph.uppercase()}_NODE'); DBMS_STATS.GATHER_TABLE_STATS(USER, '${graph.uppercase()}_EDGE'); END;")
+        }
+        // Ends of two labels, and ends of another label, which the keyed end's test must keep and leave out.
+        query(SMALL, "CREATE (:Small:Two {s: -1})-[:R]->(:Big:Two {j: -1}), (:Small:Two {s: -2})-[:R]->(:Other {j: -2}), (:Other {s: -3})-[:R]->(:Big:Two {j: -3})")
+    }
+
+    @Test
+    fun `an end read by its key, of two labels or of another label, is kept or left out as its labels say`() {
+        for (statement in listOf(
+            "MATCH (x:Small)-[:R]->(a:Big) WHERE a.j < 0 OR x.s < 0 RETURN [x.s, a.j]",
+            "MATCH (a:Big)<-[:R]-(x:Small) WHERE a.j < 0 OR x.s < 0 RETURN [x.s, a.j]",
+            "MATCH (x:Small)-[:R]-(a:Big) WHERE a.j < 0 OR x.s < 0 RETURN [x.s, a.j]",
+            "MATCH (x:Small:Two)-[:R]->(a:Big:Two) RETURN [x.s, a.j]",
+            "MATCH (a:Big)<-[:R]-(x:Small {s: -1}) RETURN [x.s, a.j]",
+        )) {
+            assertTrue("INSTR(" in OracleCypherCompiler(graphs.getValue(SMALL)).compile(statement).sql, statement)
+            assertEquals(listOf(listOf(-1L, -1L)), query(SMALL, statement).map { row -> (row as List<*>).map { (it as Number).toLong() } }, statement)
         }
     }
 
