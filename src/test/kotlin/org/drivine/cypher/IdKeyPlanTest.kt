@@ -317,6 +317,23 @@ class OracleIdKeyPlanTest : IdKeyPlanContract() {
         }
     }
 
+    /** A node found by its id, its labels tested by their text, is still left out where it lacks a label the pattern names (#580). */
+    @Test
+    fun `a node found by its id without a label the pattern names is no row`() {
+        val ids = mapOf("id" to id(5), "ids" to listOf(id(5), id(6)))
+        for ((statement, expected) in listOf(
+            "MATCH (n:Gone) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Item:Gone) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Ite) WHERE id(n) = \$id RETURN n.k" to emptyList(),
+            "MATCH (n:Gone) WHERE id(n) IN \$ids RETURN n.k" to emptyList(),
+            "UNWIND \$ids AS i MATCH (n:Gone) WHERE id(n) = i RETURN n.k" to emptyList(),
+            "UNWIND \$ids AS i MATCH (n:Other:Item) WHERE id(n) = i RETURN n.k ORDER BY n.k" to listOf(5L, 6L),
+        )) {
+            assertTrue("INSTR(" in compiled(statement, ids).sql, statement)
+            assertEquals(expected, query(statement, ids), statement)
+        }
+    }
+
     /** A statement that writes reads its rows, and a `DELETE` its ids, with the labels so tested, and the hint (#580). */
     @Test
     fun `a labelled node found by its id in a statement that writes is found, and written`() {
