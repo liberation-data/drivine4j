@@ -386,7 +386,7 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   ([#601](https://github.com/liberation-data/drivine4j/issues/601), [#320](https://github.com/liberation-data/drivine4j/issues/320),
   [drivine#620](https://github.com/liberation-data/drivine/issues/620)). Such a node is mostly found by its key, from a
   node the `WITH` passed on; one found by its label alone is read from the whole node table. The nodes before the
-  `WITH`, a node the `WITH` passed on, and every other read keep the index.
+  `WITH`, a `WHERE`'s label test of a node the `WITH` passed on, and every other read keep the index.
 - A list worked out on each row by a subquery (`keys(n)`, `[i IN range(1, k) | i]`, `[(p)-->(q) | q.name]`) is read
   from a derived table inside a lateral view. This works around an Oracle bug, seen on 23.26.3: a subquery that reads
   the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the

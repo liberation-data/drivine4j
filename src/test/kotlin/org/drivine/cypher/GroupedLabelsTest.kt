@@ -58,6 +58,20 @@ class GroupedLabelsTest {
     }
 
     @Test
+    fun `tests by their text a node an OPTIONAL MATCH or a shortest path finds after such a WITH, in the lateral query that finds it`() {
+        for (cypher in listOf(
+            "MATCH (p:Person) WITH p, count(*) AS c OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN c, m.title",
+            "MATCH (p:Person) WITH p, count(*) AS c OPTIONAL MATCH (p)-[:ACTED_IN]->(m) WHERE m:Movie RETURN c, m.title",
+            "MATCH (p:Person) WITH p, count(*) AS c MATCH s = shortestPath((p)-[:ACTED_IN*]->(m:Movie)) RETURN c, m.title",
+        )) {
+            val sql = oracle(cypher)
+            val (index, text) = tests(sql, "Movie")
+            assertEquals(emptyList(), index, "$cypher\n$sql")
+            assertEquals(1, text.size, "$cypher\n$sql")
+        }
+    }
+
+    @Test
     fun `tests by their text a label the WHERE of such a node tests, as one its pattern names`() {
         for (cypher in listOf(
             "MATCH (p:Person) WITH p, count(*) AS c MATCH (m) WHERE m:Movie RETURN c, m.title",
@@ -68,6 +82,11 @@ class GroupedLabelsTest {
             assertEquals(emptyList(), index, "$cypher\n$sql")
             assertEquals(1, text.size, "$cypher\n$sql")
         }
+        // A node the WITH passed on is no node found after it: its WHERE's test is of the WITH's column, in the index's form.
+        val passed = "MATCH (m) WITH m, count(*) AS c MATCH (m)-->() WHERE m:Movie RETURN m.title"
+        val passedSql = oracle(passed)
+        assertTrue(Regex("""JSON_EXISTS\(w\d+\.c\d+_labels, '\$\[\*]\?\(@ == "Movie"\)'\)""").containsMatchIn(passedSql), "$passed\n$passedSql")
+        assertEquals(emptyList(), tests(passedSql, "Movie").second, "$passed\n$passedSql")
         val before = "MATCH (m) WHERE m:Movie WITH m, count(*) AS c RETURN m.title, c"
         val sql = oracle(before)
         val (index, text) = tests(sql, "Movie")

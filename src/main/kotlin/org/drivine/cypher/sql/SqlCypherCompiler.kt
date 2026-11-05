@@ -1330,7 +1330,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 return where?.let { filtered(row, it) } ?: row
             }
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
-            var inner = Select(row.scope)
+            var inner = Select(row.scope).also { it.afterGrouping = row.afterGrouping }
             patterns(inner, match.patterns, metByPaths)
             where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, madeAnew, inBody = true)) { e -> isSeeded(e, madeAnew) } }
             val found = inner.bound.filterKeys { it !in row.scope && it !in madeAnew }
@@ -1686,7 +1686,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun shortest(select: Select, pattern: Pattern, where: Expression?) {
             val relationship = pattern.relationships.singleOrNull()
             if (relationship?.range == null || relationship.group != null) unsupported("A shortest path of anything but one variable-length relationship")
-            val inner = Select(select.scope)
+            val inner = Select(select.scope).also { it.afterGrouping = select.afterGrouping }
             val hops = mutableListOf<Hop>()
             // Its ends named, to find the shortest between each two of them where they were not bound before it.
             val ends = listOf(pattern.nodes.first().variable ?: SHORTEST_FROM, pattern.nodes.last().variable ?: SHORTEST_TO)
@@ -5387,7 +5387,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * Whether it reads the rows of a `WITH` that groups them, as one that aggregates or is `DISTINCT` does, or of a `WITH`
-         * that reads those: a node a pattern finds here is then tested for its labels as [groupedLabels] tests them.
+         * that reads those, or is the lateral query of an `OPTIONAL MATCH` or a shortest path read beside such rows: a node a
+         * pattern finds here is then tested for its labels as [groupedLabels] tests them.
          */
         var afterGrouping = false
 
