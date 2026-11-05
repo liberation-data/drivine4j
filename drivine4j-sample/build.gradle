@@ -11,6 +11,9 @@ plugins {
 // which lacks DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
 ext['kotlin.version'] = '2.2.20'
 ext['jedis.version'] = '8.0.1'
+// Boot manages Testcontainers to 1.21.3, whose Docker client asks for API 1.32: Docker Engine 29 refuses below 1.40, so
+// no container started and every Spring test context failed (#618). 1.21.4, the root module's, asks for one it takes.
+ext['testcontainers.version'] = '1.21.4'
 
 dependencyManagement {
     imports {
