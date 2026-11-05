@@ -73,15 +73,17 @@ internal class TextQuery private constructor(
          * slow as the one count that took it, where [SEPARATOR]'s way is five times. Null for the second where the term is
          * the start of a word, which may go on.
          *
-         * Null where the term is a phrase that repeats a word. There an occurrence of it may begin inside another, "la la"
-         * in "la la land", and the two counts take different ones: the second took the "la la" of "la land", the first did
-         * not, and the term counted none. A term of words each once begins inside no other, as a word begins inside none.
+         * Null where the term is a phrase that repeats a word, or whose last word starts its first. There an occurrence of
+         * it may begin inside another, "la la" in "la la land" or "kiwis kiwi" in "kiwis kiwis kiwi", and the two counts take
+         * different ones: the second took the "la la" of "la land", the first did not, and the term counted none. Any other
+         * term begins inside none of its occurrences: one that did would begin at a word of it, which its first word is not.
          */
         fun counted(pattern: String): Pair<String, String?>? {
             if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
             val ended = pattern.removeSuffix(BOUNDARY_AFTER)
             val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
-            return if (words.toSet().size < words.size) null else ended to "$ended[[:alnum:]_]"
+            val overlaps = words.toSet().size < words.size || words.size > 1 && words.first().startsWith(words.last())
+            return if (overlaps) null else ended to "$ended[[:alnum:]_]"
         }
 
         /** What stands between the words of a phrase in a term's expression. */

@@ -100,6 +100,12 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a phrase whose last word starts its first is found where the phrase begins again`() {
+        // Its words are each once, yet counted on Oracle as two counts, "tapirs tapir" in "tapirs tapirs tapir" counted none.
+        assertEquals(listOf("tapirs"), search("+\"tapirs tapir\"").map { it.value.id })
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
@@ -127,6 +133,7 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'triple', title: 't', body: 'okapi okapi okapi'})
             CREATE (:Article {id: 'apart', title: 'a', body: 'okapi lemur okapi'})
             CREATE (:Article {id: 'lalaland', title: 'l', body: 'la la land'})
+            CREATE (:Article {id: 'tapirs', title: 't', body: 'tapirs tapirs tapir'})
         """.trimIndent()
 
         /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */

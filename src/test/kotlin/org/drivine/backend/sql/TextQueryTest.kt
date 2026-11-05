@@ -314,4 +314,14 @@ class TextQueryTest {
         assertEquals(1, counted("\"la la\"", "la la land"))
         assertEquals(1, countedByOracle("\"la la\"", "la la land"))
     }
+
+    @Test
+    fun `a phrase whose last word starts its first counts the same on Oracle, where the word after it goes on`() {
+        // Its words are each once, yet "kiwis kiwi" ending anywhere took the first two words, and going on into a word
+        // took them too, so the two counts counted none.
+        assertEquals(null, TextQuery.counted(TextQuery.parse("\"kiwis kiwi\"").scored.single()))
+        assertEquals(1, counted("\"kiwis kiwi\"", "kiwis kiwis kiwi"))
+        assertEquals(1, countedByOracle("\"kiwis kiwi\"", "kiwis kiwis kiwi"))
+        assertEquals(1, countedByOracle("\"kiwis bird kiwi\"", "kiwis bird kiwis bird kiwi"))
+    }
 }
