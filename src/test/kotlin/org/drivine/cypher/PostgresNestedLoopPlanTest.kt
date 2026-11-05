@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test
 import java.sql.DriverManager
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -95,8 +96,11 @@ class PostgresNestedLoopSettingsTest {
 
     private val merge = "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF]->(n)"
 
-    /** The settings after [cypher], compiled, ran in a transaction that set [setup] first, then rolled back. */
-    private fun settingsAfter(setup: String, cypher: String, nodes: Boolean = false, fails: Boolean = false): List<String> {
+    /**
+     * The settings after [cypher], compiled, ran in a transaction that set [setup] first, then rolled back. [fails] is a part
+     * of the error the call must raise, so that a failure before the loop turns the settings off doesn't pass for one in it.
+     */
+    private fun settingsAfter(setup: String, cypher: String, nodes: Boolean = false, fails: String? = null): List<String> {
         PostgresTestDatabase.graphManager("cy_planner")
         val compiled = PostgresCypherCompiler("cy_planner").compile(cypher).sql
         assertTrue("set_config('enable_seqscan', 'off', true)" in compiled, compiled)
@@ -109,9 +113,10 @@ class PostgresNestedLoopSettingsTest {
                     st.execute(compiled.substringBefore("\nSELECT cy.result FROM "))
                     val function = Regex("""pg_temp\.drivine_cypher_[0-9a-f]+""").find(compiled)!!.value
                     val savepoint = c.setSavepoint()
-                    val failed = runCatching { st.executeQuery("SELECT count(*) FROM $function('{}'::jsonb)").close() }.isFailure
-                    assertEquals(fails, failed, "$cypher failed")
-                    if (failed) c.rollback(savepoint)
+                    val error = runCatching { st.executeQuery("SELECT count(*) FROM $function('{}'::jsonb)").close() }.exceptionOrNull()
+                    if (fails == null) assertNull(error, "$cypher failed")
+                    else assertTrue(error?.message.orEmpty().contains(fails), "$cypher failed with: ${error?.message}")
+                    if (error != null) c.rollback(savepoint)
                     st.executeQuery("SELECT current_setting('enable_seqscan'), current_setting('enable_hashjoin'), current_setting('enable_mergejoin')").use { rs ->
                         rs.next()
                         listOf(rs.getString(1), rs.getString(2), rs.getString(3))
@@ -135,6 +140,6 @@ class PostgresNestedLoopSettingsTest {
 
     @Test
     fun `a procedure that fails in its loop leaves the settings as they were, once its savepoint is rolled back`() {
-        assertEquals(listOf("on", "off", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF {w: n.missing}]->(n)", nodes = true, fails = true))
+        assertEquals(listOf("on", "off", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF {w: n.missing}]->(n)", nodes = true, fails = "because of null property value for 'w'"))
     }
 }
