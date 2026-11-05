@@ -721,8 +721,11 @@ relationships with it.
 - `loadMatching` reads the full-text syntax Oracle reads, and counts each term in the text as Oracle
   does without Oracle Text. It scores by BM25, as Lucene and so Neo4j's full-text index do
   (`k1` 1.2, `b` 0.75): a term weighs as it is rare among the label's nodes, and a text's counts
-  against its length, in characters, beside the label's average. Scored by the counts alone, a common
-  word outweighed the word a query was about, and a long text won by holding more of everything: over
+  against its length, in characters, beside the label's average. A `prefix*` adds the same to every
+  node that holds it, however often and however rare, as Lucene's prefix query does: in `kiw* melon`,
+  a node with `kiwi` and no `melon` scores about 0.54 of one with both, as on Neo4j. Scored by the
+  counts alone, a common word outweighed the word a query was about, and a long text won by holding
+  more of everything: over
   Drivine's own docs, the top hit was Neo4j's for 6 of 21 queries, and is for 17. A full-text index
   is a GIN index of `pg_trgm` trigrams over the text, which narrows a search to the nodes that hold a
   term's words. Every node that holds a term is among them, so how rare each term is comes out the

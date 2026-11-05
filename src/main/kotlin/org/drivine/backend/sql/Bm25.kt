@@ -6,6 +6,8 @@ package org.drivine.backend.sql
  * without a text index of their own score so, so that they rank the texts as Neo4j does: counted alone, a common word
  * outweighed the word a query is about, and a long text won by holding more of everything.
  *
+ * A prefix term is scored as Lucene scores a prefix query: the same [PREFIX] for every node that holds it (drivine4j#612).
+ *
  * Each term's count is [TextQuery]'s, a whole word or phrase matched in the lower-cased text. Its rarity is over every node
  * of the label, and so is the average length, however a store narrows the nodes it counts.
  */
