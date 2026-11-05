@@ -69,8 +69,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val indexed = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties) != null
-        val candidates = select.matching(index.properties, TextQuery.parse(text), indexed)
+        val candidates = select.matching(index.properties, TextQuery.parse(text))
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
         return ScoredSearchPlan(statement.statement, statement.bindings)
     }

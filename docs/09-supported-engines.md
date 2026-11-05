@@ -462,8 +462,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   `foo\bar` is the phrase `foo bar` here and the word `foobar` on Neo4j. The index holds what has
   been committed, so a search does not see its own transaction's writes. Oracle Text is in the
   regular Free image and not the slim one: without it, or with no index made, a search counts the
-  words in the text of every node of the label, and does see them. An `analyzer` is recorded with
-  the index and not applied.
+  words in the text of every node of the label, scores them by BM25 as Postgres does, and does see
+  them. An `analyzer` is recorded with the index and not applied.
 - A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
 - The deprecated `GraphObjectManager.save` and `saveAll` throw `UnsupportedOperationException` on Oracle;
   that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
@@ -693,10 +693,16 @@ relationships with it.
   embedding is of the vector's size, and is exact. pgvector is made with the graph where the server
   has it and the user may: without it, everything else works.
 - `loadMatching` reads the full-text syntax Oracle reads, and counts each term in the text as Oracle
-  does without Oracle Text, so the two score alike. A full-text index is a GIN index of `pg_trgm`
-  trigrams over the text, which narrows a search to the nodes that hold a term's words; the same
-  counting then scores them, and a search sees its own transaction's writes. An `analyzer` is
-  recorded with the index and not applied.
+  does without Oracle Text. It scores by BM25, as Lucene and so Neo4j's full-text index do
+  (`k1` 1.2, `b` 0.75): a term weighs as it is rare among the label's nodes, and a text's counts
+  against its length, in characters, beside the label's average. Scored by the counts alone, a common
+  word outweighed the word a query was about, and a long text won by holding more of everything: over
+  Drivine's own docs, the top hit was Neo4j's for 6 of 21 queries, and is for 17. How rare a term is,
+  how many nodes the label has and their average length are over every node of the label, so a
+  search reads them all, once. A full-text index is a GIN index of `pg_trgm` trigrams over the text,
+  made and recorded; it does not narrow a search until those figures are kept between searches
+  (#605). A search sees its own transaction's writes. An `analyzer` is recorded with the index and
+  not applied.
 - The deprecated `GraphObjectManager.save` and `saveAll`, and the Cypher migration tools, do not run
   on Postgres, as on Oracle; that manager's loads, queries and deletes work.
 
@@ -857,7 +863,8 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
 - `matches` takes a regular expression in Java's dialect, matched against the whole value. A leading
   `(?i)` ignores case.
 - A vector index and a full-text index are recorded and nothing is made for them: `loadNearest` and
-  `loadMatching` measure every node of the label, and are exact.
+  `loadMatching` measure every node of the label, and are exact. `loadMatching` scores by BM25, as
+  Postgres does.
 - The test kit's Cypher fixtures (`SqlCypherFixtures`) work here as on Oracle and Postgres, and so does
   `TestCleanup.beforeEach`. SQLite's tests need no container.
 

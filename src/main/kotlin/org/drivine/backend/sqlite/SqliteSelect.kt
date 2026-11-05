@@ -1,5 +1,6 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.backend.sql.Bm25
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.annotation.Direction
@@ -485,25 +486,24 @@ internal class SqliteSelect(
     }
 
     /**
-     * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
-     * against the best of them, so the best scores one. Each term is a regular expression that matches
-     * it as a whole word, counted by the function [SqliteRegexpCountFunction] registers as Postgres
-     * counts it, so the two score alike. There is no full-text index yet: every node of the root's
-     * labels is read.
+     * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
+     * scores one. Each term is a regular expression that matches it as a whole word, counted by the function
+     * [SqliteRegexpCountFunction] registers as Postgres counts it, so the two score alike. There is no full-text index yet:
+     * every node of the root's labels is read, and a term's rarity, and the average length a text's is weighed against, are
+     * over them all.
      */
     fun matching(keys: List<String>, query: TextQuery): String {
-        val text = SqliteSql.searchedText("c", keys)
-        fun count(pattern: String) = "${SqliteFunctions.REGEXP_COUNT}(s.text, ${SqliteSql.text(scope.bound(pattern))})"
-        val texts = Query("${SqliteSql.columns("c")}, $text AS text", Table(graph.nodes, "c"), listOfNotNull(SqliteSql.hasLabels("c", rootLabels())))
-        val counted = Query(
-            "${SqliteSql.columns("s")}, ${query.scored.joinToString(" + ") { count(it) }} AS score",
-            Derived(texts.text(), "s"),
-            query.required.map { "${count(it)} > 0" } + query.excluded.map { "${count(it)} = 0" },
+        val texts = Query("c.nid, ${SqliteSql.searchedText("c", keys)} AS text", Table(graph.nodes, "c"), listOfNotNull(SqliteSql.hasLabels("c", rootLabels())))
+        return Bm25.ranked(
+            texts.text(), graph.nodes, query,
+            Bm25.Dialect(
+                columns = SqliteSql::columns,
+                count = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))})" },
+                length = { "length($it)" },
+                ln = { "${SqliteFunctions.MATH}('log', $it)" },
+                real = { "CAST($it AS REAL)" },
+            ),
         )
-        return Query(
-            "${SqliteSql.columns("h")}, CAST(h.score AS REAL) / MAX(h.score) OVER () AS score",
-            Derived(counted.text(), "h"), listOf("h.score > 0"),
-        ).text()
     }
 
     // ----- What a delete selects -----
