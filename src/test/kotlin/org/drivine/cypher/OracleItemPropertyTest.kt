@@ -269,7 +269,8 @@ class OracleItemPropertyTest {
     fun `a grouping key an order term over the items reads is read through its text once, for the item and the GROUP BY`() {
         // #413: worked out in the query that groups, the term read the key's text again at each level of the sum, 52 times.
         val sql = OracleCypherCompiler("g").compile("MATCH (me:P)--(you:P) RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)").sql
-        assertEquals(2, Regex("JSON_SERIALIZE").findAll(sql).count(), sql)
+        // Each end's labels, read by their keys (#581), are tested through their text too: those are not the key's.
+        assertEquals(2, Regex("""JSON_SERIALIZE\((?!\w+\.labels\))""").findAll(sql).count(), sql)
     }
 
     @Test
