@@ -75,6 +75,13 @@ class NodeEqualityTest {
         if (earlierScanned) assertTrue("JSON_EXISTS($a.labels, " in sql, where)
         assertFalse("JSON_EXISTS($b.labels, " in sql, where)
         labels.forEach { assertTrue(OracleSql.holdsLabel("$b.labels", it) in sql, where) }
+        assertPlannedWithoutFeedback(sql, where)
+    }
+
+    /** That [sql] is planned without statistics feedback: once, in the hints of its outermost query (#585). */
+    private fun assertPlannedWithoutFeedback(sql: String, where: String = sql) {
+        assertEquals(1, sql.split(OracleCypherCompiler.NO_FEEDBACK).size - 1, where)
+        assertTrue(Regex("""^SELECT /\*\+ [^*]*${Regex.escape(OracleCypherCompiler.NO_FEEDBACK)}[^*]* \*/""").containsMatchIn(sql), where)
     }
 
     /** That on Oracle [statement], which matches a label on each of [labelled] nodes, tests each through the index over labels, as before. */
@@ -82,6 +89,7 @@ class NodeEqualityTest {
         val sql = OracleCypherCompiler("g").compile(statement).sql
         assertEquals(labelled, Regex("""JSON_EXISTS\(\w+\.labels, '\$\[\*]\?\(@ == "Big"\)'\)""").findAll(sql).count(), "$statement\n$sql")
         assertFalse("INSTR(" in sql, "$statement\n$sql")
+        assertFalse("_optimizer_use_feedback" in sql, "$statement\n$sql")
     }
 
     @Test
@@ -145,6 +153,40 @@ class NodeEqualityTest {
         assertTrue("n1.labels @> '[\"Big\"]'" in postgres && "n2.labels @> '[\"Big\"]'" in postgres, postgres)
         val sqlite = SqliteCypherCompiler("g").compile(statement).sql
         assertTrue(SqliteSql.holdsLabel("n1.labels", "Big") in sqlite && SqliteSql.holdsLabel("n2.labels", "Big") in sqlite, sqlite)
+        listOf(postgres, sqlite).forEach { assertFalse("_optimizer_use_feedback" in it, it) }
+    }
+
+    @Test
+    fun `on Oracle, only a query that reads a node by its key this way is planned without statistics feedback`() {
+        // With a test of the labels as keyedLabels writes it, beside the JSON table transformation's hint, and on its own.
+        val both = OracleCypherCompiler("g").compile("MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*)").sql
+        assertTrue(both.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM ${OracleCypherCompiler.NO_FEEDBACK} */ "), both)
+        // Read by its key in one query of a UNION, or in an EXISTS subquery: the statement's outermost query holds the hint, once.
+        for (statement in listOf(
+            "MATCH (n:Small) RETURN count(*) AS c UNION ALL MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*) AS c",
+            "MATCH (n:Small) RETURN count(*) AS c UNION MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*) AS c",
+            "MATCH (a:Big) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)",
+        )) {
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertTrue("INSTR(" in sql, "$statement\n$sql")
+            assertPlannedWithoutFeedback(sql, "$statement\n$sql")
+        }
+        // A label in the labels' text form that keyedLabels didn't write, as a node's second label is tested.
+        listOf(
+            "MATCH (n:Big) RETURN count(*)",
+            "MATCH (n:Big:Other) RETURN count(*)",
+            "MATCH (a:Big) MATCH (b:Big) RETURN count(*)",
+            "MATCH (x:Small)-[:R]->(a:Big) RETURN count(*)",
+            "MATCH (n:Big) WHERE id(n) = \$id RETURN n",
+            "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i RETURN count(*)",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g").compile(statement, mapOf("id" to 5, "ids" to listOf(1, 2))).sql
+            assertFalse("_optimizer_use_feedback" in sql, "$statement\n$sql")
+        }
+        // A statement that writes is a procedure: the query of its step that reads b by its key holds the hint, once.
+        val write = OracleCypherCompiler("g").compile("MATCH (a:Big) MATCH (b:Big) WHERE a = b SET b.seen = true").sql
+        assertEquals(1, write.split(OracleCypherCompiler.NO_FEEDBACK).size - 1, write)
+        assertTrue(Regex("""SELECT /\*\+ [^*]*${Regex.escape(OracleCypherCompiler.NO_FEEDBACK)}""").containsMatchIn(write), write)
     }
 
     @Test
@@ -200,6 +242,20 @@ class OracleNodeEqualityPlanTest {
         assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q) RETURN c.name", listOf("Carrie"))
     }
 
+    /** A statement that writes is a procedure, and Oracle takes the step that reads c by its key with its hint (#585). */
+    @Test
+    fun `a node read by its key in a statement that writes is found, and written`() {
+        val statement = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q SET c.seen = true RETURN c.name"
+        val sql = OracleCypherCompiler(GRAPH).compile(statement).sql
+        assertTrue(OracleCypherCompiler.NO_FEEDBACK in sql, sql)
+        try {
+            assertEquals(listOf("Carrie"), query(statement), statement)
+            assertEquals(listOf("Carrie"), query("MATCH (c:Person) WHERE c.seen = true RETURN c.name"))
+        } finally {
+            query("MATCH (c:Person) REMOVE c.seen")
+        }
+    }
+
     companion object {
         const val GRAPH = "nodeeq"
     }
@@ -236,9 +292,7 @@ class OracleKeyedLabelPlanTest {
     /** That [statement] counts [expected], and that Oracle reads `b`, the later of the two nodes compared, by its primary key, and keeps its join. */
     private fun assertReadByKey(statement: String, expected: Long) {
         val compiled = OracleCypherCompiler(GRAPH).compile(statement)
-        val compared = assertNotNull(Regex("""\b(n(\d+))\.nid = (n(\d+))\.nid \+ 0""").find(compiled.sql), "No node equal to a node in:\n${compiled.sql}")
-        val b = listOf(compared.groupValues[1] to compared.groupValues[2], compared.groupValues[3] to compared.groupValues[4])
-            .maxBy { it.second.toInt() }.first.uppercase()
+        val b = laterCompared(compiled.sql)
         val plan = OracleTestDatabase.plan(pm, compiled.sql, compiled.parameters, "BASIC +PREDICATE +OUTLINE")
         println("$statement\n$plan\n")
         assertTrue("INDEX UNIQUE SCAN" in plan && Regex("""access\("$b"\."NID"=""").containsMatchIn(plan), "$statement does not read b by its key:\n$plan")
@@ -261,8 +315,55 @@ class OracleKeyedLabelPlanTest {
         assertReadByKey("MATCH (a:Big) WHERE EXISTS { MATCH (b:Big) WHERE a = b } RETURN count(*)", all)
     }
 
+    /**
+     * Statistics feedback planned the statement again from its first run's counts: the index over labels is estimated at one
+     * row, and the run found 3,000. The second and third runs of a new cursor read every node for `b` and the index once for
+     * each, as before #578, and the fourth went back to reading b by its key (#585). So each run of one cursor, on one
+     * session, is checked by the plan of the child cursor that ran it.
+     */
+    @Test
+    fun `a node read by its key is read so on every run of a new cursor, not planned again from what the first run found`() {
+        val connection = OracleTestDatabase.connections(pm).connect()
+        try {
+            val sid = connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL").transform(String::class.java)).single()
+            val all = NODES.toLong()
+            for ((statement, expected) in listOf(
+                "MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*)" to all,
+                "MATCH (a:Big) MATCH (b:Big) WHERE id(b) = id(a) RETURN count(*)" to all,
+                "MATCH (a:Big:Other) MATCH (b:Big:Other) WHERE a = b RETURN count(*)" to all,
+                "MATCH (x:Small)-[:R]->(a:Big) MATCH (b:Big) WHERE a = b RETURN count(*)" to all / 2,
+            )) {
+                val b = laterCompared(OracleCypherCompiler(GRAPH).compile(statement).sql)
+                // A new cursor: statistics gathered again invalidate the one an earlier test, or statement, ran.
+                OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE', no_invalidate => FALSE); END;")
+                for (run in 1..RUNS) {
+                    val started = System.nanoTime()
+                    val count = connection.query(QuerySpecification.withStatement(CypherStatement(statement))).map { (it as Number).toLong() }
+                    val ms = (System.nanoTime() - started) / 1_000_000.0
+                    val plan = OracleTestDatabase.lastPlan(sid, "BASIC +PREDICATE +NOTE")
+                    println("$statement, run $run: ${"%.1f".format(ms)} ms\n$plan\n")
+                    val where = "$statement, run $run of one cursor:\n$plan"
+                    assertTrue("INDEX UNIQUE SCAN" in plan && Regex("""access\("$b"\."NID"=""").containsMatchIn(plan), "Does not read b by its key: $where")
+                    assertFalse("statistics feedback used" in plan, "Planned again from statistics feedback: $where")
+                    assertEquals(listOf(expected), count, statement)
+                }
+            }
+        } finally {
+            connection.release()
+        }
+    }
+
+    /** The alias of the later of the two nodes [sql] compares by their keys, as Oracle names it in a plan. */
+    private fun laterCompared(sql: String): String {
+        val compared = assertNotNull(Regex("""\b(n(\d+))\.nid = (n(\d+))\.nid \+ 0""").find(sql), "No node equal to a node in:\n$sql")
+        return listOf(compared.groupValues[1] to compared.groupValues[2], compared.groupValues[3] to compared.groupValues[4])
+            .maxBy { it.second.toInt() }.first.uppercase()
+    }
+
     companion object {
         const val GRAPH = "keyedlabel"
+        /** Runs of one cursor: statistics feedback planned the second and third again, and the fourth as the first. */
+        const val RUNS = 5
         const val NODES = 3000
         const val SMALL = 750
     }

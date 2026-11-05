@@ -728,8 +728,18 @@ class OracleCypherCompiler(
      * way round [sameKey] writes the comparison: `MATCH (a:Big) MATCH (b:Big) WHERE a = b` took 406 ms over 2,000 nodes and
      * 1,537 ms over 4,000, and about 2 ms and 3 ms in this form (#578). A hint naming the key's index did as well, but names
      * the node's alias in the query block that reads it, which a statement's subqueries and `WITH`s move.
+     *
+     * Each test so written is noted ([keyed]), and a query that holds one is planned without statistics feedback (see
+     * [planned]).
      */
-    override fun keyedLabels(labels: String, all: List<String>) = all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }
+    override fun keyedLabels(labels: String, all: List<String>) =
+        all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }.also { keyed += it }
+
+    /**
+     * Each test of a node's labels [keyedLabels] wrote. Kept as text, and looked for in the query [planned] is given, so a
+     * trial compile that writes one and is thrown away, or a step of a procedure that holds none, is planned as before.
+     */
+    private val keyed = mutableSetOf<String>()
 
     /** A number, as the key's `NUMBER`; anything else, or a number past one, null. */
     override fun keyValue(json: String) = "JSON_VALUE($json, '\$' RETURNING NUMBER NULL ON ERROR)"
@@ -1236,12 +1246,24 @@ class OracleCypherCompiler(
      * size(a.s)` and `a.l + b.l`. Seen on Oracle 23.26.3 (gvenzl/oracle-free 23). The hint is the statement's, whichever
      * query of it holds it, so the outermost one holds it. A query of one table reads as it did, none lost a test, but where
      * a comparison reads a property by its own path (see [readsCompared]).
+     *
+     * A query that tests a node's labels as [keyedLabels] writes them, to read it by its key, is planned without statistics
+     * feedback (`OPT_PARAM('_optimizer_use_feedback' 'false')`, [NO_FEEDBACK]). Oracle (23.26) estimates one row from the
+     * index over labels, and plans the keyed read on a cursor's first run; the run's feedback then corrects that one row to
+     * the label's count, and Oracle plans the next two runs again, reading every node in the label's text form and the index
+     * once for each, before it went back to the keyed plan for the fourth run and after: `MATCH (a:Big) MATCH (b:Big) WHERE
+     * a = b` took 7 ms, then 1,482 ms and 1,526 ms, then 7 ms over 4,000 nodes, so each new cursor paid the cost #578 took
+     * away twice (#585). The hint leaves the first run's plan as it was. It is the statement's, so the outermost query holds it.
      */
     override fun planned(query: String): String {
-        if (graphTable.findAll(query).count() < 2 && !readsCompared) return query
-        val hints = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
-        return if (hints != null) query.replaceRange(hints.range, "${hints.value} $NO_JSON_TABLE_TRANSFORM")
-        else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $NO_JSON_TABLE_TRANSFORM */ ")
+        val hints = listOfNotNull(
+            NO_JSON_TABLE_TRANSFORM.takeIf { readsCompared || graphTable.findAll(query).count() >= 2 },
+            NO_FEEDBACK.takeIf { keyed.any { it in query } },
+        ).joinToString(" ")
+        if (hints.isEmpty()) return query
+        val given = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
+        return if (given != null) query.replaceRange(given.range, "${given.value} $hints")
+        else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $hints */ ")
     }
 
     /** A read of the graph's node or relationship table: see [planned]. */
@@ -1493,6 +1515,9 @@ class OracleCypherCompiler(
 
         /** The hint that turns Oracle's JSON table transformation off: see [planned]. */
         private const val NO_JSON_TABLE_TRANSFORM = "NO_JSON_TABLE_TRANSFORM"
+
+        /** The hint that plans a statement without statistics feedback: see [planned]. */
+        internal const val NO_FEEDBACK = "OPT_PARAM('_optimizer_use_feedback' 'false')"
 
         /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
         private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")
