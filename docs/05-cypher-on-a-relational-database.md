@@ -127,6 +127,14 @@ the statement and deletes one variable, a node with `DETACH` or a relationship, 
 relationships, reads the ids from the match itself, so `MATCH (n) DETACH DELETE n` is one SQL `DELETE`. In a `FOREACH`
 or a `CALL { … }` that writes, each row is still written alone, as in Cypher.
 
+Any other write, a `CREATE`, `MERGE`, `SET` or `REMOVE`, and a `CALL { … }` that writes and returns, is a loop over its
+rows, and keeps each row it leaves in a list of the store's own that grows in place: an array of `jsonb` in PL/pgSQL, a
+`JSON_ARRAY_T` in PL/SQL, a list in Drivine's function on SQLite. It is read as one JSON list once the loop is done, so
+the loop takes time in proportion to its rows. Appended to a JSON list, each row copied the list, and ten times the rows
+took about a hundred times as long ([#588](https://github.com/liberation-data/drivine4j/issues/588)). On Oracle, a query
+that reads the row a `FOREACH` or a `CALL { … }` is written for is planned for one row (`CARDINALITY`): planned for the
+8,168 rows Oracle guesses a `JSON_TABLE` of a variable holds, it read every node for each row, by a hash join.
+
 A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
 `toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
 takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes

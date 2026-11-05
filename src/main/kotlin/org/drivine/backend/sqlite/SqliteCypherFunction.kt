@@ -15,7 +15,7 @@ import java.sql.SQLException
  * Each step has its SQL, in which each variable it reads is a numbered parameter, and the variables bound to them in
  * turn: the parameters' object, the rows carried from clause to clause, the id a write made. A step sets a variable to
  * what its query gives, loops over a query's rows, which are read whole before the loop writes anything, writes, fails
- * the procedure, or returns rows. The steps run within a savepoint of their own: a procedure that fails is rolled back
+ * the procedure, keeps a row in a list of rows, or returns rows. The steps run within a savepoint of their own: a procedure that fails is rolled back
  * to where it began, so the statement is applied whole or not at all.
  */
 internal class SqliteCypherFunction(connection: Connection) : Function() {
@@ -53,6 +53,8 @@ internal class SqliteCypherFunction(connection: Connection) : Function() {
                     val into = step["variable"]?.takeUnless { it.isNull }?.asText()
                     if (into != null) variables[into] = query(step, variables).firstOrNull() else statements.update(sql(step), *values(step, variables))
                 }
+                "kept" -> variables[step["variable"].asText()] = Kept()
+                "keep" -> (variables[step["variable"].asText()] as Kept) += query(step, variables).firstOrNull()
                 "return" -> rows.addAll(query(step, variables))
                 else -> throw SQLException("drivine_cypher has no step $op.")
             }
@@ -65,7 +67,16 @@ internal class SqliteCypherFunction(connection: Connection) : Function() {
     private fun sql(step: JsonNode): String = step["sql"].asText()
 
     /** The values of the variables the step reads, in the order its parameters are numbered. */
-    private fun values(step: JsonNode, variables: Map<String, Any?>): Array<Any?> = step["variables"].map { variables[it.asText()] }.toTypedArray()
+    private fun values(step: JsonNode, variables: Map<String, Any?>): Array<Any?> =
+        step["variables"].map { variables[it.asText()].let { value -> if (value is Kept) value.json() else value } }.toTypedArray()
+
+    /**
+     * The rows a write keeps, each the JSON text, or the number, a step gave: a step that reads them is given them as a JSON
+     * list. Each `json_insert` of a row into the list as text read and wrote the whole list again (#588).
+     */
+    private class Kept : ArrayList<Any?>() {
+        fun json() = joinToString(",", "[", "]") { it?.toString() ?: "null" }
+    }
 
     /** The first column of the row [results] is at: a whole number as a Long, a real one as a Double, and text as it is. */
     private fun first(results: ResultSet): Any? = when (val value = results.getObject(1)) {
