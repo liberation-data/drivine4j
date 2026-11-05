@@ -242,6 +242,20 @@ class OracleNodeEqualityPlanTest {
         assertJoined("MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE id(c) = id(q) RETURN c.name", listOf("Carrie"))
     }
 
+    /** A statement that writes is a procedure, and Oracle takes the step that reads c by its key with its hint (#585). */
+    @Test
+    fun `a node read by its key in a statement that writes is found, and written`() {
+        val statement = "MATCH (p {name: 'Keanu'})-[:KNOWS]->(q) MATCH (c:Person) WHERE c = q SET c.seen = true RETURN c.name"
+        val sql = OracleCypherCompiler(GRAPH).compile(statement).sql
+        assertTrue(OracleCypherCompiler.NO_FEEDBACK in sql, sql)
+        try {
+            assertEquals(listOf("Carrie"), query(statement), statement)
+            assertEquals(listOf("Carrie"), query("MATCH (c:Person) WHERE c.seen = true RETURN c.name"))
+        } finally {
+            query("MATCH (c:Person) REMOVE c.seen")
+        }
+    }
+
     companion object {
         const val GRAPH = "nodeeq"
     }
