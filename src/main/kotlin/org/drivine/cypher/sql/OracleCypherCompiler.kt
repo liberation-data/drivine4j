@@ -727,13 +727,23 @@ class OracleCypherCompiler(
      * of the node the key is equal to, and filtered it on the key, rather than read the one row by the primary key, whichever
      * way round [sameKey] writes the comparison: `MATCH (a:Big) MATCH (b:Big) WHERE a = b` took 406 ms over 2,000 nodes and
      * 1,537 ms over 4,000, and about 2 ms and 3 ms in this form (#578). A hint naming the key's index did as well, but names
-     * the node's alias in the query block that reads it, which a statement's subqueries and `WITH`s move.
+     * the node's alias in the query block that reads it, which a statement's subqueries and `WITH`s move. The same index read
+     * once for each id had `UNWIND $ids AS i MATCH (n:L) WHERE id(n) = i` take 183 ms for 100 ids over 8,000 nodes (#580), and
+     * once for each edge had `MATCH (x:A)-[:R]->(y:B)` take 1.3 s over 8,000 edges (#581): 1.6 ms and 7 ms in this form.
      *
      * Each test so written is noted ([keyed]), and a query that holds one is planned without statistics feedback (see
      * [planned]).
      */
     override fun keyedLabels(labels: String, all: List<String>) =
         all.joinToString(" AND ") { OracleSql.holdsLabel(labels, it) }.also { keyed += it }
+
+    /**
+     * [FEW_ROWS] rows for the `JSON_TABLE` [alias]: Oracle (23.26) estimates one over a value given at 8,168, and so read every
+     * node once and hashed it to a list of 100 ids, rather than read each node by its key: 12 ms over 8,000 nodes, and 1.6 ms
+     * with this hint, 2.6 ms for 500 ids (#580). It is an estimate, not a limit: a longer list is read whole, each id by the
+     * key, which takes time linear in the ids.
+     */
+    override fun fewRows(alias: String) = "CARDINALITY($alias $FEW_ROWS)"
 
     /**
      * Each test of a node's labels [keyedLabels] wrote. Kept as text, and looked for in the query [planned] is given, so a
@@ -1597,6 +1607,9 @@ class OracleCypherCompiler(
 
         /** The hint that plans a statement without statistics feedback: see [planned]. */
         internal const val NO_FEEDBACK = "OPT_PARAM('_optimizer_use_feedback' 'false')"
+
+        /** The rows [fewRows] estimates a list of ids at: few enough that Oracle reads each node it gives by its key. */
+        internal const val FEW_ROWS = 10
 
         /**
          * A test of a column of labels, `n1.labels`, as [hasLabel] writes it, `JSON_EXISTS(n1.labels, '$[*]?(@ == "X")')`,

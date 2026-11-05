@@ -367,6 +367,16 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   over 4,000 nodes ([#585](https://github.com/liberation-data/drivine4j/issues/585)). The earlier of two such nodes keeps the
   index's form, and so does a node equal to one found by nothing else (`MATCH (a) MATCH (b:Rare) WHERE a = b`), where
   the index is the way in.
+- The same text form, and the same hint, are written for a node with a label whose id a `WHERE` compares with a value
+  (`id(n) = $id`, `id(n) IN $ids`, `UNWIND $ids AS i … WHERE id(n) = i`, `id(n) = x.k`), and for the later of the two
+  labelled ends of a single relationship (`MATCH (x:A)-[:R]->(y:B)`; the earlier where only the later is given
+  properties, as `(y:B)<-[:R]-(x:A {k: 1})`; both ends of one of either direction). With the
+  index's form Oracle 23.26 read every node of the label, and the key only as a filter, once for each id or each edge:
+  an `UNWIND` of 100 ids over 8,000 nodes took 183 ms, about 2 ms now
+  ([#580](https://github.com/liberation-data/drivine4j/issues/580)), and `MATCH (x:A)-[:R]->(y:B)` 1.3 s over 8,000
+  edges, about 7 ms now ([#581](https://github.com/liberation-data/drivine4j/issues/581)). The list of ids an `IN` reads,
+  and an `UNWIND`'s whose item an id is set equal to, carries the hint `CARDINALITY(<alias> 10)`: Oracle estimates a list
+  given as a value at 8,168 rows, and otherwise read every node once and hashed it to the ids.
 - A list worked out on each row by a subquery (`keys(n)`, `[i IN range(1, k) | i]`, `[(p)-->(q) | q.name]`) is read
   from a derived table inside a lateral view. This works around an Oracle bug, seen on 23.26.3: a subquery that reads
   the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the

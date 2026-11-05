@@ -21,7 +21,9 @@ class OracleJsonTableTransformTest {
         val sql = compiled("MATCH (a:N1), (b:N2) RETURN a.n + b.n, a.n - b.n")
         assertTrue(sql.startsWith("SELECT /*+ $hint */ "), sql)
         assertEquals(1, Regex(hint).findAll(sql).count(), sql)
-        assertTrue(compiled("MATCH (a:N1)-->(b:N2) RETURN b.n + 1").startsWith("SELECT /*+ $hint */ "))
+        // Its later end read by its key (#581), the statement is planned without statistics feedback too, in the same hint.
+        val walked = compiled("MATCH (a:N1)-->(b:N2) RETURN b.n + 1")
+        assertTrue(walked.startsWith("SELECT /*+ $hint ${OracleCypherCompiler.NO_FEEDBACK} */ "), walked)
     }
 
     @Test
