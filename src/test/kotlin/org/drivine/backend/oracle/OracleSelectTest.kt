@@ -556,6 +556,15 @@ class OracleSelectTest {
     }
 
     @Test
+    fun `a text search without an index counts a phrase that repeats a word in the text with each character between words twice`() {
+        val select = select(Shelf::class.java)
+        val sql = select.matching(listOf("title"), TextQuery.parse("\"la la\"")).squashed()
+        // Two counts would take different occurrences where one begins inside another: "la la" in "la la land" (drivine4j#607).
+        assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(REGEXP_REPLACE(s.text, '([^[:alnum:]_])', '\\1\\1'), \$_p0) AS tf1 FROM"), sql)
+        assertEquals("(^|[^[:alnum:]_])la[^[:alnum:]_]+la(\$|[^[:alnum:]_])", select.bindings()["_p0"])
+    }
+
+    @Test
     fun `a text search with several properties joins their text`() {
         val sql = select(Shelf::class.java).matching(listOf("title", "body"), TextQuery.parse("graph")).squashed()
         assertTrue(sql.contains("LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) || ' ' || LOWER(JSON_VALUE(c.props, '$.body' RETURNING CLOB)) AS text"), sql)

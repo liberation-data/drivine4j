@@ -58,13 +58,34 @@ internal class TextQuery private constructor(
             if (pattern.endsWith(BOUNDARY_AFTER)) pattern.removeSuffix(BOUNDARY_AFTER) + BOUNDARY_AHEAD else pattern
 
         /**
-         * For a store whose expressions don't look ahead, Oracle's: [pattern] ending where its last word does, and that
-         * expression holding a letter, a digit or an underscore after it. A term occurs as many times as the first matches
-         * less the second, and neither takes the character before the next. Null for the second where the term is the
-         * start of a word, which may go on.
+         * One character between words, as a group: for a store whose expressions don't look ahead, Oracle's. A term's
+         * expression takes the character after it, which a term written again at once needs before it (drivine4j#607). Each
+         * such character of the text written twice (`\1\1`), one is there for each, so the term's expression counts in it as
+         * [lookingAhead] counts in the text. It is the slow way, a fifth as fast as [counted]'s over 100,000 texts on Oracle,
+         * kept for the terms [counted] can't count.
          */
-        fun counted(pattern: String): Pair<String, String?> =
-            if (pattern.endsWith(BOUNDARY_AFTER)) pattern.removeSuffix(BOUNDARY_AFTER).let { it to "$it[[:alnum:]_]" } else pattern to null
+        const val SEPARATOR = "([^[:alnum:]_])"
+
+        /**
+         * For a store whose expressions don't look ahead, Oracle's: [pattern] ending where its last word does, and that
+         * expression holding a letter, a digit or an underscore after it. The term occurs as many times as the first matches
+         * less the second, and neither takes the character before the next, so it counts as [lookingAhead] does: twice as
+         * slow as the one count that took it, where [SEPARATOR]'s way is five times. Null for the second where the term is
+         * the start of a word, which may go on.
+         *
+         * Null where the term is a phrase that repeats a word. There an occurrence of it may begin inside another, "la la"
+         * in "la la land", and the two counts take different ones: the second took the "la la" of "la land", the first did
+         * not, and the term counted none. A term of words each once begins inside no other, as a word begins inside none.
+         */
+        fun counted(pattern: String): Pair<String, String?>? {
+            if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
+            val ended = pattern.removeSuffix(BOUNDARY_AFTER)
+            val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
+            return if (words.toSet().size < words.size) null else ended to "$ended[[:alnum:]_]"
+        }
+
+        /** What stands between the words of a phrase in a term's expression. */
+        private const val BETWEEN = "[^[:alnum:]_]+"
 
         /**
          * Reads [query]. It must name at least one term that scores: a query of operators and
@@ -215,7 +236,7 @@ internal class TextQuery private constructor(
         }
 
         /** The expression for the term as whole words; when [prefix], the last as the start of one. */
-        val pattern: String = BOUNDARY_BEFORE + words.joinToString("[^[:alnum:]_]+") + (if (prefix) "" else BOUNDARY_AFTER)
+        val pattern: String = BOUNDARY_BEFORE + words.joinToString(BETWEEN) + (if (prefix) "" else BOUNDARY_AFTER)
 
         companion object {
             /**
