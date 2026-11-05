@@ -324,4 +324,35 @@ class TextQueryTest {
         assertEquals(1, countedByOracle("\"kiwis kiwi\"", "kiwis kiwis kiwi"))
         assertEquals(1, countedByOracle("\"kiwis bird kiwi\"", "kiwis bird kiwis bird kiwi"))
     }
+
+    @Test
+    fun `a phrase of distinct words, whose last doesn't start its first, counts the same on Oracle by its two counts`() {
+        // No occurrence of such a term begins inside another: one would begin at a later word of it, which would be its first.
+        val cases = listOf(
+            // Its first word starts its last.
+            "\"kiwi kiwis\"" to "kiwi kiwi kiwis kiwis kiwi kiwisx kiwi kiwis",
+            // Its first word starts a middle one.
+            "\"ki kiwi bird\"" to "ki ki kiwi bird ki kiwi birds ki kiwi bird ki kiwi bird",
+            // Words of digits and underscores, which go on as letters do.
+            "\"a1 a12\"" to "a1 a1 a12 a1 a12 a1 a123 a1 a12_",
+            "\"_a a_b\"" to "_a _a a_b _a a_b _a a_bc",
+            "a_1" to "a_1 a_1 a_1a a_1_ a_1",
+        )
+        cases.forEach { (query, text) ->
+            assertTrue(TextQuery.counted(TextQuery.parse(query).scored.single()) != null, query)
+            assertEquals(counted(query, text), countedByOracle(query, text), "$query in $text")
+        }
+        assertEquals(2, counted("\"kiwi kiwis\"", "kiwi kiwi kiwis kiwis kiwi kiwisx kiwi kiwis"))
+        assertEquals(3, countedByOracle("\"ki kiwi bird\"", "ki ki kiwi bird ki kiwi birds ki kiwi bird ki kiwi bird"))
+    }
+
+    @Test
+    fun `a word holding a number that isn't a digit is counted on Oracle by its one expression, so no occurrence is lost`() {
+        // "²" is a word's to the query, not to [[:alnum:]]: "b²b" in "b²b²bx" begins inside the first, and the two counts
+        // took the first ending and the second going on, so counted none.
+        val term = TextQuery.parse("b²b").scored.single()
+        assertEquals(term to null, TextQuery.counted(term))
+        assertEquals(1, counted("b²b", "b²b²bx"))
+        assertEquals(1, countedByOracle("b²b", "b²b²bx"))
+    }
 }

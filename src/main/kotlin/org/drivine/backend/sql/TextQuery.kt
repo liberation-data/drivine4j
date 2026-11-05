@@ -77,11 +77,18 @@ internal class TextQuery private constructor(
          * it may begin inside another, "la la" in "la la land" or "kiwis kiwi" in "kiwis kiwis kiwi", and the two counts take
          * different ones: the second took the "la la" of "la land", the first did not, and the term counted none. Any other
          * term begins inside none of its occurrences: one that did would begin at a word of it, which its first word is not.
+         *
+         * [pattern] itself, with null for the second, where a word holds a number that isn't a digit, the "²" of "b²b": a
+         * word's to [GAP] but not to `[[:alnum:]]`, so an occurrence may begin at it, "b²b" in "b²b²bx", and neither way
+         * above counts it. The one count undercounts the term only where it is written again at once, as it did before.
          */
         fun counted(pattern: String): Pair<String, String?>? {
             if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
             val ended = pattern.removeSuffix(BOUNDARY_AFTER)
             val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
+            if (words.any { word -> word.codePoints().anyMatch { !Character.isAlphabetic(it) && !Character.isDigit(it) && it != '_'.code } }) {
+                return pattern to null
+            }
             val overlaps = words.toSet().size < words.size || words.size > 1 && words.first().startsWith(words.last())
             return if (overlaps) null else ended to "$ended[[:alnum:]_]"
         }
