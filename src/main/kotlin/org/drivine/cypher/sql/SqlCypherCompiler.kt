@@ -412,7 +412,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /**
      * Whether the labels [labels], a JSON list, hold each of [all], for a node read by its key: one whose key a condition every
      * row must pass sets equal to the key of a node found some other way (see `Writer.readByKey`) or to a value
-     * (`Writer.keyedById`), or the later of a relationship's two ends that are both tested for labels (`Writer.keyedEnd`). As
+     * (`Writer.keyedById`), or one of a relationship's two ends that are both tested for labels (`Writer.keyedEnd`). As
      * [hasLabels] tests them, where the store reads that node by its key anyway. A store whose planner reads the index over
      * labels for each row of the other node, each id or each edge instead, and filters it on the key, tests them in a form the
      * index can't answer: see Oracle's.

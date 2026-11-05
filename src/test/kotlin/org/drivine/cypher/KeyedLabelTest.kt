@@ -98,6 +98,14 @@ class KeyedLabelTest {
             val sql = oracle(statement)
             assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u1 ${OracleCypherCompiler.FEW_ROWS}\) """).containsMatchIn(sql), "$statement\n$sql")
         }
+        // A subquery of no RETURN reads its rows in a query of its own, which holds the hint.
+        for (statement in listOf(
+            "MATCH (a:Small) RETURN COUNT { UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i }",
+            "MATCH (a:Small) WHERE EXISTS { UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i } RETURN a.s",
+        )) {
+            val sql = oracle(statement)
+            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u\d+ ${OracleCypherCompiler.FEW_ROWS}\) \*/ 1\n""").containsMatchIn(sql), "$statement\n$sql")
+        }
         // An UNWIND beside an id compared with something else.
         val beside = oracle("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = \$id RETURN count(*)")
         assertFalse("CARDINALITY(u1" in beside, beside)
