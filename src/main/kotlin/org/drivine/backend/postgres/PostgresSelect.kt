@@ -474,6 +474,7 @@ internal class PostgresSelect(
      */
     fun matching(keys: List<String>, query: TextQuery, indexed: Boolean = false): String {
         val text = PostgresSql.searchedText("c", keys)
+        val len = "length(${keys.joinToString(" || ' ' || ") { "COALESCE(${PostgresSql.property("c", it)}, '')" }})"
         val labelled = listOfNotNull(PostgresSql.hasLabels("c", rootLabels()))
         // A node that matches a term holds each of its words: what the trigram index answers is whether it holds them.
         val narrowed = if (indexed) {
@@ -482,14 +483,13 @@ internal class PostgresSelect(
             emptyList()
         }
         return Bm25.ranked(
-            Query("c.nid, $text AS text", Table(graph.nodes, "c"), labelled + narrowed).text(),
-            Query("$text AS text", Table(graph.nodes, "c"), labelled).text(),
+            Query("c.nid, $text AS text, $len AS len", Table(graph.nodes, "c"), labelled + narrowed).text(),
+            Query("$len AS len", Table(graph.nodes, "c"), labelled).text(),
             graph.nodes, query,
             Bm25.Dialect(
                 columns = PostgresSql::columns,
                 count = { text, term -> "(SELECT count(*) FROM regexp_matches($text, ${PostgresSql.text(scope.bound(term))}, 'g'))" },
                 holds = { text, term -> "$text ~ ${PostgresSql.text(scope.bound(term))}" },
-                length = { "length($it)" },
                 ln = { "ln($it)" },
                 real = { "CAST($it AS double precision)" },
             ),

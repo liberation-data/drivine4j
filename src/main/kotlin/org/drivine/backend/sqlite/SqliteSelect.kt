@@ -494,16 +494,16 @@ internal class SqliteSelect(
      */
     fun matching(keys: List<String>, query: TextQuery): String {
         val text = SqliteSql.searchedText("c", keys)
+        val len = "length(${keys.joinToString(" || ' ' || ") { "COALESCE(${SqliteSql.property("c", it)}, '')" }})"
         val labelled = listOfNotNull(SqliteSql.hasLabels("c", rootLabels()))
         return Bm25.ranked(
-            Query("c.nid, $text AS text", Table(graph.nodes, "c"), labelled).text(),
-            Query("$text AS text", Table(graph.nodes, "c"), labelled).text(),
+            Query("c.nid, $text AS text, $len AS len", Table(graph.nodes, "c"), labelled).text(),
+            Query("$len AS len", Table(graph.nodes, "c"), labelled).text(),
             graph.nodes, query,
             Bm25.Dialect(
                 columns = SqliteSql::columns,
                 count = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))})" },
                 holds = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))}) > 0" },
-                length = { "length($it)" },
                 ln = { "${SqliteFunctions.MATH}('log', $it)" },
                 real = { "CAST($it AS REAL)" },
             ),

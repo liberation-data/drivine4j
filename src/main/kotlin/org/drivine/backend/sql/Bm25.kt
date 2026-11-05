@@ -25,8 +25,6 @@ internal object Bm25 {
         val count: (text: String, term: String) -> String,
         /** Whether a term occurs in a text at all, the term bound as a parameter: cheaper than [count] where the store can tell. */
         val holds: (text: String, term: String) -> String,
-        /** A text's length in characters, 0 when there is none. */
-        val length: (text: String) -> String,
         /** The natural logarithm of a number. */
         val ln: (String) -> String,
         /** A number as floating point. */
@@ -35,9 +33,11 @@ internal object Bm25 {
 
     /**
      * The nodes whose text meets [query], each with its BM25 score against the best of them, so the best scores one: a
-     * query of [Dialect.columns] and `score`. [candidates] is a query of `nid` and `text` for the nodes of the label that
-     * may hold a scoring term, which a store narrows by an index where it has one; [label] is a query of `text` for every
-     * node of the label; [nodes] is the table of the rows the nodes found are joined back to.
+     * query of [Dialect.columns] and `score`. [candidates] is a query of `nid`, `text` and `len` for the nodes of the label
+     * that may hold a scoring term, which a store narrows by an index where it has one; [label] is a query of `len` for
+     * every node of the label; [nodes] is the table of the rows the nodes found are joined back to. `text` is lower-cased,
+     * as a term is matched in it, and `len` is the length in characters of the text before it was, 0 where there is none:
+     * lowering every node's text only to measure it took most of the time a rare word's search did.
      *
      * Only the candidates that hold a scoring term are counted. Every node that holds a term is one of them, so the count
      * of those that hold it, each term's rarity, is a window aggregate over them, and exact. The label's count of nodes and
@@ -50,13 +50,13 @@ internal object Bm25 {
         val required = query.required.indices.map { "r${it + 1}" }
         val excluded = query.excluded.indices.map { "x${it + 1}" }
         val counts = query.scored.zip(tf) + query.required.zip(required) + query.excluded.zip(excluded)
-        val select = (listOf("s.nid", "${sql.length("s.text")} AS len") + counts.map { (term, name) -> "${sql.count("s.text", term)} AS $name" }).joinToString(", ")
+        val select = (listOf("s.nid", "s.len") + counts.map { (term, name) -> "${sql.count("s.text", term)} AS $name" }).joinToString(", ")
         val counted = Query(select, Derived(candidates, "s"), listOf(query.scored.joinToString(" OR ", "(", ")") { sql.holds("s.text", it) }))
         // Each a subquery of its own, which no row is passed to, so a store works it out once. Joined beside the candidates,
         // Postgres read the label again for each candidate where it guessed there were few: 55 s for a rare word at 100,000.
         fun figure(of: String) = Query(sql.real(of), Derived(label, "l")).nested()
         val weighed = Query(
-            (listOf("h.*", "${figure("COUNT(*)")} AS n", "${figure("AVG(${sql.length("l.text")})")} AS avglen") +
+            (listOf("h.*", "${figure("COUNT(*)")} AS n", "${figure("AVG(l.len)")} AS avglen") +
                 tf.zip(df).map { (t, d) -> "SUM(CASE WHEN h.$t > 0 THEN 1 ELSE 0 END) OVER () AS $d" }).joinToString(", "),
             Derived(counted.text(), "h"),
         )

@@ -526,18 +526,19 @@ class OracleSelectTest {
     fun `a text search without an index counts each term on its own, keeps the required and excluded, and scores by BM25`() {
         val select = select(Shelf::class.java)
         val sql = select.matching(listOf("title"), TextQuery.parse("graph +data -noise")).squashed()
-        assertTrue(sql.contains("SELECT c.nid, LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text"), sql)
+        // The text is lowered to match a term in, and measured as it is.
+        assertTrue(sql.contains("SELECT c.nid, LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text, NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len"), sql)
         assertTrue(sql.contains("MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")'))"), sql)
         assertTrue(
-            sql.contains("SELECT s.nid, NVL(LENGTH(s.text), 0) AS len, REGEXP_COUNT(s.text, \$_p0) AS tf1, REGEXP_COUNT(s.text, \$_p1) AS tf2, REGEXP_COUNT(s.text, \$_p2) AS r1, REGEXP_COUNT(s.text, \$_p3) AS x1"),
+            sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) AS tf1, REGEXP_COUNT(s.text, \$_p1) AS tf2, REGEXP_COUNT(s.text, \$_p2) AS r1, REGEXP_COUNT(s.text, \$_p3) AS x1"),
             sql,
         )
         // Only the nodes that hold a scoring term are counted: every node that holds one is among them, so each term's rarity over them is exact.
         assertTrue(sql.contains(") s WHERE (REGEXP_LIKE(s.text, \$_p4) OR REGEXP_LIKE(s.text, \$_p5)) ) h"), sql)
         assertTrue(sql.contains("SUM(CASE WHEN h.tf1 > 0 THEN 1 ELSE 0 END) OVER () AS df1, SUM(CASE WHEN h.tf2 > 0 THEN 1 ELSE 0 END) OVER () AS df2"), sql)
         // The label's count of nodes and average length, over every node of it, with no term matched.
-        assertTrue(sql.contains("h.*, ( SELECT COUNT(*) FROM ( SELECT LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text FROM GRAPH_TABLE"), sql)
-        assertTrue(sql.contains(") AS n, ( SELECT AVG(NVL(LENGTH(l.text), 0)) FROM ("), sql)
+        assertTrue(sql.contains("h.*, ( SELECT COUNT(*) FROM ( SELECT NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len FROM GRAPH_TABLE"), sql)
+        assertTrue(sql.contains(") AS n, ( SELECT AVG(l.len) FROM ("), sql)
         assertTrue(sql.contains("LN(1 + (w.n - w.df1 + 0.5) / (w.df1 + 0.5)) * w.tf1 * 2.2 / (w.tf1 + 1.2 * (0.25 + 0.75 * w.len / NULLIF(w.avglen, 0)))"), sql)
         // Those that lack a required term, or hold an excluded one, are left out once the rarities are counted.
         assertTrue(sql.contains(") w WHERE w.r1 > 0 AND w.x1 = 0"), sql)
