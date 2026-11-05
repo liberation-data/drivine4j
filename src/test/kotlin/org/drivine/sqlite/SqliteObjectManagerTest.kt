@@ -694,11 +694,13 @@ class SqliteObjectManagerTest {
             )
         )
 
-        // Scored by BM25 (drivine4j#604): the text that holds the word twice first, the best scoring one, the other below it.
+        // Scored by BM25 (drivine4j#604), k1 1.2 and b 0.75, against the best: a1 holds the word twice in 32 characters, a2
+        // once in 23, the average 67 / 3. Both hold it, so its rarity cancels: 2.2 / (1 + 1.2 * (0.25 + 0.75 * 23 / avg))
+        // over 4.4 / (2 + 1.2 * (0.25 + 0.75 * 32 / avg)).
         val graph = stateless.loadMatching(ArticleNode::class.java, "graph", 10, 0.0)
         assertEquals(listOf("a1", "a2"), graph.map { it.value.id })
         assertEquals(1.0, graph[0].score, 1e-9)
-        assertTrue(graph[1].score > 0.0 && graph[1].score < 1.0, graph.toString())
+        assertEquals(0.8059651474530831, graph[1].score, 1e-9)
         assertEquals(listOf("a1"), stateless.loadMatching(ArticleNode::class.java, "graph -soup", 10, 0.0).map { it.value.id })
         assertEquals(listOf("a3"), stateless.loadMatching(ArticleNode::class.java, "école", 10, 0.0).map { it.value.id })
         assertEquals(setOf("a1", "a2", "a3"), stateless.loadMatching(ArticleNode::class.java, "graph*", 10, 0.0).map { it.value.id }.toSet())
