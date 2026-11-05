@@ -86,6 +86,21 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a prefix term scores every node that holds it alike, as Lucene's prefix query does`() {
+        // Lucene scores a prefix query by a constant, not by how often or how rare (drivine4j#612).
+        val hits = search("kiw*")
+        assertEquals(setOf("once", "often"), hits.map { it.value.id }.toSet())
+        assertTrue(hits.all { kotlin.math.abs(it.score - 1.0) < 1e-9 }, hits.toString())
+    }
+
+    @Test
+    fun `a prefix term beside a word adds the same to each node that holds it`() {
+        val hits = search("kiw* bird")
+        assertEquals(listOf("once", "often"), hits.map { it.value.id })
+        assertTrue(hits[1].score < hits[0].score, hits.toString())
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
