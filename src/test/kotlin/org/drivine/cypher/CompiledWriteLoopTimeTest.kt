@@ -27,6 +27,9 @@ abstract class CompiledWriteLoopTimeContract {
 
     abstract fun clear()
 
+    /** Run after [clear], with the graph empty, before the writes are timed: see [CompiledWriteLoopTimePostgresTest]. */
+    open fun emptied() {}
+
     private fun query(cypher: String, n: Int): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(mapOf("n" to n)))
 
@@ -53,6 +56,7 @@ abstract class CompiledWriteLoopTimeContract {
     /** The milliseconds each write took over [n] rows. */
     private fun timed(n: Int): List<Long> {
         clear()
+        emptied()
         return writes.mapIndexed { i, (name, cypher, expected) ->
             val start = System.nanoTime()
             val rows = query(cypher, n)
@@ -69,11 +73,11 @@ abstract class CompiledWriteLoopTimeContract {
         val large = timed(LARGE)
         val report = writes.indices.joinToString("; ") { "${writes[it].first} ${small[it]} ms over $SMALL rows, ${large[it]} ms over $LARGE" }
         println("${this::class.simpleName}: $report")
-        val slow = writes.indices.filter { large[it] > maxOf(RATIO * small[it], FLOOR_MS) }
+        val slow = writes.indices.filter { slow(small[it], large[it]) }
         if (slow.isNotEmpty()) fail("Grew faster than the rows: ${slow.joinToString { writes[it].first }}. $report")
     }
 
-    private companion object {
+    internal companion object {
         const val SMALL = 2_000
         const val LARGE = 20_000
 
@@ -82,14 +86,78 @@ abstract class CompiledWriteLoopTimeContract {
 
         /** Where the small run is short, its fixed costs, and a CI runner's jitter, are much of it: the large one gets this at least. */
         const val FLOOR_MS = 3_000L
+
+        /** Whether a write that took [small] ms over [SMALL] rows and [large] over [LARGE] grew faster than its rows. */
+        fun slow(small: Long, large: Long) = large > maxOf(RATIO * small, FLOOR_MS)
     }
 }
 
+/**
+ * On Postgres the tables are vacuumed while empty first, as autovacuum leaves a store's tables once they have been
+ * emptied (#609): their statistics then say they have no rows, where a table never vacuumed is taken to have ten pages.
+ * The `MERGE` read its pattern by a plan PL/pgSQL made for the empty edge table, a scan of the whole table, and kept it
+ * while the loop filled the table: 28.6 s over 20,000 rows, where it took 0.4 s on a table never vacuumed.
+ */
 @PostgresTests
 class CompiledWriteLoopTimePostgresTest : CompiledWriteLoopTimeContract() {
     override val pm = PostgresTestDatabase.graphManager("cy_loop")
 
     override fun clear() = PostgresTestDatabase.clear(pm)
+
+    override fun emptied() = PostgresTestDatabase.vacuum("cy_loop")
+}
+
+/**
+ * A compiled write whose loop reads a node or a relationship by its key, from a table the loop adds to, or joins a table to
+ * the rows of a `CALL { … }` for one row, takes time in proportion to its rows on Postgres (#609): a `MERGE`
+ * that reads its pattern, a `SET` of what the loop made, in a `MERGE`'s `ON CREATE`, a `CALL { … }` or a `FOREACH`, with
+ * the tables vacuumed while empty; and a `CALL { … }` that returns a value or deletes what it made, over nodes just made,
+ * which Postgres planned to hash a scan of every node for each row (17 s over 20,000 rows). Each is timed as
+ * [CompiledWriteLoopTimeContract] times a write, from an empty graph vacuumed, that [nodes] makes the nodes of where it
+ * reads them.
+ */
+@PostgresTests
+class CompiledWriteKeyedReadTimePostgresTest {
+
+    private val pm = PostgresTestDatabase.graphManager("cy_keyed")
+
+    private fun query(cypher: String, n: Int): List<Any?> =
+        pm.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(mapOf("n" to n)))
+
+    /** Each write, and what it leaves, counted after it: n each time, over n rows. One that starts with `MATCH` reads [nodes]. */
+    private val writes = listOf(
+        Triple("MERGE ON CREATE SET", "MATCH (n:CyLoop) MERGE (n)-[r:CY_SELF]->(n) ON CREATE SET r.w = n.i", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w IS NOT NULL RETURN count(r)"),
+        Triple("CALL MERGE", "MATCH (n:CyLoop) CALL (n) { MERGE (n)-[:CY_SELF]->(n) } RETURN count(n)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) RETURN count(r)"),
+        Triple("CALL CREATE SET", "MATCH (n:CyLoop) CALL (n) { CREATE (n)-[r:CY_SELF]->(n) SET r.w = n.i } RETURN count(n)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w IS NOT NULL RETURN count(r)"),
+        Triple("FOREACH CREATE SET", "MATCH (n:CyLoop) FOREACH (x IN [1] | CREATE (n)-[r:CY_SELF]->(n) SET r.w = x)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w = 1 RETURN count(r)"),
+        Triple("CALL RETURN", "MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)", "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)"),
+        Triple("CALL DETACH DELETE", "MATCH (n:CyLoop) CALL (n) { CREATE (m:CyMade) DETACH DELETE m } RETURN count(n)", "MATCH (n:CyLoop) RETURN count(n)"),
+        Triple("CALL CREATE node SET", "UNWIND range(1, \$n) AS i CALL (i) { CREATE (a:CyLoop {i: i}) SET a.y = i } RETURN count(i)", "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)"),
+    )
+
+    /** The nodes a write that reads them is given. */
+    private val nodes = "UNWIND range(1, \$n) AS i CREATE (:CyLoop {i: i})"
+
+    /** The milliseconds [cypher] took over [n] rows, from an empty graph vacuumed. */
+    private fun timed(cypher: String, check: String, n: Int): Long {
+        PostgresTestDatabase.clear(pm)
+        PostgresTestDatabase.vacuum("cy_keyed")
+        if (cypher.startsWith("MATCH")) query(nodes, n)
+        val start = System.nanoTime()
+        query(cypher, n)
+        val ms = (System.nanoTime() - start) / 1_000_000
+        assertEquals(listOf(n.toLong()), query(check, n), "$cypher over $n rows, read back")
+        return ms
+    }
+
+    @Test
+    fun `a write whose loop reads a table for each row takes about ten times as long over ten times the rows`() {
+        val times = writes.map { (_, cypher, check) -> timed(cypher, check, CompiledWriteLoopTimeContract.SMALL) to timed(cypher, check, CompiledWriteLoopTimeContract.LARGE) }
+        val report = writes.indices.joinToString("; ") { "${writes[it].first} ${times[it].first} ms over ${CompiledWriteLoopTimeContract.SMALL} rows, ${times[it].second} ms over ${CompiledWriteLoopTimeContract.LARGE}" }
+        println("${this::class.simpleName}: $report")
+        val slow = writes.indices.filter { CompiledWriteLoopTimeContract.slow(times[it].first, times[it].second) }
+        if (slow.isNotEmpty()) fail("Grew faster than the rows: ${slow.joinToString { writes[it].first }}. $report")
+    }
 }
 
 @OracleTests

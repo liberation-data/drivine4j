@@ -72,6 +72,12 @@ object PostgresTestDatabase {
         }
     }
 
+    /**
+     * Vacuums and analyses the node and edge tables of the graph [graph], as autovacuum does: run while they are empty, it
+     * leaves statistics that say they have no rows, where a table never vacuumed is taken to have ten pages.
+     */
+    fun vacuum(graph: String) = run("VACUUM ANALYZE ${graph}_edge", "VACUUM ANALYZE ${graph}_node")
+
     /** Drops the tables of the graph [graph], when they are there, and the functions over them. */
     fun drop(graph: String) = run("DROP TABLE IF EXISTS ${graph}_edge, ${graph}_node, ${graph}_schema CASCADE")
 }
