@@ -354,5 +354,8 @@ class TextQueryTest {
         assertEquals(term to null, TextQuery.counted(term))
         assertEquals(1, counted("b²b", "b²b²bx"))
         assertEquals(1, countedByOracle("b²b", "b²b²bx"))
+        // A letter number, "ⅻ", is a number that isn't a digit too, though Java reads it as alphabetic.
+        val roman = TextQuery.parse("bⅻb").scored.single()
+        assertEquals(roman to null, TextQuery.counted(roman))
     }
 }

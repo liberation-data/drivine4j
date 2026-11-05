@@ -21,7 +21,10 @@ internal object Bm25 {
     class Dialect(
         /** The columns of a node's row, as the alias's. */
         val columns: (alias: String) -> String,
-        /** How often a term occurs in a text, the term bound as a parameter. */
+        /**
+         * How often a term occurs in a text, the term bound as a parameter: each time, where it is written again at once too, so
+         * not taking the character after one (drivine4j#607).
+         */
         val count: (text: String, term: String) -> String,
         /** Whether a term occurs in a text at all, the term bound as a parameter: cheaper than [count] where the store can tell. */
         val holds: (text: String, term: String) -> String,

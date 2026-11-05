@@ -86,7 +86,7 @@ internal class TextQuery private constructor(
             if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
             val ended = pattern.removeSuffix(BOUNDARY_AFTER)
             val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
-            if (words.any { word -> word.codePoints().anyMatch { !Character.isAlphabetic(it) && !Character.isDigit(it) && it != '_'.code } }) {
+            if (words.any { word -> word.codePoints().anyMatch { !Character.isLetter(it) && !Character.isDigit(it) && it != '_'.code } }) {
                 return pattern to null
             }
             val overlaps = words.toSet().size < words.size || words.size > 1 && words.first().startsWith(words.last())
