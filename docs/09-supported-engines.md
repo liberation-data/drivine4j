@@ -660,6 +660,12 @@ relationships with it.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
   and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database).
+- A write's loop over its rows that reads the node or edge table for each row, where it adds to that table or joins it to
+  the rows of a `CALL { … }`, runs with `enable_seqscan`, `enable_hashjoin` and `enable_mergejoin` off, set back after it
+  to what they were ([#609](https://github.com/liberation-data/drivine4j/issues/609)). Postgres kept a plan made while
+  the table was empty, or took a `CALL`'s one row for 100, and read the whole table for each row: `MATCH (n) MERGE
+  (n)-[:R]->(n)` took 28 s over 20,000 nodes where it now takes under 1 s. The settings are set for the transaction
+  (`set_config(…, true)`), so a statement that fails leaves them as its transaction or savepoint had them.
 - Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
