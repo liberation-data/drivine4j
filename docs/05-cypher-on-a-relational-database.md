@@ -121,6 +121,12 @@ Cypher's, so `5.0` is the id `5`, and a text, a list or null is no id. Under `NO
 the nodes of a label the pattern names (`MATCH (n:Person) WHERE id(n) = $id`) by the index over labels, as it does for
 a key written in SQL, `nid = 6`; without the label it reads the key.
 
+A `DELETE` deletes the nodes and relationships of all its rows at once, a statement for each table, not one for each
+row: the relationships first, then the nodes, a node's relationships going with it where it is `DETACH`. One that ends
+the statement and deletes one variable, a node with `DETACH` or a relationship, of a match that binds only nodes and
+relationships, reads the ids from the match itself, so `MATCH (n) DETACH DELETE n` is one SQL `DELETE`. In a `FOREACH`
+or a `CALL { … }` that writes, each row is still written alone, as in Cypher.
+
 A value whose kind the statement fixes (a literal, a list or a map written, a function that gives a float such as
 `toFloat()` or `round()`, arithmetic of such numbers, a `CASE` whose values are of one such kind, an item an `UNWIND`
 takes from a list written of them, or a variable a `WITH` binds to one) is refused where an operator or a function takes

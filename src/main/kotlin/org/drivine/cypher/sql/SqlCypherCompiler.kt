@@ -398,6 +398,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sameKey(a: String, b: String) = "$a = $b"
 
     /**
+     * The key column [key] as a subquery gives it to an `IN` over the same table's key, `nid IN (SELECT n1.nid …)`: a
+     * store whose planner rewrites that into a wrong answer gives it in a form it can't rewrite: see Oracle's.
+     */
+    protected open fun inKey(key: String) = key
+
+    /**
      * Whether the labels [labels], a JSON list, hold each of [all], for a node read by its key: one whose key a condition every
      * row must pass sets equal to the key of a node found some other way (see `Writer.readByKey`). As [hasLabels] tests them,
      * where the store reads that node by its key anyway. A store whose planner reads the index over labels for each row of the
@@ -1870,8 +1876,13 @@ abstract class SqlCypherCompiler(graph: String) {
         fun procedure(query: Query): List<ProcedureStep> {
             give(query)
             var select = Select(emptyMap())
-            for (clause in creates(query.clauses)) {
-                if (clause is Clause.Return) step(ProcedureStep.Return(project(select, clause.projection, final = true).sql)) else select = next(select, clause)
+            val clauses = creates(query.clauses)
+            clauses.forEachIndexed { i, clause ->
+                when {
+                    clause is Clause.Return -> step(ProcedureStep.Return(project(select, clause.projection, final = true).sql))
+                    clause is Clause.Delete && i == clauses.lastIndex && deleteMatched(select, clause) -> Unit
+                    else -> select = next(select, clause)
+                }
             }
             return blocks.single()
         }
@@ -2026,11 +2037,10 @@ abstract class SqlCypherCompiler(graph: String) {
             step(ProcedureStep.Select(variable, value(select.scope), from(select).joinToString("") { "\n$it" }))
         }
 
-        /** One write: made for each row of [ROWS] in turn, and the rows it leaves put back there. */
+        /** One write: made for each row of [ROWS] in turn, and the rows it leaves put back there; a `DELETE` over all of them at once, see [delete]. */
         private fun write(clause: Clause) {
+            if (clause is Clause.Delete) return delete(clause)
             assign(OUT, literalJson(emptyList<Any>()))
-            val deleting = clause is Clause.Delete && !clause.detach
-            if (deleting) assign(DOOMED, literalJson(emptyList<Any>()))
             val r = alias("r")
             loop(RECORD, "SELECT ${named(item(r), "item")} FROM ${elements(ROWS, r)} ORDER BY ${itemNo(r)}") {
                 let(ROW, "$RECORD.item")
@@ -2048,22 +2058,10 @@ abstract class SqlCypherCompiler(graph: String) {
                         clause.items.forEach(::remove)
                         keep()
                     }
-                    is Clause.Delete -> {
-                        delete(clause)
-                        keep()
-                    }
                     else -> error("${clause::class.simpleName} reads")
                 }
             }
             let(ROWS, OUT)
-            if (deleting) {
-                // A node is deleted when the clause has deleted the relationships it deletes: one it does not delete must not be there.
-                val d = alias("d")
-                val doomed = "SELECT ${idOf(item(d), null)} FROM ${elements(DOOMED, d)}"
-                step(ProcedureStep.Select(COUNT, "count(*)", " FROM $edges WHERE src IN ($doomed) OR dst IN ($doomed)"))
-                branch("$COUNT > 0") { step(ProcedureStep.Raise("A node is deleted that still has relationships: delete them first, or DETACH DELETE it.")) }
-                execute("DELETE FROM $nodes WHERE nid IN ($doomed)")
-            }
         }
 
         /**
@@ -2404,19 +2402,57 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun stampOf(json: String) = text(propertyOf(json, Stamps.PROPERTY))
 
         /**
-         * A `DELETE` for the row in [ROW]: its relationships first, then its nodes, each with its relationships
-         * where it is `DETACH`; without, a node is gathered in [DOOMED] and deleted once the rows are done.
+         * A `DELETE` over all the rows in [ROWS] at once, which it leaves as they are (#587): one statement for each table,
+         * the ids of every row's relationships, then of its nodes, each with its relationships where it is `DETACH`, as the
+         * edge table's foreign keys cascade. A node or a relationship on many rows, or named twice, is deleted once. Nothing
+         * the clause writes is read before it is done, so it deletes what a statement for each row in turn would.
          */
         private fun delete(delete: Clause.Delete) {
             val targets = delete.expressions.map { expression ->
                 val variable = (expression as? Expression.Variable)?.name ?: unsupported("A DELETE of anything but a variable")
-                variable to target(variable, "DELETE")
+                variable to target(variable, "DELETE").first
             }
-            targets.filter { it.second.first == edges }.forEach { (_, target) -> execute("DELETE FROM $edges WHERE eid = ${target.third}") }
-            targets.filter { it.second.first == nodes }.forEach { (_, target) ->
-                if (delete.detach) execute("DELETE FROM $nodes WHERE nid = ${target.third}")
-                else assign(DOOMED, appended(DOOMED, scalar(target.third)))
+            fun ids(table: String) = targets.filter { it.second == table }.map { it.first }.distinct().ifEmpty { null }?.joinToString(" UNION ALL ") { variable ->
+                val r = alias("r")
+                "SELECT ${idOf(item(r), key(variable))} FROM ${elements(ROWS, r)}"
             }
+            deleteIds(ids(edges), ids(nodes), delete.detach)
+        }
+
+        /**
+         * The relationships whose ids the query [relationships] gives deleted, then the nodes whose ids [nodeIds] gives:
+         * with their relationships where [detach]; without, the statement fails where one has a relationship still.
+         */
+        private fun deleteIds(relationships: String?, nodeIds: String?, detach: Boolean) {
+            relationships?.let { execute("DELETE FROM $edges WHERE eid IN ($it)") }
+            if (nodeIds == null) return
+            if (!detach) {
+                step(ProcedureStep.Select(COUNT, "count(*)", " FROM $edges WHERE src IN ($nodeIds) OR dst IN ($nodeIds)"))
+                branch("$COUNT > 0") { step(ProcedureStep.Raise("A node is deleted that still has relationships: delete them first, or DETACH DELETE it.")) }
+            }
+            execute("DELETE FROM $nodes WHERE nid IN ($nodeIds)")
+        }
+
+        /**
+         * A `DELETE` that ends the statement written as one statement that reads the ids it deletes from [select] itself,
+         * so the rows of its match, which nothing after it reads, are not gathered into [ROWS] first (#587): that list held
+         * an id for each of 1.1M nodes in `MATCH (n) DETACH DELETE n`. Only where the statement reads its match once, and
+         * that is all it would read: the clause deletes one variable, a node with `DETACH` or a relationship, and every
+         * variable [select] binds is a node or a relationship, so gathering the rows works out no value it would not. A
+         * plain `DELETE` of nodes reads them twice, to test them for relationships and to delete them, and two of
+         * relationships and nodes read the match again once the relationships are gone, so they are gathered as before.
+         * False where it is not written so, and then nothing is.
+         */
+        private fun deleteMatched(select: Select, delete: Clause.Delete): Boolean {
+            if (!select.scope.values.all { it is Value.Node || it is Value.Relationship }) return false
+            val variable = delete.expressions.map { (it as? Expression.Variable)?.name ?: return false }.distinct().singleOrNull() ?: return false
+            val read = (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }
+            when (val target = select.scope[variable]) {
+                is Value.Node -> if (delete.detach) deleteIds(null, planned("SELECT ${inKey(target.nid)} AS id$read"), detach = true) else return false
+                is Value.Relationship -> deleteIds(planned("SELECT ${inKey(target.eid)} AS id$read"), null, detach = delete.detach)
+                else -> return false
+            }
+            return true
         }
 
         // ----- Projection -----
@@ -5384,9 +5420,6 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** How deep `FOREACH`es and writing `CALL`s nest. */
         const val NESTING = 3
-
-        /** The nodes a `DELETE` deletes once its rows are done, a JSON list of ids. */
-        const val DOOMED = "cy_doomed"
 
         /** The record of a write's loop over the rows: its `item` is a row. */
         const val RECORD = "cy_record"
