@@ -559,7 +559,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * again replaces it with itself.
      */
     override fun procedure(program: List<ProcedureStep>): String {
-        val body = statements(program)
+        val nestedLoops = program.any(::plannedAsNestedLoops)
+        val body = program.flatMap { step ->
+            if (!plannedAsNestedLoops(step)) statements(listOf(step))
+            else listOf(
+                "$PLANNER := ARRAY[${JOIN_METHODS.joinToString { "current_setting('$it')" }}];",
+                "PERFORM ${JOIN_METHODS.joinToString { "set_config('$it', 'off', true)" }};",
+            ) + statements(listOf(step)) +
+                "PERFORM ${JOIN_METHODS.withIndex().joinToString { (i, setting) -> "set_config('$setting', $PLANNER[${i + 1}], true)" }};"
+        }
         val kept = keptLists(program)
         val text = (listOf(
             "#variable_conflict use_column",
@@ -575,7 +583,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $RECORD record;",
             "    $MATCHED record;",
         ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;", "    $CALLER$it jsonb;") } +
-            kept.filter { it != OUT }.map { "    $it jsonb[];" } + listOf(
+            kept.filter { it != OUT }.map { "    $it jsonb[];" } + listOfNotNull("    $PLANNER text[];".takeIf { nestedLoops }) + listOf(
             "BEGIN",
             indent(body.joinToString("\n")),
             "END",
@@ -586,6 +594,55 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         val quote = (sequenceOf("\$cy\$") + generateSequence(1) { it + 1 }.map { "\$cy$it\$" }).first { it !in text }
         return "CREATE OR REPLACE FUNCTION $function($PARAMS jsonb) RETURNS SETOF json LANGUAGE plpgsql AS $quote\n$text\n$quote;\n" +
             "SELECT cy.result FROM $function(CAST(\$${Parameters.OBJECT} AS jsonb)) AS cy (result)"
+    }
+
+    /**
+     * Whether [step], a step of the procedure outside any loop, is a loop whose statements for each row are planned as nested
+     * loops over the tables' indexes: with [JOIN_METHODS] off while it runs, and as they were after it (#609).
+     * Postgres plans a statement the loop runs for each row on its first runs, and may keep that plan for all the rows
+     * after. Two of the loop's reads were planned to scan a whole table, so each row read all of it, and the loop took
+     * time in step with the square of its rows:
+     *
+     * - A read of a table by its key, where the loop adds to the table: a `MERGE` reading its pattern, a `SET` of what the
+     *   loop made, in an `ON CREATE`, a `CALL { … }` or a `FOREACH`. A table vacuumed while empty, as autovacuum leaves one,
+     *   has statistics that say it holds nothing, and its plan from the first rows, a scan of the few rows there, was kept
+     *   as the loop filled the table. `MATCH (n) MERGE (n)-[:R]->(n)` took 28.6 s over 20,000 nodes, and 0.4 s on a table
+     *   never vacuumed, which Postgres takes to have ten pages.
+     * - A read of the rows of a `CALL { … }` for one row, which `jsonb_array_elements` gives, joined to a table: Postgres
+     *   takes such a list to hold 100 rows, and below some 20,000 nodes plans to hash a scan of the whole table. A
+     *   `MATCH (n) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)` took 17 s over 20,000 nodes just made, and
+     *   0.6 s over the same nodes once a `SET` of each had grown the table past that.
+     *
+     * So planned, each read is by an index, and the loops take 0.4 s to 0.7 s over 20,000 rows. A loop with neither read is
+     * planned as it was, and its procedure is the same text: `MATCH (n) SET n.x = 1` reads its nodes by their keys from a
+     * table it adds nothing to. A loop outside all others reads only the procedure's own rows, no table, so the settings
+     * change the plans of the statements it runs for each row alone. Set with `set_config(…, true)`, they are put back by no
+     * exception block where the loop fails: the failure aborts the transaction, or the savepoint it is rolled back to, and
+     * Postgres undoes the settings with it.
+     *
+     * A read for each row that no index answers is no faster for it: one that counted 20,000 nodes for each of 2,000 rows
+     * took 1.2 s to 2.0 s either way, and one that joined 20,000 relationships to their nodes for each row 1.7 times as long.
+     */
+    private fun plannedAsNestedLoops(step: ProcedureStep): Boolean {
+        if (step !is ProcedureStep.Loop) return false
+        val statements = sqlOf(step.body)
+        val tables = listOf(nodes, edges)
+        fun inserts(statement: String, table: String) = statement.startsWith("INSERT INTO $table ")
+        fun reads(statement: String, table: String) = !inserts(statement, table) && Regex("""\b${Regex.escape(table)}\b""").containsMatchIn(statement)
+        val grown = tables.filter { table -> statements.any { inserts(it, table) } }
+        return statements.any { statement -> tables.any { reads(statement, it) && (it in grown || JSON_LIST in statement) } }
+    }
+
+    /** The SQL of each step of [program], and of the steps in its loops and conditions. */
+    private fun sqlOf(program: List<ProcedureStep>): List<String> = program.flatMap { step ->
+        when (step) {
+            is ProcedureStep.Select -> listOf("SELECT ${step.expression}${step.from}")
+            is ProcedureStep.Loop -> listOf(step.query) + sqlOf(step.body)
+            is ProcedureStep.If -> listOf(step.condition) + sqlOf(step.body)
+            is ProcedureStep.Execute -> listOf(step.statement)
+            is ProcedureStep.Return -> listOf(step.query)
+            is ProcedureStep.Let, is ProcedureStep.Raise, is ProcedureStep.Kept, is ProcedureStep.Keep -> emptyList()
+        }
     }
 
     override fun returnRows(query: String) = listOf("RETURN QUERY SELECT CAST(cy_q.result AS json) FROM (\n${indent(query)}\n) cy_q;")
@@ -636,6 +693,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
 
     companion object {
+        /** The planner's settings a loop's statements for each row are planned with off: see [plannedAsNestedLoops]. */
+        private val JOIN_METHODS = listOf("enable_seqscan", "enable_hashjoin", "enable_mergejoin")
+
+        /** The procedure's variable that holds [JOIN_METHODS] as they were before a loop planned with them off. */
+        private const val PLANNER = "cy_planner"
+
+        /** How a query reads the rows of a JSON list: see [plannedAsNestedLoops]. */
+        private const val JSON_LIST = "jsonb_array_elements("
+
         /** A property read, `(n1.props -> 'name')`: the row's column, and the key. */
         private val PROPERTY_READ = Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""")
 
