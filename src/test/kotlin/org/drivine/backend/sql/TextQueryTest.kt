@@ -231,4 +231,15 @@ class TextQueryTest {
 
         assertEquals(50_000, query.scored.size)
     }
+
+    @Test
+    fun `a word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as the text's expression reads it`() {
+        // drivine4j#616: a vowel sign and a letter number are in a word, as [[:alnum:]] holds them; a superscript or a
+        // fraction is between words, as it is in the text and to Neo4j's analyzer.
+        assertEquals(listOf(listOf("किताब")), TextQuery.parse("किताब").scoredWords)
+        assertEquals(listOf(listOf("bⅻb")), TextQuery.parse("bⅻb").scoredWords)
+        assertEquals(listOf(listOf("m", "x")), TextQuery.parse("m²x").scoredWords)
+        assertEquals(listOf(listOf("1", "2")), TextQuery.parse("1½2").scoredWords)
+        assertEquals(listOf(listOf("٣٤")), TextQuery.parse("٣٤").scoredWords)
+    }
 }

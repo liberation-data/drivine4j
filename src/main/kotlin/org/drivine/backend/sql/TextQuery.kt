@@ -37,8 +37,16 @@ internal class TextQuery private constructor(
 ) {
 
     companion object {
-        /** What stands between two words: a run of anything but letters, digits and underscores. */
-        private val GAP = Regex("[^\\p{L}\\p{N}_]+")
+        /**
+         * What stands between two words: a run of anything but letters, decimal digits and underscores, as a term's
+         * expression's `[[:alnum:]_]` reads them in the text, on Postgres and in Java (and so on SQLite): letters as Unicode's
+         * Alphabetic holds them, which takes in the vowel signs of Indic scripts and the letter numbers (`ⅻ`), and digits as
+         * `Nd`. Read as any letter or number, a query split a Hindi word at its vowel sign, "कि" the word "क", which the text's
+         * "कि" went on from, and kept "²" in a word where the text ends one at it, as Neo4j's analyzer does (drivine4j#616).
+         * Oracle's `[[:alnum:]]` holds every combining mark too, so a word with a virama or a decomposed accent is one word there
+         * and two here.
+         */
+        private val GAP = Regex("[^\\p{IsAlphabetic}\\p{Nd}_]+")
 
         /** The characters that end a term. */
         private const val SPACES = " \t\n\u000B\u000C\r"

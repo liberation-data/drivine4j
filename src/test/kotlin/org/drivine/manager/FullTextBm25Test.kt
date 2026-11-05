@@ -86,6 +86,15 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a word is what a text's expression reads as one, so its vowel signs are in it and a superscript is between words`() {
+        // A word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as [[:alnum:]_] reads it in the
+        // text (drivine4j#616). A Hindi vowel sign is in a word: split at it, किताब was "क", which [[:alnum:]] went on from.
+        assertEquals(listOf("hindi"), search("किताब").map { it.value.id })
+        // "²" is not: "m²x" is the words "m" and "x", as Neo4j's analyzer reads it.
+        assertEquals(listOf("area"), search("\"m²x\"").map { it.value.id })
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
@@ -110,6 +119,8 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'once', title: 'o', body: 'kiwi bird'})
             CREATE (:Article {id: 'often', title: 'f', body: 'kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi'})
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
+            CREATE (:Article {id: 'hindi', title: 'h', body: 'एक किताब'})
+            CREATE (:Article {id: 'area', title: 'a', body: 'an m² x here'})
         """.trimIndent()
 
         /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */
