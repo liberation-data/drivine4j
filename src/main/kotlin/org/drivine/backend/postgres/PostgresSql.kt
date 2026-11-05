@@ -136,8 +136,11 @@ internal object PostgresSql {
      * them, in lower case. A property it does not have is no text. The expression of a full-text index
      * too (with an empty alias), so a statement that reads it so is answered by the index.
      */
-    fun searchedText(alias: String, keys: List<String>): String =
-        "lower(${keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }})"
+    fun searchedText(alias: String, keys: List<String>): String = "lower(${joinedText(alias, keys)})"
+
+    /** [searchedText] before it is lowered: what a full-text search measures a text's length by (drivine4j#604). */
+    fun joinedText(alias: String, keys: List<String>): String =
+        keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }
 
     /** The columns a row of a node has, which every row source of a node gives. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp")

@@ -494,7 +494,7 @@ internal class SqliteSelect(
      */
     fun matching(keys: List<String>, query: TextQuery): String {
         val text = SqliteSql.searchedText("c", keys)
-        val len = "length(${keys.joinToString(" || ' ' || ") { "COALESCE(${SqliteSql.property("c", it)}, '')" }})"
+        val len = "length(${SqliteSql.joinedText("c", keys)})"
         val labelled = listOfNotNull(SqliteSql.hasLabels("c", rootLabels()))
         return Bm25.ranked(
             Query("c.nid, $text AS text, $len AS len", Table(graph.nodes, "c"), labelled).text(),

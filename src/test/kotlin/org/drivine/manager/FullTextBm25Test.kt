@@ -1,5 +1,8 @@
 package org.drivine.manager
 
+import org.drivine.annotation.FullTextIndex
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
@@ -48,7 +51,11 @@ abstract class FullTextBm25Contract {
     fun seed() {
         write(COMMON)
         write(SEED)
-        if (indexed) pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
+        write(PAPERS)
+        if (indexed) {
+            pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
+            pm.indexes.ensure(FullTextIndexSpec("Paper", listOf("title", "body")))
+        }
         settle()
     }
 
@@ -83,6 +90,14 @@ abstract class FullTextBm25Contract {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
         assertEquals(setOf("short"), search("zebra -longer").map { it.value.id }.toSet())
+        assertEquals(listOf("short", "long"), search("+zebra").map { it.value.id })
+    }
+
+    @Test
+    fun `a node that lacks one of several searched properties is measured by the rest, and scores`() {
+        val hits = manager.loadMatching(PaperNode::class.java, "kiwi", 50, 0.0)
+        assertEquals(setOf("untitled", "unbodied", "both"), hits.map { it.value.id }.toSet(), hits.toString())
+        assertTrue(hits.all { it.score > 0.0 }, hits.toString())
     }
 
     companion object {
@@ -97,10 +112,23 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
         """.trimIndent()
 
+        /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */
+        val PAPERS = """
+            CREATE (:Paper {id: 'untitled', body: 'kiwi pie'})
+            CREATE (:Paper {id: 'unbodied', title: 'kiwi'})
+            CREATE (:Paper {id: 'both', title: 'kiwi', body: 'kiwi kiwi'})
+            CREATE (:Paper {id: 'other', title: 'nothing', body: 'to see'})
+        """.trimIndent()
+
         /** Twenty texts that hold "graph", written apart from [SEED]: an `UNWIND` before it would make each of its nodes twenty times. */
         const val COMMON = "UNWIND range(1, 20) AS i CREATE (:Article {id: 'common' + toString(i), title: 'c', body: 'a note on a graph and its nodes'})"
     }
 }
+
+/** A text searched over two properties, either of which a node may lack. */
+@FullTextIndex(properties = ["title", "body"])
+@NodeFragment(labels = ["Paper"])
+data class PaperNode(@NodeId val id: String, val title: String?, val body: String?)
 
 class Neo4jFullTextBm25Test : FullTextBm25Contract() {
     private val provider by lazy {

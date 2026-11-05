@@ -474,7 +474,7 @@ internal class PostgresSelect(
      */
     fun matching(keys: List<String>, query: TextQuery, indexed: Boolean = false): String {
         val text = PostgresSql.searchedText("c", keys)
-        val len = "length(${keys.joinToString(" || ' ' || ") { "COALESCE(${PostgresSql.property("c", it)}, '')" }})"
+        val len = "length(${PostgresSql.joinedText("c", keys)})"
         val labelled = listOfNotNull(PostgresSql.hasLabels("c", rootLabels()))
         // A node that matches a term holds each of its words: what the trigram index answers is whether it holds them.
         val narrowed = if (indexed) {

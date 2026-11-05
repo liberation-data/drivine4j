@@ -564,8 +564,9 @@ internal class OracleSelect(
      * the statement names twice, gave wrong counts on Oracle 23.26: every position of the text.
      */
     fun matching(keys: List<String>, query: TextQuery): String {
-        val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
-        val len = "NVL(LENGTH(${keys.joinToString(" || ' ' || ") { "JSON_VALUE(c.props, ${path(it)} RETURNING CLOB)" }}), 0)"
+        val values = keys.map { "JSON_VALUE(c.props, ${path(it)} RETURNING CLOB)" }
+        val text = values.joinToString(" || ' ' || ") { "LOWER($it)" }
+        val len = "NVL(LENGTH(${values.joinToString(" || ' ' || ")}), 0)"
         return Bm25.ranked(
             Query("c.nid, $text AS text, $len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
             Query("$len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
