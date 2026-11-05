@@ -574,7 +574,12 @@ internal class OracleSelect(
             Bm25.Dialect(
                 // The row of the node table is joined back, whose document is made as the graph's vertex makes it.
                 columns = { "$it.nid, $it.labels, $it.props, $it.stamp, ${OracleSql.transform(it)} AS doc" },
-                count = { text, term -> "REGEXP_COUNT($text, ${scope.bound(term)})" },
+                // Oracle's expressions don't look ahead: the term ending where its last word does, less those a word goes on from.
+                count = { text, term ->
+                    TextQuery.counted(term).let { (ended, continued) ->
+                        "REGEXP_COUNT($text, ${scope.bound(ended)})" + (continued?.let { " - REGEXP_COUNT($text, ${scope.bound(it)})" } ?: "")
+                    }
+                },
                 holds = { text, term -> "REGEXP_LIKE($text, ${scope.bound(term)})" },
                 ln = { "LN($it)" },
                 real = { it },

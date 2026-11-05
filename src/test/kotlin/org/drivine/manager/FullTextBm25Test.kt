@@ -86,6 +86,14 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a term written three times running counts three times, not every other one`() {
+        // As long as each other: counted three times and twice, not twice each (drivine4j#607).
+        val hits = search("okapi")
+        assertEquals(listOf("triple", "apart"), hits.map { it.value.id })
+        assertTrue(hits[0].score > hits[1].score, hits.toString())
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
@@ -110,6 +118,8 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'once', title: 'o', body: 'kiwi bird'})
             CREATE (:Article {id: 'often', title: 'f', body: 'kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi'})
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
+            CREATE (:Article {id: 'triple', title: 't', body: 'okapi okapi okapi'})
+            CREATE (:Article {id: 'apart', title: 'a', body: 'okapi lemur okapi'})
         """.trimIndent()
 
         /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */

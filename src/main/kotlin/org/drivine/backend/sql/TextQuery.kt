@@ -46,6 +46,26 @@ internal class TextQuery private constructor(
         private const val BOUNDARY_BEFORE = "(^|[^[:alnum:]_])"
         private const val BOUNDARY_AFTER = "($|[^[:alnum:]_])"
 
+        /** What [BOUNDARY_AFTER] holds to, without taking the character it is: Postgres's and Java's lookahead. */
+        private const val BOUNDARY_AHEAD = "(?=\$|[^[:alnum:]_])"
+
+        /**
+         * [pattern], a term's expression, ending where its last word does, the character after it held to but not taken:
+         * counted, a term written again at once still has the character before it (drivine4j#607). Taken, "kiwi kiwi kiwi"
+         * counted twice. For a store whose expressions look ahead.
+         */
+        fun lookingAhead(pattern: String): String =
+            if (pattern.endsWith(BOUNDARY_AFTER)) pattern.removeSuffix(BOUNDARY_AFTER) + BOUNDARY_AHEAD else pattern
+
+        /**
+         * For a store whose expressions don't look ahead, Oracle's: [pattern] ending where its last word does, and that
+         * expression holding a letter, a digit or an underscore after it. A term occurs as many times as the first matches
+         * less the second, and neither takes the character before the next. Null for the second where the term is the
+         * start of a word, which may go on.
+         */
+        fun counted(pattern: String): Pair<String, String?> =
+            if (pattern.endsWith(BOUNDARY_AFTER)) pattern.removeSuffix(BOUNDARY_AFTER).let { it to "$it[[:alnum:]_]" } else pattern to null
+
         /**
          * Reads [query]. It must name at least one term that scores: a query of operators and
          * punctuation alone is refused with an [IllegalArgumentException].
