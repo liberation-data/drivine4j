@@ -697,12 +697,12 @@ relationships with it.
   (`k1` 1.2, `b` 0.75): a term weighs as it is rare among the label's nodes, and a text's counts
   against its length, in characters, beside the label's average. Scored by the counts alone, a common
   word outweighed the word a query was about, and a long text won by holding more of everything: over
-  Drivine's own docs, the top hit was Neo4j's for 6 of 21 queries, and is for 17. How rare a term is,
-  how many nodes the label has and their average length are over every node of the label, so a
-  search reads them all, once. A full-text index is a GIN index of `pg_trgm` trigrams over the text,
-  made and recorded; it does not narrow a search until those figures are kept between searches
-  (#605). A search sees its own transaction's writes. An `analyzer` is recorded with the index and
-  not applied.
+  Drivine's own docs, the top hit was Neo4j's for 6 of 21 queries, and is for 17. A full-text index
+  is a GIN index of `pg_trgm` trigrams over the text, which narrows a search to the nodes that hold a
+  term's words. Every node that holds a term is among them, so how rare each term is comes out the
+  same; only the label's count of nodes and their average length are read from every node of it, and
+  no term is matched in that read. A search sees its own transaction's writes. An `analyzer` is
+  recorded with the index and not applied.
 - The deprecated `GraphObjectManager.save` and `saveAll`, and the Cypher migration tools, do not run
   on Postgres, as on Oracle; that manager's loads, queries and deletes work.
 

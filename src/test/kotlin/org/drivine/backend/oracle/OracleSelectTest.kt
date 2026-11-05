@@ -532,19 +532,24 @@ class OracleSelectTest {
             sql.contains("SELECT s.nid, NVL(LENGTH(s.text), 0) AS len, REGEXP_COUNT(s.text, \$_p0) AS tf1, REGEXP_COUNT(s.text, \$_p1) AS tf2, REGEXP_COUNT(s.text, \$_p2) AS r1, REGEXP_COUNT(s.text, \$_p3) AS x1"),
             sql,
         )
-        // Each term's rarity, and the average length, over every node of the label: in the same read, before any is left out.
-        assertTrue(sql.contains("h.*, COUNT(*) OVER () AS n, AVG(h.len) OVER () AS avglen, SUM(CASE WHEN h.tf1 > 0 THEN 1 ELSE 0 END) OVER () AS df1"), sql)
+        // Only the nodes that hold a scoring term are counted: every node that holds one is among them, so each term's rarity over them is exact.
+        assertTrue(sql.contains(") s WHERE (REGEXP_LIKE(s.text, \$_p4) OR REGEXP_LIKE(s.text, \$_p5)) ) h"), sql)
+        assertTrue(sql.contains("SUM(CASE WHEN h.tf1 > 0 THEN 1 ELSE 0 END) OVER () AS df1, SUM(CASE WHEN h.tf2 > 0 THEN 1 ELSE 0 END) OVER () AS df2"), sql)
+        // The label's count of nodes and average length, over every node of it, with no term matched.
+        assertTrue(sql.contains("CROSS JOIN ( SELECT COUNT(*) AS n, AVG(NVL(LENGTH(l.text), 0)) AS avglen FROM ( SELECT LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text FROM GRAPH_TABLE"), sql)
         assertTrue(sql.contains("LN(1 + (w.n - w.df1 + 0.5) / (w.df1 + 0.5)) * w.tf1 * 2.2 / (w.tf1 + 1.2 * (0.25 + 0.75 * w.len / NULLIF(w.avglen, 0)))"), sql)
-        assertTrue(sql.contains(") w WHERE (w.tf1 > 0 OR w.tf2 > 0) AND w.r1 > 0 AND w.x1 = 0"), sql)
+        // Those that lack a required term, or hold an excluded one, are left out once the rarities are counted.
+        assertTrue(sql.contains(") w WHERE w.r1 > 0 AND w.x1 = 0"), sql)
         assertTrue(sql.contains(") b JOIN g_node c ON c.nid = b.nid WHERE b.score > 0"), sql)
         assertTrue(sql.contains("c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, b.score / MAX(b.score) OVER () AS score"), sql)
         val bound = select.bindings()
-        // Each scoring term, then the required and the excluded.
-        assertEquals(listOf("_p0", "_p1", "_p2", "_p3"), bound.keys.toList())
+        // Each scoring term's count, the required and the excluded, then each scoring term again, for whether a node holds it.
+        assertEquals(listOf("_p0", "_p1", "_p2", "_p3", "_p4", "_p5"), bound.keys.toList())
         assertEquals("(^|[^[:alnum:]_])graph($|[^[:alnum:]_])", bound["_p0"])
         assertEquals("(^|[^[:alnum:]_])data($|[^[:alnum:]_])", bound["_p1"])
         assertEquals(bound["_p1"], bound["_p2"])
         assertEquals("(^|[^[:alnum:]_])noise($|[^[:alnum:]_])", bound["_p3"])
+        assertEquals(listOf(bound["_p0"], bound["_p1"]), listOf(bound["_p4"], bound["_p5"]))
     }
 
     @Test

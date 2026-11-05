@@ -29,7 +29,7 @@ abstract class FullTextRankingAgreementContract {
     /** The manager of the store whose ranking is measured, over a graph of its own. */
     abstract val pm: NonTransactionalPersistenceManager
 
-    /** Whether the store's full-text index is made before the search: the scores are the same with it as without. */
+    /** Whether the store's full-text index is made before the search: on Postgres, it narrows what is read, and the score is the same. */
     open val indexed = false
 
     /** Writes the corpus to the store: through compiled Cypher on a SQL store. */

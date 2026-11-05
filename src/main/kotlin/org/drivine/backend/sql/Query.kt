@@ -23,6 +23,12 @@ internal class Derived(private val query: String, override val alias: String) : 
     override fun reading(readers: List<String>): String = "(\n    ${query.under()}\n) $alias"
 }
 
+/** [rows], each beside the one row [single] gives, which every row reads: as rows named [rows]'s alias. */
+internal class Beside(private val rows: RowSource, private val single: RowSource) : RowSource {
+    override val alias: String get() = rows.alias
+    override fun reading(readers: List<String>): String = "${rows.reading(readers)}\nCROSS JOIN ${single.reading(readers)}"
+}
+
 /**
  * The nodes [grouped] gives once each, as rows named [once], joined to their rows of [nodes], named
  * [row]: the Postgres and SQLite selects read a path's nodes so, each node once however many ways lead to it,

@@ -31,7 +31,7 @@ abstract class FullTextBm25Contract {
 
     abstract val pm: NonTransactionalPersistenceManager
 
-    /** Whether the full-text index is made first: the scores are the same with it as without. */
+    /** Whether the full-text index is made: on Postgres, it narrows the nodes counted, and the scores are the same. */
     open val indexed = false
 
     /** Writes [cypher] to the store. */
@@ -136,13 +136,13 @@ class PostgresIndexedFullTextBm25Test : FullTextBm25Contract() {
     override fun write(cypher: String) = PostgresTestDatabase.seed(pm, cypher)
 
     @Test
-    fun `with the index made, each node scores as it does without one`() {
+    fun `narrowed by the index, each node scores as it does without one`() {
         val plain = PostgresTestDatabase.graphManager("ftbm25cmp").also(PostgresTestDatabase::clear)
         PostgresTestDatabase.seed(plain, COMMON)
         PostgresTestDatabase.seed(plain, SEED)
         val bare = StatelessGraphObjectManager(plain, Neo4jObjectMapper.instance, SubtypeRegistry())
         val with = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
-        for (query in listOf("graph soup", "zebra", "kiwi", "graph", "+soup graph")) {
+        for (query in listOf("graph soup", "zebra", "kiwi", "graph", "+soup graph", "\"zebra crossing\" kiwi", "zebra -longer", "+\"of soup\" graph")) {
             val a = bare.loadMatching(ArticleNode::class.java, query, 50, 0.0).associate { it.value.id to it.score }
             val b = with.loadMatching(ArticleNode::class.java, query, 50, 0.0).associate { it.value.id to it.score }
             assertEquals(a.keys, b.keys, query)

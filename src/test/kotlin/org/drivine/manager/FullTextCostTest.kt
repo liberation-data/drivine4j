@@ -75,4 +75,29 @@ class FullTextCostTest {
             measure("oracle", pm, cypher(pm), count, indexed = false)
         }
     }
+
+    /**
+     * Where a rare word's search goes on Postgres at 100,000 nodes: whether a regular expression's literal is found without
+     * running it, and what the label's count and average length cost read on their own. Run by hand, with
+     * `PROBE_EXPLAIN=true`: it prints the plans.
+     */
+    @Test
+    @EnabledIfEnvironmentVariable(named = "PROBE_EXPLAIN", matches = "true")
+    fun `explain a rare word on postgres`() {
+        val pm = PostgresTestDatabase.graphManager("ftcost").also(PostgresTestDatabase::clear)
+        rows(100_000).chunked(2000).forEach { cypher(pm)("UNWIND \$rows AS r CREATE (:Article {id: r.id, title: r.title, body: r.body})", mapOf("rows" to it)) }
+        PostgresTestDatabase.run("ANALYZE ftcost_node")
+        val text = org.drivine.backend.postgres.PostgresSql.searchedText("c", listOf("body"))
+        val pattern = org.drivine.backend.sql.TextQuery.parse("w3000").scored.single().replace("'", "''")
+        val probes = mapOf(
+            "count each" to "SELECT count(*) FROM ftcost_node c WHERE (SELECT count(*) FROM regexp_matches($text, '$pattern', 'g')) > 0",
+            "holds" to "SELECT count(*) FROM ftcost_node c WHERE $text ~ '$pattern'",
+            "figures" to "SELECT count(*), avg(length($text)) FROM ftcost_node c",
+            "figures unlowered" to "SELECT count(*), avg(length(c.props->>'body')) FROM ftcost_node c",
+        )
+        for ((name, sql) in probes) {
+            val plan = PostgresTestDatabase.pm.query(QuerySpecification.withStatement("EXPLAIN (ANALYZE, BUFFERS) $sql"))
+            println("PROBE $name\n" + plan.joinToString("\n") { "  $it" })
+        }
+    }
 }

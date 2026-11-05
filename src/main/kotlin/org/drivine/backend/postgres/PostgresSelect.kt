@@ -465,22 +465,39 @@ internal class PostgresSelect(
      * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
      * scores one. Each term is a regular expression that matches it as a whole word, counted as Oracle counts it without a text
      * index, so the two score alike. A term's rarity, and the average length a text's is weighed against, are over every node
-     * of the label, so every node of it is read: a full-text index's trigrams, which could narrow the nodes counted, cannot
-     * narrow those figures, and the label is read once for both ([Bm25.ranked]).
+     * of the label.
+     *
+     * With [indexed], the nodes counted are first narrowed to those whose text holds every word of some scoring term, which the
+     * trigram index of a full-text index answers (see [PostgresSchemaGrammar]): a node that does not cannot match the term, so
+     * every node that holds a term is still counted, and the scores are the same. Only the label's count of nodes and their
+     * average length are read from every node of it.
      */
-    fun matching(keys: List<String>, query: TextQuery): String {
-        val texts = Query("c.nid, ${PostgresSql.searchedText("c", keys)} AS text", Table(graph.nodes, "c"), listOfNotNull(PostgresSql.hasLabels("c", rootLabels())))
+    fun matching(keys: List<String>, query: TextQuery, indexed: Boolean = false): String {
+        val text = PostgresSql.searchedText("c", keys)
+        val labelled = listOfNotNull(PostgresSql.hasLabels("c", rootLabels()))
+        // A node that matches a term holds each of its words: what the trigram index answers is whether it holds them.
+        val narrowed = if (indexed) {
+            listOf(query.scoredWords.joinToString(" OR ", "(", ")") { words -> words.joinToString(" AND ", "(", ")") { "$text LIKE ${PostgresSql.text(scope.bound("%${likeText(it)}%"))}" } })
+        } else {
+            emptyList()
+        }
         return Bm25.ranked(
-            texts.text(), graph.nodes, query,
+            Query("c.nid, $text AS text", Table(graph.nodes, "c"), labelled + narrowed).text(),
+            Query("$text AS text", Table(graph.nodes, "c"), labelled).text(),
+            graph.nodes, query,
             Bm25.Dialect(
                 columns = PostgresSql::columns,
                 count = { text, term -> "(SELECT count(*) FROM regexp_matches($text, ${PostgresSql.text(scope.bound(term))}, 'g'))" },
+                holds = { text, term -> "$text ~ ${PostgresSql.text(scope.bound(term))}" },
                 length = { "length($it)" },
                 ln = { "ln($it)" },
                 real = { "CAST($it AS double precision)" },
             ),
         )
     }
+
+    /** [word] as text a `LIKE` pattern matches as it is: its own `%`, `_` and backslash taken as themselves. */
+    private fun likeText(word: String): String = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     // ----- What a delete selects -----
 

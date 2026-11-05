@@ -565,13 +565,15 @@ internal class OracleSelect(
      */
     fun matching(keys: List<String>, query: TextQuery): String {
         val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
-        val texts = Query("c.nid, $text AS text", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!))
         return Bm25.ranked(
-            texts.text(), graph.nodes, query,
+            Query("c.nid, $text AS text", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
+            Query("$text AS text", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
+            graph.nodes, query,
             Bm25.Dialect(
                 // The row of the node table is joined back, whose document is made as the graph's vertex makes it.
                 columns = { "$it.nid, $it.labels, $it.props, $it.stamp, ${OracleSql.transform(it)} AS doc" },
                 count = { text, term -> "REGEXP_COUNT($text, ${scope.bound(term)})" },
+                holds = { text, term -> "REGEXP_LIKE($text, ${scope.bound(term)})" },
                 length = { "NVL(LENGTH($it), 0)" },
                 ln = { "LN($it)" },
                 real = { it },

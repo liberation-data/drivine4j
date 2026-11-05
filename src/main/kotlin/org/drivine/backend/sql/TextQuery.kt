@@ -25,9 +25,7 @@ internal class TextQuery private constructor(
     val excluded: List<String>,
     /**
      * The words of each term of [scored], in turn: a node whose text matches the term holds each of them,
-     * so a store may narrow what it counts to the nodes that hold them all, by an index of their text. None does
-     * since BM25's figures are over every node of the label (drivine4j#604); once they are kept between searches
-     * (drivine4j#605), Postgres's trigram index narrows by these again.
+     * so a store may narrow what it counts to the nodes that hold them all, by an index of their text.
      */
     val scoredWords: List<List<String>>,
     /**
