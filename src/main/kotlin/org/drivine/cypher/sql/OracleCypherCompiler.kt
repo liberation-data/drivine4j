@@ -757,9 +757,13 @@ class OracleCypherCompiler(
     /**
      * A list that holds a subquery is read from a lateral view first, [listView]: a subquery in `JSON_TABLE`'s argument
      * reads no table beside it in the `FROM`.
+     *
+     * The rows of a `FOREACH` or a `CALL { … }` written for each row alone ([rowAlone]) are noted ([oneRow]), and the query
+     * that reads them is planned for one row: see [oneRowPlanned].
      */
     override fun elements(json: String, alias: String): String {
         val items = "COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) $alias"
+        if (json == ROWS && rowAlone > 0) oneRow += alias
         if (!json.contains("SELECT", ignoreCase = true)) return "JSON_TABLE($json, '\$[*]' $items"
         return "${listView(json, alias, hint = "")} ${alias}_l CROSS JOIN JSON_TABLE(${alias}_l.list, '\$[*]' $items"
     }
@@ -1264,16 +1268,64 @@ class OracleCypherCompiler(
      * once for each, before it went back to the keyed plan for the fourth run and after: `MATCH (a:Big) MATCH (b:Big) WHERE
      * a = b` took 7 ms, then 1,482 ms and 1,526 ms, then 7 ms over 4,000 nodes, so each new cursor paid the cost #578 took
      * away twice (#585). The hint leaves the first run's plan as it was. It is the statement's, so the outermost query holds it.
+     *
+     * A query of a procedure that reads the rows of a `FOREACH` or a `CALL { … }` written for each row alone is planned for
+     * one row of them first: see [oneRowPlanned].
      */
     override fun planned(query: String): String {
+        val estimated = oneRowPlanned(query)
         val hints = listOfNotNull(
-            NO_JSON_TABLE_TRANSFORM.takeIf { readsCompared || graphTable.findAll(query).count() >= 2 },
-            NO_FEEDBACK.takeIf { keyed.any { it in query } },
+            NO_JSON_TABLE_TRANSFORM.takeIf { readsCompared || graphTable.findAll(estimated).count() >= 2 },
+            NO_FEEDBACK.takeIf { keyed.any { it in estimated } },
         ).joinToString(" ")
-        if (hints.isEmpty()) return query
-        val given = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
-        return if (given != null) query.replaceRange(given.range, "${given.value} $hints")
-        else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $hints */ ")
+        if (hints.isEmpty()) return estimated
+        val given = HINTED.find(estimated)?.takeIf { it.range.first == 0 }?.groups?.get(1)
+        return if (given != null) estimated.replaceRange(given.range, "${given.value} $hints")
+        else estimated.replaceFirst(Regex("^SELECT "), "SELECT /*+ $hints */ ")
+    }
+
+    /**
+     * The aliases of the `JSON_TABLE`s that read [ROWS] where a `FOREACH` or a `CALL { … }` is written for each row alone
+     * ([rowAlone]): kept as text, as [keyed] is, and looked for in the query [planned] is given.
+     */
+    private val oneRow = mutableSetOf<String>()
+
+    /**
+     * [query] with each query of it that reads the rows of a `FOREACH` or a `CALL { … }` written for each row alone
+     * ([oneRow]) told they are one row (`CARDINALITY(r 1)`), in its own query's hint, where Oracle reads it: one in the
+     * statement's outermost query left the plan as it was. Oracle estimates 8,168 rows for a `JSON_TABLE` over a variable,
+     * and joined the node table to them by a hash join over all its nodes, so a `CALL (n) { SET … RETURN n.i AS j }`
+     * read every node for each row (191 buffers a row over 10,000 nodes, 38 over 2,000), and took 20 s over 10,000 rows
+     * where it took 1 s over 2,000 (#588). Told of one row, Oracle reads each node by its key: 3 buffers a row, at any size.
+     */
+    private fun oneRowPlanned(query: String): String =
+        oneRow.fold(query) { text, alias ->
+            val read = Regex("""FROM JSON_TABLE\(${Regex.escape(ROWS)}, '\$\[\*]' COLUMNS \(item_no FOR ORDINALITY, item JSON PATH '\$'\)\) ${Regex.escape(alias)}\b""")
+            // An alias names one source of the statement, so one query reads it.
+            val select = read.find(text)?.let { owningSelect(text, it.range.first) } ?: return@fold text
+            val hint = "CARDINALITY($alias 1)"
+            val after = select + "SELECT ".length
+            if (text.startsWith("/*+ ", after)) text.indexOf(" */", after).let { end -> text.replaceRange(end, end, " $hint") }
+            else text.replaceRange(after, after, "/*+ $hint */ ")
+        }
+
+    /**
+     * Where the `SELECT` whose `FROM` is at [from] in [query] begins: read back from there, past the brackets of its select
+     * list and the quotes of its texts; null where a bracket opens before it.
+     */
+    private fun owningSelect(query: String, from: Int): Int? {
+        var depth = 0
+        var at = from - 1
+        while (at >= 0) {
+            when (query[at]) {
+                '\'' -> at = query.lastIndexOf('\'', at - 1).takeIf { it >= 0 } ?: return null
+                ')' -> depth++
+                '(' -> if (depth == 0) return null else depth--
+                'S' -> if (depth == 0 && query.startsWith("SELECT ", at) && (at == 0 || !query[at - 1].isLetterOrDigit() && query[at - 1] != '_')) return at
+            }
+            at--
+        }
+        return null
     }
 
     /**
@@ -1442,12 +1494,13 @@ class OracleCypherCompiler(
         shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
 
     /** An anonymous block, which returns its rows as an implicit result. */
-    override fun procedure(program: List<ProcedureStep>) = (listOf(
+    override fun procedure(program: List<ProcedureStep>) = keptLists(program).let { kept -> (listOf(
         "DECLARE",
         // Text, read as JSON where each parameter is read: see [propertyOf].
         "    $PARAMS CLOB := \$${Parameters.OBJECT};",
         "    $ROWS JSON;",
-        "    $OUT JSON;",
+        // A list in memory, which a row is appended to in place: see [keep].
+        "    $OUT ${if (OUT in kept) "JSON_ARRAY_T" else "JSON"};",
         "    $ROW JSON;",
         "    $VALUE JSON;",
         "    $ID NUMBER;",
@@ -1455,13 +1508,14 @@ class OracleCypherCompiler(
         "    $FOUND BOOLEAN;",
         "    $CURSOR SYS_REFCURSOR;",
         "    ${OracleTemporalSql.NOW} TIMESTAMP;",
-    ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } + listOf(
+    ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } +
+        kept.filter { it != OUT }.map { "    $it JSON_ARRAY_T;" } + listOf(
         "BEGIN",
         // The clock is read once, by a query: see [OracleTemporalSql.now].
         "    SELECT ${OracleTemporalSql.CLOCK} INTO ${OracleTemporalSql.NOW} FROM DUAL;",
         indent(statements(program).joinToString("\n")),
         "END;",
-    )).joinToString("\n")
+    )).joinToString("\n") }
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 
@@ -1503,6 +1557,16 @@ class OracleCypherCompiler(
     override fun idOf(json: String, key: String?) = "JSON_VALUE($json, ${key?.let { OracleSql.path(it) } ?: "'$'"} RETURNING NUMBER)"
 
     override fun appended(list: String, item: String) = "JSON_TRANSFORM($list, APPEND '\$' = $item)"
+
+    override fun emptyKept() = "JSON_ARRAY_T()"
+
+    /**
+     * A `JSON_ARRAY_T` is a list held in memory, which `append` adds to in place: `JSON_TRANSFORM`'s `APPEND` on a `JSON`
+     * list made the list anew for each row (#588).
+     */
+    override fun keep(list: String, item: String) = "$list.append($item);"
+
+    override fun keptRows(list: String) = "$list.to_json"
 
     override fun stripNulls(json: String) = "JSON_MERGEPATCH(JSON('{}'), $json RETURNING JSON)"
 

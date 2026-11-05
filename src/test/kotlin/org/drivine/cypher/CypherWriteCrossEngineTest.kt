@@ -580,6 +580,72 @@ abstract class CypherWriteContract {
         assertEquals(emptyList(), rs())
         assertEquals(listOf(1L, 2L), ks())
     }
+
+    @Test
+    fun `the rows a CREATE, SET or REMOVE leaves are its rows in their order, with their nulls`() {
+        // #588: each row a write loop keeps is put back in the order it was read, a null and a map of lists as they were.
+        assertEquals(
+            listOf(listOf(3L, 3L), listOf(null, null), listOf(1L, 1L), listOf(2L, 2L)),
+            query("UNWIND [3, null, 1, 2] AS i CREATE (n:CyWrite {k: i}) RETURN [i, n.k]"),
+        )
+        assertEquals(listOf(mapOf("a" to listOf(1L, null)), null), query("UNWIND [{a: [1, null]}, null] AS m CREATE (:CyWrite {m: true}) RETURN m"))
+        assertEquals(listOf(30L, 20L, 10L), query("MATCH (n:CyWrite) WHERE n.k IS NOT NULL WITH n ORDER BY n.k DESC SET n.x = n.k * 10 RETURN n.x"))
+        assertEquals(
+            listOf(listOf(1L, null), listOf(2L, null), listOf(3L, null)),
+            query("MATCH (n:CyWrite) WHERE n.k IS NOT NULL WITH n ORDER BY n.k REMOVE n.x RETURN [n.k, n.x]"),
+        )
+        assertEquals(listOf(0L), query("MATCH (n:CyNone) SET n.x = 1 RETURN count(*)"))
+        assertEquals(listOf(1L, 2L), query("UNWIND [1, 2] AS k FOREACH (x IN [k] | CREATE (:CyWrite {f: x})) RETURN k"))
+    }
+
+    @Test
+    fun `the rows a MERGE leaves are those of each row in turn, a row for each match`() {
+        // #588: a MERGE keeps a row for each node it finds, or the one it makes, the input rows in their order.
+        query("CREATE (:CyWrite {k: 7, t: 'a'}), (:CyWrite {k: 7, t: 'b'})")
+        val rows = query("UNWIND [8, 7, 8] AS k MERGE (n:CyWrite {k: k}) RETURN [k, n.t]")
+        assertEquals(listOf(8L, 7L, 7L, 8L), rows.map { (it as List<*>)[0] })
+        assertEquals(setOf("a", "b"), rows.slice(1..2).map { (it as List<*>)[1] }.toSet())
+        assertEquals(listOf(3L), query("MATCH (n:CyWrite) RETURN count(n)"))
+    }
+
+    @Test
+    fun `the rows a CALL that writes and returns gives are each row's in turn, with what it returns in order`() {
+        // #588: what a call returns for each row is kept after what it returned for the rows before it.
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(1L, 10L), listOf(2L, 2L), listOf(2L, 20L)),
+            query("UNWIND [1, 2] AS k CALL (k) { UNWIND [k, k * 10] AS j CREATE (:CyWrite {j: j}) RETURN j } RETURN [k, j]"),
+        )
+        assertEquals(listOf(listOf(1L, null), listOf(2L, null)), query("UNWIND [1, 2] AS k CALL (k) { CREATE (m:CyWrite) RETURN m.none AS z } RETURN [k, z]"))
+        assertEquals(listOf(0L), query("MATCH (n:CyNone) CALL (n) { SET n.x = 1 RETURN 1 AS one } RETURN count(*)"))
+        // A call within a call keeps its rows in a list of its own depth, and two calls in turn each make theirs anew.
+        assertEquals(
+            listOf(listOf(1L, 10L, 11L), listOf(1L, 20L, 21L), listOf(2L, 20L, 21L), listOf(2L, 40L, 41L)),
+            query(
+                "UNWIND [1, 2] AS k CALL (k) { UNWIND [k, k * 2] AS i CALL (i) { CREATE (:CyWrite {i: i}) RETURN i * 10 AS j } " +
+                    "CREATE (:CyWrite {j: j}) RETURN j } CALL (j) { CREATE (:CyWrite {j: j}) RETURN j + 1 AS l } RETURN [k, j, l]",
+            ),
+        )
+    }
+
+    @Test
+    fun `the rows a write keeps hold their values as a read gives them, exact numbers, temporals and nested maps`() {
+        // #588: a kept row goes through the store's own list (jsonb[], JSON_ARRAY_T, a list in SQLite's function) and back.
+        // Each value is read from the row's item, so the row holds it, not the statement's text. No text past 32 KB: on
+        // Oracle a read and a CREATE that return one, in a list, leave the session to crash on its next statement, as
+        // before #588's change (#599).
+        val given = mapOf(
+            "rows" to (1..2).map {
+                mapOf("i" to it, "big" to 9007199254740993L, "f" to 0.1, "m" to mapOf("a" to mapOf("b" to listOf(1, "c", null))), "d" to "2020-01-02", "dt" to "2020-01-02T03:04:05.123Z")
+            },
+        )
+        val values = "UNWIND \$rows AS r WITH r.i AS i, r.big AS big, r.f AS f, r.i / 3.0 AS third, r.m AS m, date(r.d) AS d, datetime(r.dt) AS dt "
+        val items = "[i, big, f, third, m, d.year, d.day, dt.epochMillis]"
+        val read = query("${values}RETURN $items", given)
+        assertEquals(2, read.size)
+        assertEquals(listOf(1L, 9007199254740993L, 0.1), (read[0] as List<*>).take(3))
+        assertEquals(read, query("${values}CREATE (:CyWrite {i: i}) RETURN $items", given))
+        assertEquals(read, query("${values}CALL (i, big, f, third, m, d, dt) { CREATE (:CyWrite {i: i}) RETURN $items AS row } RETURN row", given))
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {

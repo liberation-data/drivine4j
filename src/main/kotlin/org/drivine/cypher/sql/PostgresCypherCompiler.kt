@@ -560,11 +560,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun procedure(program: List<ProcedureStep>): String {
         val body = statements(program)
+        val kept = keptLists(program)
         val text = (listOf(
             "#variable_conflict use_column",
             "DECLARE",
             "    $ROWS jsonb;",
-            "    $OUT jsonb;",
+            // An array, which array_append extends in place: see [keep].
+            "    $OUT ${if (OUT in kept) "jsonb[]" else "jsonb"};",
             "    $ROW jsonb;",
             "    $VALUE jsonb;",
             "    $ID bigint;",
@@ -572,7 +574,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $FOUND boolean;",
             "    $RECORD record;",
             "    $MATCHED record;",
-        ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;", "    $CALLER$it jsonb;") } + listOf(
+        ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;", "    $CALLER$it jsonb;") } +
+            kept.filter { it != OUT }.map { "    $it jsonb[];" } + listOf(
             "BEGIN",
             indent(body.joinToString("\n")),
             "END",
@@ -614,6 +617,17 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun idOf(json: String, key: String?) = if (key != null) "CAST($json ->> ${literal(key)} AS bigint)" else "CAST($json #>> '{}' AS bigint)"
 
     override fun appended(list: String, item: String) = "($list || jsonb_build_array($item))"
+
+    override fun emptyKept() = "'{}'"
+
+    /**
+     * PL/pgSQL extends a local array in place where it is assigned `array_append` of itself, so each row is a step that
+     * does not grow with the rows kept: `||` on a `jsonb` list copied the list for each (#588). Not by `SELECT … INTO`,
+     * which is a query, and passes the array as a copy.
+     */
+    override fun keep(list: String, item: String) = "$list := array_append($list, CAST($item AS jsonb));"
+
+    override fun keptRows(list: String) = "to_jsonb($list)"
 
     override fun stripNulls(json: String) = "jsonb_strip_nulls(CAST($json AS jsonb))"
 
