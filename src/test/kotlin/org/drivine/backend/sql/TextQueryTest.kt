@@ -241,5 +241,7 @@ class TextQueryTest {
         assertEquals(listOf(listOf("m", "x")), TextQuery.parse("m²x").scoredWords)
         assertEquals(listOf(listOf("1", "2")), TextQuery.parse("1½2").scoredWords)
         assertEquals(listOf(listOf("٣٤")), TextQuery.parse("٣٤").scoredWords)
+        // A backslash before "²" makes it text, which is still between words: before, it kept "²x" a word.
+        assertEquals(listOf(listOf("m", "x")), TextQuery.parse("""m\²x""").scoredWords)
     }
 }
