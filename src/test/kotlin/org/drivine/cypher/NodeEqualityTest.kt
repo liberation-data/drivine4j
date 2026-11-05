@@ -176,9 +176,9 @@ class NodeEqualityTest {
             "MATCH (n:Big) RETURN count(*)",
             "MATCH (n:Big:Other) RETURN count(*)",
             "MATCH (a:Big) MATCH (b:Big) RETURN count(*)",
-            "MATCH (x:Small)-[:R]->(a:Big) RETURN count(*)",
-            "MATCH (n:Big) WHERE id(n) = \$id RETURN n",
-            "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i RETURN count(*)",
+            "MATCH (x:Small)-[:R]->(a) RETURN count(*)",
+            "MATCH (n) WHERE id(n) = \$id RETURN n",
+            "UNWIND \$ids AS i MATCH (n) WHERE id(n) = i RETURN count(*)",
         ).forEach { statement ->
             val sql = OracleCypherCompiler("g").compile(statement, mapOf("id" to 5, "ids" to listOf(1, 2))).sql
             assertFalse("_optimizer_use_feedback" in sql, "$statement\n$sql")
