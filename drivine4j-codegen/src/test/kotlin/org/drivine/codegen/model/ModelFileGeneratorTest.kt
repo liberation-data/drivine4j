@@ -376,7 +376,8 @@ class ModelFileGeneratorTest {
 
         file.setLastModified(0)
         generate(kotlinDomain, file = file, workDir = File(dir, "again"))
-        assertEquals(first, file.readText())
+        // It differed once in CI and in none of many runs here (#621): say where, should it again.
+        assertEquals(first, file.readText(), firstDifference(first, file.readText()))
         assertEquals(0, file.lastModified())
     }
 
@@ -540,6 +541,15 @@ class ModelFileGeneratorTest {
     fun `the module's file is found from its main sources`() {
         assertEquals(File("/repo/app/.drivine/model.json"), ModelFileGenerator.mainModuleFile(File("/repo/app/src/main/kotlin/a/B.kt")))
         assertNull(ModelFileGenerator.mainModuleFile(File("/repo/app/src/test/kotlin/a/B.kt")))
+    }
+
+    /** Where [again] first differs from [first], with the lines around it in each. */
+    private fun firstDifference(first: String, again: String): String {
+        val a = first.lines()
+        val b = again.lines()
+        val at = a.indices.firstOrNull { it >= b.size || a[it] != b[it] } ?: a.size
+        fun around(lines: List<String>) = lines.subList(maxOf(0, at - 3), minOf(lines.size, at + 4)).joinToString("\n")
+        return "The second model file differs at line ${at + 1}.\nFirst:\n${around(a)}\nSecond:\n${around(b)}"
     }
 
     private fun generate(vararg sources: SourceFile, file: File = File(dir, "model.json"), workDir: File = File(dir, "work")): JsonNode {
