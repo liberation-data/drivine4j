@@ -17,6 +17,8 @@ import org.drivine.cypher.ast.RemoveItem
 import org.drivine.cypher.ast.SetItem
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import org.drivine.schema.ddl.SchemaDdl
+import org.drivine.schema.ddl.SchemaDdlResult
 import org.slf4j.LoggerFactory
 import java.math.RoundingMode
 
@@ -117,9 +119,19 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     private var probing = false
 
-    /** The statement [cypher], with its parameters' values [parameters], as SQL. */
-    fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher =
-        compile(CypherReader.read(cypher), parameters)
+    /**
+     * The statement [cypher], with its parameters' values [parameters], as SQL. Neo4j schema DDL is no query: one a SQL
+     * store cannot honour is refused as [SchemaDdl] refuses it, and the rest as a schema command, which a
+     * PersistenceManager runs through the schema machinery (see [org.drivine.schema.ddl.SchemaCommands]).
+     */
+    fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher {
+        when (val ddl = SchemaDdl.translate(cypher)) {
+            is SchemaDdlResult.NotDdl -> {}
+            is SchemaDdlResult.Refused -> throw DrivineException(ddl.message)
+            else -> throw DrivineException(SCHEMA_COMMAND)
+        }
+        return compile(CypherReader.read(cypher), parameters)
+    }
 
     /**
      * Whether the statement's parameters hold NaN or an infinity, at any depth: set as [compile] starts. A store whose JSON holds
@@ -5564,6 +5576,9 @@ abstract class SqlCypherCompiler(graph: String) {
     private enum class Kind { NODE, RELATIONSHIP, VALUE, NODES, RELATIONSHIPS, PATH }
 
     protected companion object {
+        /** Why a schema command is not compiled: it is no query, and a PersistenceManager runs it. */
+        const val SCHEMA_COMMAND = "The statement is a schema command, which is not compiled to SQL: run it through a PersistenceManager, which applies it to the store's schema."
+
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
         const val PENDING = "__with__"
 
