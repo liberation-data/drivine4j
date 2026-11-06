@@ -1,6 +1,8 @@
 package org.drivine.cypher.sql
 
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.JsonNodeFactory
+import com.fasterxml.jackson.databind.node.NullNode
 import org.drivine.DrivineException
 import org.drivine.cypher.CypherReader
 import org.drivine.cypher.ast.Clause
@@ -391,10 +393,33 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun hasLabels(labels: String, all: List<String>): String = all.joinToString(" AND ") { hasLabel(labels, it) }
 
     /**
-     * A test an index answers, to stand beside the comparison of the [property], read as [propertyOf]
-     * gives it, with the [value], a text or a truth value; null where there is none.
+     * The node's properties [props] a compared property is read from as [propertyOf] gives it, the property's [key], and the
+     * [labels] the pattern names for the node: what a store whose index is over a label's nodes, as Oracle's, needs to write
+     * the index's own expression (#617). [scalar] says the value it is compared with is known to be no list or map, as what
+     * each row of a list the statement is given holds at the key it is read from is, nor a text the index doesn't hold ([indexHolds]): a
+     * store whose index holds no list need not then let one through.
      */
-    protected open fun indexedEquality(property: String, value: String): String? = null
+    protected class IndexedProperty(val props: String, val key: String, val labels: List<String>, val scalar: Boolean = false)
+
+    /**
+     * A test an index answers, to stand beside the comparison of the [property], read as [propertyOf]
+     * gives it, with the [value], a text or a truth value; null where there is none. [of] is the property's node, where it is
+     * one a pattern names.
+     */
+    protected open fun indexedEquality(property: String, value: String, of: IndexedProperty? = null): String? = null
+
+    /**
+     * As [indexedEquality], for a [value] whose kind isn't known as the statement compiles, as an unwound row's: a test an
+     * index answers that holds wherever the comparison could, so it leaves out no row the comparison keeps. A number's text
+     * differs where its JSON doesn't (`1` and `1.0`). Null where the store has none (#617).
+     */
+    protected open fun indexedEqualityOfAny(property: String, value: String, of: IndexedProperty? = null, scalar: Boolean = false): String? = null
+
+    /**
+     * Whether the store's index holds the value [given], a text or a truth value, as a text a test of [indexedEquality] finds:
+     * where it doesn't, the comparison stands alone. Oracle's reads an empty text, and one past 4,000 bytes, as null (#617).
+     */
+    protected open fun indexHolds(given: Any): Boolean = true
 
     /**
      * The JSON value [json] as a node's or a relationship's key column compares with it: the number it is, a whole one where
@@ -1563,6 +1588,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             select.source(elementsOf(list, items, name))
             select.unwound[item(name)] = name
+            givenTree(unwind.list)?.let { unwoundGiven[item(name)] = it }
             // An item of a list that holds no null holds none, nor is JSON's null; of a list of texts, or of a text, is a text. An item
             // of a list written whose every item is of one known kind is of that kind, as Neo4j types it.
             select.bind(
@@ -1626,7 +1652,19 @@ abstract class SqlCypherCompiler(graph: String) {
                     val test = if (select.afterGrouping) groupedLabels(value.labels, node.labels) else hasLabels(value.labels, node.labels)
                     select.labelTest(value, node.labels, test)
                 }
-                node.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
+                node.properties?.let { properties ->
+                    indexedEmitted = false
+                    // Not after a WITH that groups: Oracle's index expression tests the labels as the index over them does,
+                    // which crashed the session there (#601, see groupedLabels).
+                    val matched = propertiesMatch(value.props, properties, select.scope, if (select.afterGrouping) emptyList() else node.labels)
+                    select.where += matched
+                    if (indexedEmitted && node.labels.isNotEmpty() && select.labelled(value.nid) != null) {
+                        select.relabel(value.nid, ::keyedLabels)
+                        // An unwound list whose item is compared so is planned as a few rows, as one an id is set equal to is
+                        // (keyedById): Oracle takes a JSON_TABLE to give 8,168, and hashed every node to them (#617).
+                        for ((item, name) in select.unwound) if (item in matched) fewRows(name)?.let(select.hints::add)
+                    }
+                }
                 if (node.labels.isNotEmpty() || node.properties != null) anchor(select, value.nid)
                 value
             }
@@ -1733,7 +1771,7 @@ abstract class SqlCypherCompiler(graph: String) {
             if (node.labels.isEmpty() && properties == null) return null
             return { row ->
                 (listOfNotNull(node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) }) +
-                    listOfNotNull(properties?.let { propertiesMatch("$row.props", it, before) })).joinToString(" AND ")
+                    listOfNotNull(properties?.let { propertiesMatch("$row.props", it, before, node.labels) })).joinToString(" AND ")
             }
         }
 
@@ -1794,7 +1832,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 inner.nodes.zip(rows).flatMap { (node, row) ->
                     listOfNotNull(
                         node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) },
-                        node.properties?.let { propertiesMatch("$row.props", it, within) },
+                        node.properties?.let { propertiesMatch("$row.props", it, within, node.labels) },
                     )
                 } + inner.relationships.zip(links).flatMap { (relationship, edge) ->
                     listOfNotNull(types("$edge.type", relationship.types), relationship.properties?.let { propertiesMatch("$edge.props", it, within) })
@@ -1958,12 +1996,16 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         )
 
-        /** A pattern's properties: each key equal to its value, or every key of a parameter's map. */
-        private fun propertiesMatch(props: String, properties: Expression, scope: Map<String, Value>): String = when (properties) {
+        /** A pattern's properties: each key equal to its value, or every key of a parameter's map. [labels] are its node's, where it is a node. */
+        private fun propertiesMatch(props: String, properties: Expression, scope: Map<String, Value>, labels: List<String> = emptyList()): String = when (properties) {
             is Expression.MapLiteral -> properties.entries.joinToString(" AND ") { (key, value) ->
                 // A property holds no null, as a graph engine stores none in a list.
                 val compiled = expression(value, scope)
-                equality(Value.Json(propertyOf(props, key), flat = true), compiled, value, scalar(value, scope) || isFlat(compiled))
+                equality(
+                    Value.Json(propertyOf(props, key), flat = true), compiled, value, scalar(value, scope) || isFlat(compiled),
+                    // Not [scalar]: a text the statement works out may be one the index doesn't hold ([indexHolds]).
+                    of = IndexedProperty(props, key, labels, givenRowsScalar(value, scope)),
+                )
             }
             else -> containsAll(props, comparable(json(expression(properties, scope))))
         }
@@ -4322,7 +4364,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.EQUALS, Operator.NOT_EQUALS -> {
                     val plain = plain(binary.left, binary.right, left, right, scope)
                     val equal = (if (plain) null else givenItemwise(binary.left, left, binary.right, right))
-                        ?: equality(left, right, binary.right, plain, stored(binary.left, scope))
+                        ?: equality(left, right, binary.right, plain, stored(binary.left, scope), scalarRows = givenRowsScalar(binary.right, scope))
                     val keyed = if (conjunct && binary.operator == Operator.EQUALS) idEquality(binary, left, right, scope) else null
                     // A node equal to a node, where the row must pass that, may be read by its key: see [readByKey].
                     if (conjunct && binary.operator == Operator.EQUALS && left is Value.Node && right is Value.Node) comparedKeys.pairs += left.nid to right.nid
@@ -4490,7 +4532,15 @@ abstract class SqlCypherCompiler(graph: String) {
          * store, which is SQL's null where it is not there, and so needs no test of its own beside such a value. Where neither
          * is [plain], either may hold a null: see [plain].
          */
-        private fun equality(left: Value, right: Value, written: Expression? = null, plain: Boolean = true, stored: Boolean = true): String {
+        private fun equality(
+            left: Value,
+            right: Value,
+            written: Expression? = null,
+            plain: Boolean = true,
+            stored: Boolean = true,
+            of: IndexedProperty? = null,
+            scalarRows: Boolean = false,
+        ): String {
             (temporalBinary(Operator.EQUALS, left, right) as? Value.Bool)?.let { return it.sql }
             // Through the store's key comparison: on Oracle, a plain `nid = nid` lets it drop the later node's join (#576).
             if (left is Value.Node && right is Value.Node) return sameKey(left.nid, right.nid)
@@ -4507,12 +4557,27 @@ abstract class SqlCypherCompiler(graph: String) {
             // Either may hold a null, which makes the comparison null where no item or entry differs.
             if (!plain) return nullableEquals(a, b, ::jsonEquals)
             val given = written?.let(::given)
-            val indexed = if (given is String || given is Boolean) indexedEquality(a, b) else null
+            // A value the statement is given is known as it compiles; one it isn't, as an unwound row's, may be of any kind,
+            // and is compared with the index's text as each of its kinds can be: else the join reads every node for each row (#617).
+            val indexed = when {
+                (given is String || given is Boolean) && indexHolds(given) -> indexedEquality(a, b, of)
+                given == null && written != null && !givenAsWritten(written) -> indexedEqualityOfAny(a, b, of, of?.scalar == true || scalarRows)
+                else -> null
+            }
             // Null is equal to nothing, itself included: the comparison is null, as in Cypher. A value the statement
             // is given that is not null needs no test of its own, and a property that is not there is SQL's null.
             val equal = if (given != null) givenEquals(a, b, given).let { if (stored) it else "CASE WHEN NOT ${isJsonNull(a)} THEN $it END" } else sharedCompared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
+            if (indexed != null) indexedEmitted = true
             return if (indexed != null) "($indexed AND $equal)" else equal
         }
+
+        /**
+         * Whether an [equality] since this was last set false wrote a test an index answers beside its comparison: the node a
+         * pattern's properties are then compared for is found by that index, and is tested for its labels by their text, as a
+         * node read by its key is ([keyedLabels]). On Oracle the test the index over labels answers had it read every node of the
+         * label, and the property only as a filter on each, even where the property's index was there (#617).
+         */
+        private var indexedEmitted = false
 
         /**
          * Whether the sides [leftWritten] and [rightWritten] of a comparison, compiled as [left] and [right], compare as JSON, as
@@ -4589,6 +4654,46 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private val parameterTrees = mutableMapOf<String, JsonNode?>()
+
+        /**
+         * The list each item an `UNWIND` reads is taken from, by the item's SQL, where the statement gives the whole of it: a
+         * parameter, or a list it writes out of literals, maps, lists and parameters, as APOC's export writes its rows. What
+         * [givenRowsScalar] reads.
+         */
+        private val unwoundGiven = mutableMapOf<String, JsonNode>()
+
+        /** [expression] as the JSON it is, where the statement gives the whole of it ([unwoundGiven]); null where it doesn't. */
+        private fun givenTree(expression: Expression): JsonNode? = when (expression) {
+            is Expression.Parameter -> parameterTree(expression.name) ?: NullNode.instance
+            is Expression.Literal -> Neo4jObjectMapper.instance.valueToTree(expression.value)
+            is Expression.ListLiteral -> JsonNodeFactory.instance.arrayNode().apply { for (item in expression.items) add(givenTree(item) ?: return null) }
+            is Expression.MapLiteral -> JsonNodeFactory.instance.objectNode().apply { for ((key, value) in expression.entries) set<JsonNode>(key, givenTree(value) ?: return null) }
+            else -> null
+        }
+
+        /**
+         * Whether [expression] is an item unwound from a list the statement gives ([unwoundGiven]), as `id` of `UNWIND $ids AS id`,
+         * a key of one, as `row.s` of `UNWIND $rows AS row`, or a key of a map at one, as `row.start._id`, at which no
+         * item of the list it is bound to holds a list or a map, or a text the store's index doesn't hold ([indexHolds]): the value
+         * is then no list or map, though it may be null (#617). Nor where a key is read of a list, which Neo4j refuses: Oracle's
+         * path reads the key of each of its items, so `row.a.b` of `{a: [{b: [1, 2]}]}` is `[1, 2]` there.
+         */
+        private fun givenRowsScalar(expression: Expression, scope: Map<String, Value>): Boolean {
+            // The keys, outermost first, down to the unwound item: `row.start._id` reads `_id` of `start`.
+            val keys = ArrayDeque<String>()
+            var subject = expression
+            while (subject is Expression.Property) {
+                keys.addFirst(subject.key)
+                subject = subject.subject
+            }
+            if (subject !is Expression.Variable) return false
+            val rows = (scope[subject.name] as? Value.Json)?.let { unwoundGiven[it.sql] } ?: return false
+            val items = if (rows.isArray) rows.toList() else listOf(rows)
+            return items.none { item ->
+                keys.fold<String, JsonNode?>(item) { node, key -> if (node?.isArray == true) return false else node?.get(key) }
+                    ?.let { it.isContainerNode || it.isTextual && !indexHolds(it.textValue()) } == true
+            }
+        }
 
         /** Whether the JSON [node] holds no null in a list or a map, at any depth. */
         private fun holdsNoNull(node: JsonNode): Boolean = !node.isContainerNode || node.all { !it.isNull && holdsNoNull(it) }
@@ -4875,6 +4980,10 @@ abstract class SqlCypherCompiler(graph: String) {
             if (values.none { identityOf(it) != null }) return null
             return comparable(Value.Json(build(values.map { identityOf(it) ?: json(it).sql }), ordered = true))
         }
+
+        /** Whether [expression] is a value the statement gives, as [given] reads it, whatever it is: written, a parameter or a parameter's key. */
+        private fun givenAsWritten(expression: Expression): Boolean = expression is Expression.Literal || expression is Expression.Parameter ||
+            (expression is Expression.Property && expression.subject is Expression.Parameter)
 
         /** The value [expression] is where the statement gives it: written, or bound to a parameter or a parameter's key; null where it is not given, or is null. */
         private fun given(expression: Expression): Any? = when (expression) {
