@@ -217,22 +217,11 @@ internal class ModelReader {
      * The class's labels and those of every `@NodeFragment` it extends or implements, its own first,
      * then the inherited ones breadth first, as `FragmentModel.labelsFor` gathers them.
      */
-    private fun labels(decl: KSClassDeclaration): List<String> {
-        val labels = LinkedHashSet<String>()
-        val visited = mutableSetOf<String>()
-        val queue = ArrayDeque(listOf(decl))
-        while (queue.isNotEmpty()) {
-            val current = queue.removeFirst()
-            if (!visited.add(id(current))) continue
-            current.drivine("NodeFragment")?.let { labels.addAll(it.stringList("labels")) }
-            current.superTypes.mapNotNull { resolveAlias(it.resolve().declaration) as? KSClassDeclaration }
-                .filter { it.qualifiedName?.asString() != "kotlin.Any" }
-                // The superclass before the interfaces, as the JVM lists them, whatever order the source has.
-                .sortedBy { it.classKind == ClassKind.INTERFACE }
-                .forEach { queue.add(it) }
-        }
-        return labels.toList()
-    }
+    private fun labels(decl: KSClassDeclaration): List<String> =
+        (sequenceOf(decl) + supertypes(decl))
+            .flatMap { it.drivine("NodeFragment")?.stringList("labels").orEmpty() }
+            .distinct()
+            .toList()
 
     /**
      * Whether [prop] is the node's id: `@NodeId` on it, its getter, or on the property of that name
@@ -251,13 +240,17 @@ internal class ModelReader {
         }
     }
 
-    /** Every class and interface [decl] extends or implements, however far up, but `Any`. */
+    /**
+     * Every class and interface [decl] extends or implements, however far up, but `Any`: breadth first, each type's
+     * superclass before its interfaces, as the JVM lists them, whatever order the source has.
+     */
     private fun supertypes(decl: KSClassDeclaration): Sequence<KSClassDeclaration> = sequence {
         val visited = mutableSetOf(id(decl))
         val queue = ArrayDeque(listOf(decl))
         while (queue.isNotEmpty()) {
             queue.removeFirst().superTypes
                 .mapNotNull { resolveAlias(it.resolve().declaration) as? KSClassDeclaration }
+                .sortedBy { it.classKind == ClassKind.INTERFACE }
                 .filter { it.qualifiedName?.asString() != "kotlin.Any" && visited.add(id(it)) }
                 .forEach { yield(it); queue.add(it) }
         }
