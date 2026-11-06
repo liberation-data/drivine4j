@@ -272,7 +272,7 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   indexed, searched with `IN` or iterated, its items are the nodes themselves too, so two with equal properties differ.
   `CALL db.labels()` and `CALL db.relationshipTypes()` compile, alone or within a query with `YIELD`, and give each
   label and type something has now, read from the nodes and relationships; any other procedure is refused. A parameter
-  may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
+  or a variable may be named by a keyword (`$limit`, `MATCH (end)`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
   are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
