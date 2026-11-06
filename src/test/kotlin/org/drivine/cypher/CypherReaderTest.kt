@@ -6,6 +6,7 @@ import org.drivine.cypher.ast.Expression
 import org.drivine.cypher.ast.Expression.Binary.Operator
 import org.drivine.cypher.ast.NodePattern
 import org.drivine.cypher.ast.Pattern
+import org.drivine.cypher.ast.Projection
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.cypher.ast.RelationshipPattern.Direction
 import org.drivine.cypher.ast.RemoveItem
@@ -336,5 +337,112 @@ class CypherReaderTest {
         )
         val syntax = assertThrows<DrivineException> { CypherReader.read("MATCH (n RETURN n") }.message!!
         assertTrue(syntax.startsWith("The statement is not Cypher, at line 1, column "), syntax)
+    }
+
+    @Test
+    fun `what is still not cypher, now a keyword may name a variable, is refused where it stops being cypher`() {
+        listOf(
+            "MATCH (n RETURN n" to "line 1, column 10",
+            "RETURN CASE WHEN 1 THEN 2" to "line 1, column 26",
+            "RETURN CASE WHEN true THEN end" to "line 1, column 31",
+            "MATCH (n) RETURN n ORDER" to "line 1, column 25",
+            "MATCH (n)\nWITH n\nRETURN n ORDER BY" to "line 3, column 18",
+        ).forEach { (cypher, at) ->
+            val syntax = assertThrows<DrivineException>(cypher) { CypherReader.read(cypher) }.message!!
+            assertTrue(syntax.startsWith("The statement is not Cypher, at $at: "), syntax)
+        }
+    }
+
+    @Test
+    fun `a keyword names a variable as Neo4j takes it, and a CASE still ends at its END`() {
+        // APOC's export names a relationship's nodes start and end (#635).
+        val apoc = CypherReader.read(
+            "UNWIND [{start: {_id: 1}, end: {_id: 2}}] AS row MATCH (start:L {id: row.start._id}) MATCH (end:L {id: row.end._id}) CREATE (start)-[r:T]->(end)"
+        )
+        val (_, _, end, create) = apoc.clauses
+        assertEquals("end", (end as Clause.Match).patterns.single().nodes.single().variable)
+        assertEquals(listOf("start", "end"), (create as Clause.Create).patterns.single().nodes.map { it.variable })
+        assertEquals(
+            Expression.Case(null, listOf(Expression.Variable("when") to Expression.Variable("end")), Expression.Variable("else")),
+            returned("WITH 1 AS when, 2 AS end, 3 AS else RETURN CASE WHEN when THEN end ELSE else END"),
+        )
+        for (word in listOf("match", "MATCH", "order", "return", "case", "distinct", "not", "in", "is", "as", "all", "call", "yield", "skip", "limit", "union", "exists")) {
+            assertEquals(Expression.Variable(word), returned("UNWIND [1] AS $word RETURN $word"), word)
+        }
+        assertEquals(Expression.Variable("desc"), (CypherReader.read("UNWIND [1] AS desc RETURN desc ORDER BY desc DESC").clauses.last() as Clause.Return).projection.items.single().expression)
+        // As written, so End is another variable than end, and between backticks the same.
+        assertEquals("End", (CypherReader.read("MATCH (End) RETURN end").clauses.first() as Clause.Match).patterns.single().nodes.single().variable)
+        assertEquals("end", (CypherReader.read("MATCH (`end`) RETURN end").clauses.first() as Clause.Match).patterns.single().nodes.single().variable)
+        // A value stays one.
+        assertEquals(Expression.Literal(null), returned("RETURN null"))
+        assertEquals(Expression.Literal(true), returned("RETURN true"))
+        assertEquals(
+            Expression.Unary(Expression.Unary.Operator.NOT, Expression.Variable("x")),
+            returned("WITH true AS x RETURN NOT x"),
+        )
+    }
+
+    @Test
+    fun `a keyword names a variable wherever a variable stands`() {
+        val v = Expression::Variable
+        val (_, foreach) = CypherReader.read("UNWIND [1] AS end FOREACH (end IN [1] | CREATE (:A {v: end}))").clauses
+        assertEquals("end", (foreach as Clause.Foreach).variable)
+        assertEquals(listOf("end", "case"), (CypherReader.read("WITH 1 AS end, 2 AS case CALL (end, case) { RETURN end + case AS e } RETURN e").clauses[1] as Clause.Call).imports)
+        val (_, set, remove) = CypherReader.read("MATCH (end) SET end.x = 1, end:L, end += {a: 1}, end = {} REMOVE end.x, end:L").clauses
+        assertEquals(
+            listOf(SetItem.Property("end", "x", Expression.Literal(1L)), SetItem.Labels("end", listOf("L")), SetItem.Add("end", Expression.MapLiteral(listOf("a" to Expression.Literal(1L)))), SetItem.Replace("end", Expression.MapLiteral(emptyList()))),
+            (set as Clause.Set).items,
+        )
+        assertEquals(listOf(RemoveItem.Property("end", "x"), RemoveItem.Labels("end", listOf("L"))), (remove as Clause.Remove).items)
+        assertEquals(v("end"), returned("CALL db.labels() YIELD label AS end RETURN end"))
+        val path = CypherReader.read("MATCH end = (a)-[case]->(b) RETURN end").clauses.first() as Clause.Match
+        assertEquals("end", path.patterns.single().variable)
+        assertEquals("case", path.patterns.single().relationships.single().variable)
+        assertEquals(Expression.ListComprehension("end", v("l"), Expression.Binary(Operator.GREATER_THAN, v("end"), Expression.Literal(0L)), v("end")), returned("WITH [1] AS l RETURN [end IN l WHERE end > 0 | end]"))
+        assertEquals(Expression.Quantifier(Expression.Quantifier.Kind.ALL, "all", v("l"), v("all")), returned("WITH [true] AS l RETURN all(all IN l WHERE all)"))
+        assertEquals(Expression.Reduce("end", Expression.Literal(0L), "in", v("l"), Expression.Binary(Operator.ADD, v("end"), v("in"))), returned("WITH [1] AS l RETURN reduce(end = 0, in IN l | end + in)"))
+        assertEquals(Expression.MapProjection("end", listOf(Expression.MapProjection.Element.Selected("name"))), returned("MATCH (end) RETURN end {.name}"))
+        assertEquals(
+            Expression.MapProjection("n", listOf(Expression.MapProjection.Element.Variable("end"), Expression.MapProjection.Element.Entry("case", v("end")))),
+            returned("MATCH (n), (end) RETURN n {end, case: end}"),
+        )
+        val comprehension = returned("MATCH (a) RETURN [order = (a)-[case]->(end) WHERE end.x = 1 | end.name]") as Expression.PatternComprehension
+        assertEquals("order", comprehension.pattern.variable)
+        assertEquals(listOf("a", "end"), comprehension.pattern.nodes.map { it.variable })
+        assertEquals("case", comprehension.pattern.relationships.single().variable)
+    }
+
+    @Test
+    fun `a keyword that names a variable beside the same keyword reads as Neo4j reads it`() {
+        val v = Expression::Variable
+        fun projection(cypher: String) = (CypherReader.read(cypher).clauses.last() as Clause.Return).projection
+        assertEquals(Projection(false, false, listOf(Projection.Item(v("distinct"), "distinct")), emptyList(), null, null), projection("UNWIND [1] AS distinct RETURN distinct"))
+        assertEquals(Projection(true, false, listOf(Projection.Item(v("distinct"), "distinct")), emptyList(), null, null), projection("UNWIND [1] AS distinct RETURN DISTINCT distinct"))
+        assertEquals(listOf(Projection.SortItem(v("desc"), true)), projection("UNWIND [1] AS desc RETURN desc ORDER BY desc DESC").orderBy)
+        assertEquals(listOf(Projection.SortItem(v("asc"), false)), projection("UNWIND [1] AS asc RETURN asc ORDER BY asc").orderBy)
+        assertEquals(listOf(Projection.SortItem(v("order"), false)), (CypherReader.read("UNWIND [1] AS order WITH order ORDER BY order RETURN order").clauses[1] as Clause.With).projection.orderBy)
+        val paged = projection("UNWIND [1] AS skip WITH skip AS limit RETURN limit SKIP 0 LIMIT 1")
+        assertEquals(Expression.Literal(0L) to Expression.Literal(1L), paged.skip to paged.limit)
+        // count(distinct) is count() of DISTINCT and nothing, as it was before a keyword could name a variable.
+        assertEquals(Expression.Function("count", true, emptyList()), returned("UNWIND [1] AS x RETURN count(distinct)"))
+        assertEquals(Expression.Function("count", true, listOf(v("distinct"))), returned("UNWIND [1] AS distinct RETURN count(DISTINCT distinct)"))
+        val where = CypherReader.read("MATCH (where) WHERE where.x = 1 RETURN where").clauses.first() as Clause.Match
+        assertEquals("where", where.patterns.single().nodes.single().variable)
+        assertEquals(Expression.Binary(Operator.EQUALS, Expression.Property(v("where"), "x"), Expression.Literal(1L)), where.where)
+        assertEquals(Expression.Case(v("end"), listOf(Expression.Literal(1L) to v("end")), v("then")), returned("WITH 1 AS end, 0 AS then RETURN CASE end WHEN 1 THEN end ELSE then END"))
+        val exists = projection("UNWIND [1] AS exists RETURN exists, EXISTS { MATCH (exists) } AS e").items.map { it.expression }
+        assertEquals(v("exists"), exists[0])
+        assertEquals(Expression.Subquery.Kind.EXISTS, (exists[1] as Expression.Subquery).kind)
+        val all = projection("UNWIND [[true]] AS all RETURN all, all(x IN all WHERE x) AS a").items.map { it.expression }
+        assertEquals(listOf(v("all"), Expression.Quantifier(Expression.Quantifier.Kind.ALL, "x", v("all"), v("x"))), all)
+        val union = CypherReader.read("UNWIND [1] AS union RETURN union UNION ALL UNWIND [2] AS all RETURN all AS union UNION RETURN 3 AS union")
+        assertEquals(listOf(true, false), union.unions.map { it.all })
+        assertEquals(v("all"), (union.unions.first().clauses.last() as Clause.Return).projection.items.single().expression)
+        assertEquals(Expression.Unary(Expression.Unary.Operator.NOT, v("not")), returned("UNWIND [true] AS not RETURN NOT not"))
+        assertEquals(Expression.Unary(Expression.Unary.Operator.IS_NOT_NULL, v("is")), returned("UNWIND [1] AS is RETURN is IS NOT NULL"))
+        assertEquals(Expression.Binary(Operator.IN, Expression.Literal(1L), v("in")), returned("UNWIND [[1]] AS in RETURN 1 IN in"))
+        val merge = CypherReader.read("MERGE (on:A) ON CREATE SET on.a = 1 ON MATCH SET on.b = 2").clauses.single() as Clause.Merge
+        assertEquals(listOf(SetItem.Property("on", "a", Expression.Literal(1L))) to listOf(SetItem.Property("on", "b", Expression.Literal(2L))), merge.onCreate to merge.onMatch)
+        assertEquals(Clause.Delete(true, listOf(v("detach"))), CypherReader.read("MATCH (detach) DETACH DELETE detach").clauses.last())
     }
 }
