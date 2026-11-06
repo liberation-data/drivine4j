@@ -86,6 +86,13 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a star inside quotes is text, as Lucene's parser reads it, so a phrase ending in one is the phrase without it`() {
+        // drivine4j#622: "of sou*" is the phrase "of sou", which "a graph of soup" doesn't hold, as on Neo4j.
+        assertEquals(emptyList(), search("\"of sou*\"").map { it.value.id })
+        assertEquals(listOf("rare"), search("\"of soup*\"").map { it.value.id })
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })

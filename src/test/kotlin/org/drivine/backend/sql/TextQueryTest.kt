@@ -112,7 +112,8 @@ class TextQueryTest {
         assertEquals("({kotlin}) NOT {python}", TextQuery.parse("kotlin -python").oracleText)
         assertEquals("({kotlin}) NOT {python} NOT {rust}", TextQuery.parse("kotlin NOT python !rust".replace("!rust", "! rust")).oracleText)
         assertEquals("(pre%)", TextQuery.parse("pre*").oracleText)
-        assertEquals("({graph} pre%)", TextQuery.parse("\"graph pre*\"").oracleText)
+        // A `*` inside quotes is text, as Lucene's parser reads it: the phrase "graph pre" (drivine4j#622).
+        assertEquals("({graph pre})", TextQuery.parse("\"graph pre*\"").oracleText)
     }
 
     @Test
@@ -230,5 +231,15 @@ class TextQueryTest {
         val query = TextQuery.parse("\"graph ".repeat(50_000))
 
         assertEquals(50_000, query.scored.size)
+    }
+
+    @Test
+    fun `a star inside quotes is text, as Lucene's parser reads it, and outside them the start of a word`() {
+        // drivine4j#622: Neo4j's parser hands a quoted text to its analyzer whole, which drops the `*`.
+        val quoted = TextQuery.parse("\"of sou*\"")
+        assertEquals(listOf(listOf("of", "sou")), quoted.scoredWords)
+        assertEquals("(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])", quoted.scored.single())
+        assertEquals("(^|[^[:alnum:]_])sou", TextQuery.parse("sou*").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw", TextQuery.parse("+kiw*").scored.single())
     }
 }
