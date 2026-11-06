@@ -9,6 +9,8 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.sqlite.SqliteTestDatabase
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -93,18 +95,32 @@ abstract class CompiledWriteLoopTimeContract {
 }
 
 /**
- * On Postgres the tables are vacuumed while empty first, as autovacuum leaves a store's tables once they have been
- * emptied (#609): their statistics then say they have no rows, where a table never vacuumed is taken to have ten pages.
+ * On Postgres the edge table is vacuumed while empty first, as autovacuum leaves a store's tables once they have been
+ * emptied (#609): its statistics then say it has no rows, where a table never vacuumed is taken to have ten pages.
  * The `MERGE` read its pattern by a plan PL/pgSQL made for the empty edge table, a scan of the whole table, and kept it
  * while the loop filled the table: 28.6 s over 20,000 rows, where it took 0.4 s on a table never vacuumed.
+ *
+ * The node table is analyzed just after it was emptied, not vacuumed, as an autoanalyze that runs just after the `DELETE`
+ * leaves it: its pages of dead rows taken to hold one row (#631, drivine-python#430). The `CALL`'s per-row read of its
+ * node was then planned to materialize a scan of the whole primary key index and filter it for the row's node, so it was
+ * quadratic: 91 s over 20,000 rows, and 72 s to 142 s in drivine-python's CI. Materialization is now off in the loop
+ * too. So that the state lasts until the `CALL`, as it did there, the node table is not autovacuumed while the test
+ * runs: an autoanalyze of the rows the writes made, landing before it, put the statistics right, and the test passed
+ * without the fix. The tables are truncated first, so they start as small as in a database new to the test.
  */
 @PostgresTests
 class CompiledWriteLoopTimePostgresTest : CompiledWriteLoopTimeContract() {
     override val pm = PostgresTestDatabase.graphManager("cy_loop")
 
+    @BeforeEach
+    fun truncated() = PostgresTestDatabase.run("TRUNCATE cy_loop_edge, cy_loop_node", "ALTER TABLE cy_loop_node SET (autovacuum_enabled = off)")
+
+    @AfterEach
+    fun autovacuumed() = PostgresTestDatabase.run("ALTER TABLE cy_loop_node RESET (autovacuum_enabled)")
+
     override fun clear() = PostgresTestDatabase.clear(pm)
 
-    override fun emptied() = PostgresTestDatabase.vacuum("cy_loop")
+    override fun emptied() = PostgresTestDatabase.run("ANALYZE cy_loop_node", "VACUUM ANALYZE cy_loop_edge")
 }
 
 /**
