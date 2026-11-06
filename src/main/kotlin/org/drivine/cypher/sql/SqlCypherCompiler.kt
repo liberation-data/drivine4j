@@ -244,6 +244,13 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun lateralColumn(name: String, column: String, json: Boolean) = "$name.$column"
 
     /**
+     * The join of the node or relationship table [table], as [row], to the one row whose key column [key] is [id]: how a row
+     * of a write's or a list's rows reads its node or relationship back by its id. A plain `LEFT JOIN`; Postgres probes the
+     * key for each row instead, as a plain join is planned by the table's statistics (#644).
+     */
+    protected open fun keyJoin(table: String, row: String, key: String, id: String): String = "LEFT JOIN $table $row ON $row.$key = $id"
+
+    /**
      * The query of a `CALL { … }`, [query], as the row that reads what it returns joins it: kept apart from that
      * row's query, where a store would merge the two and read a value bound in the row wrongly.
      */
@@ -1585,10 +1592,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 select.source(elements(list.ids, name))
                 val row = alias(if (list.relationships) "e" else "n")
                 if (list.relationships) {
-                    select.join("LEFT JOIN $edges $row ON $row.eid = ${idOf(item(name), null)}")
+                    select.join(keyJoin(edges, row, "eid", idOf(item(name), null)))
                     select.bind(unwind.variable, Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props"))
                 } else {
-                    select.join("LEFT JOIN $nodes $row ON $row.nid = ${idOf(item(name), null)}")
+                    select.join(keyJoin(nodes, row, "nid", idOf(item(name), null)))
                     select.bind(unwind.variable, Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp"))
                 }
                 select.order += itemNo(name) to false
@@ -1914,7 +1921,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 nodes to json(Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")).sql
             }
             val id = if (entities.relationships) "eid" else "nid"
-            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, itemNo(u))} FROM ${elements(ids, u)} LEFT JOIN $table $row ON $row.$id = ${idOf(item(u), null)}) END"
+            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, itemNo(u))} FROM ${elements(ids, u)} ${keyJoin(table, row, id, idOf(item(u), null))}) END"
         }
 
         /**
@@ -1936,10 +1943,10 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun entityItems(ids: String, relationships: Boolean, name: String): Pair<String, Value> {
             val row = alias(if (relationships) "e" else "n")
             return if (relationships) {
-                "FROM ${elements(ids, name)} LEFT JOIN $edges $row ON $row.eid = ${idOf(item(name), null)}" to
+                "FROM ${elements(ids, name)} ${keyJoin(edges, row, "eid", idOf(item(name), null))}" to
                     Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props")
             } else {
-                "FROM ${elements(ids, name)} LEFT JOIN $nodes $row ON $row.nid = ${idOf(item(name), null)}" to
+                "FROM ${elements(ids, name)} ${keyJoin(nodes, row, "nid", idOf(item(name), null))}" to
                     Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")
             }
         }
@@ -2166,12 +2173,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 when (kind) {
                     Kind.NODE -> {
                         val n = alias("n")
-                        select.join("LEFT JOIN $nodes $n ON $n.nid = ${idOf(row, key)}")
+                        select.join(keyJoin(nodes, n, "nid", idOf(row, key)))
                         select.bind(variable, Value.Node("$n.nid", "$n.labels", "$n.props", "$n.stamp"))
                     }
                     Kind.RELATIONSHIP -> {
                         val e = alias("e")
-                        select.join("LEFT JOIN $edges $e ON $e.eid = ${idOf(row, key)}")
+                        select.join(keyJoin(edges, e, "eid", idOf(row, key)))
                         select.bind(variable, Value.Relationship("$e.eid", "$e.src", "$e.dst", "$e.type", "$e.props"))
                     }
                     Kind.VALUE -> select.bind(
