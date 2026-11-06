@@ -680,6 +680,12 @@ relationships with it.
   or took a `CALL`'s one row for 100, and read the whole table for each row: `MATCH (n) MERGE (n)-[:R]->(n)` took 28 s
   over 20,000 nodes where it now takes under 1 s. The settings are set for the transaction (`set_config(…, true)`), so a
   statement that fails leaves them as its transaction or savepoint had them.
+- A statement's rows, a JSON list, read each row's node or relationship back from its table by its id through a probe
+  of the table's key, `LEFT JOIN LATERAL (SELECT * FROM … WHERE nid = … OFFSET 0) … ON TRUE`, not a plain join
+  ([#644](https://github.com/liberation-data/drivine4j/issues/644)). A plain join is planned by the table's
+  statistics, and where they said the table was empty while it still had pages, as an `ANALYZE` just after a `DELETE`
+  leaves them, each row was compared with every row of the table: a `FOREACH` over 20,000 nodes took 19 s where it now
+  takes under 1 s. The probe is a scan of the key's index whatever the statistics say.
 - Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs

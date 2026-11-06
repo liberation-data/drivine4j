@@ -178,6 +178,16 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun hasLabel(labels: String, label: String) = "$labels @> ${literal(Neo4jObjectMapper.instance.writeValueAsString(listOf(label)))}"
 
+    /**
+     * A probe of the key for each row, which Postgres plans as a scan of the primary key's index whatever the table's
+     * statistics say. As a plain join, a table whose statistics say it is empty while it still has pages, as an ANALYZE just
+     * after a `DELETE` leaves it, was planned to compare each row with every row of a scan materialized, so a write over
+     * 20,000 rows took 19 s where it takes under one (#644). A probe rescanned as a scan of the whole table is costed by
+     * the table's pages, so the index is taken. `OFFSET 0` keeps the subquery from being pulled up into a plain join.
+     */
+    override fun keyJoin(table: String, row: String, key: String, id: String): String =
+        lateral("SELECT * FROM $table $row WHERE $row.$key = $id OFFSET 0", row, optional = true, columns = emptyList())
+
     /** The property's text, as a range index or a uniqueness constraint reads it with `->>`, compared with the value's. */
     override fun indexedEquality(property: String, value: String, of: IndexedProperty?): String? =
         PROPERTY_READ.matchEntire(property)?.let { "(${it.groupValues[1]} ->> ${it.groupValues[2]}) = ($value #>> '{}')" }
