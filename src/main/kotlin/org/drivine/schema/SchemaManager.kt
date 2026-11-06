@@ -176,6 +176,97 @@ class SchemaManager(
         }
     }
 
+    /**
+     * Removes [specs] from what [owner] declares, on every schema-capable database. See the overload taking a
+     * catalog.
+     */
+    fun remove(owner: String?, vararg specs: SchemaItemSpec) = remove(SchemaCatalog.of(specs.toList()).named(owner))
+
+    /**
+     * Removes the catalog's items from what its owner ([SchemaCatalog.named]) declares, on its databases
+     * ([SchemaCatalog.forDatabase]): the counterpart of [ensure]. Each item is found by its identity (kind, label
+     * and properties), whatever its name.
+     *
+     * An item [ensure] gave the owner is forgotten, so that a later [enforce] does not make it again. On each
+     * database, the item is then dropped, unless a startup catalog (of any owner) or another owner's runtime items
+     * declare it, or another owner's marker there records it (declared or ensured at runtime, by whichever manager
+     * or process): it is then left in place, with a warning naming who declares it. Either way the owner's marker
+     * no longer records it, so it is no orphan of the owner. An item that is not there is dropped as nothing,
+     * and forgotten all the same.
+     *
+     * The catalog must not carry a version.
+     */
+    fun remove(catalog: SchemaCatalog) {
+        if (catalog.version != null) {
+            throw DrivineException("Schema removed at runtime cannot carry a version (${catalog.version}): an owner's version is declared by its startup catalogs.")
+        }
+        if (catalog.isEmpty()) return
+        synchronized(lock) {
+            val identities = catalog.items.map(::identityOf).toSet()
+            runtime.forEach { (key, specs) ->
+                if (key.first == catalog.name && (catalog.target == DatabaseTarget.All || key.second == catalog.target)) {
+                    identities.forEach { specs.remove(it) }
+                }
+            }
+            runtime.entries.removeIf { it.value.isEmpty() }
+            val resolution = SchemaTargets.resolve(listOf(catalog), databaseRegistry)
+            warnSkipped(resolution)
+            resolution.databases.sorted().forEach { database -> removeFromDatabase(database, catalog) }
+        }
+    }
+
+    /** What [ensure] has given [owner], on any database. */
+    internal fun ensured(owner: String?): List<SchemaItemSpec> = synchronized(lock) {
+        runtime.filterKeys { it.first == owner }.values.flatMap { it.values }
+    }
+
+    /** [remove], on one database: drops what no one else declares there, and takes the items out of the owner's marker. */
+    private fun removeFromDatabase(database: String, catalog: SchemaCatalog) {
+        val owner = catalog.name
+        val ownerLabel = owner ?: "schema"
+        val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
+        val elsewhere = catalogs.filter { it.target.includes(database) && !it.isEmpty() } +
+            runtimeCatalogs(runtime).filter { it.name != owner && it.target.includes(database) }
+        val versionStore = SchemaVersionStore(manager, SchemaVersionStore.scopeFor(owner))
+        // What other owners' markers record, declared or ensured at runtime: an owner this manager was not given,
+        // such as an application's, whose catalogs are another manager's or another process's.
+        val recordedElsewhere = versionStore.otherScopes().associateWith { SchemaVersionStore(manager, it).storedRecord()?.keys.orEmpty() }
+        var dropped = 0
+        val kept = mutableListOf<SchemaItemSpec>()
+        catalog.items.forEach { spec ->
+            val identity = identityOf(spec)
+            val declaring = (
+                elsewhere.filter { other -> other.items.any { identityOf(it) == identity } }.map { it.name ?: "schema" } +
+                    recordedElsewhere.filterValues { keys -> keys.any { recordsIdentity(it, spec) } }.keys
+                ).distinct()
+            if (declaring.isNotEmpty()) {
+                logger.warn(
+                    "{} on {}{} is removed from owner '{}' on '{}' and left in place, as {} declare(s) it",
+                    spec.kind, spec.label, spec.properties, ownerLabel, database, declaring.joinToString { "'$it'" }
+                )
+                kept += spec
+                return@forEach
+            }
+            val removed = when (spec) {
+                is IndexSpec -> manager.indexes.drop(spec)
+                is ConstraintSpec -> manager.constraints.drop(spec)
+            }
+            if (removed) dropped++
+        }
+
+        versionStore.storedRecord()?.let { recorded ->
+            val gone = recorded.keys.filter { key -> catalog.items.any { recordsIdentity(key, it) } }.toSet()
+            if (gone.isNotEmpty()) {
+                versionStore.record(versionStore.storedVersion(), recorded.keys - gone, recorded.runtime - gone, recorded.stale - gone)
+            }
+        }
+
+        logger.info(
+            "Schema for owner '{}' on '{}': {} removed, {} dropped, {} left in place",
+            ownerLabel, database, catalog.items.size, dropped, kept.size
+        )
+    }
+
     private sealed interface OwnerFilter {
         fun includes(name: String?): Boolean
     }
@@ -192,6 +283,22 @@ class SchemaManager(
     private data class Identity(val kind: SchemaItemKind, val label: String, val properties: Set<String>)
 
     private fun identityOf(spec: SchemaItemSpec) = Identity(spec.kind, spec.label, spec.made().properties.toSet())
+
+    /**
+     * Whether the inventory [key] is of an item of [spec]'s identity, whatever its name: of its kind and label, and of
+     * its properties in any order, as [identityOf] compares them. An item of the properties in another order is the
+     * same item on the store, so another owner's key of that order co-owns it, and the owner's own is forgotten with it.
+     */
+    private fun recordsIdentity(key: String, spec: SchemaItemSpec): Boolean {
+        val made = spec.made()
+        val head = "${made.kind}:${made.label}:"
+        if (!key.startsWith(head)) return false
+        val length = made.properties.sumOf { it.length } + made.properties.size - 1
+        val rest = key.substring(head.length)
+        if (rest.length <= length || rest[length] != ':') return false
+        val properties = rest.substring(0, length)
+        return properties == made.properties.joinToString(",") || properties.split(",").sorted() == made.properties.sorted()
+    }
 
     /** The [runtime] items with [catalog]'s added, each replacing an item of its identity, owner and target. */
     private fun withRuntime(catalog: SchemaCatalog): Map<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>> {

@@ -2,11 +2,13 @@ package org.drivine.backend.postgres
 
 import org.drivine.backend.postgres.PostgresSql.hasLabel
 import org.drivine.backend.postgres.PostgresSql.literal
+import org.drivine.schema.ALIASES
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaAliases
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
@@ -18,6 +20,7 @@ import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.aliasesJson
 import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
@@ -45,7 +48,7 @@ import java.sql.SQLException
  * an index's expression does not say which label and properties it was made for. An index is named
  * bare, so Postgres keeps its name in lower case, and finds it by the name recorded however it is cased.
  */
-internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaGrammar {
+internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = "Postgres"
     override val supportsIfNotExists = true
@@ -68,13 +71,13 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
 
     /**
      * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already; with [updated], a record already there takes [details]. Two processes
-     * recording it at once record it once.
+     * recorded already; with [updated], a record already there takes [details], and keeps its
+     * aliases (see [SchemaAliases]). Two processes recording it at once record it once.
      */
     private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}", updated: Boolean = false): String = """
         INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details)
         VALUES (${literal(spec.kind.name)}, ${literal(spec.label)}, ${literal(json(spec.properties))}, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)})
-        ON CONFLICT (kind, label, properties) ${if (updated) "DO UPDATE SET details = EXCLUDED.details" else "DO NOTHING"}
+        ON CONFLICT (kind, label, properties) ${if (updated) "DO UPDATE SET details = EXCLUDED.details || jsonb_strip_nulls(jsonb_build_object('$ALIASES', ${graph.catalog}.details -> '$ALIASES'))" else "DO NOTHING"}
     """
 
     /**
@@ -83,7 +86,7 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
      * item is dropped as it was made whatever a later version would call it.
      */
     private fun forgotten(item: SchemaItemInfo): SchemaStatement {
-        val record = "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+        val record = recordOf(item)
         return statement(
             """
             DO ${'$'}forget${'$'}
@@ -102,6 +105,15 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
             ${'$'}forget${'$'}
             """
         )
+    }
+
+    /** The test of the catalog's key that finds the record of [item]. */
+    private fun recordOf(item: SchemaItemInfo): String =
+        "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+
+    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement {
+        val details = if (aliases.isEmpty()) "details - '$ALIASES'" else "jsonb_set(details, '{$ALIASES}', ${literal(aliasesJson(aliases))}::jsonb)"
+        return statement("UPDATE ${graph.catalog} SET details = $details WHERE ${recordOf(item)}")
     }
 
     /**

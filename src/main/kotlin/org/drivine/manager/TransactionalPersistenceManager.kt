@@ -8,6 +8,7 @@ import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
+import org.drivine.schema.ddl.SchemaCommands
 import org.drivine.store.StoreIdentity
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
@@ -69,7 +70,13 @@ class TransactionalPersistenceManager(
                 "Obtain managers through PersistenceManagerFactory, or use a non-transactional manager."
         )
 
+    /**
+     * Runs a statement in the transaction. Neo4j schema DDL given as Cypher to Postgres, Oracle or SQLite is
+     * refused here, as Drivine applies it outside any transaction (see [SchemaCommands]), save for
+     * `db.awaitIndexes`, which does nothing there.
+     */
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
+        if (SchemaCommands.refusedInTransaction(type, spec)) return emptyList()
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         return try {
@@ -80,6 +87,7 @@ class TransactionalPersistenceManager(
     }
 
     override fun execute(spec: QuerySpecification<*>) {
+        if (SchemaCommands.refusedInTransaction(type, spec)) return
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         try {
@@ -106,6 +114,7 @@ class TransactionalPersistenceManager(
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         if (specs.size > 1 && !atomicBatches) nonAtomic.report(specs.size)
         return specs.map { spec ->
+            if (SchemaCommands.refusedInTransaction(type, spec)) return@map emptyList()
             try {
                 @Suppress("UNCHECKED_CAST")
                 connection.query(spec as QuerySpecification<Any>)
