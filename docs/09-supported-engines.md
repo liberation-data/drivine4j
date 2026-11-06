@@ -377,6 +377,19 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   edges, about 7 ms now ([#581](https://github.com/liberation-data/drivine4j/issues/581)). The list of ids an `IN` reads,
   and an `UNWIND`'s whose item an id is set equal to, carries the hint `CARDINALITY(<alias> 10)`: Oracle estimates a list
   given as a value at 8,168 rows, and otherwise read every node once and hashed it to the ids.
+- A node with a label that a pattern finds by a property (`MATCH (n:Person {id: $id})`, `UNWIND $rows AS row MATCH
+  (n:Person {id: row.id})`) is compared by it as JSON alone for now, and Oracle reads the label's nodes to find it. The
+  compiler can read it through the label's range index, or a uniqueness constraint over the property alone, where it is
+  told the graph has one; the connection doesn't tell it yet
+  ([#638](https://github.com/liberation-data/drivine4j/issues/638)). Told so, it compares the node as JSON and, beside that,
+  as that index reads it, so Oracle finds the node through the index. Its labels are tested by
+  their text, and an `UNWIND` whose item is compared so carries the hint `CARDINALITY(<alias> 10)`. Compared as JSON
+  alone, inside a `CASE`, even a parameter's value read every node of the label, once for each row of an `UNWIND`
+  ([#617](https://github.com/liberation-data/drivine4j/issues/617)). A row's value that may be a list, such as one worked
+  out, is let through to the JSON comparison too, which Oracle reads no index beside; one a parameter gives, or a list
+  written of literals, maps, lists and parameters, as APOC's export writes its rows, is known to hold none where it
+  holds none. An empty text, and one past 4,000 bytes, are compared as JSON alone, as the index holds no text for them.
+  A node found after a `WITH` that groups is compared as JSON alone (below).
 - A node a compiled `MATCH` finds after a `WITH` that groups its rows (one that aggregates or is `DISTINCT`, or a
   `WITH` after one) tests its labels by their text, which the index over labels can't answer, in its pattern and in a
   `WHERE` such as `WHERE m:Movie`. With the index's form, Oracle 23.26 sometimes crashed the session building the
@@ -700,6 +713,14 @@ relationships with it.
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own, in one
   transaction; `patchAll` writes 500 nodes to a statement.
 - A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
+- A compiled `MATCH` that compares a property by `=` with a value a row holds (`UNWIND $rows AS row MATCH (n:Person {id:
+  row.id})`, `UNWIND $ids AS id MATCH (n:Person {id: id})`, or `WHERE n.id = row.id`) is read through the range index or the uniqueness constraint over the property,
+  as one compared with a text given is: beside the comparison stands a test of the property's text among the texts the
+  value can be stored as: a number's with no zeros after its point and with each count of them up to 16, since `numeric`
+  keeps the scale a product makes (`0.25 * 10` is stored as `2.50`) ([#617](https://github.com/liberation-data/drivine4j/issues/617)).
+  This holds where the rows are known to hold no list or map at the key: a parameter's, or a list written of literals,
+  maps, lists and parameters, as APOC's export writes its rows. A list's numbers may be stored at any scale, so a row
+  that may hold a list is compared as JSON alone, as before.
 - A number is compared and ordered as a number only where one is stored: the text `'7'` is not `7`,
   as on the graph engines. Postgres keeps an empty string apart from null, so `""` is a value.
 - Text is ordered by the database's collation, so a page of mixed-case text may not be in the order

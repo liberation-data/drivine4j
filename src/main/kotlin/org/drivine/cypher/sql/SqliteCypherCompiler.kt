@@ -126,7 +126,7 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * The property's text, as a range index or a uniqueness constraint reads it (see [SqliteSql.propertyText]), compared
      * with the value's: a string's text, or a truth value's JSON.
      */
-    override fun indexedEquality(property: String, value: String): String? =
+    override fun indexedEquality(property: String, value: String, of: IndexedProperty?): String? =
         Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""").matchEntire(property)?.let {
             "${SqliteSql.propertyText(it.groupValues[1], it.groupValues[2])} = (CASE json_type($value) WHEN 'text' THEN $value ->> '$' ELSE $value END)"
         }
