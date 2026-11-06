@@ -16,18 +16,18 @@ import kotlin.test.assertTrue
 /**
  * On Postgres, a loop whose statements for each row read a table by its key where the loop adds to it, or join a table to a
  * JSON list of rows, is planned as nested loops over the indexes, and the planner's settings are put back after it
- * (#609): see `PostgresCypherCompiler.plannedAsNestedLoops`. Their times are [CompiledWriteKeyedReadTimePostgresTest]'s.
+ * (#609, #631): see `PostgresCypherCompiler.plannedAsNestedLoops`. Their times are [CompiledWriteKeyedReadTimePostgresTest]'s.
  */
 class PostgresNestedLoopPlanTest {
 
     private fun compiled(cypher: String) = PostgresCypherCompiler("g").compile(cypher).sql
 
-    private val off = "PERFORM set_config('enable_seqscan', 'off', true), set_config('enable_hashjoin', 'off', true), set_config('enable_mergejoin', 'off', true);"
-    private val saved = "cy_planner := ARRAY[current_setting('enable_seqscan'), current_setting('enable_hashjoin'), current_setting('enable_mergejoin')];"
-    private val restored = "PERFORM set_config('enable_seqscan', cy_planner[1], true), set_config('enable_hashjoin', cy_planner[2], true), set_config('enable_mergejoin', cy_planner[3], true);"
+    private val off = "PERFORM set_config('enable_seqscan', 'off', true), set_config('enable_hashjoin', 'off', true), set_config('enable_mergejoin', 'off', true), set_config('enable_material', 'off', true);"
+    private val saved = "cy_planner := ARRAY[current_setting('enable_seqscan'), current_setting('enable_hashjoin'), current_setting('enable_mergejoin'), current_setting('enable_material')];"
+    private val restored = "PERFORM set_config('enable_seqscan', cy_planner[1], true), set_config('enable_hashjoin', cy_planner[2], true), set_config('enable_mergejoin', cy_planner[3], true), set_config('enable_material', cy_planner[4], true);"
 
     @Test
-    fun `a MERGE's loop is planned with seq scans and hash and merge joins off, and the settings are put back after it`() {
+    fun `a MERGE's loop is planned with seq scans, hash and merge joins and materialization off, and the settings are put back after it`() {
         val lines = compiled("MATCH (n:CyLoop) MERGE (n)-[:CY_SELF]->(n)").lines()
         assertTrue("    cy_planner text[];" in lines, lines.joinToString("\n"))
         val loop = lines.indexOfFirst { it.startsWith("    FOR cy_record IN ") }
@@ -117,9 +117,9 @@ class PostgresNestedLoopSettingsTest {
                     if (fails == null) assertNull(error, "$cypher failed")
                     else assertTrue(error?.message.orEmpty().contains(fails), "$cypher failed with: ${error?.message}")
                     if (error != null) c.rollback(savepoint)
-                    st.executeQuery("SELECT current_setting('enable_seqscan'), current_setting('enable_hashjoin'), current_setting('enable_mergejoin')").use { rs ->
+                    st.executeQuery("SELECT current_setting('enable_seqscan'), current_setting('enable_hashjoin'), current_setting('enable_mergejoin'), current_setting('enable_material')").use { rs ->
                         rs.next()
-                        listOf(rs.getString(1), rs.getString(2), rs.getString(3))
+                        listOf(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4))
                     }
                 }
             } finally {
@@ -130,16 +130,16 @@ class PostgresNestedLoopSettingsTest {
 
     @Test
     fun `a procedure puts the settings back as the session had them, in its transaction`() {
-        assertEquals(listOf("on", "off", "on"), settingsAfter("SET enable_hashjoin = off", merge))
+        assertEquals(listOf("on", "off", "on", "on"), settingsAfter("SET enable_hashjoin = off", merge))
     }
 
     @Test
     fun `a procedure puts the settings back as its transaction had them`() {
-        assertEquals(listOf("on", "off", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", merge, nodes = true))
+        assertEquals(listOf("on", "off", "on", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", merge, nodes = true))
     }
 
     @Test
     fun `a procedure that fails in its loop leaves the settings as they were, once its savepoint is rolled back`() {
-        assertEquals(listOf("on", "off", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF {w: n.missing}]->(n)", nodes = true, fails = "because of null property value for 'w'"))
+        assertEquals(listOf("on", "off", "on", "on"), settingsAfter("SET LOCAL enable_hashjoin = off", "MATCH (n:CyLoop) MERGE (n)-[:CY_SELF {w: n.missing}]->(n)", nodes = true, fails = "because of null property value for 'w'"))
     }
 }
