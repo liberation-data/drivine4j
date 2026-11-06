@@ -235,11 +235,33 @@ internal class ModelReader {
     }
 
     /**
-     * Whether [prop] is the node's id: `@NodeId` on it, its getter, or on the property it overrides,
-     * which Kotlin does not carry over to an `override`.
+     * Whether [prop] is the node's id: `@NodeId` on it, its getter, or on the property of that name
+     * it overrides in a supertype, which Kotlin does not carry over to an `override`. The supertypes
+     * are searched by name rather than with KSP's `findOverridee`, which in KSP2 at times finds
+     * nothing, and so left the id out of a file written twice from the same code (#621).
      */
-    private fun isNodeId(prop: KSPropertyDeclaration): Boolean =
-        generateSequence(prop) { it.findOverridee() }.any { it.drivine("NodeId") != null }
+    private fun isNodeId(prop: KSPropertyDeclaration): Boolean {
+        if (prop.drivine("NodeId") != null) return true
+        val owner = prop.parentDeclaration as? KSClassDeclaration ?: return false
+        val name = prop.simpleName.asString()
+        return supertypes(owner).any { type ->
+            type.getDeclaredProperties().any {
+                it.simpleName.asString() == name && Modifier.PRIVATE !in it.modifiers && it.drivine("NodeId") != null
+            }
+        }
+    }
+
+    /** Every class and interface [decl] extends or implements, however far up, but `Any`. */
+    private fun supertypes(decl: KSClassDeclaration): Sequence<KSClassDeclaration> = sequence {
+        val visited = mutableSetOf(id(decl))
+        val queue = ArrayDeque(listOf(decl))
+        while (queue.isNotEmpty()) {
+            queue.removeFirst().superTypes
+                .mapNotNull { resolveAlias(it.resolve().declaration) as? KSClassDeclaration }
+                .filter { it.qualifiedName?.asString() != "kotlin.Any" && visited.add(id(it)) }
+                .forEach { yield(it); queue.add(it) }
+        }
+    }
 
     private fun nullable(prop: KSPropertyDeclaration, type: KSType): Any {
         if (!prop.isJava()) return type.isMarkedNullable

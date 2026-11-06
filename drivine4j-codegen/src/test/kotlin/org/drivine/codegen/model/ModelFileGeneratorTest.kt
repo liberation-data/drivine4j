@@ -214,6 +214,34 @@ class ModelFileGeneratorTest {
     }
 
     @Test
+    fun `an override's node id is found however far up it is declared, and not from a base's private property`() {
+        val model = generate(
+            SourceFile.kotlin(
+                "Far.kt",
+                """
+                package ux
+
+                import org.drivine.annotation.*
+
+                interface Keyed { @get:NodeId val key: String }
+
+                interface Named : Keyed { override val key: String; val name: String }
+
+                @NodeFragment(labels = ["Far"])
+                data class Far(override val key: String, override val name: String) : Named
+
+                abstract class Hidden { @NodeId private val key: String = "" }
+
+                @NodeFragment(labels = ["NotOverridden"])
+                class NotOverridden : Hidden() { val key: String = "" }
+                """.trimIndent(),
+            ),
+        )
+        assertEquals("key", fragment(model, "ux.Far")["nodeId"].asText())
+        assertFalse(fragment(model, "ux.NotOverridden").has("nodeId"))
+    }
+
+    @Test
     fun `views carry paths, depth, sorting, read-only fields and aggregates`() {
         val model = generate(kotlinDomain)
         val team = view(model, "fx.Team")
@@ -376,8 +404,9 @@ class ModelFileGeneratorTest {
 
         file.setLastModified(0)
         generate(kotlinDomain, file = file, workDir = File(dir, "again"))
-        // It differed once in CI and in none of many runs here (#621): say where, should it again.
-        assertEquals(first, file.readText(), firstDifference(first, file.readText()))
+        // It differed once in CI (#621), KSP2's findOverridee having found no @NodeId: say where, should it again.
+        val again = file.readText()
+        assertEquals(first, again, firstDifference(first, again))
         assertEquals(0, file.lastModified())
     }
 
