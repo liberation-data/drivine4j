@@ -241,5 +241,11 @@ class TextQueryTest {
         assertEquals("(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])", quoted.scored.single())
         assertEquals("(^|[^[:alnum:]_])sou", TextQuery.parse("sou*").scored.single())
         assertEquals("(^|[^[:alnum:]_])kiw", TextQuery.parse("+kiw*").scored.single())
+        val phrase = "(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])"
+        assertEquals(phrase, TextQuery.parse("body:\"of sou*\"").scored.single())
+        assertEquals(phrase, TextQuery.parse("\"of sou\\*\"").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw(\$|[^[:alnum:]_])", TextQuery.parse("\"kiw*\"").scored.single())
+        assertEquals("({kiw})", TextQuery.parse("\"kiw*\"").oracleText)
+        assertEquals("({of sou})", TextQuery.parse("body:\"of sou*\"").oracleText)
     }
 }

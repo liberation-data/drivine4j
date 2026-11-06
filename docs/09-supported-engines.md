@@ -476,8 +476,9 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   the graph engines. With no index made, or one of another size than the vector's, it measures every
   node of the label whose embedding is of the vector's size, and is exact.
 - A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
-  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. A backslash before
-  punctuation or a space makes that character text: `prefix\*` is the word and `\-not` is not taken
+  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. In a phrase a `*`
+  is text, as on Neo4j: `"of sou*"` is the phrase `of sou`. A backslash before punctuation or a
+  space makes that character text: `prefix\*` is the word and `\-not` is not taken
   away. A backslash before a letter or a digit is a gap between two words, where Lucene drops it:
   `foo\bar` is the phrase `foo bar` here and the word `foobar` on Neo4j. The index holds what has
   been committed, so a search does not see its own transaction's writes. Oracle Text is in the

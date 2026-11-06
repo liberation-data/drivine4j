@@ -203,8 +203,8 @@ internal class TextQuery private constructor(
              * Reads [token]. Null when it holds no word.
              *
              * A word still holds a field up to its first colon that no backslash precedes: the second
-             * field of `a:b:word`. The term is the start of a word when a `*` that no backslash
-             * precedes is its last character.
+             * field of `a:b:word`. The term is the start of a word when it is not quoted and a `*`
+             * that no backslash precedes is its last character.
              */
             fun of(token: Token): Term? {
                 val text = if (token.quoted) token.symbols else token.symbols.drop(token.symbols.indexOfFirst { it.isBare(':') } + 1)
