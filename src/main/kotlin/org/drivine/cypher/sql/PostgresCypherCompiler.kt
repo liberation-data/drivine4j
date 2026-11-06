@@ -633,7 +633,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * - A read of the rows of a `CALL { … }` for one row, which `jsonb_array_elements` gives, joined to a table: Postgres
      *   takes such a list to hold 100 rows, and below some 20,000 nodes plans to hash a scan of the whole table. A
      *   `MATCH (n) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)` took 17 s over 20,000 nodes just made, and
-     *   0.6 s over the same nodes once a `SET` of each had grown the table past that.
+     *   0.6 s over the same nodes once a `SET` of each had grown the table past that. With seq scans and hash and merge
+     *   joins off, a table analyzed while empty but not yet truncated, as an autoanalyze that runs just after a `DELETE`
+     *   of every node leaves it, was taken to hold one row, and the read was planned to materialize a scan of the whole of
+     *   its key's index and filter that for the row's node: 91 s over 20,000 nodes (#631, drivine-python#430).
+     *   Materialization is off with them, so the index is read by the row's key.
      *
      * So planned, each read is by an index, and the loops take 0.4 s to 0.7 s over 20,000 rows. A loop with neither read is
      * planned as it was, and its procedure is the same text: `MATCH (n) SET n.x = 1` reads its nodes by their keys from a
@@ -723,7 +727,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         const val TRAILING_ZEROS = 16
 
         /** The planner's settings a loop's statements for each row are planned with off: see [plannedAsNestedLoops]. */
-        private val JOIN_METHODS = listOf("enable_seqscan", "enable_hashjoin", "enable_mergejoin")
+        private val JOIN_METHODS = listOf("enable_seqscan", "enable_hashjoin", "enable_mergejoin", "enable_material")
 
         /** The procedure's variable that holds [JOIN_METHODS] as they were before a loop planned with them off. */
         private const val PLANNER = "cy_planner"
