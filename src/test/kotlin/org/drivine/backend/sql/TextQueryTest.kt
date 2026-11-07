@@ -316,8 +316,9 @@ class TextQueryTest {
     fun `a prefix term counts each word it starts, its last word the start of one`() {
         assertEquals(3, counted("kiw*", "kiwi kiwis kiw akiwi"))
         assertEquals(3, countedByOracle("kiw*", "kiwi kiwis kiw akiwi"))
-        assertEquals(2, counted("\"of sou*\"", "of soup of soups"))
-        assertEquals(2, countedByOracle("\"of sou*\"", "of soup of soups"))
+        // A `*` inside quotes is text (drivine4j#622): "of sou*" is the phrase "of sou", which "of soup of soups" doesn't hold.
+        assertEquals(0, counted("\"of sou*\"", "of soup of soups"))
+        assertEquals(0, countedByOracle("\"of sou*\"", "of soup of soups"))
     }
 
     @Test
