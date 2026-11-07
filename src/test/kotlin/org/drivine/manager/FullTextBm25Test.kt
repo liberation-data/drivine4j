@@ -59,10 +59,12 @@ abstract class FullTextBm25Contract {
         write(SEED)
         write(PAPERS)
         write(FRUITS.entries.joinToString("\n") { (id, body) -> "CREATE (:Fruit {id: '$id', body: '$body'})" })
+        write(BOOKS.entries.joinToString("\n") { (id, body) -> "CREATE (:Book {id: '$id', body: '$body'})" })
         if (indexed) {
             pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
             pm.indexes.ensure(FullTextIndexSpec("Paper", listOf("title", "body")))
             pm.indexes.ensure(FullTextIndexSpec("Fruit", "body"))
+            pm.indexes.ensure(FullTextIndexSpec("Book", "body"))
         }
         settle()
     }
@@ -91,6 +93,15 @@ abstract class FullTextBm25Contract {
         assertEquals(1.0, hits.getValue("often"), 1e-9)
         // Ten times the count, as long again as the other's text: not ten times the score.
         assertTrue(hits.getValue("once") > 0.4, hits.toString())
+    }
+
+    @Test
+    fun `a word is what a text's expression reads as one, so its vowel signs are in it and a superscript is between words`() {
+        // A word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as [[:alnum:]_] reads it in the
+        // text (drivine4j#616). A Hindi vowel sign is in a word: split at it, किताब was "क", which [[:alnum:]] went on from.
+        assertEquals(listOf("hindi"), search("किताब").map { it.value.id })
+        // "²" is not: "m²x" is the words "m" and "x", as Neo4j's analyzer reads it.
+        assertEquals(listOf("area"), search("\"m²x\"").map { it.value.id })
     }
 
     @Test
@@ -140,6 +151,15 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a Hindi word written twice running counts twice, as a word of letters does`() {
+        // Its vowel signs are in the word, and [[:alnum:]] on Oracle: counted there by the one expression, "किताब किताब"
+        // counted once and tied with "किताब हिसाब", as long (drivine4j#607, drivine4j#616).
+        val hits = manager.loadMatching(BookNode::class.java, "किताब", 50, 0.0)
+        assertEquals(listOf("twice", "once"), hits.map { it.value.id }, hits.toString())
+        assertTrue(hits[0].score > hits[1].score, hits.toString())
+    }
+
+    @Test
     fun `a phrase that repeats a word is found where its words begin it again`() {
         // Counted on Oracle as two counts, "la la" in "la la land" counted none (drivine4j#607).
         assertEquals(listOf("lalaland"), search("+\"la la\"").map { it.value.id })
@@ -176,6 +196,8 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'once', title: 'o', body: 'kiwi bird'})
             CREATE (:Article {id: 'often', title: 'f', body: 'kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi'})
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
+            CREATE (:Article {id: 'hindi', title: 'h', body: 'एक किताब'})
+            CREATE (:Article {id: 'area', title: 'a', body: 'an m² x here'})
             CREATE (:Article {id: 'triple', title: 't', body: 'okapi okapi okapi'})
             CREATE (:Article {id: 'apart', title: 'a', body: 'okapi lemur okapi'})
             CREATE (:Article {id: 'lalaland', title: 'l', body: 'la la land'})
@@ -199,6 +221,9 @@ abstract class FullTextBm25Contract {
             "other" to "nothing here",
         )
 
+        /** A Hindi word twice and once, in texts as long as each other in characters and in tokens. */
+        val BOOKS = linkedMapOf("twice" to "किताब किताब", "once" to "किताब हिसाब", "other" to "कुछ नहीं")
+
         /** Twenty texts that hold "graph", written apart from [SEED]: an `UNWIND` before it would make each of its nodes twenty times. */
         const val COMMON = "UNWIND range(1, 20) AS i CREATE (:Article {id: 'common' + toString(i), title: 'c', body: 'a note on a graph and its nodes'})"
     }
@@ -213,6 +238,11 @@ data class PaperNode(@NodeId val id: String, val title: String?, val body: Strin
 @FullTextIndex(properties = ["body"])
 @NodeFragment(labels = ["Fruit"])
 data class FruitNode(@NodeId val id: String, val body: String)
+
+/** Texts in Hindi, to count a word with vowel signs. */
+@FullTextIndex(properties = ["body"])
+@NodeFragment(labels = ["Book"])
+data class BookNode(@NodeId val id: String, val body: String)
 
 class Neo4jFullTextBm25Test : FullTextBm25Contract() {
     private val provider by lazy {

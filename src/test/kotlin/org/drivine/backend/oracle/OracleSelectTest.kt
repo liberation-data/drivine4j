@@ -565,9 +565,10 @@ class OracleSelectTest {
     }
 
     @Test
-    fun `a text search without an index counts a prefix term, and one with a number that isn't a digit, by its one expression`() {
-        // A prefix term takes no character after it, and "²" begins an occurrence that two counts would lose (drivine4j#607).
-        listOf("kiw*" to "(^|[^[:alnum:]_])kiw", "b²b" to "(^|[^[:alnum:]_])b²b(\$|[^[:alnum:]_])").forEach { (query, bound) ->
+    fun `a text search without an index counts a prefix term, and one with a circled letter, by its one expression`() {
+        // A prefix term takes no character after it, and "ⓐ", a word's to the query and not measured on Oracle, may begin an
+        // occurrence there that two counts would lose (drivine4j#607).
+        listOf("kiw*" to "(^|[^[:alnum:]_])kiw", "bⓐb" to "(^|[^[:alnum:]_])bⓐb(\$|[^[:alnum:]_])").forEach { (query, bound) ->
             val select = select(Shelf::class.java)
             val sql = select.matching(listOf("title"), TextQuery.parse(query)).squashed()
             assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) AS tf1 FROM"), sql)

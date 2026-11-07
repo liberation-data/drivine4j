@@ -37,8 +37,16 @@ internal class TextQuery private constructor(
 ) {
 
     companion object {
-        /** What stands between two words: a run of anything but letters, digits and underscores. */
-        private val GAP = Regex("[^\\p{L}\\p{N}_]+")
+        /**
+         * What stands between two words: a run of anything but letters, decimal digits and underscores, as a term's
+         * expression's `[[:alnum:]_]` reads them in the text, on Postgres and in Java (and so on SQLite): letters as Unicode's
+         * Alphabetic holds them, which takes in the vowel signs of Indic scripts and the letter numbers (`ⅻ`), and digits as
+         * `Nd`. Read as any letter or number, a query split a Hindi word at its vowel sign, "कि" the word "क", which the text's
+         * "कि" went on from, and kept "²" in a word where the text ends one at it, as Neo4j's analyzer does (drivine4j#616).
+         * Oracle's `[[:alnum:]]` holds every combining mark too, so a word with a virama or a decomposed accent is one word there
+         * and two here.
+         */
+        private val GAP = Regex("[^\\p{IsAlphabetic}\\p{Nd}_]+")
 
         /** The characters that end a term. */
         private const val SPACES = " \t\n\u000B\u000C\r"
@@ -81,20 +89,26 @@ internal class TextQuery private constructor(
          * different ones: the second took the "la la" of "la land", the first did not, and the term counted none. Any other
          * term begins inside none of its occurrences: one that did would begin at a word of it, which its first word is not.
          *
-         * [pattern] itself, with null for the second, where a word holds a number that isn't a digit, the "²" of "b²b": a
-         * word's to [GAP] but not to `[[:alnum:]]`, so an occurrence may begin at it, "b²b" in "b²b²bx", and neither way
-         * above counts it. The one count undercounts the term only where it is written again at once, as it did before.
+         * [pattern] itself, with null for the second, where a word holds a character that is a word's to [GAP] but may not be
+         * to Oracle's `[[:alnum:]]`, which was measured on letters, decimal digits, letter numbers ("ⅻ") and combining marks (a
+         * Hindi vowel sign) alone: a circled letter, the "ⓐ" of "bⓐb". An occurrence may begin at it, and neither way above
+         * counts it. The one count undercounts the term only where it is written again at once, as it did before.
          */
         fun counted(pattern: String): Pair<String, String?>? {
             if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
             val ended = pattern.removeSuffix(BOUNDARY_AFTER)
             val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
-            if (words.any { word -> word.codePoints().anyMatch { !Character.isLetter(it) && !Character.isDigit(it) && it != '_'.code } }) {
+            if (words.any { word -> word.codePoints().anyMatch { !isOracleAlnum(it) && it != '_'.code } }) {
                 return pattern to null
             }
             val overlaps = words.toSet().size < words.size || words.size > 1 && words.first().startsWith(words.last())
             return if (overlaps) null else ended to "$ended[[:alnum:]_]"
         }
+
+        /** Whether Oracle's `[[:alnum:]]` was measured to hold [char]: a letter, a decimal digit, a letter number or a combining mark. */
+        private fun isOracleAlnum(char: Int) = Character.isLetter(char) || Character.isDigit(char) || Character.getType(char).toByte() in ORACLE_ALNUM_TYPES
+
+        private val ORACLE_ALNUM_TYPES = setOf(Character.LETTER_NUMBER, Character.NON_SPACING_MARK, Character.COMBINING_SPACING_MARK)
 
         /** What stands between the words of a phrase in a term's expression. */
         private const val BETWEEN = "[^[:alnum:]_]+"
