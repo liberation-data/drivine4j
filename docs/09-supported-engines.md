@@ -272,7 +272,7 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   indexed, searched with `IN` or iterated, its items are the nodes themselves too, so two with equal properties differ.
   `CALL db.labels()` and `CALL db.relationshipTypes()` compile, alone or within a query with `YIELD`, and give each
   label and type something has now, read from the nodes and relationships; any other procedure is refused. A parameter
-  may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
+  or a variable may be named by a keyword (`$limit`, `MATCH (end)`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
   are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
@@ -377,6 +377,19 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   edges, about 7 ms now ([#581](https://github.com/liberation-data/drivine4j/issues/581)). The list of ids an `IN` reads,
   and an `UNWIND`'s whose item an id is set equal to, carries the hint `CARDINALITY(<alias> 10)`: Oracle estimates a list
   given as a value at 8,168 rows, and otherwise read every node once and hashed it to the ids.
+- A node with a label that a pattern finds by a property (`MATCH (n:Person {id: $id})`, `UNWIND $rows AS row MATCH
+  (n:Person {id: row.id})`) is compared by it as JSON alone for now, and Oracle reads the label's nodes to find it. The
+  compiler can read it through the label's range index, or a uniqueness constraint over the property alone, where it is
+  told the graph has one; the connection doesn't tell it yet
+  ([#638](https://github.com/liberation-data/drivine4j/issues/638)). Told so, it compares the node as JSON and, beside that,
+  as that index reads it, so Oracle finds the node through the index. Its labels are tested by
+  their text, and an `UNWIND` whose item is compared so carries the hint `CARDINALITY(<alias> 10)`. Compared as JSON
+  alone, inside a `CASE`, even a parameter's value read every node of the label, once for each row of an `UNWIND`
+  ([#617](https://github.com/liberation-data/drivine4j/issues/617)). A row's value that may be a list, such as one worked
+  out, is let through to the JSON comparison too, which Oracle reads no index beside; one a parameter gives, or a list
+  written of literals, maps, lists and parameters, as APOC's export writes its rows, is known to hold none where it
+  holds none. An empty text, and one past 4,000 bytes, are compared as JSON alone, as the index holds no text for them.
+  A node found after a `WITH` that groups is compared as JSON alone (below).
 - A node a compiled `MATCH` finds after a `WITH` that groups its rows (one that aggregates or is `DISTINCT`, or a
   `WITH` after one) tests its labels by their text, which the index over labels can't answer, in its pattern and in a
   `WHERE` such as `WHERE m:Movie`. With the index's form, Oracle 23.26 sometimes crashed the session building the
@@ -476,8 +489,11 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   the graph engines. With no index made, or one of another size than the vector's, it measures every
   node of the label whose embedding is of the vector's size, and is exact.
 - A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
-  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. A backslash before
-  punctuation or a space makes that character text: `prefix\*` is the word and `\-not` is not taken
+  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. A word is a run of
+  letters as Unicode's Alphabetic holds them (with the vowel signs of Indic scripts), decimal digits
+  and underscores, as the text's `[[:alnum:]_]` reads it: `m²x` is the phrase `m x`. In a phrase a `*`
+  is text, as on Neo4j: `"of sou*"` is the phrase `of sou`. A backslash before punctuation or a
+  space makes that character text: `prefix\*` is the word and `\-not` is not taken
   away. A backslash before a letter or a digit is a gap between two words, where Lucene drops it:
   `foo\bar` is the phrase `foo bar` here and the word `foobar` on Neo4j. The index holds what has
   been committed, so a search does not see its own transaction's writes. Oracle Text is in the
@@ -661,11 +677,18 @@ relationships with it.
   and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database).
 - A write's loop over its rows that reads the node or edge table for each row, where it adds to that table or joins it to
-  the rows of a `CALL { … }`, runs with `enable_seqscan`, `enable_hashjoin` and `enable_mergejoin` off, set back after it
-  to what they were ([#609](https://github.com/liberation-data/drivine4j/issues/609)). Postgres kept a plan made while
-  the table was empty, or took a `CALL`'s one row for 100, and read the whole table for each row: `MATCH (n) MERGE
-  (n)-[:R]->(n)` took 28 s over 20,000 nodes where it now takes under 1 s. The settings are set for the transaction
-  (`set_config(…, true)`), so a statement that fails leaves them as its transaction or savepoint had them.
+  the rows of a `CALL { … }`, runs with `enable_seqscan`, `enable_hashjoin`, `enable_mergejoin` and `enable_material`
+  off, set back after it to what they were ([#609](https://github.com/liberation-data/drivine4j/issues/609),
+  [#631](https://github.com/liberation-data/drivine4j/issues/631)). Postgres kept a plan made while the table was empty,
+  or took a `CALL`'s one row for 100, and read the whole table for each row: `MATCH (n) MERGE (n)-[:R]->(n)` took 28 s
+  over 20,000 nodes where it now takes under 1 s. The settings are set for the transaction (`set_config(…, true)`), so a
+  statement that fails leaves them as its transaction or savepoint had them.
+- A statement's rows, a JSON list, read each row's node or relationship back from its table by its id through a probe
+  of the table's key, `LEFT JOIN LATERAL (SELECT * FROM … WHERE nid = … OFFSET 0) … ON TRUE`, not a plain join
+  ([#644](https://github.com/liberation-data/drivine4j/issues/644)). A plain join is planned by the table's
+  statistics, and where they said the table was empty while it still had pages, as an `ANALYZE` just after a `DELETE`
+  leaves them, each row was compared with every row of the table: a `FOREACH` over 20,000 nodes took 19 s where it now
+  takes under 1 s. The probe is a scan of the key's index whatever the statistics say.
 - Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
@@ -699,6 +722,14 @@ relationships with it.
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own, in one
   transaction; `patchAll` writes 500 nodes to a statement.
 - A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
+- A compiled `MATCH` that compares a property by `=` with a value a row holds (`UNWIND $rows AS row MATCH (n:Person {id:
+  row.id})`, `UNWIND $ids AS id MATCH (n:Person {id: id})`, or `WHERE n.id = row.id`) is read through the range index or the uniqueness constraint over the property,
+  as one compared with a text given is: beside the comparison stands a test of the property's text among the texts the
+  value can be stored as: a number's with no zeros after its point and with each count of them up to 16, since `numeric`
+  keeps the scale a product makes (`0.25 * 10` is stored as `2.50`) ([#617](https://github.com/liberation-data/drivine4j/issues/617)).
+  This holds where the rows are known to hold no list or map at the key: a parameter's, or a list written of literals,
+  maps, lists and parameters, as APOC's export writes its rows. A list's numbers may be stored at any scale, so a row
+  that may hold a list is compared as JSON alone, as before.
 - A number is compared and ordered as a number only where one is stored: the text `'7'` is not `7`,
   as on the graph engines. Postgres keeps an empty string apart from null, so `""` is a value.
 - Text is ordered by the database's collation, so a page of mixed-case text may not be in the order
@@ -721,8 +752,11 @@ relationships with it.
 - `loadMatching` reads the full-text syntax Oracle reads, and counts each term in the text as Oracle
   does without Oracle Text. It scores by BM25, as Lucene and so Neo4j's full-text index do
   (`k1` 1.2, `b` 0.75): a term weighs as it is rare among the label's nodes, and a text's counts
-  against its length, in characters, beside the label's average. Scored by the counts alone, a common
-  word outweighed the word a query was about, and a long text won by holding more of everything: over
+  against its length, in characters, beside the label's average. A `prefix*` adds the same to every
+  node that holds it, however often and however rare, as Lucene's prefix query does: in `kiw* melon`,
+  a node with `kiwi` and no `melon` scores about 0.54 of one with both, as on Neo4j. Scored by the
+  counts alone, a common word outweighed the word a query was about, and a long text won by holding
+  more of everything: over
   Drivine's own docs, the top hit was Neo4j's for 6 of 21 queries, and is for 17. A full-text index
   is a GIN index of `pg_trgm` trigrams over the text, which narrows a search to the nodes that hold a
   term's words. Every node that holds a term is among them, so how rare each term is comes out the

@@ -529,12 +529,14 @@ class OracleSelectTest {
         // The text is lowered to match a term in, and measured as it is.
         assertTrue(sql.contains("SELECT c.nid, LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text, NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len"), sql)
         assertTrue(sql.contains("MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")'))"), sql)
+        // Each term ending where its last word does, less those a word goes on from: Oracle's expressions don't look ahead, and
+        // one that takes the character after a term leaves none before it where the term is written again at once (drivine4j#607).
         assertTrue(
-            sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) AS tf1, REGEXP_COUNT(s.text, \$_p1) AS tf2, REGEXP_COUNT(s.text, \$_p2) AS r1, REGEXP_COUNT(s.text, \$_p3) AS x1"),
+            sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) - REGEXP_COUNT(s.text, \$_p1) AS tf1, REGEXP_COUNT(s.text, \$_p2) - REGEXP_COUNT(s.text, \$_p3) AS tf2, REGEXP_COUNT(s.text, \$_p4) - REGEXP_COUNT(s.text, \$_p5) AS r1, REGEXP_COUNT(s.text, \$_p6) - REGEXP_COUNT(s.text, \$_p7) AS x1"),
             sql,
         )
         // Only the nodes that hold a scoring term are counted: every node that holds one is among them, so each term's rarity over them is exact.
-        assertTrue(sql.contains(") s WHERE (REGEXP_LIKE(s.text, \$_p4) OR REGEXP_LIKE(s.text, \$_p5)) ) h"), sql)
+        assertTrue(sql.contains(") s WHERE (REGEXP_LIKE(s.text, \$_p8) OR REGEXP_LIKE(s.text, \$_p9)) ) h"), sql)
         assertTrue(sql.contains("SUM(CASE WHEN h.tf1 > 0 THEN 1 ELSE 0 END) OVER () AS df1, SUM(CASE WHEN h.tf2 > 0 THEN 1 ELSE 0 END) OVER () AS df2"), sql)
         // The label's count of nodes and average length, over every node of it, with no term matched.
         assertTrue(sql.contains("h.*, ( SELECT COUNT(*) FROM ( SELECT NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len FROM GRAPH_TABLE"), sql)
@@ -545,13 +547,33 @@ class OracleSelectTest {
         assertTrue(sql.contains(") b JOIN g_node c ON c.nid = b.nid WHERE b.score > 0"), sql)
         assertTrue(sql.contains("c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, b.score / MAX(b.score) OVER () AS score"), sql)
         val bound = select.bindings()
-        // Each scoring term's count, the required and the excluded, then each scoring term again, for whether a node holds it.
-        assertEquals(listOf("_p0", "_p1", "_p2", "_p3", "_p4", "_p5"), bound.keys.toList())
-        assertEquals("(^|[^[:alnum:]_])graph($|[^[:alnum:]_])", bound["_p0"])
-        assertEquals("(^|[^[:alnum:]_])data($|[^[:alnum:]_])", bound["_p1"])
-        assertEquals(bound["_p1"], bound["_p2"])
-        assertEquals("(^|[^[:alnum:]_])noise($|[^[:alnum:]_])", bound["_p3"])
-        assertEquals(listOf(bound["_p0"], bound["_p1"]), listOf(bound["_p4"], bound["_p5"]))
+        // Each scoring term's count, the required and the excluded, each as its two expressions; then each scoring term again,
+        // for whether a node holds it.
+        assertEquals((0..9).map { "_p$it" }, bound.keys.toList())
+        val word = { w: String -> "(^|[^[:alnum:]_])$w" }
+        assertEquals(listOf("graph", "data", "data", "noise").flatMap { listOf(word(it), word(it) + "[[:alnum:]_]") }, (0..7).map { bound["_p$it"] })
+        assertEquals(listOf(word("graph"), word("data")).map { "$it(\$|[^[:alnum:]_])" }, listOf(bound["_p8"], bound["_p9"]))
+    }
+
+    @Test
+    fun `a text search without an index counts a phrase that repeats a word in the text with each character between words twice`() {
+        val select = select(Shelf::class.java)
+        val sql = select.matching(listOf("title"), TextQuery.parse("\"la la\"")).squashed()
+        // Two counts would take different occurrences where one begins inside another: "la la" in "la la land" (drivine4j#607).
+        assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(REGEXP_REPLACE(s.text, '([^[:alnum:]_])', '\\1\\1'), \$_p0) AS tf1 FROM"), sql)
+        assertEquals("(^|[^[:alnum:]_])la[^[:alnum:]_]+la(\$|[^[:alnum:]_])", select.bindings()["_p0"])
+    }
+
+    @Test
+    fun `a text search without an index counts a prefix term, and one with a circled letter, by its one expression`() {
+        // A prefix term takes no character after it, and "ⓐ", a word's to the query and not measured on Oracle, may begin an
+        // occurrence there that two counts would lose (drivine4j#607).
+        listOf("kiw*" to "(^|[^[:alnum:]_])kiw", "bⓐb" to "(^|[^[:alnum:]_])bⓐb(\$|[^[:alnum:]_])").forEach { (query, bound) ->
+            val select = select(Shelf::class.java)
+            val sql = select.matching(listOf("title"), TextQuery.parse(query)).squashed()
+            assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) AS tf1 FROM"), sql)
+            assertEquals(bound, select.bindings()["_p0"])
+        }
     }
 
     @Test

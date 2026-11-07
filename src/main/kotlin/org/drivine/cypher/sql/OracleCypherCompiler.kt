@@ -37,6 +37,13 @@ class OracleCypherCompiler(
     graph: String,
     private val nullsEqualStored: Boolean = true,
     eraStored: Boolean = true,
+    /**
+     * The labels and properties a range index or a one-property uniqueness constraint is over, each as `label to key`: a
+     * node a pattern finds by one is read through that index ([indexedEquality]). Empty, as a statement compiled without
+     * the store's catalog is, no node is: its labels tested as the index over them answers, a property with no index of its
+     * own would read every node of the graph in place of those of the label (#617).
+     */
+    private val indexedProperties: Set<Pair<String, String>> = emptySet(),
 ) : SqlCypherCompiler(graph) {
 
     /** The function the store keeps that compares two values that may hold a null: see [nullsEqual]. */
@@ -482,6 +489,45 @@ class OracleCypherCompiler(
 
     override fun withEntries(json: String, entries: List<Pair<String, String>>) =
         if (entries.isEmpty()) json else "JSON_TRANSFORM($json, ${entries.joinToString(", ") { (key, value) -> "SET ${OracleSql.path(key)} = $value" }})"
+
+    /**
+     * The node's property read as the labelled index over its label holds it, [OracleSql.labelled], equal to the [value]'s
+     * text, for each label the pattern names for it: Oracle had no such test, so even a parameter's value was compared only
+     * as JSON, inside a `CASE`, which no index answers, and a node found by a property was found by reading every node of
+     * the label (#617).
+     */
+    override fun indexedEquality(property: String, value: String, of: IndexedProperty?): String? =
+        labelledEquals(of, "JSON_VALUE($value, '\$')")
+
+    /** An empty text, and one past [SHORT_TEXT] bytes, which the index's `JSON_VALUE` reads as null: see [readShort]. */
+    override fun indexHolds(given: Any) = readShort(given)
+
+    /**
+     * As [indexedEquality], for a value of any kind: `JSON_VALUE` gives a number's text as Oracle holds the number, so `1` and
+     * `1.0` are the same text. A list has no text, and neither does the property a list is in the labelled index, which holds
+     * none: it is let through, to be compared as JSON, so no list a node holds is left out (#617). Oracle reads no index
+     * beside that `OR`, so where the value is known to be no list or map ([scalar]) it is left out.
+     */
+    override fun indexedEqualityOfAny(property: String, value: String, of: IndexedProperty?, scalar: Boolean): String? {
+        if (labelledEquals(of, value) == null) return null
+        if (scalar) return labelledEquals(of, "JSON_VALUE($value, '\$')")
+        return shared(value) { (x) -> "(${labelledEquals(of, "JSON_VALUE($x, '\$')")} OR JSON_VALUE($x, '\$') IS NULL)" }
+    }
+
+    /**
+     * [text] equal to the property [of] names, as each index a label of its node may have over it holds it: a range index's
+     * labelled one, and a uniqueness constraint's over the one property, which stands for it and has it dropped. Both are
+     * written, for each label [indexedProperties] says has an index over the property: on a node with the label and the
+     * property they are the same value, and Oracle reads through whichever index is there. Null where it names no such label.
+     */
+    private fun labelledEquals(of: IndexedProperty?, text: String): String? {
+        if (of == null || of.labels.isEmpty() || !of.props.endsWith(".props")) return null
+        val alias = of.props.removeSuffix(".props")
+        val indexed = of.labels.filter { (it to of.key) in indexedProperties }.ifEmpty { return null }
+        return indexed.joinToString(" AND ") { label ->
+            "${OracleSql.labelled(alias, label, of.key)} = $text AND ${OracleSql.unique(alias, label, listOf(of.key), of.key)} = $text"
+        }
+    }
 
     /**
      * A procedure's parameter is read from the text its parameters are bound as, each where it is read, and one that holds

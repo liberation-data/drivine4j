@@ -3,11 +3,13 @@ package org.drivine.backend.oracle
 import org.drivine.backend.oracle.OracleSql.hasLabel
 import org.drivine.backend.oracle.OracleSql.literal
 import org.drivine.backend.oracle.OracleSql.path
+import org.drivine.schema.ALIASES
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaAliases
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
@@ -19,6 +21,7 @@ import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.aliasesJson
 import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
@@ -45,7 +48,7 @@ import java.sql.SQLException
  * Oracle's dictionary holds the expressions and not what they were made for, so what Drivine made is
  * recorded in a table of the graph's own, and read back from there.
  */
-internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGrammar {
+internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = "Oracle"
     override val supportsIfNotExists = true
@@ -78,7 +81,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     /**
      * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already; with [updated], a record already there takes [details]. A `MERGE` does not
+     * recorded already; with [updated], a record already there takes [details], a range index's, and
+     * keeps its aliases (see [rangeDetails]). A `MERGE` does not
      * read again before it inserts, so of two processes recording it at once the second is refused on
      * the catalog's key; that refusal is taken as recorded, and never read as the constraint itself
      * violated.
@@ -87,7 +91,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         BEGIN
             MERGE INTO ${graph.catalog} c
             USING (SELECT ${literal(spec.kind.name)} AS kind, ${literal(spec.label)} AS label, ${literal(json(spec.properties))} AS properties FROM dual) k
-            ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)${if (updated) "\n            WHEN MATCHED THEN UPDATE SET c.details = ${literal(details)}" else ""}
+            ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)${if (updated) "\n            WHEN MATCHED THEN UPDATE SET c.details = JSON_MERGEPATCH(c.details, ${literal(rangeDetails(details))})" else ""}
             WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
                 VALUES (k.kind, k.label, k.properties, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)});
         EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
@@ -95,6 +99,26 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             NULL;
         END;
     """
+
+    /**
+     * [details], a range index's, as the patch of a record's details that gives it them: each other key a range
+     * index's details hold is taken out, and the aliases the record keeps (see [SchemaAliases]) are kept.
+     */
+    private fun rangeDetails(details: String): String {
+        val absent = RANGE_DETAILS.filter { "\"$it\"" !in details }.joinToString(", ") { "\"$it\": null" }
+        if (absent.isEmpty()) return details
+        val body = details.trim().removePrefix("{").removeSuffix("}").trim()
+        return if (body.isEmpty()) "{$absent}" else "{$body, $absent}"
+    }
+
+    /** The test of the catalog's key that finds the record of [item]. */
+    private fun recordOf(item: SchemaItemInfo): String =
+        "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+
+    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement {
+        val patch = "{\"$ALIASES\": ${if (aliases.isEmpty()) "null" else aliasesJson(aliases)}}"
+        return statement("UPDATE ${graph.catalog} SET details = JSON_MERGEPATCH(details, ${literal(patch)}) WHERE ${recordOf(item)}")
+    }
 
     /**
      * Forgets [item], and drops what it was made as when nothing else recorded uses it: an index, or
@@ -114,7 +138,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                 IF v_labelled IS NOT NULL THEN
                     EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
                 END IF;"""
-        val record = "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+        val record = recordOf(item)
         // Dropped first and forgotten last: a drop commits what came before it, and one that fails
         // (another session writing the table) then leaves the record naming what is still there,
         // for the next drop to find. A record naming what is gone is listed as not there.
@@ -139,6 +163,9 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     }
 
     companion object {
+        /** The keys of a range index's details: the name of its labelled index, or of the uniqueness constraint's index that stands for it. */
+        private val RANGE_DETAILS = listOf("labelled", "unique")
+
         /** The status a range index is listed with when it lacks what this version makes for it. */
         const val INCOMPLETE = "INCOMPLETE"
 
@@ -307,8 +334,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     }
 
     /**
-     * Records the range index [spec] as served by a uniqueness constraint's index, [details], and
-     * drops the labelled index it was made with, when it was. The index is dropped first: a drop that
+     * Records the range index [spec] as served by a uniqueness constraint's index, [details], keeping
+     * its aliases, and drops the labelled index it was made with, when it was. The index is dropped first: a drop that
      * fails (another session writing the table) leaves the record naming it, for the next
      * constraint made to find and drop.
      */
@@ -322,7 +349,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                 IF v_labelled IS NOT NULL THEN
                     EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
                 END IF;
-                UPDATE ${graph.catalog} SET details = ${literal(details)} WHERE $record;
+                UPDATE ${graph.catalog} SET details = JSON_MERGEPATCH(details, ${literal(rangeDetails(details))}) WHERE $record;
                 COMMIT;
             END;
         """

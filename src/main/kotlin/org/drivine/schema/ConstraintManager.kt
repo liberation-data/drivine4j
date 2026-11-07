@@ -182,6 +182,10 @@ class ConstraintManager internal constructor(
     fun list(): List<SchemaItemInfo> =
         introspect(grammar.listConstraintsQuery())?.let { grammar.parseConstraintRows(it) } ?: emptyList()
 
+    /** Every managed constraint, as [list] gives them, with the aliases its record keeps (see [SchemaAliases]). */
+    internal fun recorded(): List<RecordedItem> =
+        introspect(grammar.listConstraintsQuery())?.let { recordedItems(it, grammar::parseConstraintRows) } ?: emptyList()
+
     /**
      * Drops the constraint that [spec] refers to, including one whose build failed, which FalkorDB
      * keeps listing though it enforces nothing.
@@ -201,7 +205,8 @@ class ConstraintManager internal constructor(
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
      * prevents recreation (in which case the previous constraint has already been dropped), or
      * [EnsureResult.BlockedByIndex] as [ensure] does. A constraint that ignores case fills the
-     * lowercased copies in again on every node of its label, recorded or not.
+     * lowercased copies in again on every node of its label, recorded or not. The constraint made again
+     * keeps the aliases its record kept (see [SchemaAliases]).
      */
     @JvmOverloads
     fun recreate(
@@ -211,13 +216,22 @@ class ConstraintManager internal constructor(
     ): EnsureResult {
         grammar.requireConstrainable(spec.made())
         val existing = find(spec)
+        // The constraint made again keeps the aliases its record kept.
+        val aliases = if (existing != null && grammar is SchemaAliases) {
+            recorded().firstOrNull { grammar.matchesIdentity(it.info, spec.made()) }?.aliases.orEmpty()
+        } else {
+            emptyList()
+        }
         if (existing != null) {
             run(grammar.dropConstraint(existing))
         }
         // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
         indexManager.fillIn(spec) { true }
         return when (val result = ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)) {
-            is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
+            is EnsureResult.Created -> {
+                if (aliases.isNotEmpty()) indexManager.alias(result.info, aliases)
+                EnsureResult.Recreated(existing, result.info)
+            }
             else -> result
         }
     }

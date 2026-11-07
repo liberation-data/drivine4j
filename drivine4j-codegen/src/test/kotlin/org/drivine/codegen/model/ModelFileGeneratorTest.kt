@@ -214,6 +214,34 @@ class ModelFileGeneratorTest {
     }
 
     @Test
+    fun `an override's node id is found however far up it is declared, and not from a base's private property`() {
+        val model = generate(
+            SourceFile.kotlin(
+                "Far.kt",
+                """
+                package ux
+
+                import org.drivine.annotation.*
+
+                interface Keyed { @get:NodeId val key: String }
+
+                interface Named : Keyed { override val key: String; val name: String }
+
+                @NodeFragment(labels = ["Far"])
+                data class Far(override val key: String, override val name: String) : Named
+
+                abstract class Hidden { @NodeId private val key: String = "" }
+
+                @NodeFragment(labels = ["NotOverridden"])
+                class NotOverridden : Hidden() { val key: String = "" }
+                """.trimIndent(),
+            ),
+        )
+        assertEquals("key", fragment(model, "ux.Far")["nodeId"].asText())
+        assertFalse(fragment(model, "ux.NotOverridden").has("nodeId"))
+    }
+
+    @Test
     fun `views carry paths, depth, sorting, read-only fields and aggregates`() {
         val model = generate(kotlinDomain)
         val team = view(model, "fx.Team")
@@ -376,7 +404,9 @@ class ModelFileGeneratorTest {
 
         file.setLastModified(0)
         generate(kotlinDomain, file = file, workDir = File(dir, "again"))
-        assertEquals(first, file.readText())
+        // It differed once in CI (#621), KSP2's findOverridee having found no @NodeId: say where, should it again.
+        val again = file.readText()
+        assertEquals(first, again, firstDifference(first, again))
         assertEquals(0, file.lastModified())
     }
 
@@ -540,6 +570,15 @@ class ModelFileGeneratorTest {
     fun `the module's file is found from its main sources`() {
         assertEquals(File("/repo/app/.drivine/model.json"), ModelFileGenerator.mainModuleFile(File("/repo/app/src/main/kotlin/a/B.kt")))
         assertNull(ModelFileGenerator.mainModuleFile(File("/repo/app/src/test/kotlin/a/B.kt")))
+    }
+
+    /** Where [again] first differs from [first], with the lines around it in each. */
+    private fun firstDifference(first: String, again: String): String {
+        val a = first.lines()
+        val b = again.lines()
+        val at = a.indices.firstOrNull { it >= b.size || a[it] != b[it] } ?: a.size
+        fun around(lines: List<String>) = lines.subList(maxOf(0, at - 3), minOf(lines.size, at + 4)).joinToString("\n")
+        return "The second model file differs at line ${at + 1}.\nFirst:\n${around(a)}\nSecond:\n${around(b)}"
     }
 
     private fun generate(vararg sources: SourceFile, file: File = File(dir, "model.json"), workDir: File = File(dir, "work")): JsonNode {

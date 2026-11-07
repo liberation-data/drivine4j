@@ -1,5 +1,6 @@
 package org.drivine.backend.sql
 
+import org.drivine.backend.sqlite.SqlitePatterns
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -112,7 +113,8 @@ class TextQueryTest {
         assertEquals("({kotlin}) NOT {python}", TextQuery.parse("kotlin -python").oracleText)
         assertEquals("({kotlin}) NOT {python} NOT {rust}", TextQuery.parse("kotlin NOT python !rust".replace("!rust", "! rust")).oracleText)
         assertEquals("(pre%)", TextQuery.parse("pre*").oracleText)
-        assertEquals("({graph} pre%)", TextQuery.parse("\"graph pre*\"").oracleText)
+        // A `*` inside quotes is text, as Lucene's parser reads it: the phrase "graph pre" (drivine4j#622).
+        assertEquals("({graph pre})", TextQuery.parse("\"graph pre*\"").oracleText)
     }
 
     @Test
@@ -230,5 +232,180 @@ class TextQueryTest {
         val query = TextQuery.parse("\"graph ".repeat(50_000))
 
         assertEquals(50_000, query.scored.size)
+    }
+
+    @Test
+    fun `a star inside quotes is text, as Lucene's parser reads it, and outside them the start of a word`() {
+        // drivine4j#622: Neo4j's parser hands a quoted text to its analyzer whole, which drops the `*`.
+        val quoted = TextQuery.parse("\"of sou*\"")
+        assertEquals(listOf(listOf("of", "sou")), quoted.scoredWords)
+        assertEquals("(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])", quoted.scored.single())
+        assertEquals("(^|[^[:alnum:]_])sou", TextQuery.parse("sou*").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw", TextQuery.parse("+kiw*").scored.single())
+        val phrase = "(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])"
+        assertEquals(phrase, TextQuery.parse("body:\"of sou*\"").scored.single())
+        assertEquals(phrase, TextQuery.parse("\"of sou\\*\"").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw(\$|[^[:alnum:]_])", TextQuery.parse("\"kiw*\"").scored.single())
+        assertEquals("({kiw})", TextQuery.parse("\"kiw*\"").oracleText)
+        assertEquals("({of sou})", TextQuery.parse("body:\"of sou*\"").oracleText)
+    }
+
+    @Test
+    fun `a word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as the text's expression reads it`() {
+        // drivine4j#616: a vowel sign and a letter number are in a word, as [[:alnum:]] holds them; a superscript or a
+        // fraction is between words, as it is in the text and to Neo4j's analyzer.
+        assertEquals(listOf(listOf("किताब")), TextQuery.parse("किताब").scoredWords)
+        assertEquals(listOf(listOf("bⅻb")), TextQuery.parse("bⅻb").scoredWords)
+        assertEquals(listOf(listOf("m", "x")), TextQuery.parse("m²x").scoredWords)
+        assertEquals(listOf(listOf("1", "2")), TextQuery.parse("1½2").scoredWords)
+        assertEquals(listOf(listOf("٣٤")), TextQuery.parse("٣٤").scoredWords)
+        // A backslash before "²" makes it text, which is still between words: before, it kept "²x" a word.
+        assertEquals(listOf(listOf("m", "x")), TextQuery.parse("""m\²x""").scoredWords)
+    }
+
+    /** How often [pattern] matches in [text], each match after the last one ends, as Postgres's and SQLite's counts are. */
+    private fun count(pattern: String, text: String): Int {
+        val matcher = SqlitePatterns().of(pattern).matcher(text)
+        var count = 0
+        while (matcher.find()) count++
+        return count
+    }
+
+    /** How often the term [query] occurs in [text], counted as Postgres and SQLite count it. */
+    private fun counted(query: String, text: String) = count(TextQuery.lookingAhead(TextQuery.parse(query).scored.single()), text)
+
+    /** How often the term [query] occurs in [text], counted as Oracle counts it (OracleSelect.matching). */
+    private fun countedByOracle(query: String, text: String): Int {
+        val term = TextQuery.parse(query).scored.single()
+        return TextQuery.counted(term)?.let { (ended, continued) -> count(ended, text) - (continued?.let { count(it, text) } ?: 0) }
+            ?: count(term, SqlitePatterns().of(TextQuery.SEPARATOR).matcher(text).replaceAll("\$1\$1"))
+    }
+
+    @Test
+    fun `a term's trailing boundary is looked ahead to, and a prefix term, which has none, is as it was`() {
+        assertEquals("(^|[^[:alnum:]_])kiwi(?=\$|[^[:alnum:]_])", TextQuery.lookingAhead(word("kiwi")))
+        assertEquals("(^|[^[:alnum:]_])kiw", TextQuery.lookingAhead(TextQuery.parse("kiw*").scored.single()))
+    }
+
+    @Test
+    fun `a term written again at once is counted each time, wherever it stands and whatever is around it`() {
+        val texts = mapOf(
+            "kiwi kiwi kiwi" to 3,
+            "kiwi,kiwi.kiwi!" to 3,
+            "(kiwi)" to 1,
+            "kiwi" to 1,
+            "kiwis kiwi_kiwi kiwi2 akiwi" to 0,
+            "kiwi\nkiwi\n" to 2,
+        )
+        texts.forEach { (text, n) ->
+            assertEquals(n, counted("kiwi", text), text)
+            assertEquals(n, countedByOracle("kiwi", text), text)
+        }
+    }
+
+    @Test
+    fun `a phrase written again at once is counted each time, and its gap may be any punctuation`() {
+        val texts = mapOf("of soup of soup" to 2, "of  soup, of -- soup." to 2, "of soups of soup" to 1, "of soup_ of soup" to 1, "of soup_of soup" to 0)
+        texts.forEach { (text, n) ->
+            assertEquals(n, counted("\"of soup\"", text), text)
+            assertEquals(n, countedByOracle("\"of soup\"", text), text)
+        }
+    }
+
+    @Test
+    fun `a prefix term counts each word it starts, its last word the start of one`() {
+        assertEquals(3, counted("kiw*", "kiwi kiwis kiw akiwi"))
+        assertEquals(3, countedByOracle("kiw*", "kiwi kiwis kiw akiwi"))
+        // A `*` inside quotes is text (drivine4j#622): "of sou*" is the phrase "of sou", which "of soup of soups" doesn't hold.
+        assertEquals(0, counted("\"of sou*\"", "of soup of soups"))
+        assertEquals(0, countedByOracle("\"of sou*\"", "of soup of soups"))
+    }
+
+    @Test
+    fun `a word in any script is a word, so a letter after a term in another script goes on with it`() {
+        assertEquals(2, counted("café", "café café cafés caféé"))
+        assertEquals(2, countedByOracle("café", "café café cafés caféé"))
+        assertEquals(2, counted("кот", "кот кот котик"))
+        assertEquals(2, countedByOracle("кот", "кот кот котик"))
+    }
+
+    @Test
+    fun `Oracle counts a term of words each once by two counts, and a phrase that repeats a word in the text with its gaps doubled`() {
+        assertEquals("(^|[^[:alnum:]_])kiwi" to "(^|[^[:alnum:]_])kiwi[[:alnum:]_]", TextQuery.counted(word("kiwi")))
+        assertEquals("(^|[^[:alnum:]_])kiw" to null, TextQuery.counted(TextQuery.parse("kiw*").scored.single()))
+        assertEquals(null, TextQuery.counted(TextQuery.parse("\"la la\"").scored.single()))
+        assertEquals(null, TextQuery.counted(TextQuery.parse("\"la di la\"").scored.single()))
+        assertEquals("(^|[^[:alnum:]_])of[^[:alnum:]_]+soup", TextQuery.counted(TextQuery.parse("\"of soup\"").scored.single())?.first)
+    }
+
+    @Test
+    fun `a phrase whose words begin it again counts the same on Oracle, where the word after it goes on`() {
+        // "la la" ends at the space before "land", and once; Oracle's count of "la la" ending anywhere took the
+        // first, and of it going on into a word took the second, "la la" of "la land", so it counted none.
+        assertEquals(1, counted("\"la la\"", "la la land"))
+        assertEquals(1, countedByOracle("\"la la\"", "la la land"))
+    }
+
+    @Test
+    fun `a phrase whose last word starts its first counts the same on Oracle, where the word after it goes on`() {
+        // Its words are each once, yet "kiwis kiwi" ending anywhere took the first two words, and going on into a word
+        // took them too, so the two counts counted none.
+        assertEquals(null, TextQuery.counted(TextQuery.parse("\"kiwis kiwi\"").scored.single()))
+        assertEquals(1, counted("\"kiwis kiwi\"", "kiwis kiwis kiwi"))
+        assertEquals(1, countedByOracle("\"kiwis kiwi\"", "kiwis kiwis kiwi"))
+        assertEquals(1, countedByOracle("\"kiwis bird kiwi\"", "kiwis bird kiwis bird kiwi"))
+    }
+
+    @Test
+    fun `a phrase of distinct words, whose last doesn't start its first, counts the same on Oracle by its two counts`() {
+        // No occurrence of such a term begins inside another: one would begin at a later word of it, which would be its first.
+        val cases = listOf(
+            // Its first word starts its last.
+            "\"kiwi kiwis\"" to "kiwi kiwi kiwis kiwis kiwi kiwisx kiwi kiwis",
+            // Its first word starts a middle one.
+            "\"ki kiwi bird\"" to "ki ki kiwi bird ki kiwi birds ki kiwi bird ki kiwi bird",
+            // Words of digits and underscores, which go on as letters do.
+            "\"a1 a12\"" to "a1 a1 a12 a1 a12 a1 a123 a1 a12_",
+            "\"_a a_b\"" to "_a _a a_b _a a_b _a a_bc",
+            "a_1" to "a_1 a_1 a_1a a_1_ a_1",
+        )
+        cases.forEach { (query, text) ->
+            assertTrue(TextQuery.counted(TextQuery.parse(query).scored.single()) != null, query)
+            assertEquals(counted(query, text), countedByOracle(query, text), "$query in $text")
+        }
+        assertEquals(2, counted("\"kiwi kiwis\"", "kiwi kiwi kiwis kiwis kiwi kiwisx kiwi kiwis"))
+        assertEquals(3, countedByOracle("\"ki kiwi bird\"", "ki ki kiwi bird ki kiwi birds ki kiwi bird ki kiwi bird"))
+    }
+
+    @Test
+    fun `a word holding a character not measured as alnum on Oracle is counted there by its one expression, so no occurrence is lost`() {
+        // A circled letter, "ⓐ", is a word's to the query, which reads it as alphabetic, and may not be to Oracle's [[:alnum:]]:
+        // an occurrence could begin inside another there, so the one count counts it.
+        val circled = TextQuery.parse("bⓐb").scored.single()
+        assertEquals(circled to null, TextQuery.counted(circled))
+        // "²" is between words (drivine4j#616): "b²b" is the phrase "b b", which repeats a word, and still counts the same.
+        assertEquals(null, TextQuery.counted(TextQuery.parse("b²b").scored.single()))
+        assertEquals(1, counted("b²b", "b²b²bx"))
+        assertEquals(1, countedByOracle("b²b", "b²b²bx"))
+    }
+
+    @Test
+    fun `a word with a vowel sign written again at once is counted each time on Oracle, by its two counts`() {
+        // A vowel sign is in a word (drivine4j#616) and a combining mark is [[:alnum:]] on Oracle, so no occurrence begins
+        // inside another: counted by the one expression, "किताब किताब" was once.
+        assertTrue(TextQuery.counted(TextQuery.parse("किताब").scored.single())?.second != null)
+        assertEquals(2, counted("किताब", "किताब किताब"))
+        assertEquals(2, countedByOracle("किताब", "किताब किताब"))
+        assertEquals(2, countedByOracle("\"एक किताब\"", "एक किताब एक किताब"))
+        // Its next character a vowel sign, the word goes on, as it does in the text on each store: no occurrence.
+        assertEquals(0, countedByOracle("किताब", "किताबें"))
+    }
+
+    @Test
+    fun `a word with a letter number written again at once is counted each time on Oracle, by its two counts`() {
+        // "ⅻ" is [[:alnum:]] on Oracle, as measured (drivine4j#616): counted by the one expression, "bⅻb bⅻb" was once.
+        assertTrue(TextQuery.counted(TextQuery.parse("bⅻb").scored.single())?.second != null)
+        assertEquals(2, counted("bⅻb", "bⅻb bⅻb"))
+        assertEquals(2, countedByOracle("bⅻb", "bⅻb bⅻb"))
     }
 }
