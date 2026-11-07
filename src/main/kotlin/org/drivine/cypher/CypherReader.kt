@@ -1,10 +1,13 @@
 package org.drivine.cypher
 
+import org.antlr.v4.runtime.BailErrorStrategy
 import org.antlr.v4.runtime.BaseErrorListener
 import org.antlr.v4.runtime.CharStreams
 import org.antlr.v4.runtime.CommonTokenStream
 import org.antlr.v4.runtime.RecognitionException
 import org.antlr.v4.runtime.Recognizer
+import org.antlr.v4.runtime.atn.PredictionMode
+import org.antlr.v4.runtime.misc.ParseCancellationException
 import org.antlr.v4.runtime.tree.TerminalNode
 import org.drivine.DrivineException
 import org.drivine.cypher.ast.Clause
@@ -31,16 +34,40 @@ import java.math.BigInteger
  */
 object CypherReader {
 
-    /** The statement [cypher], read. */
+    /**
+     * The statement [cypher], read. It is parsed in ANTLR's two stages (#655): first with SLL prediction, which is
+     * faster and gives the tree full LL prediction gives wherever it finds no error, bailing at its first error with no
+     * listener to report it; then, only where SLL bails, again from the first token with LL, whose error is the one
+     * a statement that is not Cypher is refused with. The lexer is the same in both stages, and refuses as it did.
+     */
     fun read(cypher: String): Query {
-        val refusing = object : BaseErrorListener() {
-            override fun syntaxError(
-                recognizer: Recognizer<*, *>?, offendingSymbol: Any?, line: Int, charPositionInLine: Int, msg: String?, e: RecognitionException?,
-            ) = throw DrivineException("The statement is not Cypher, at line $line, column ${charPositionInLine + 1}: $msg")
+        val tokens = CommonTokenStream(lexer(cypher))
+        val tree = try {
+            CypherParser(tokens).apply {
+                removeErrorListeners()
+                interpreter.predictionMode = PredictionMode.SLL
+                errorHandler = BailErrorStrategy()
+            }.oC_Cypher()
+        } catch (e: ParseCancellationException) {
+            tokens.seek(0)
+            fullContext(tokens)
         }
-        val lexer = CypherLexer(CharStreams.fromString(cypher)).apply { removeErrorListeners(); addErrorListener(refusing) }
-        val parser = CypherParser(CommonTokenStream(lexer)).apply { removeErrorListeners(); addErrorListener(refusing) }
-        return query(parser.oC_Cypher().oC_Statement().oC_Query())
+        return query(tree.oC_Statement().oC_Query())
+    }
+
+    /** The statement [cypher], parsed with LL prediction alone: what [read] gives where SLL bails. */
+    internal fun readFullContext(cypher: String): Query = query(fullContext(CommonTokenStream(lexer(cypher))).oC_Statement().oC_Query())
+
+    private fun fullContext(tokens: CommonTokenStream): OC_CypherContext =
+        CypherParser(tokens).apply { removeErrorListeners(); addErrorListener(refusing) }.oC_Cypher()
+
+    private fun lexer(cypher: String) = CypherLexer(CharStreams.fromString(cypher)).apply { removeErrorListeners(); addErrorListener(refusing) }
+
+    /** Refuses a statement that is not Cypher, with where it went wrong. */
+    private val refusing = object : BaseErrorListener() {
+        override fun syntaxError(
+            recognizer: Recognizer<*, *>?, offendingSymbol: Any?, line: Int, charPositionInLine: Int, msg: String?, e: RecognitionException?,
+        ) = throw DrivineException("The statement is not Cypher, at line $line, column ${charPositionInLine + 1}: $msg")
     }
 
     private fun query(context: OC_QueryContext): Query = context.oC_RegularQuery()?.let(::regular) ?: standalone(context.oC_StandaloneCall())
