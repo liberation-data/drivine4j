@@ -8,6 +8,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.ddl.SchemaCommands
 import org.drivine.store.StoreIdentity
 import org.drivine.store.StoreIdentityResolver
 import org.drivine.schema.ConstraintManager
@@ -43,11 +44,29 @@ class NonTransactionalPersistenceManager(
 
     override val constraints: ConstraintManager by lazy { ConstraintManager(connectionProvider, indexes) }
 
+    /**
+     * What runs Neo4j schema DDL given as Cypher to a SQL store (see [SchemaCommands]): the one
+     * [PersistenceManagerFactory] made for the database, or, for a manager made without one, one of the
+     * manager's own, made when DDL is first run.
+     */
+    internal var schemaCommands: SchemaCommands? = null
+
+    private val commands: SchemaCommands by lazy { schemaCommands ?: SchemaCommands.standalone(connectionProvider) }
+
     private val logger = LoggerFactory.getLogger(NonTransactionalPersistenceManager::class.java)
     private val finderOperations = FinderOperations(this)
     private val nonAtomic = NonAtomicBatches(logger, database)
 
+    /**
+     * Runs a statement. Neo4j schema DDL (`CREATE INDEX`, `CREATE CONSTRAINT`, `DROP …`, `db.awaitIndexes`)
+     * given as Cypher to Postgres, Oracle or SQLite is applied through Drivine's schema machinery, and gives
+     * no rows; see [SchemaCommands]. A graph engine is sent it as it is.
+     */
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
+        SchemaCommands.ddlOf(type, spec)?.let { ddl ->
+            commands.run(ddl)
+            return emptyList()
+        }
         val connection = connectionProvider.connect()
         return try {
             val result = connection.query(spec)
@@ -86,6 +105,14 @@ class NonTransactionalPersistenceManager(
      */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
+        if (specs.any { SchemaCommands.ddlOf(type, it) != null }) {
+            @Suppress("UNCHECKED_CAST")
+            if (specs.size == 1) return listOf(query(specs.single() as QuerySpecification<Any>))
+            throw DrivineException(
+                "A schema command is not run in a batch of statements, which runs in one transaction: " +
+                    "Drivine applies it on connections of its own. Run it on its own."
+            )
+        }
         if (specs.size == 1 && !atomicBatches) {
             @Suppress("UNCHECKED_CAST")
             return listOf(query(specs.single() as QuerySpecification<Any>))

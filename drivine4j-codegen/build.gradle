@@ -65,6 +65,11 @@ kotlin {
 
 test {
     useJUnitPlatform()
+    // A failed assertion's message in the build's own output, as CI shows it: the model file tests say there where two
+    // files differ (#621).
+    testLogging {
+        exceptionFormat = 'full'
+    }
 }
 
 // Publishing configuration

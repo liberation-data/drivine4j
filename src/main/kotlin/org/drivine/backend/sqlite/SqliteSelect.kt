@@ -502,7 +502,7 @@ internal class SqliteSelect(
             graph.nodes, query,
             Bm25.Dialect(
                 columns = SqliteSql::columns,
-                count = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))})" },
+                count = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(TextQuery.lookingAhead(term)))})" },
                 holds = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))}) > 0" },
                 ln = { "${SqliteFunctions.MATH}('log', $it)" },
                 real = { "CAST($it AS REAL)" },

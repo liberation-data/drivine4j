@@ -488,7 +488,7 @@ internal class PostgresSelect(
             graph.nodes, query,
             Bm25.Dialect(
                 columns = PostgresSql::columns,
-                count = { text, term -> "(SELECT count(*) FROM regexp_matches($text, ${PostgresSql.text(scope.bound(term))}, 'g'))" },
+                count = { text, term -> "(SELECT count(*) FROM regexp_matches($text, ${PostgresSql.text(scope.bound(TextQuery.lookingAhead(term)))}, 'g'))" },
                 holds = { text, term -> "$text ~ ${PostgresSql.text(scope.bound(term))}" },
                 ln = { "ln($it)" },
                 real = { "CAST($it AS double precision)" },
