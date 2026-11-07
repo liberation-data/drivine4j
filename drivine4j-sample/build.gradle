@@ -93,4 +93,7 @@ test {
     // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
     rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
     if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+    // The kotlinx-serialization-json Spring Boot's BOM manages, which a Boot application resolves the Cypher compiler's
+    // JSON library to, beneath the version the compiler is built with: BootManagedCompilerTest compiles against it.
+    systemProperty 'drivine.boot.kotlinSerialization', dependencyManagement.importedProperties['kotlin-serialization.version']
 }
