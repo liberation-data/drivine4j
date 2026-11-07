@@ -762,7 +762,10 @@ relationships with it.
   term's words. Every node that holds a term is among them, so how rare each term is comes out the
   same; only the label's count of nodes and their average length are read from every node of it, and
   no term is matched in that read. A search sees its own transaction's writes. An `analyzer` is
-  recorded with the index and not applied.
+  recorded with the index and not applied. A dotted name, as `org.example.models`, is words here,
+  split at each dot, as it is on Oracle and SQLite: `example models` finds it, and the name itself
+  is the phrase of its words. Neo4j's default analyzer keeps such a name one token, which the whole
+  name finds and `example models` doesn't; `FullTextIndexSpec`'s `analyzer` picks another there.
 - The deprecated `GraphObjectManager.save` and `saveAll`, and the Cypher migration tools, do not run
   on Postgres, as on Oracle; that manager's loads, queries and deletes work.
 
