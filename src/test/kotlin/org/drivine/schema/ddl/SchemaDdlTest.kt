@@ -1,10 +1,8 @@
 package org.drivine.schema.ddl
 
 import org.drivine.DrivineException
+import org.drivine.connection.CypherCompile
 import org.drivine.connection.DatabaseType
-import org.drivine.cypher.sql.OracleCypherCompiler
-import org.drivine.cypher.sql.PostgresCypherCompiler
-import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.FullTextIndexSpec
@@ -213,12 +211,18 @@ class SchemaDdlTest {
 
     @Test
     fun `the SQL compilers refuse a schema command, as the translator does or as no query`() {
-        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
-            val refused = assertThrows<DrivineException> { compiler.compile("CREATE POINT INDEX FOR (p:Place) ON (p.location)") }
+        // Through CypherCompile, where a connection compiles, which throws the compiler's refusal as a DrivineException.
+        val compiles: List<(String) -> Any> = listOf(
+            { cypher -> CypherCompile.postgres("g", cypher, emptyMap()) },
+            { cypher -> CypherCompile.oracle("g", cypher, emptyMap(), { true }, { true }) },
+            { cypher -> CypherCompile.sqlite("g", cypher, emptyMap()) },
+        )
+        compiles.forEach { compile ->
+            val refused = assertThrows<DrivineException> { compile("CREATE POINT INDEX FOR (p:Place) ON (p.location)") }
             assertEquals("A POINT index is Neo4j's, and is not made on a SQL store.", refused.message)
-            val command = assertThrows<DrivineException> { compiler.compile("CREATE INDEX FOR (p:Person) ON (p.name)") }
+            val command = assertThrows<DrivineException> { compile("CREATE INDEX FOR (p:Person) ON (p.name)") }
             assertTrue(command.message!!.startsWith("The statement is a schema command"), command.message)
-            compiler.compile("CREATE (index:Index) RETURN index")
+            compile("CREATE (index:Index) RETURN index")
         }
     }
 
