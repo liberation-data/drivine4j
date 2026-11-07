@@ -588,7 +588,8 @@ object CypherReader {
 
     // ----- Names and literals -----
 
-    private fun name(context: OC_VariableContext): String = symbolic(context.oC_SymbolicName())
+    /** A variable's name: a keyword, as `end`, as it is written (#635). */
+    private fun name(context: OC_VariableContext): String = context.oC_SymbolicName()?.let(::symbolic) ?: context.oC_KeywordVariable().text
 
     /** A name, as written or between backticks, where a doubled backtick is one. */
     private fun name(context: OC_SchemaNameContext): String =

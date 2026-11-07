@@ -6,6 +6,8 @@ package org.drivine.backend.sql
  * without a text index of their own score so, so that they rank the texts as Neo4j does: counted alone, a common word
  * outweighed the word a query is about, and a long text won by holding more of everything.
  *
+ * A prefix term is scored as Lucene scores a prefix query: the same [PREFIX] for every node that holds it (drivine4j#612).
+ *
  * Each term's count is [TextQuery]'s, a whole word or phrase matched in the lower-cased text. Its rarity is over every node
  * of the label, and so is the average length, however a store narrows the nodes it counts.
  */
@@ -17,11 +19,22 @@ internal object Bm25 {
     /** How much a text's length, against the average, weighs its counts down: Lucene's. */
     const val B = 0.75
 
+    /**
+     * What a prefix term adds to the score of each node that holds it. Lucene scores a prefix query as a constant, its boost
+     * of 1, beside terms it scores by BM25 without the `k1 + 1` that [score]'s carries: on [score]'s scale that is `k1 + 1`.
+     * Measured on Neo4j, `kiw*` gave each node it found 1, and in `kiw* melon` 0.54 to those without "melon" beside 1 for
+     * the one with it, as this gives (drivine4j#612).
+     */
+    const val PREFIX = K1 + 1
+
     /** How a store writes what [ranked] asks of it. */
     class Dialect(
         /** The columns of a node's row, as the alias's. */
         val columns: (alias: String) -> String,
-        /** How often a term occurs in a text, the term bound as a parameter. */
+        /**
+         * How often a term occurs in a text, the term bound as a parameter: each time, where it is written again at once too, so
+         * not taking the character after one (drivine4j#607).
+         */
         val count: (text: String, term: String) -> String,
         /** Whether a term occurs in a text at all, the term bound as a parameter: cheaper than [count] where the store can tell. */
         val holds: (text: String, term: String) -> String,
@@ -60,7 +73,15 @@ internal object Bm25 {
                 tf.zip(df).map { (t, d) -> "SUM(CASE WHEN h.$t > 0 THEN 1 ELSE 0 END) OVER () AS $d" }).joinToString(", "),
             Derived(counted.text(), "h"),
         )
-        val score = score(tf.zip(df).map { (t, d) -> "w.$t" to "w.$d" }, "w.n", "w.len", "NULLIF(w.avglen, 0)", sql.ln)
+        // A prefix term weighs the same for each node that holds it, as Lucene's prefix query scores it: a constant, not by how
+        // often or how rare (drivine4j#612). Every other term by BM25.
+        val score = query.scored.indices.joinToString("\n    + ") { i ->
+            if (TextQuery.isPrefix(query.scored[i])) {
+                "CASE WHEN w.${tf[i]} > 0 THEN $PREFIX ELSE 0 END"
+            } else {
+                score(listOf("w.${tf[i]}" to "w.${df[i]}"), "w.n", "w.len", "NULLIF(w.avglen, 0)", sql.ln)
+            }
+        }
         val scored = Query("w.nid, ${sql.real(score)} AS score", Derived(weighed.text(), "w"), required.map { "w.$it > 0" } + excluded.map { "w.$it = 0" })
         return Query(
             "${sql.columns("c")}, b.score / MAX(b.score) OVER () AS score",

@@ -3,6 +3,7 @@ package org.drivine.manager
 import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.backend.sql.Bm25
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
@@ -21,6 +22,8 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import sample.fulltext.ArticleNode
+import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -45,6 +48,9 @@ abstract class FullTextBm25Contract {
     /** Waits for the index to hold what was written, where it fills after the write. */
     open fun settle() {}
 
+    /** A text's length as the store measures it for BM25: in characters on the SQL stores, in tokens on Lucene. */
+    open fun length(text: String): Int = text.length
+
     private val manager by lazy { StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry()) }
 
     @BeforeAll
@@ -52,9 +58,11 @@ abstract class FullTextBm25Contract {
         write(COMMON)
         write(SEED)
         write(PAPERS)
+        write(FRUITS.entries.joinToString("\n") { (id, body) -> "CREATE (:Fruit {id: '$id', body: '$body'})" })
         if (indexed) {
             pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
             pm.indexes.ensure(FullTextIndexSpec("Paper", listOf("title", "body")))
+            pm.indexes.ensure(FullTextIndexSpec("Fruit", "body"))
         }
         settle()
     }
@@ -95,6 +103,64 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a prefix term scores every node that holds it alike, as Lucene's prefix query does`() {
+        // Lucene scores a prefix query by a constant, not by how often or how rare (drivine4j#612).
+        val hits = search("kiw*")
+        assertEquals(setOf("once", "often"), hits.map { it.value.id }.toSet())
+        assertTrue(hits.all { abs(it.score - 1.0) < 1e-9 }, hits.toString())
+    }
+
+    @Test
+    fun `a prefix term beside a word adds the same to each node that holds it`() {
+        val hits = search("kiw* bird")
+        assertEquals(listOf("once", "often"), hits.map { it.value.id })
+        assertTrue(hits[1].score < hits[0].score, hits.toString())
+    }
+
+    @Test
+    fun `a prefix term beside a rare word weighs as Lucene's constant does beside its BM25, as Neo4j measured`() {
+        val fruit = { query: String -> manager.loadMatching(FruitNode::class.java, query, 50, 0.0).associate { it.value.id to it.score } }
+        // On Neo4j, every hit of a prefix alone scored 1 (drivine4j#612).
+        assertEquals(setOf("one", "three", "long", "rare"), fruit("kiw*").keys)
+        assertEquals(setOf("one", "three", "long"), fruit("kiwi*").keys)
+        assertTrue((fruit("kiw*").values + fruit("kiwi*").values).all { abs(it - 1.0) < 1e-6 }, fruit("kiw*").toString())
+        // "melon" is in "rare" alone: its BM25 beside the prefix's constant, with the lengths the store measures.
+        val lengths = FRUITS.mapValues { length(it.value) }
+        val average = lengths.values.average()
+        val idf = ln(1 + (FRUITS.size - 1 + 0.5) / (1 + 0.5))
+        val melon = idf * (Bm25.K1 + 1) / (1 + Bm25.K1 * (1 - Bm25.B + Bm25.B * lengths.getValue("rare") / average))
+        val expected = Bm25.PREFIX / (Bm25.PREFIX + melon)
+        for (query in listOf("kiw* melon", "+kiw* melon")) {
+            val hits = fruit(query)
+            assertEquals(setOf("one", "three", "long", "rare"), hits.keys, query)
+            assertEquals(1.0, hits.getValue("rare"), 1e-6, query)
+            listOf("one", "three", "long").forEach { assertEquals(expected, hits.getValue(it), 1e-4, "$query: $it") }
+        }
+        // Neo4j gave 0.5409; the SQL stores, measuring length in characters, about 0.549.
+        assertEquals(0.5409, expected, 0.01)
+    }
+
+    @Test
+    fun `a term written three times running counts three times, not every other one`() {
+        // As long as each other: counted three times and twice, not twice each (drivine4j#607).
+        val hits = search("okapi")
+        assertEquals(listOf("triple", "apart"), hits.map { it.value.id })
+        assertTrue(hits[0].score > hits[1].score, hits.toString())
+    }
+
+    @Test
+    fun `a phrase that repeats a word is found where its words begin it again`() {
+        // Counted on Oracle as two counts, "la la" in "la la land" counted none (drivine4j#607).
+        assertEquals(listOf("lalaland"), search("+\"la la\"").map { it.value.id })
+    }
+
+    @Test
+    fun `a phrase whose last word starts its first is found where the phrase begins again`() {
+        // Its words are each once, yet counted on Oracle as two counts, "tapirs tapir" in "tapirs tapirs tapir" counted none.
+        assertEquals(listOf("tapirs"), search("+\"tapirs tapir\"").map { it.value.id })
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
@@ -121,6 +187,10 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
             CREATE (:Article {id: 'hindi', title: 'h', body: 'एक किताब'})
             CREATE (:Article {id: 'area', title: 'a', body: 'an m² x here'})
+            CREATE (:Article {id: 'triple', title: 't', body: 'okapi okapi okapi'})
+            CREATE (:Article {id: 'apart', title: 'a', body: 'okapi lemur okapi'})
+            CREATE (:Article {id: 'lalaland', title: 'l', body: 'la la land'})
+            CREATE (:Article {id: 'tapirs', title: 't', body: 'tapirs tapirs tapir'})
         """.trimIndent()
 
         /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */
@@ -131,6 +201,15 @@ abstract class FullTextBm25Contract {
             CREATE (:Paper {id: 'other', title: 'nothing', body: 'to see'})
         """.trimIndent()
 
+        /** drivine4j#612's texts, measured on Neo4j: a prefix that "rare" alone holds beside "melon". */
+        val FRUITS = linkedMapOf(
+            "one" to "kiwi",
+            "three" to "kiwi kiwis kiwifruit",
+            "long" to "a kiwi among a great many other words that make this text far longer than any of the others",
+            "rare" to "kiwano melon",
+            "other" to "nothing here",
+        )
+
         /** Twenty texts that hold "graph", written apart from [SEED]: an `UNWIND` before it would make each of its nodes twenty times. */
         const val COMMON = "UNWIND range(1, 20) AS i CREATE (:Article {id: 'common' + toString(i), title: 'c', body: 'a note on a graph and its nodes'})"
     }
@@ -140,6 +219,11 @@ abstract class FullTextBm25Contract {
 @FullTextIndex(properties = ["title", "body"])
 @NodeFragment(labels = ["Paper"])
 data class PaperNode(@NodeId val id: String, val title: String?, val body: String?)
+
+/** drivine4j#612's texts, to search for a prefix. */
+@FullTextIndex(properties = ["body"])
+@NodeFragment(labels = ["Fruit"])
+data class FruitNode(@NodeId val id: String, val body: String)
 
 class Neo4jFullTextBm25Test : FullTextBm25Contract() {
     private val provider by lazy {
@@ -152,6 +236,9 @@ class Neo4jFullTextBm25Test : FullTextBm25Contract() {
     }
     override val pm by lazy { NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, SubtypeRegistry()) }
     override val indexed = true
+
+    /** Lucene's standard analyzer measures a text in tokens. */
+    override fun length(text: String) = text.split(' ').size
 
     /** Neo4j's full-text index fills after the write. */
     override fun settle() {

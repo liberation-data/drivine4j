@@ -168,6 +168,32 @@ class IndexManager internal constructor(
             .distinct()
     }
 
+    /** Every managed index, as [list] gives them, with the aliases its record keeps (see [SchemaAliases]). */
+    internal fun recorded(): List<RecordedItem> {
+        val queries = listOfNotNull(
+            SchemaItemKind.VECTOR_INDEX,
+            SchemaItemKind.RANGE_INDEX,
+            SchemaItemKind.FULLTEXT_INDEX,
+            SchemaItemKind.TEXT_INDEX.takeIf { grammar.supportsTextIndex },
+        )
+            .map { grammar.listIndexesQuery(it) }
+            .distinct()
+        return queries.flatMap { query -> introspect(query)?.let { recordedItems(it, grammar::parseIndexRows) } ?: emptyList() }.distinct()
+    }
+
+    /** Records [aliases] as all the aliases of [item], an index or a constraint whose record is there; nothing, on a store that keeps none. */
+    internal fun alias(item: SchemaItemInfo, aliases: List<String>) {
+        val store = grammar as? SchemaAliases ?: return
+        executor.execute(store.aliased(item, aliases))
+    }
+
+    /** The aliases the record of the index [spec], as it is made, keeps; none, on a store that keeps none. */
+    private fun aliasesOf(spec: IndexSpec): List<String> {
+        if (grammar !is SchemaAliases) return emptyList()
+        val rows = introspect(grammar.listIndexesQuery(spec.kind)) ?: return emptyList()
+        return recordedItems(rows, grammar::parseIndexRows).firstOrNull { grammar.matchesIdentity(it.info, spec) }?.aliases.orEmpty()
+    }
+
     /**
      * Drops the index that [spec] refers to.
      *
@@ -183,7 +209,7 @@ class IndexManager internal constructor(
      * Drops (if present) and recreates the index described by [spec]. Destructive — previously
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
      * An index that ignores case fills the lowercased copies in again on every node of its label,
-     * recorded or not.
+     * recorded or not. The index made again keeps the aliases its record kept (see [SchemaAliases]).
      */
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
         requireSupported(spec)
@@ -192,9 +218,10 @@ class IndexManager internal constructor(
         return recreateMade(spec.made())
     }
 
-    /** [recreate], of [spec] as it is made. */
+    /** [recreate], of [spec] as it is made. The index made again keeps the aliases it had. */
     private fun recreateMade(spec: IndexSpec): EnsureResult.Recreated {
         val existing = find(spec)
+        val aliases = if (existing != null) aliasesOf(spec) else emptyList()
         if (existing != null) {
             dropExisting(existing, spec)
         }
@@ -205,6 +232,7 @@ class IndexManager internal constructor(
         warnUnsupportedTuning(spec)
         run(grammar.createIndex(spec, related))
         val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+        if (aliases.isNotEmpty()) alias(created, aliases)
         logEffectiveVectorConfig(spec, created)
         logger.warn(
             "Recreated {} {} on {}{} — previously indexed data may be stale " +
