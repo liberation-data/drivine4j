@@ -48,6 +48,9 @@ dependencies {
     // The generated DSL references annotation + runtime DSL types from the root library. Non-transitive:
     // we only need the drivine classes (annotations, query.dsl), not the root's Spring/Jackson deps.
     testImplementation(rootProject) { transitive = false }
+    // And the Cypher compiler, which holds the schema specs' enums the annotations name (SimilarityFunction): the
+    // root project's api dependency, which a non-transitive dependency leaves out.
+    testImplementation("org.drivine:drivine-cypher-compiler-jvm:${rootProject.cypherCompilerVersion}") { transitive = false }
 }
 
 test {

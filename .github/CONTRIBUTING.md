@@ -3,6 +3,10 @@
 ## Running Tests Locally
 
 ```bash
+# Once in a new checkout, and again after gradle/cypher-compiler.properties moves: the pinned Cypher compiler,
+# published into .compiler-repo, which the build reads it from (see docs/16-building-from-source.md)
+scripts/compiler-local.sh
+
 # Run all tests
 ./gradlew test
 
