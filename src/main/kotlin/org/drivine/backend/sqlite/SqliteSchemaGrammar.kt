@@ -3,11 +3,13 @@ package org.drivine.backend.sqlite
 import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteSql.hasLabel
 import org.drivine.backend.sqlite.SqliteSql.literal
+import org.drivine.schema.ALIASES
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaAliases
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
@@ -19,6 +21,7 @@ import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.aliasesJson
 import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
@@ -42,7 +45,7 @@ import java.sql.SQLException
  * from there: an index's expression does not say which label and properties it was made for. An index
  * a record names that is no longer there is not listed, so it is made again when asked for.
  */
-internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGrammar {
+internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = "SQLite"
     override val supportsIfNotExists = true
@@ -84,11 +87,19 @@ internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGramm
             SchemaItemKind.UNIQUENESS_CONSTRAINT -> UNIQUE
             else -> null
         }
-        val record = "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
         return listOfNotNull(
             kind?.let { statement("DROP INDEX IF EXISTS ${graph.objectName(it, listOf(item.label) + item.properties)}") },
-            statement("DELETE FROM ${graph.catalog} WHERE $record"),
+            statement("DELETE FROM ${graph.catalog} WHERE ${recordOf(item)}"),
         )
+    }
+
+    /** The test of the catalog's key that finds the record of [item]. */
+    private fun recordOf(item: SchemaItemInfo): String =
+        "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+
+    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement {
+        val details = if (aliases.isEmpty()) "json_remove(details, '$.$ALIASES')" else "json_set(details, '$.$ALIASES', json(${literal(aliasesJson(aliases))}))"
+        return statement("UPDATE ${graph.catalog} SET details = $details WHERE ${recordOf(item)}")
     }
 
     /**

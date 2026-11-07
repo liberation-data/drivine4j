@@ -132,6 +132,26 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a term written three times running counts three times, not every other one`() {
+        // As long as each other: counted three times and twice, not twice each (drivine4j#607).
+        val hits = search("okapi")
+        assertEquals(listOf("triple", "apart"), hits.map { it.value.id })
+        assertTrue(hits[0].score > hits[1].score, hits.toString())
+    }
+
+    @Test
+    fun `a phrase that repeats a word is found where its words begin it again`() {
+        // Counted on Oracle as two counts, "la la" in "la la land" counted none (drivine4j#607).
+        assertEquals(listOf("lalaland"), search("+\"la la\"").map { it.value.id })
+    }
+
+    @Test
+    fun `a phrase whose last word starts its first is found where the phrase begins again`() {
+        // Its words are each once, yet counted on Oracle as two counts, "tapirs tapir" in "tapirs tapirs tapir" counted none.
+        assertEquals(listOf("tapirs"), search("+\"tapirs tapir\"").map { it.value.id })
+    }
+
+    @Test
     fun `a term every node but one holds still finds the nodes, and required and excluded terms keep their meaning`() {
         assertEquals(22, search("graph").size)
         assertEquals(listOf("rare"), search("+soup graph").map { it.value.id })
@@ -156,6 +176,10 @@ abstract class FullTextBm25Contract {
             CREATE (:Article {id: 'once', title: 'o', body: 'kiwi bird'})
             CREATE (:Article {id: 'often', title: 'f', body: 'kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi kiwi'})
             CREATE (:Article {id: 'none', title: 'n', body: 'nothing to see'})
+            CREATE (:Article {id: 'triple', title: 't', body: 'okapi okapi okapi'})
+            CREATE (:Article {id: 'apart', title: 'a', body: 'okapi lemur okapi'})
+            CREATE (:Article {id: 'lalaland', title: 'l', body: 'la la land'})
+            CREATE (:Article {id: 'tapirs', title: 't', body: 'tapirs tapirs tapir'})
         """.trimIndent()
 
         /** Texts over two properties, one of them missing in some: a missing one is no text, and its length none. */

@@ -70,8 +70,8 @@ class OracleSchemaGrammarTest {
             "MERGE INTO g_schema c",
             "USING (SELECT 'RANGE_INDEX' AS kind, 'Person' AS label, '[\"name\",\"metadata.source\"]' AS properties FROM dual) k",
             "ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)",
-            // A record made before there were labelled indexes takes the name of the one now made.
-            "WHEN MATCHED THEN UPDATE SET c.details = '{\"labelled\": \"$labelled\"}'",
+            // A record made before there were labelled indexes takes the name of the one now made, and keeps its aliases.
+            "WHEN MATCHED THEN UPDATE SET c.details = JSON_MERGEPATCH(c.details, '{\"labelled\": \"$labelled\", \"unique\": null}')",
             "WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)",
             "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{\"labelled\": \"$labelled\"}');",
             "EXCEPTION WHEN DUP_VAL_ON_INDEX THEN",
@@ -374,7 +374,8 @@ class OracleSchemaGrammarTest {
             "IF v_labelled IS NOT NULL THEN",
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
             "END IF;",
-            "UPDATE g_schema SET details = '{\"unique\": \"$uq\"}' WHERE kind = 'RANGE_INDEX'",
+            // Its aliases are kept.
+            "UPDATE g_schema SET details = JSON_MERGEPATCH(details, '{\"unique\": \"$uq\", \"labelled\": null}') WHERE kind = 'RANGE_INDEX'",
             "COMMIT;",
         )
         record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label", "'$uq', '{}'")
