@@ -178,7 +178,7 @@ A statement is read as DDL only where it opens with one of these keyword sequenc
 
 `CREATE` follows Neo4j: over an item of the same kind, label and properties that is there already, `IF NOT EXISTS` does nothing but add the alias (and leaves an item of another shape as it is, with a warning), and without it the statement fails. A name another item goes by, by the API's name or an alias, is refused, with `IF NOT EXISTS` or without. A `DROP` of a name no item goes by fails, and does nothing with `IF EXISTS`; `DROP INDEX` of a constraint's name fails, as does `DROP CONSTRAINT` of an index's.
 
-**Transactions.** DDL is refused inside an open transaction (the transactional manager, or the delegating one within `@Transactional`), save `db.awaitIndexes`, which does nothing there: Drivine applies schema on connections of its own, committed as they go, which the transaction's rollback would not undo. Run it outside the transaction. A batch (`executeBatch`) of one schema command runs it; a batch of more that holds one is refused, since a batch is one transaction.
+**Transactions.** DDL is refused inside an open transaction (the transactional manager, or the delegating one within `@Transactional`), save `db.awaitIndexes`, which does nothing there: Drivine applies schema on connections of its own, committed as they go, which the transaction's rollback would not undo. Run it outside the transaction. Each command borrows one such connection, which its catalog reads, its DDL and its marker's writes all run on, and gives it back as it ends. A batch (`executeBatch`) of one schema command runs it; a batch of more that holds one is refused, since a batch is one transaction.
 
 ### Version-triggered rebuild
 

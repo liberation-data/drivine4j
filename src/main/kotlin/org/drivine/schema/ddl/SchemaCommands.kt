@@ -5,6 +5,7 @@ import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.PinnedConnections
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.PersistenceManagerType
@@ -52,6 +53,10 @@ import org.slf4j.LoggerFactory
  *
  * DDL is not run inside a transaction ([refusedInTransaction]): Drivine's schema statements run on a connection
  * of their own, committed as they go, which the caller's rollback would not undo.
+ *
+ * Each command runs on one connection of the database's provider, borrowed as it starts and given back as it ends
+ * (see [PinnedConnections]): its catalog reads, its DDL and its marker's writes, which would otherwise borrow one
+ * each, some twenty for a `CREATE CONSTRAINT` (#654).
  */
 internal class SchemaCommands(
     /** The database's registered name. */
@@ -59,6 +64,8 @@ internal class SchemaCommands(
     private val schemaManager: SchemaManager,
     /** The database's non-transactional manager, asked for only when a command runs. */
     private val manager: () -> PersistenceManager,
+    /** The database's connection provider, whose one connection a command runs on. */
+    private val provider: () -> ConnectionProvider,
 ) {
 
     private val logger = LoggerFactory.getLogger(SchemaCommands::class.java)
@@ -72,14 +79,17 @@ internal class SchemaCommands(
             is SchemaDdlResult.NotDdl -> throw IllegalArgumentException("Not schema DDL")
             is SchemaDdlResult.Refused -> throw DrivineException(ddl.message)
             is SchemaDdlResult.AwaitIndexes -> logger.debug("db.awaitIndexes on '{}': an index on a SQL store is whole once made, so nothing is waited for", database)
-            is SchemaDdlResult.Reserved -> synchronized(lock) {
+            is SchemaDdlResult.Reserved -> command {
                 val result = manager().constraints.ensure(ddl.spec, replaceBlockingIndex = true)
                 logger.debug("Schema DDL on '{}' named Drivine's own {} on {}{}, ensured as Drivine ensures it: {}", database, ddl.spec.kind, ddl.spec.label, ddl.spec.properties, result)
             }
-            is SchemaDdlResult.Create -> synchronized(lock) { create(ddl) }
-            is SchemaDdlResult.Drop -> synchronized(lock) { drop(ddl) }
+            is SchemaDdlResult.Create -> command { create(ddl) }
+            is SchemaDdlResult.Drop -> command { drop(ddl) }
         }
     }
+
+    /** Runs [block] under [lock], on one connection of the database held for its length. */
+    private fun command(block: () -> Unit) = synchronized(lock) { PinnedConnections.pinned(provider(), block) }
 
     /** What is recorded of every index and constraint, with their aliases. */
     private fun recorded(pm: PersistenceManager): List<RecordedItem> = pm.indexes.recorded() + pm.constraints.recorded()
@@ -155,7 +165,12 @@ internal class SchemaCommands(
         /** The commands of the database [name] of [registry], ensured and removed through [factory]'s managers. */
         fun of(factory: PersistenceManagerFactory, registry: DatabaseRegistry, name: String): SchemaCommands {
             val database = registry.resolveDatabaseName(name) ?: name
-            return SchemaCommands(database, SchemaManager(factory, registry, emptyList())) { factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL) }
+            return SchemaCommands(
+                database,
+                SchemaManager(factory, registry, emptyList()),
+                manager = { factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL) },
+                provider = { registry.connectionProvider(database) ?: throw DrivineException("No database is registered under name: $database") },
+            )
         }
 
         /** The commands of [provider]'s database, for a manager made without a factory: a registry of that database alone. */

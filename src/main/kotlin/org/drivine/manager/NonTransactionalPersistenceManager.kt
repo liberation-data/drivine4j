@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.NonAtomicBatchException
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.PinnedConnections
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
@@ -67,13 +68,10 @@ class NonTransactionalPersistenceManager(
             commands.run(ddl)
             return emptyList()
         }
-        val connection = connectionProvider.connect()
+        // On the connection a schema command holds, where one does: see SchemaCommands.
         return try {
-            val result = connection.query(spec)
-            connection.release()
-            result
+            PinnedConnections.on(connectionProvider) { it.query(spec) }
         } catch (e: Exception) {
-            connection.release(e)
             throw DrivineException.withRootCause(e, spec)
         }
     }
