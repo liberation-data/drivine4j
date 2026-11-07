@@ -575,7 +575,7 @@ internal class OracleSelect(
                 // The row of the node table is joined back, whose document is made as the graph's vertex makes it.
                 columns = { "$it.nid, $it.labels, $it.props, $it.stamp, ${OracleSql.transform(it)} AS doc" },
                 // Oracle's expressions don't look ahead: the term ending where its last word does, less those a word goes on
-                // from, or a prefix term or one with a number that isn't a digit by its one expression (TextQuery.counted); a
+                // from, or a prefix term or one with a character not measured as [[:alnum:]] by its one expression (TextQuery.counted); a
                 // phrase that repeats a word or whose last word starts its first, in the text with each character between words
                 // written twice (TextQuery.SEPARATOR).
                 count = { text, term ->

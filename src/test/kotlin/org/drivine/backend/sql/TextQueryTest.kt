@@ -360,15 +360,34 @@ class TextQueryTest {
     }
 
     @Test
-    fun `a word holding a number that isn't a digit is counted on Oracle by its one expression, so no occurrence is lost`() {
-        // "²" is a word's to the query, not to [[:alnum:]]: "b²b" in "b²b²bx" begins inside the first, and the two counts
-        // took the first ending and the second going on, so counted none.
-        val term = TextQuery.parse("b²b").scored.single()
-        assertEquals(term to null, TextQuery.counted(term))
+    fun `a word holding a character not measured as alnum on Oracle is counted there by its one expression, so no occurrence is lost`() {
+        // A circled letter, "ⓐ", is a word's to the query, which reads it as alphabetic, and may not be to Oracle's [[:alnum:]]:
+        // an occurrence could begin inside another there, so the one count counts it.
+        val circled = TextQuery.parse("bⓐb").scored.single()
+        assertEquals(circled to null, TextQuery.counted(circled))
+        // "²" is between words (drivine4j#616): "b²b" is the phrase "b b", which repeats a word, and still counts the same.
+        assertEquals(null, TextQuery.counted(TextQuery.parse("b²b").scored.single()))
         assertEquals(1, counted("b²b", "b²b²bx"))
         assertEquals(1, countedByOracle("b²b", "b²b²bx"))
-        // A letter number, "ⅻ", is a number that isn't a digit too, though Java reads it as alphabetic.
-        val roman = TextQuery.parse("bⅻb").scored.single()
-        assertEquals(roman to null, TextQuery.counted(roman))
+    }
+
+    @Test
+    fun `a word with a vowel sign written again at once is counted each time on Oracle, by its two counts`() {
+        // A vowel sign is in a word (drivine4j#616) and a combining mark is [[:alnum:]] on Oracle, so no occurrence begins
+        // inside another: counted by the one expression, "किताब किताब" was once.
+        assertTrue(TextQuery.counted(TextQuery.parse("किताब").scored.single())?.second != null)
+        assertEquals(2, counted("किताब", "किताब किताब"))
+        assertEquals(2, countedByOracle("किताब", "किताब किताब"))
+        assertEquals(2, countedByOracle("\"एक किताब\"", "एक किताब एक किताब"))
+        // Its next character a vowel sign, the word goes on, as it does in the text on each store: no occurrence.
+        assertEquals(0, countedByOracle("किताब", "किताबें"))
+    }
+
+    @Test
+    fun `a word with a letter number written again at once is counted each time on Oracle, by its two counts`() {
+        // "ⅻ" is [[:alnum:]] on Oracle, as measured (drivine4j#616): counted by the one expression, "bⅻb bⅻb" was once.
+        assertTrue(TextQuery.counted(TextQuery.parse("bⅻb").scored.single())?.second != null)
+        assertEquals(2, counted("bⅻb", "bⅻb bⅻb"))
+        assertEquals(2, countedByOracle("bⅻb", "bⅻb bⅻb"))
     }
 }
