@@ -39,6 +39,10 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
+import java.util.concurrent.atomic.AtomicInteger
+import javax.sql.DataSource
 import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -53,8 +57,11 @@ import kotlin.test.assertTrue
  */
 abstract class SchemaDdlContract {
 
-    /** A provider of connections to the graph [graph], which makes its tables. */
-    abstract fun provider(graph: String): ConnectionProvider
+    /** The store's data source. */
+    abstract val dataSource: DataSource
+
+    /** A provider of connections from [dataSource] to the graph [graph], which makes its tables. */
+    abstract fun provider(graph: String, dataSource: DataSource = this.dataSource): ConnectionProvider
 
     /** Makes the tables of the graph [graph], through [pm]. */
     abstract fun ensure(graph: String, pm: PersistenceManager)
@@ -429,12 +436,87 @@ abstract class SchemaDdlContract {
         assertNull(pm.indexes.find(own))
         assertEquals(listOf(shared.inventoryKey), ddlKeys("app"))
     }
+
+    @Test
+    fun `one schema command borrows one connection, gives it back however it ends, and starts no transaction on it`() {
+        val counting = CountingDataSource(dataSource)
+        val counted = DatabaseRegistry(DataSourceMap()).also { it.register(provider(graph, counting)) }
+        val manager = PersistenceManagerFactory(counted, TransactionContextHolder(counted)).get(graph, PersistenceManagerType.NON_TRANSACTIONAL)
+        fun statement(text: String) = QuerySpecification.withStatement(CypherStatement(text))
+        // The provider's first connection makes the graph's tables, on a connection of its own.
+        manager.query(statement("MATCH (n) RETURN count(n)"))
+
+        fun connections(text: String, fails: Boolean = false): Int {
+            counting.reset()
+            if (fails) assertFails { manager.execute(statement(text)) } else manager.execute(statement(text))
+            assertEquals(counting.opened.get(), counting.closed.get(), "every connection given back: $text")
+            return counting.opened.get()
+        }
+
+        val create = "CREATE CONSTRAINT Person_id_unique IF NOT EXISTS FOR (p:Person) REQUIRE (p.id) IS UNIQUE"
+        val counts = linkedMapOf(
+            "CREATE CONSTRAINT IF NOT EXISTS" to connections(create),
+            "CREATE CONSTRAINT IF NOT EXISTS, made already" to connections(create),
+            "CREATE INDEX" to connections("CREATE INDEX Person_name FOR (p:Person) ON (p.name)"),
+            "CREATE INDEX, made already, which fails" to connections("CREATE INDEX Person_name FOR (p:Person) ON (p.name)", fails = true),
+            "CREATE CONSTRAINT of Drivine's own" to connections("CREATE CONSTRAINT IF NOT EXISTS FOR (n:_DrivineSchema) REQUIRE (n.scope) IS UNIQUE"),
+            "DROP CONSTRAINT" to connections("DROP CONSTRAINT Person_id_unique"),
+            "DROP INDEX" to connections("DROP INDEX Person_name"),
+            "DROP CONSTRAINT IF EXISTS, of nothing" to connections("DROP CONSTRAINT Person_id_unique IF EXISTS"),
+            "DROP CONSTRAINT of nothing, which fails" to connections("DROP CONSTRAINT Person_id_unique", fails = true),
+        )
+        LoggerFactory.getLogger(SchemaDdlContract::class.java).info("Connections per schema command: {}", counts)
+
+        assertEquals(counts.mapValues { 1 }, counts)
+        // Each statement committed as it ran: the session was never put in a transaction.
+        assertEquals(emptyList(), counting.transactional)
+        assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "id")))
+        assertNull(pm.indexes.find(RangeIndexSpec("Person", "name")))
+    }
+}
+
+/**
+ * Counts the connections [target] gives and those given back, and notes what would put one in a transaction:
+ * turning off auto-commit, a commit or a rollback.
+ */
+private class CountingDataSource(private val target: DataSource) : DataSource by target {
+    val opened = AtomicInteger()
+    val closed = AtomicInteger()
+    val transactional: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+
+    fun reset() {
+        opened.set(0)
+        closed.set(0)
+        transactional.clear()
+    }
+
+    override fun getConnection(): java.sql.Connection = counted(target.connection)
+
+    override fun getConnection(username: String?, password: String?): java.sql.Connection = counted(target.getConnection(username, password))
+
+    private fun counted(connection: java.sql.Connection): java.sql.Connection {
+        opened.incrementAndGet()
+        return Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, args ->
+            when {
+                method.name == "close" -> closed.incrementAndGet()
+                method.name == "setAutoCommit" && args?.firstOrNull() == false -> transactional += "setAutoCommit(false)"
+                method.name == "commit" || method.name == "rollback" -> transactional += method.name
+            }
+            try {
+                method.invoke(connection, *(args ?: emptyArray()))
+            } catch (e: InvocationTargetException) {
+                throw e.targetException
+            }
+        } as java.sql.Connection
+    }
 }
 
 @PostgresTests
 class SchemaDdlPostgresTest : SchemaDdlContract() {
-    override fun provider(graph: String): ConnectionProvider =
-        JdbcConnectionProvider(graph, DatabaseType.POSTGRES, PostgresTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph)
+    override val dataSource: DataSource get() = PostgresTestDatabase.provider.nativeDriver
+
+    override fun provider(graph: String, dataSource: DataSource): ConnectionProvider =
+        JdbcConnectionProvider(graph, DatabaseType.POSTGRES, dataSource, SubtypeRegistry(), graphName = graph)
 
     override fun ensure(graph: String, pm: PersistenceManager) = PostgresGraph(graph).ensure(pm)
 
@@ -445,8 +527,10 @@ class SchemaDdlPostgresTest : SchemaDdlContract() {
 
 @OracleTests
 class SchemaDdlOracleTest : SchemaDdlContract() {
-    override fun provider(graph: String): ConnectionProvider =
-        JdbcConnectionProvider(graph, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph)
+    override val dataSource: DataSource get() = OracleTestDatabase.provider.nativeDriver
+
+    override fun provider(graph: String, dataSource: DataSource): ConnectionProvider =
+        JdbcConnectionProvider(graph, DatabaseType.ORACLE, dataSource, SubtypeRegistry(), graphName = graph)
 
     override fun ensure(graph: String, pm: PersistenceManager) = OracleGraph(graph).ensure(pm)
 
@@ -460,8 +544,10 @@ class SchemaDdlOracleTest : SchemaDdlContract() {
 }
 
 class SchemaDdlSqliteTest : SchemaDdlContract() {
-    override fun provider(graph: String): ConnectionProvider =
-        JdbcConnectionProvider(graph, DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph)
+    override val dataSource: DataSource get() = SqliteTestDatabase.provider.nativeDriver
+
+    override fun provider(graph: String, dataSource: DataSource): ConnectionProvider =
+        JdbcConnectionProvider(graph, DatabaseType.SQLITE, dataSource, SubtypeRegistry(), graphName = graph)
 
     override fun ensure(graph: String, pm: PersistenceManager) = SqliteGraph(graph).ensure(pm)
 

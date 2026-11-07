@@ -70,7 +70,10 @@ class IndexManager internal constructor(
         }
     }
 
-    /** Runs a schema statement that is not an index: on a connection of its own, committed as it runs. */
+    /**
+     * Runs a schema statement that is not an index: on a connection of its own, committed as it runs, which is the one
+     * a schema command holds where one does (see [org.drivine.connection.PinnedConnections]).
+     */
     internal fun run(statement: String): List<Any?> = executor.query(statement)
 
     /**
