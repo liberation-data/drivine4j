@@ -46,6 +46,9 @@ internal class TextQuery private constructor(
         private const val BOUNDARY_BEFORE = "(^|[^[:alnum:]_])"
         private const val BOUNDARY_AFTER = "($|[^[:alnum:]_])"
 
+        /** Whether [pattern], a term's expression, is a prefix term's: one whose last word is the start of a word, `kiw*`. */
+        fun isPrefix(pattern: String): Boolean = !pattern.endsWith(BOUNDARY_AFTER)
+
         /** What [BOUNDARY_AFTER] holds to, without taking the character it is: Postgres's and Java's lookahead. */
         private const val BOUNDARY_AHEAD = "(?=\$|[^[:alnum:]_])"
 
