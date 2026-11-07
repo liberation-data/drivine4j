@@ -19,14 +19,15 @@ case "$version" in
   0.0.0-*) ;;
   *) echo "compiler-local: $version is a release, read from Maven Central"; exit 0 ;;
 esac
-if [ -f "$jar" ]; then
-  echo "compiler-local: $version is in .compiler-repo"
-  exit 0
-fi
+# Before the published build is taken, so a commit moved without its version isn't built against the old one.
 case "$version" in
   "0.0.0-${commit:0:12}") ;;
   *) echo "compiler-local: version $version is not 0.0.0-${commit:0:12}, the pinned commit's" >&2; exit 1 ;;
 esac
+if [ -f "$jar" ]; then
+  echo "compiler-local: $version is in .compiler-repo"
+  exit 0
+fi
 src=${1:-}
 if [ -z "$src" ]; then
   src="$root/build/cypher-compiler-src"

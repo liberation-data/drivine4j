@@ -97,7 +97,7 @@ dependencies {
 	// The versions are the ones Spring Boot 3.5.7 manages, as before.
 	implementation 'org.slf4j:slf4j-api:2.0.17'
 
-	// The Cypher compiler, with the schema specs and DrivineException that drivine4j's API names: an api dependency.
+	// The Cypher compiler, with the schema specs that drivine4j's API names: an api dependency.
 	// The JVM artifact by name, so a Maven build that reads this POM, and not Gradle's module metadata, gets its jar.
 	api "org.drivine:drivine-cypher-compiler-jvm:${cypherCompilerVersion}"
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'

@@ -71,6 +71,7 @@ internal object SqliteFunctions {
     const val ROUND = Shared.ROUND
     const val FAIL = Shared.FAIL
 
+    /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`: as [Shared.REGEXP]. */
     const val REGEXP = Shared.REGEXP
 
     /** Registers every function on [connection], a connection of xerial's driver, for the statements run on it. */

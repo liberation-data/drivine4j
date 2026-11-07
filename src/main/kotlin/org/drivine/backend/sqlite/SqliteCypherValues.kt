@@ -158,5 +158,6 @@ internal object SqliteCypherValues {
         return a.size().compareTo(b.size()).sign
     }
 
+    /** An infinity as SQLite reads it, as it reads `9.0e+999`, which its JSON writes for one: as [Shared.INFINITY]. */
     const val INFINITY = Shared.INFINITY
 }

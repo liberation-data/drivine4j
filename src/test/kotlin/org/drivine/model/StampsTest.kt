@@ -14,6 +14,14 @@ class StampsTest {
     private val links = "bbbbbbbbbbbbbbbb"
     private val now = "1111111111111111:2222222222222222"
 
+    @Test
+    fun `the stamp and the lower copies, whose names the compiler holds, are under the reserved prefix`() {
+        // The compiler's org.drivine.cypher.store constants are what drivine4j's are: a node's reserved properties are
+        // left out of what it reads by this prefix.
+        assertTrue(Stamps.PROPERTY.startsWith(NodeLabelsModel.RESERVED_PREFIX), Stamps.PROPERTY)
+        assertEquals("${NodeLabelsModel.RESERVED_PREFIX}lower.", LowerCopies.PREFIX)
+    }
+
     // ----- The stamp itself -----
 
     @Test

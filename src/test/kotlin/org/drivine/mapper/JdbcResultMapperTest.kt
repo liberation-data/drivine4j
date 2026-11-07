@@ -225,4 +225,25 @@ class JdbcResultMapperTest {
         assertEquals(listOf("A", "B"), two.single().keys)
         assertEquals(listOf<Any>(listOf(1L, "b")), mapper.mapQueryResults(two, spec))
     }
+
+    @Test
+    fun `the jsonb of a statement given NaN or an infinity reads their stand-ins as them, and any other number as java_math rounds it`() {
+        val nan = "2" + "0".repeat(309) + ".5"
+        val infinity = "1" + "0".repeat(309) + ".5"
+        val text = """[$nan, $infinity, -$infinity, 1e400, 0.1, 2.5E-12, 1.7976931348623157E308, 9007199254740993.0, 3, {"x": [-0.5]}]"""
+        val rows = JdbcResultMapper.rows(resultSet(listOf(Column("doc", "jsonb", Types.OTHER))) {
+            `when`(it.getString(1)).thenReturn(text)
+        }, nonFinite = true)
+        val read = rows.single().values.single() as List<*>
+        assertEquals(Double.NaN, read[0])
+        assertEquals(Double.POSITIVE_INFINITY, read[1])
+        assertEquals(Double.NEGATIVE_INFINITY, read[2])
+        assertEquals(Double.POSITIVE_INFINITY, read[3])
+        assertEquals(0.1, read[4])
+        assertEquals(2.5E-12, read[5])
+        assertEquals(Double.MAX_VALUE, read[6])
+        assertEquals(BigDecimal("9007199254740993.0").toDouble(), read[7])
+        assertEquals(3L, read[8])
+        assertEquals(mapOf("x" to listOf(-0.5)), read[9])
+    }
 }
