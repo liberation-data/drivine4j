@@ -95,6 +95,10 @@ own run, when the pull request is up to date with its base.
   reworded snippet is noticed. A snippet added, moved or reworded changes the list with it, and its test, run in CI,
   fails until it does. Prose doesn't name the current version, so it needs no bump.
 - **Push trigger:** a push to `main` that changes `build.gradle`.
+- **The Cypher compiler:** a release names `org.drivine:drivine-cypher-compiler-jvm` at the version
+  `gradle/cypher-compiler.properties` pins, so the build job fails a release while that is a commit's build
+  (`0.0.0-<commit>`, which CI publishes into `.compiler-repo` and no user could resolve). Pin a version Maven Central
+  has first. A dry run goes on, building the pinned commit.
 - **Modules:** seven are published, all under `org.drivine`: `drivine4j`, `drivine4j-codegen`,
   `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
   `drivine4j-spring-boot-starter`. `drivine4j-sample` is not. A new published module is added to `MODULES` in

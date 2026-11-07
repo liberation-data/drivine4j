@@ -3,6 +3,7 @@ package org.drivine.backend.sqlite
 import org.drivine.backend.postgres.PostgresSql
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.under
+import org.drivine.cypher.store.SqliteSql as Shared
 import org.drivine.model.Stamps
 import org.drivine.schema.SimilarityFunction
 
@@ -37,11 +38,11 @@ internal object SqliteSql {
      */
     const val JSON_ROWS = "/* drivine:json */"
 
-    /** [text] as a SQL string literal, its quotes doubled. SQLite reads a backslash in one as itself. */
-    fun literal(text: String): String = "'${text.replace("'", "''")}'"
+    /** As [Shared.literal], which the compiler calls too. */
+    fun literal(text: String): String = Shared.literal(text)
 
-    /** [text] as JSON writes a string. */
-    fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    /** As [Shared.quoted], which the compiler calls too. */
+    fun quoted(text: String): String = Shared.quoted(text)
 
     /** The path of the property [key] of a JSON object, as a literal; refused when it is empty, which names no property. */
     fun path(key: String): String {
@@ -49,17 +50,11 @@ internal object SqliteSql {
         return literal("$.${quoted(key)}")
     }
 
-    /** [alias]'s column [column]; the column of the table itself, as an index names it, for an empty alias. */
-    private fun column(alias: String, column: String): String = if (alias.isEmpty()) column else "$alias.$column"
+    /** As [Shared.hasLabel], which the compiler calls too. */
+    fun hasLabel(alias: String, label: String): String = Shared.hasLabel(alias, label)
 
-    /**
-     * Whether the node [alias] carries [label]: the test a partial index over the label's nodes is
-     * made with (see [SqliteSchemaGrammar]), so a statement that makes it is answered by the index.
-     */
-    fun hasLabel(alias: String, label: String): String = holdsLabel(column(alias, "labels"), label)
-
-    /** Whether the JSON array of labels [labels] holds [label]: the test [hasLabel] makes of a node's column, which compiled Cypher makes too. */
-    fun holdsLabel(labels: String, label: String): String = "instr($labels, ${literal(quoted(label))}) > 0"
+    /** As [Shared.holdsLabel], which the compiler calls too. */
+    fun holdsLabel(labels: String, label: String): String = Shared.holdsLabel(labels, label)
 
     /** The labels of a node that carries [label] alone, as a literal of the JSON array they are stored as. */
     fun labelArray(label: String): String = literal("[${quoted(label)}]")
@@ -69,10 +64,10 @@ internal object SqliteSql {
         labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { hasLabel(alias, it) }
 
     /** The JSON of the property [key] of the node or relationship [alias], as text: `'"Ada"'` for a string. */
-    fun value(alias: String, key: String): String = "(${column(alias, "props")} -> ${path(key)})"
+    fun value(alias: String, key: String): String = "(${Shared.column(alias, "props")} -> ${path(key)})"
 
     /** The JSON type of the property [key] of [alias], as SQLite names it (`'text'`, `'integer'`, `'array'`…); null where there is none. */
-    fun type(alias: String, key: String): String = "json_type(${column(alias, "props")}, ${path(key)})"
+    fun type(alias: String, key: String): String = "json_type(${Shared.column(alias, "props")}, ${path(key)})"
 
     /**
      * The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. For
@@ -80,8 +75,8 @@ internal object SqliteSql {
      * expression a range index or a uniqueness constraint is made over.
      */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String {
-        if (key == Stamps.PROPERTY) return column(alias, "stamp")
-        val text = propertyText(column(alias, "props"), path(key))
+        if (key == Stamps.PROPERTY) return Shared.column(alias, "stamp")
+        val text = propertyText(Shared.column(alias, "props"), path(key))
         return when (kind) {
             SqlKind.TEXT -> text
             SqlKind.NUMBER -> number(alias, key)
@@ -89,16 +84,12 @@ internal object SqliteSql {
         }
     }
 
-    /**
-     * The value at [path], a literal, of the JSON [props] as text, as [property] reads a property: a string as itself,
-     * anything else as its JSON, and null as SQL's null. A range index or a uniqueness constraint is made over it.
-     */
-    fun propertyText(props: String, path: String): String =
-        "(CASE json_type($props, $path) WHEN 'text' THEN $props ->> $path WHEN 'null' THEN NULL ELSE $props -> $path END)"
+    /** As [Shared.propertyText], which the compiler calls too. */
+    fun propertyText(props: String, path: String): String = Shared.propertyText(props, path)
 
     /** The property [key] of [alias] as a number where one is stored, and null for anything else. */
     fun number(alias: String, key: String): String =
-        "(CASE WHEN ${type(alias, key)} IN ('integer', 'real') THEN ${column(alias, "props")} ->> ${path(key)} END)"
+        "(CASE WHEN ${type(alias, key)} IN ('integer', 'real') THEN ${Shared.column(alias, "props")} ->> ${path(key)} END)"
 
     /**
      * [text], the text of a moment or a date, read as [kind] compares: a moment as nanoseconds since the
@@ -130,7 +121,7 @@ internal object SqliteSql {
      * an embedding of another size is no point in the same space.
      */
     fun holdsEmbedding(alias: String, key: String, dimensions: Int): String =
-        "${type(alias, key)} = 'array' AND json_array_length(${column(alias, "props")}, ${path(key)}) = $dimensions"
+        "${type(alias, key)} = 'array' AND json_array_length(${Shared.column(alias, "props")}, ${path(key)}) = $dimensions"
 
     /**
      * The score the graph engines give the embedding under [key] of [alias] against the vector bound as

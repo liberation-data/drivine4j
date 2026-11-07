@@ -44,3 +44,6 @@ out/
 
 # Left by python3 scripts/test_release_version.py.
 __pycache__/
+
+### The Cypher compiler, published from the pinned commit by scripts/compiler-local.sh ###
+.compiler-repo/

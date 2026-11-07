@@ -1,5 +1,6 @@
 package org.drivine.model
 
+import org.drivine.cypher.store.LowerCopies as Shared
 import org.drivine.schema.SchemaGrammar
 
 /**
@@ -18,11 +19,11 @@ import org.drivine.schema.SchemaGrammar
  */
 object LowerCopies {
     /** Prefix of the property a copy is stored under. */
-    const val PREFIX = "${NodeLabelsModel.RESERVED_PREFIX}lower."
+    const val PREFIX = Shared.PREFIX
 
     /** The property the copy of [property] is stored under. */
     @JvmStatic
-    fun of(property: String): String = PREFIX + property
+    fun of(property: String): String = Shared.of(property)
 
     /**
      * The `SET` item that writes the copy of [property] on the node bound to [alias], from what the
