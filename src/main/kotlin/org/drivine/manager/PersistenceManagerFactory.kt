@@ -2,6 +2,7 @@ package org.drivine.manager
 
 import org.drivine.DrivineException
 import org.drivine.connection.DatabaseRegistry
+import org.drivine.schema.ddl.SchemaCommands
 import org.drivine.transaction.TransactionContextHolder
 import java.util.concurrent.ConcurrentHashMap
 
@@ -23,6 +24,13 @@ class PersistenceManagerFactory(
      * register two.
      */
     private val managers = ConcurrentHashMap<String, PersistenceManagerEntry>()
+
+    /**
+     * The schema commands of each SQL store's database, by its registered name: one per database, so that the
+     * managers asked for by `"default"` and by the database's own name, two entries of [managers], run DDL with one
+     * lock and one record of what DDL ensured.
+     */
+    private val schemaCommands = ConcurrentHashMap<String, SchemaCommands>()
 
     /**
      * Returns a PersistenceManager for the database registered under the specified name.
@@ -49,6 +57,10 @@ class PersistenceManagerFactory(
         // The non-transactional manager owns the schema managers (DDL must run in auto-commit
         // mode); the transactional manager borrows them from it.
         val nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry)
+        // Neo4j schema DDL given as Cypher to a SQL store is applied through the schema machinery, under one manager per database.
+        if (connectionProvider.type in SchemaCommands.STORES) {
+            nonTransactional.schemaCommands = schemaCommands.computeIfAbsent(registry.resolveDatabaseName(name) ?: name) { SchemaCommands.of(this, registry, it) }
+        }
         return PersistenceManagerEntry(
             transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry, grammar, nonTransactional),
             nonTransactional = nonTransactional,

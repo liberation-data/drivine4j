@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.manager.PersistenceManager
+import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 
@@ -98,6 +99,20 @@ class SchemaVersionStore(
             }
         }
         return RecordedInventory(keys, runtime, stale)
+    }
+
+    /**
+     * The scopes of the other owners' markers in this database, whichever manager or process recorded them: what
+     * [SchemaManager.remove] reads, so that an item another owner records is left in place. Read as Cypher, which
+     * every store with a marker runs (the SQL stores compile it), since the marker is a node of the graph on each.
+     */
+    internal fun otherScopes(): List<String> {
+        statements // The graph is made first, where it is not yet.
+        return manager.query(
+            QuerySpecification
+                .withStatement(CypherStatement("MATCH (m:`$LABEL`) RETURN DISTINCT m.$SCOPE_PROPERTY"))
+                .transform(String::class.java)
+        ).filter { it != scope }
     }
 
     /**

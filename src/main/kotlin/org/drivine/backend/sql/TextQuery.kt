@@ -37,14 +37,81 @@ internal class TextQuery private constructor(
 ) {
 
     companion object {
-        /** What stands between two words: a run of anything but letters, digits and underscores. */
-        private val GAP = Regex("[^\\p{L}\\p{N}_]+")
+        /**
+         * What stands between two words: a run of anything but letters, decimal digits and underscores, as a term's
+         * expression's `[[:alnum:]_]` reads them in the text, on Postgres and in Java (and so on SQLite): letters as Unicode's
+         * Alphabetic holds them, which takes in the vowel signs of Indic scripts and the letter numbers (`ⅻ`), and digits as
+         * `Nd`. Read as any letter or number, a query split a Hindi word at its vowel sign, "कि" the word "क", which the text's
+         * "कि" went on from, and kept "²" in a word where the text ends one at it, as Neo4j's analyzer does (drivine4j#616).
+         * Oracle's `[[:alnum:]]` holds every combining mark too, so a word with a virama or a decomposed accent is one word there
+         * and two here.
+         */
+        private val GAP = Regex("[^\\p{IsAlphabetic}\\p{Nd}_]+")
 
         /** The characters that end a term. */
         private const val SPACES = " \t\n\u000B\u000C\r"
 
         private const val BOUNDARY_BEFORE = "(^|[^[:alnum:]_])"
         private const val BOUNDARY_AFTER = "($|[^[:alnum:]_])"
+
+        /** Whether [pattern], a term's expression, is a prefix term's: one whose last word is the start of a word, `kiw*`. */
+        fun isPrefix(pattern: String): Boolean = !pattern.endsWith(BOUNDARY_AFTER)
+
+        /** What [BOUNDARY_AFTER] holds to, without taking the character it is: Postgres's and Java's lookahead. */
+        private const val BOUNDARY_AHEAD = "(?=\$|[^[:alnum:]_])"
+
+        /**
+         * [pattern], a term's expression, ending where its last word does, the character after it held to but not taken:
+         * counted, a term written again at once still has the character before it (drivine4j#607). Taken, "kiwi kiwi kiwi"
+         * counted twice. For a store whose expressions look ahead.
+         */
+        fun lookingAhead(pattern: String): String =
+            if (pattern.endsWith(BOUNDARY_AFTER)) pattern.removeSuffix(BOUNDARY_AFTER) + BOUNDARY_AHEAD else pattern
+
+        /**
+         * One character between words, as a group: for a store whose expressions don't look ahead, Oracle's. A term's
+         * expression takes the character after it, which a term written again at once needs before it (drivine4j#607). Each
+         * such character of the text written twice (`\1\1`), one is there for each, so the term's expression counts in it as
+         * [lookingAhead] counts in the text. It is the slow way, a fifth as fast as [counted]'s over 100,000 texts on Oracle,
+         * kept for the terms [counted] can't count.
+         */
+        const val SEPARATOR = "([^[:alnum:]_])"
+
+        /**
+         * For a store whose expressions don't look ahead, Oracle's: [pattern] ending where its last word does, and that
+         * expression holding a letter, a digit or an underscore after it. The term occurs as many times as the first matches
+         * less the second, and neither takes the character before the next, so it counts as [lookingAhead] does: twice as
+         * slow as the one count that took it, where [SEPARATOR]'s way is five times. Null for the second where the term is
+         * the start of a word, which may go on.
+         *
+         * Null where the term is a phrase that repeats a word, or whose last word starts its first. There an occurrence of
+         * it may begin inside another, "la la" in "la la land" or "kiwis kiwi" in "kiwis kiwis kiwi", and the two counts take
+         * different ones: the second took the "la la" of "la land", the first did not, and the term counted none. Any other
+         * term begins inside none of its occurrences: one that did would begin at a word of it, which its first word is not.
+         *
+         * [pattern] itself, with null for the second, where a word holds a character that is a word's to [GAP] but may not be
+         * to Oracle's `[[:alnum:]]`, which was measured on letters, decimal digits, letter numbers ("ⅻ") and combining marks (a
+         * Hindi vowel sign) alone: a circled letter, the "ⓐ" of "bⓐb". An occurrence may begin at it, and neither way above
+         * counts it. The one count undercounts the term only where it is written again at once, as it did before.
+         */
+        fun counted(pattern: String): Pair<String, String?>? {
+            if (!pattern.endsWith(BOUNDARY_AFTER)) return pattern to null
+            val ended = pattern.removeSuffix(BOUNDARY_AFTER)
+            val words = ended.removePrefix(BOUNDARY_BEFORE).split(BETWEEN)
+            if (words.any { word -> word.codePoints().anyMatch { !isOracleAlnum(it) && it != '_'.code } }) {
+                return pattern to null
+            }
+            val overlaps = words.toSet().size < words.size || words.size > 1 && words.first().startsWith(words.last())
+            return if (overlaps) null else ended to "$ended[[:alnum:]_]"
+        }
+
+        /** Whether Oracle's `[[:alnum:]]` was measured to hold [char]: a letter, a decimal digit, a letter number or a combining mark. */
+        private fun isOracleAlnum(char: Int) = Character.isLetter(char) || Character.isDigit(char) || Character.getType(char).toByte() in ORACLE_ALNUM_TYPES
+
+        private val ORACLE_ALNUM_TYPES = setOf(Character.LETTER_NUMBER, Character.NON_SPACING_MARK, Character.COMBINING_SPACING_MARK)
+
+        /** What stands between the words of a phrase in a term's expression. */
+        private const val BETWEEN = "[^[:alnum:]_]+"
 
         /**
          * Reads [query]. It must name at least one term that scores: a query of operators and
@@ -195,7 +262,7 @@ internal class TextQuery private constructor(
         }
 
         /** The expression for the term as whole words; when [prefix], the last as the start of one. */
-        val pattern: String = BOUNDARY_BEFORE + words.joinToString("[^[:alnum:]_]+") + (if (prefix) "" else BOUNDARY_AFTER)
+        val pattern: String = BOUNDARY_BEFORE + words.joinToString(BETWEEN) + (if (prefix) "" else BOUNDARY_AFTER)
 
         companion object {
             /**

@@ -107,6 +107,11 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
+Neo4j's schema DDL (`CREATE INDEX`, `CREATE CONSTRAINT`, `DROP INDEX`, `DROP CONSTRAINT`, `CALL db.awaitIndexes`) is no
+query: given to a `PersistenceManager`, it is applied to the store's schema, as
+[Neo4j schema DDL on the SQL stores](10-schema-management.md#neo4j-schema-ddl-on-the-sql-stores) describes, and the
+compiler alone refuses it.
+
 A statement is translated as written, and nothing is added to it. So a write of a
 [`@CaseInsensitive`](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case) property leaves the lowercased
 copy the object managers keep beside it as it was, on these stores as on the graph engines: set the copy in the same
