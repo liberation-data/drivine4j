@@ -7,7 +7,8 @@ package org.drivine.backend.sql
  * [oracleText].
  *
  * It reads the plain core of the Lucene syntax the graph engines take: words, a `"quoted phrase"`,
- * `+must`, `-not` and `NOT not`, a `prefix*`, and `field:word` as the word. `AND` makes the word
+ * `+must`, `-not` and `NOT not`, a `prefix*` (outside quotes: inside them, as in Lucene, a `*` is
+ * text), and `field:word` as the word. `AND` makes the word
  * after it one a node must hold; `OR` is the default between words. Anything else is read as text.
  *
  * A backslash before a character that is not part of a word makes that character text: `\+must` is
@@ -269,13 +270,14 @@ internal class TextQuery private constructor(
              * Reads [token]. Null when it holds no word.
              *
              * A word still holds a field up to its first colon that no backslash precedes: the second
-             * field of `a:b:word`. The term is the start of a word when a `*` that no backslash
-             * precedes is its last character.
+             * field of `a:b:word`. The term is the start of a word when it is not quoted and a `*`
+             * that no backslash precedes is its last character.
              */
             fun of(token: Token): Term? {
                 val text = if (token.quoted) token.symbols else token.symbols.drop(token.symbols.indexOfFirst { it.isBare(':') } + 1)
                 val words = String(CharArray(text.size) { text[it].char }).lowercase().split(GAP).filter { it.isNotEmpty() }
-                return if (words.isEmpty()) null else Term(words, prefix = text.last().isBare('*'))
+                // A `*` inside quotes is text, as Lucene's parser reads it: "of sou*" is the phrase "of sou" (drivine4j#622).
+                return if (words.isEmpty()) null else Term(words, prefix = !token.quoted && text.last().isBare('*'))
             }
         }
     }

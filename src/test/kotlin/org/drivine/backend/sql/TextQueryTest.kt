@@ -113,7 +113,8 @@ class TextQueryTest {
         assertEquals("({kotlin}) NOT {python}", TextQuery.parse("kotlin -python").oracleText)
         assertEquals("({kotlin}) NOT {python} NOT {rust}", TextQuery.parse("kotlin NOT python !rust".replace("!rust", "! rust")).oracleText)
         assertEquals("(pre%)", TextQuery.parse("pre*").oracleText)
-        assertEquals("({graph} pre%)", TextQuery.parse("\"graph pre*\"").oracleText)
+        // A `*` inside quotes is text, as Lucene's parser reads it: the phrase "graph pre" (drivine4j#622).
+        assertEquals("({graph pre})", TextQuery.parse("\"graph pre*\"").oracleText)
     }
 
     @Test
@@ -234,6 +235,22 @@ class TextQueryTest {
     }
 
     @Test
+    fun `a star inside quotes is text, as Lucene's parser reads it, and outside them the start of a word`() {
+        // drivine4j#622: Neo4j's parser hands a quoted text to its analyzer whole, which drops the `*`.
+        val quoted = TextQuery.parse("\"of sou*\"")
+        assertEquals(listOf(listOf("of", "sou")), quoted.scoredWords)
+        assertEquals("(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])", quoted.scored.single())
+        assertEquals("(^|[^[:alnum:]_])sou", TextQuery.parse("sou*").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw", TextQuery.parse("+kiw*").scored.single())
+        val phrase = "(^|[^[:alnum:]_])of[^[:alnum:]_]+sou(\$|[^[:alnum:]_])"
+        assertEquals(phrase, TextQuery.parse("body:\"of sou*\"").scored.single())
+        assertEquals(phrase, TextQuery.parse("\"of sou\\*\"").scored.single())
+        assertEquals("(^|[^[:alnum:]_])kiw(\$|[^[:alnum:]_])", TextQuery.parse("\"kiw*\"").scored.single())
+        assertEquals("({kiw})", TextQuery.parse("\"kiw*\"").oracleText)
+        assertEquals("({of sou})", TextQuery.parse("body:\"of sou*\"").oracleText)
+    }
+
+    @Test
     fun `a word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as the text's expression reads it`() {
         // drivine4j#616: a vowel sign and a letter number are in a word, as [[:alnum:]] holds them; a superscript or a
         // fraction is between words, as it is in the text and to Neo4j's analyzer.
@@ -299,8 +316,9 @@ class TextQueryTest {
     fun `a prefix term counts each word it starts, its last word the start of one`() {
         assertEquals(3, counted("kiw*", "kiwi kiwis kiw akiwi"))
         assertEquals(3, countedByOracle("kiw*", "kiwi kiwis kiw akiwi"))
-        assertEquals(2, counted("\"of sou*\"", "of soup of soups"))
-        assertEquals(2, countedByOracle("\"of sou*\"", "of soup of soups"))
+        // A `*` inside quotes is text (drivine4j#622): "of sou*" is the phrase "of sou", which "of soup of soups" doesn't hold.
+        assertEquals(0, counted("\"of sou*\"", "of soup of soups"))
+        assertEquals(0, countedByOracle("\"of sou*\"", "of soup of soups"))
     }
 
     @Test

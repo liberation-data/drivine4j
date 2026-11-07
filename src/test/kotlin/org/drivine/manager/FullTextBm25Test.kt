@@ -96,6 +96,13 @@ abstract class FullTextBm25Contract {
     }
 
     @Test
+    fun `a star inside quotes is text, as Lucene's parser reads it, so a phrase ending in one is the phrase without it`() {
+        // drivine4j#622: "of sou*" is the phrase "of sou", which "a graph of soup" doesn't hold, as on Neo4j.
+        assertEquals(emptyList(), search("\"of sou*\"").map { it.value.id })
+        assertEquals(listOf("rare"), search("\"of soup*\"").map { it.value.id })
+    }
+
+    @Test
     fun `a word is what a text's expression reads as one, so its vowel signs are in it and a superscript is between words`() {
         // A word is letters as Unicode's Alphabetic holds them, decimal digits and underscores, as [[:alnum:]_] reads it in the
         // text (drivine4j#616). A Hindi vowel sign is in a word: split at it, किताब was "क", which [[:alnum:]] went on from.
