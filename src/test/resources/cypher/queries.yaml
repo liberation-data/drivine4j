@@ -798,7 +798,7 @@ cases:
         error: true
 
   - name: "keys()"
-    description: "keys() gives a map's or node's keys, whatever they're called."
+    description: "keys() gives a map's or node's keys, whatever they're called, and fails of any other value but null (drivine4j#669)."
     steps:
       - cypher: "RETURN keys({b: 1, a: {x: 2}, `odd key`: [1], `q\"t`: null})"
         unorderedLists: true
@@ -808,6 +808,13 @@ cases:
         rows: ["born", "name"]
       - cypher: "RETURN keys({})"
         rows: [[]]
+      - note: "A value read from data that is no map, node or relationship: Neo4j fails as the statement runs."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN keys(p.born)"
+        error: true
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN keys(p.name)"
+        error: true
+      - cypher: "UNWIND [[1], 1.5] AS x RETURN keys(x)"
+        error: true
 
   - name: "Regular expressions and more functions"
     description: "=~ matches the whole text, Java-style; split, reverse, toBoolean, round and others give the values Neo4j gives."
