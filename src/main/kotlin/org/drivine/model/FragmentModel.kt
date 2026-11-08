@@ -11,9 +11,11 @@ import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.VectorIndex
 import org.drivine.schema.VectorAnnotationCheck
+import org.slf4j.LoggerFactory
 import java.lang.reflect.Modifier
 import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
+import kotlin.reflect.KVisibility
 import kotlin.reflect.KMutableProperty1
 import kotlin.reflect.KProperty1
 import kotlin.reflect.full.allSuperclasses
@@ -525,9 +527,10 @@ data class FragmentModel(
             // Try Kotlin reflection first
             return try {
                 val kClass = clazz.kotlin
-                kClass.memberProperties.find { property -> hasNodeId(kClass, property) }?.name
+                (kClass.memberProperties.find { property -> hasNodeId(kClass, property) }?.name
                     // A Java superclass's private `@NodeId` field, which Kotlin reflection leaves out.
-                    ?: findNodeIdFieldJava(clazz, onlyJavaClasses = true)
+                    ?: findNodeIdFieldJava(clazz, onlyJavaClasses = true))
+                    .also { if (it == null) warnOfPrivateNodeId(kClass) }
             } catch (e: Exception) {
                 // Fall back to Java reflection
                 findNodeIdFieldJava(clazz)
@@ -537,16 +540,44 @@ data class FragmentModel(
         /**
          * Whether [property] carries `@NodeId` on itself, its getter, or — for an `override` of a
          * supertype property — the same-named property/getter on any supertype (interface or class).
+         * A supertype's private property is no such property: it isn't overridden, so a subclass's
+         * property of the same name is its own, as the code generator reads it too (#628).
          */
         private fun hasNodeId(kClass: KClass<*>, property: KProperty1<*, *>): Boolean {
-            if (property.findAnnotation<NodeId>() != null || property.getter.findAnnotation<NodeId>() != null) {
+            if (property.isNodeId()) {
                 return true
             }
             return kClass.allSuperclasses.any { supertype ->
                 supertype.memberProperties.any { superProp ->
-                    superProp.name == property.name &&
-                        (superProp.findAnnotation<NodeId>() != null || superProp.getter.findAnnotation<NodeId>() != null)
+                    superProp.name == property.name && superProp.visibility != KVisibility.PRIVATE && superProp.isNodeId()
                 }
+            }
+        }
+
+        private fun KProperty1<*, *>.isNodeId(): Boolean =
+            findAnnotation<NodeId>() != null || getter.findAnnotation<NodeId>() != null
+
+        private val logger = LoggerFactory.getLogger(FragmentModel::class.java)
+
+        /** The classes already warned of by [warnOfPrivateNodeId]: a model is read again on each use. */
+        private val warnedOfPrivateNodeId: MutableSet<Class<*>> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        /**
+         * Warns, once a class, of a class with no node id whose Kotlin supertype has a private `@NodeId`: before
+         * #628 that was taken as the class's id, and a private property isn't inherited as one.
+         */
+        private fun warnOfPrivateNodeId(kClass: KClass<*>) {
+            val hidden = kClass.allSuperclasses.firstNotNullOfOrNull { supertype ->
+                supertype.memberProperties
+                    .firstOrNull { it.visibility == KVisibility.PRIVATE && it.isNodeId() }
+                    ?.let { "${supertype.qualifiedName}.${it.name}" }
+            } ?: return
+            if (warnedOfPrivateNodeId.add(kClass.java)) {
+                logger.warn(
+                    "{} has no @NodeId: {} is private, and a supertype's private property isn't inherited as a node id. " +
+                        "Make it protected or public, or put @NodeId on {}'s own property.",
+                    kClass.qualifiedName, hidden, kClass.simpleName,
+                )
             }
         }
 

@@ -36,6 +36,8 @@ data class Organization(
 )
 ```
 
+**An inherited node id.** A fragment's node id may come from a supertype: a `@NodeId` property it inherits, or one it overrides, as a sealed subtype overrides `@get:NodeId val id` on its interface. A supertype's **private** `@NodeId` is not inherited: a private property isn't overridden, so a subclass's property of the same name is its own, and the subclass has no node id unless it marks one. Drivine logs a warning for such a class. Make the supertype's property protected or public, or put `@NodeId` on the subclass's own.
+
 **Defaults for missing properties.** When a node is missing a property, the value loads as `null` — which fails for a non-nullable type. Two annotations handle that without any Jackson knowledge:
 
 ```kotlin
