@@ -221,10 +221,11 @@ class StatelessVectorSearchOracleTest {
     }
 }
 
+/** On a graph of its own, as StatelessSaveThenVectorSearchPostgresTest is, so its `Doc` index holds its own nodes alone. */
 @PostgresTests
 class StatelessVectorSearchPostgresTest {
     private val registry = SubtypeRegistry()
-    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val pm = PostgresTestDatabase.graphManager("vectorsearch", registry)
     private val fixtures = PostgresTestDatabase.fixtures(pm)
 
     @BeforeEach

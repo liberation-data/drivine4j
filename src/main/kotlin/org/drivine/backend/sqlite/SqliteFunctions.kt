@@ -2,6 +2,7 @@ package org.drivine.backend.sqlite
 
 import org.sqlite.Function
 import java.sql.Connection
+import org.drivine.cypher.store.SqliteFunctions as Shared
 
 /**
  * The functions Drivine registers on each connection to a SQLite store, which its statements call:
@@ -41,36 +42,37 @@ import java.sql.Connection
  */
 internal object SqliteFunctions {
 
-    const val WRITE = "drivine_write"
-    const val DELETE = "drivine_delete"
-    const val LOWER_COPIES = "drivine_lower_copies"
-    const val SIMILARITY = "drivine_similarity"
-    const val REGEXP_COUNT = "drivine_regexp_count"
-    const val LOWER = "drivine_lower"
-    const val EPOCH = "drivine_epoch"
-    const val EQUAL = "drivine_equal"
-    const val CONTAINS = "drivine_contains"
-    const val ADD = "drivine_add"
-    const val CANONICAL = "drivine_canonical"
-    const val CYPHER = "drivine_cypher"
-    const val UPPER = "drivine_upper"
-    const val SPLIT = "drivine_split"
-    const val REVERSE = "drivine_reverse"
-    const val UUID = "drivine_uuid"
-    const val REGEX_GROUP = "drivine_regex_group"
-    const val REGEX_REPLACE = "drivine_regexp_replace"
-    const val TRUNC = "drivine_trunc"
-    const val TO_CHAR = "drivine_to_char"
-    const val TEMPORAL = "drivine_temporal"
-    const val FLOAT_TEXT = "drivine_float_text"
-    const val SORT_KEY = "drivine_sort_key"
-    const val LIST_ORDER = "drivine_list_order"
-    const val MATH = "drivine_math"
-    const val ROUND = "drivine_round"
-    const val FAIL = "drivine_fail"
+    // The functions' names, which the compiler's SQL calls too: see [Shared].
+    const val WRITE = Shared.WRITE
+    const val DELETE = Shared.DELETE
+    const val LOWER_COPIES = Shared.LOWER_COPIES
+    const val SIMILARITY = Shared.SIMILARITY
+    const val REGEXP_COUNT = Shared.REGEXP_COUNT
+    const val LOWER = Shared.LOWER
+    const val EPOCH = Shared.EPOCH
+    const val EQUAL = Shared.EQUAL
+    const val CONTAINS = Shared.CONTAINS
+    const val ADD = Shared.ADD
+    const val CANONICAL = Shared.CANONICAL
+    const val CYPHER = Shared.CYPHER
+    const val UPPER = Shared.UPPER
+    const val SPLIT = Shared.SPLIT
+    const val REVERSE = Shared.REVERSE
+    const val UUID = Shared.UUID
+    const val REGEX_GROUP = Shared.REGEX_GROUP
+    const val REGEX_REPLACE = Shared.REGEX_REPLACE
+    const val TRUNC = Shared.TRUNC
+    const val TO_CHAR = Shared.TO_CHAR
+    const val TEMPORAL = Shared.TEMPORAL
+    const val FLOAT_TEXT = Shared.FLOAT_TEXT
+    const val SORT_KEY = Shared.SORT_KEY
+    const val LIST_ORDER = Shared.LIST_ORDER
+    const val MATH = Shared.MATH
+    const val ROUND = Shared.ROUND
+    const val FAIL = Shared.FAIL
 
-    /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`. */
-    const val REGEXP = "regexp"
+    /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`: as [Shared.REGEXP]. */
+    const val REGEXP = Shared.REGEXP
 
     /** Registers every function on [connection], a connection of xerial's driver, for the statements run on it. */
     fun register(connection: Connection) {

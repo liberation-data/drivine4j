@@ -21,6 +21,22 @@ These are read by all three libraries. Change them here only together with the o
 - **The golden statements:** `test/1.Unit/golden/statements.json` in Drivine for TypeScript is copied byte for byte to `tests/golden/statements.json` in drivine-python. A change to a statement that the goldens pin is made in both.
 - **The Cypher spec:** what each Cypher statement gives on each store, compiled to SQL or not, lives in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec). `scripts/sync-cypher-spec.sh <tag>` copies a tagged version into `src/test/resources/cypher`, unchanged; the other two libraries copy the same tag. `scripts/check-cypher-spec.sh`, run in CI, fails when a copy differs from its tag and warns when the spec has a later one. A change to what the compiler gives or refuses goes to the spec first.
 
+## The Cypher compiler is a module of its own
+
+The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`) is not in this repository:
+it is [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)'s `compiler/` module, which the other
+two libraries are to share, and drivine4j builds against its JVM artifact, `org.drivine:drivine-cypher-compiler-jvm`.
+`gradle/cypher-compiler.properties` pins a release, which the build reads from Maven Central: a spec tag `vX.Y.Z` is the
+compiler's release `X.Y.Z`. Between releases it can pin a commit, `0.0.0-<commit>`, which `scripts/compiler-local.sh`
+publishes into `.compiler-repo` in the checkout for the build to read; drivine4j can't release on one.
+
+- **A compiler bug is fixed in the module,** with its tests there, and drivine4j takes the fix by moving the pin.
+- **drivine4j calls the compiler to compile at one place,** `org.drivine.connection.CypherCompile`, which writes the
+  parameters as drivine4j's Jackson mapper writes them and turns the compiler's `CompilerException` into a
+  `DrivineException`. `CompilerBoundaryTest` fails if anything else calls in, or if a class is in both jars.
+- **What drivine4j calls beyond the compiler's API** is marked `@DrivineInternalApi` in the module; drivine4j opts in
+  module-wide.
+
 ## Releases go out as trains
 
 The three libraries are released together, as a train recorded in

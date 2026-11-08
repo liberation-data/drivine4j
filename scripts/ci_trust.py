@@ -24,6 +24,9 @@ the pull request's merge ref, which its pull_request run tested. A run counts wh
 - a pull_request run tested its merge ref instead, which is the same tree only when the pull request was up to date
   with its base. ci.yml's first job records the tree it checked out as an artifact named `ci-tree-<tree>`, and a
   pull_request run counts only when it recorded this tree, besides its head commit having it;
+- it ran the full set. A pull request's run leaves out each variant's nightly part, unless it is labelled `full-ci`, and
+  then records its tree as `ci-tree-pr-set-<tree>`, which doesn't count, at once and not once it ends. A push run is
+  always full;
 - it passed: concluded success, with every job of its latest attempt concluded success. A job skipped by a condition
   would leave part of the tree untested and the run still green, so a skipped job means it doesn't count.
 
@@ -59,6 +62,8 @@ from typing import Any
 CI = ".github/workflows/ci.yml"
 EVENTS = ("push", "pull_request")
 RECORD = "ci-tree-"
+# After RECORD, in the record of a run of the pull request set alone, without the nightly parts.
+PR_SET = "pr-set-"
 # They go into the API's paths, so each must be what it says: a repository's name, and git object names.
 REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 OBJECT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -154,9 +159,15 @@ def classify(gathered: Gathered, tree: str) -> Look:
     if _tree_of(run) != tree:
         return look("ignored", f"its commit {sha} is another tree")
     done = run.get("status") == "completed"
+    if run.get("event") == "pull_request" and f"{PR_SET}{tree}" in trees:
+        return look(
+            "ignored", "it ran the pull request set alone, without the nightly parts, as one not labelled full-ci does"
+        )
     if run.get("event") == "pull_request" and tree not in trees:
         if trees:
-            return look("ignored", f"it tested its merge ref, tree {trees[0]}, as its base had moved on")
+            return look(
+                "ignored", f"it tested its merge ref, tree {trees[0].removeprefix(PR_SET)}, as its base had moved on"
+            )
         if not done:
             return look("maybe", "it has not yet recorded the tree of the merge ref it tests")
         return look(

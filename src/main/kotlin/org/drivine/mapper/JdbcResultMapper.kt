@@ -85,6 +85,14 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java), tagged) else readJson(text)
 
         /**
+         * [number] as [PostgresCypherCompiler.read] reads it: NaN or an infinity where it stands for one, and otherwise its
+         * double as java.math gives it, correctly rounded, as before the compiler took bignum's decimal.
+         */
+        private fun postgresRead(number: BigDecimal): Double =
+            PostgresCypherCompiler.read(com.ionspin.kotlin.bignum.decimal.BigDecimal.parseString(number.toString()))
+                .let { if (it.isFinite()) number.toDouble() else it }
+
+        /**
          * [value], read with its floats as `BigDecimal`, with each whole number a `Long` (past a `Long`'s range a `Double`, as
          * [widened] makes it), each float a `Double`, and each value that stands for NaN or an infinity the double it is: a number
          * past any double's, as Postgres writes one ([PostgresCypherCompiler.read]), and, where [tagged], `{"${'$'}numberDouble": "NaN"}`,
@@ -93,7 +101,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         private fun nonFiniteRead(value: Any?, tagged: Boolean): Any? = when {
             value is Int -> value.toLong()
             value is BigInteger -> value.toDouble()
-            value is BigDecimal -> PostgresCypherCompiler.read(value)
+            value is BigDecimal -> postgresRead(value)
             tagged && value == NAN_TAG -> Double.NaN
             value is Map<*, *> -> value.mapValuesTo(LinkedHashMap()) { (_, v) -> nonFiniteRead(v, tagged) }
             value is List<*> -> value.map { nonFiniteRead(it, tagged) }

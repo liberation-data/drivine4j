@@ -55,6 +55,9 @@ dependencies {
     }
     // The annotations the test's sources use. Non-transitive: only the drivine classes are needed.
     testImplementation(rootProject) { transitive = false }
+    // And the Cypher compiler, which holds the schema specs' enums the annotations name (SimilarityFunction): the
+    // root project's api dependency, which a non-transitive dependency leaves out.
+    testImplementation("org.drivine:drivine-cypher-compiler-jvm:${rootProject.cypherCompilerVersion}") { transitive = false }
 }
 
 kotlin {

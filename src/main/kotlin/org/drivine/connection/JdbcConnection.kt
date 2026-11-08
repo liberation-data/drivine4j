@@ -7,9 +7,6 @@ import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.cypher.sql.CompiledCypher
-import org.drivine.cypher.sql.OracleCypherCompiler
-import org.drivine.cypher.sql.PostgresCypherCompiler
-import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.ResultMapper
@@ -138,26 +135,15 @@ class JdbcConnection(
         // So is an Oracle older than 23.9, which has no UUID() for randomUUID().
         cypherRefusal?.let { throw DrivineException(it, spec = spec) }
         return when (type) {
-            DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
-            DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
-            // Its text values are JSON: see JdbcResultMapper.sqliteRows.
-            DatabaseType.SQLITE -> SqliteCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
+            DatabaseType.POSTGRES -> CypherCompile.postgres(graphName, spec.statement!!.text, spec.parameters)
+            DatabaseType.ORACLE -> CypherCompile.oracle(
+                graphName, spec.statement!!.text, spec.parameters,
+                nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
+                eraStored = { OracleStoredFunctions.era(connection, graphName) },
+            )
+            DatabaseType.SQLITE -> CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters)
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
-    }
-
-    /**
-     * [cypher] compiled for Oracle, calling the functions the graph's store keeps where the statement needs one and the
-     * session may call it, and compiled again to call none where it may not: see [OracleStoredFunctions].
-     */
-    private fun oracleCompiled(cypher: String, parameters: Map<String, Any?>): CompiledCypher {
-        val compiler = OracleCypherCompiler(graphName)
-        val compiled = compiler.compile(cypher, parameters)
-        // Each is asked of apart: a store an earlier version made may have the one and not the others.
-        val nullsEqual = !compiler.callsStoredNullsEqual || OracleStoredFunctions.nullsEqual(connection, graphName)
-        val era = !compiler.callsStoredEra || OracleStoredFunctions.era(connection, graphName)
-        if (nullsEqual && era) return compiled
-        return OracleCypherCompiler(graphName, nullsEqualStored = nullsEqual, eraStored = era).compile(cypher, parameters)
     }
 
     /** Binds [value] to the marker at [index], counted from one. */

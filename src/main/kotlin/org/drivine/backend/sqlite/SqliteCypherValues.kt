@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.util.RawValue
 import java.math.BigDecimal
 import kotlin.math.sign
+import org.drivine.cypher.store.SqliteCypherValues as Shared
 
 /**
  * Cypher's values as a compiled statement holds them on SQLite, the JSON text of each, and what Cypher does
@@ -28,7 +29,10 @@ internal object SqliteCypherValues {
     /** [node] as JSON text: an infinity as SQLite writes one, and NaN as [NAN]. */
     fun write(node: JsonNode): String = json.writeValueAsString(nonFinite(node))
 
-    /** NaN, as a statement given one writes it, where SQLite's JSON holds no NaN: see [SqliteCypherCompiler][org.drivine.cypher.sql.SqliteCypherCompiler]. */
+    /**
+     * NaN, as a statement given one writes it, where SQLite's JSON holds no NaN: see [SqliteCypherCompiler][org.drivine.cypher.sql.SqliteCypherCompiler].
+     * Jackson's node of [Shared.NAN], which is the compiler's own tree's.
+     */
     val NAN: JsonNode = JsonNodeFactory.instance.objectNode().put("\$numberDouble", "NaN")
 
     /** Whether [node] is NaN, as [NAN] writes it. */
@@ -154,6 +158,6 @@ internal object SqliteCypherValues {
         return a.size().compareTo(b.size()).sign
     }
 
-    /** An infinity as SQLite reads it, as it reads `9.0e+999`, which its JSON writes for one. */
-    const val INFINITY = "9e999"
+    /** An infinity as SQLite reads it, as it reads `9.0e+999`, which its JSON writes for one: as [Shared.INFINITY]. */
+    const val INFINITY = Shared.INFINITY
 }

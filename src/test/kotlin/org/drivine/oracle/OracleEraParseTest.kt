@@ -5,6 +5,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.test.Nightly
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.Test
 import java.sql.DriverManager
@@ -22,6 +23,7 @@ import kotlin.test.assertTrue
  * The time is the session's `parse time cpu` in `v$sesstat`, which the test user may not read, so the system user reads
  * it; each statement is new to Oracle (a comment that no other has), so it is parsed hard.
  */
+@Nightly
 @OracleTests
 class OracleEraParseTest {
 

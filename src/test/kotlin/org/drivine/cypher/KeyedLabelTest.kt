@@ -8,6 +8,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -200,6 +201,7 @@ class KeyedLabelTest {
  * Over S `:Small` nodes, each with 4 relationships to a `:Big` node of its own, Oracle (23.26) read `x`'s label through the index
  * over labels once for each edge, and filtered it by the edge's `src`: 1.2 s at S = 2,000, growing with edges × S (#581).
  */
+@Nightly
 @OracleTests
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OracleRelationshipLabelPlanTest {
