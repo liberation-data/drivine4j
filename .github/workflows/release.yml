@@ -201,6 +201,20 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+      # A release names the Cypher compiler in its POM, so it must name one Maven Central has: not a commit's build, which
+      # CI publishes into .compiler-repo and no user of the release could resolve. A dry run builds that commit's instead.
+      - name: The Cypher compiler is a release on Maven Central
+        run: |
+          compiler=$(sed -n 's/^version=//p' gradle/cypher-compiler.properties)
+          if [[ "$compiler" == 0.0.0-* ]]; then
+            if [[ "$PUBLISH" == true ]]; then
+              echo "::error::gradle/cypher-compiler.properties pins the Cypher compiler at $compiler, a commit's build: release once it pins a version on Maven Central."
+              exit 1
+            fi
+            echo "::warning::gradle/cypher-compiler.properties pins the Cypher compiler at $compiler, a commit's build: a release of it would fail here. A dry run goes on with it."
+          fi
+      - name: The pinned Cypher compiler, where it is a commit's build
+        run: scripts/compiler-local.sh
       - name: Maven Central doesn't have this version yet
         run: |
           # Only an answer of 200 stops a release. When Maven Central can't be asked, the step goes on: the portal

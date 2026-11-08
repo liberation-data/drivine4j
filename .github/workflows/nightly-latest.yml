@@ -57,6 +57,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
 
@@ -105,6 +115,16 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
 
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
@@ -182,6 +202,16 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
 
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
@@ -276,6 +306,16 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
 
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
@@ -387,6 +427,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
 
@@ -492,6 +542,16 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
 
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties

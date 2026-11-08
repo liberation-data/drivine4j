@@ -1,6 +1,7 @@
 package org.drivine.model
 
 import java.util.concurrent.ThreadLocalRandom
+import org.drivine.cypher.store.Stamps as Shared
 
 /**
  * The stamp Drivine keeps on a node, so a later save can tell whether the node is as it was when the
@@ -19,7 +20,7 @@ import java.util.concurrent.ThreadLocalRandom
  */
 object Stamps {
     /** The node property the stamp is stored under. */
-    const val PROPERTY = "__drivine.stamp"
+    const val PROPERTY = Shared.PROPERTY
 
     /** [PROPERTY] as it is written in a statement. */
     const val QUOTED = "`$PROPERTY`"

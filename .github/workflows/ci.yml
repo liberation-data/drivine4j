@@ -189,6 +189,16 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      # The Cypher compiler gradle/cypher-compiler.properties pins, as .github/actions/test-part has it: this job builds
+      # before it runs that action.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
       - name: Build with Gradle
         run: ./gradlew build -x test -x standaloneTest --no-daemon
 

@@ -25,6 +25,17 @@ runs:
       shell: bash
       run: chmod +x gradlew
 
+    # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+    # between releases is published into .compiler-repo for the build to read: see the script.
+    - name: Cache the pinned Cypher compiler
+      uses: actions/cache@v4
+      with:
+        path: .compiler-repo
+        key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+    - name: Publish the pinned Cypher compiler
+      shell: bash
+      run: scripts/compiler-local.sh
+
     # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
     - name: Configure Testcontainers for Docker 29+
       shell: bash
