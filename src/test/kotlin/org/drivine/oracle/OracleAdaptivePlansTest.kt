@@ -6,6 +6,7 @@ import org.drivine.cypher.spec.CypherSpec
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
+import org.drivine.test.Nightly
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -26,6 +27,7 @@ import kotlin.test.assertNotSame
  * the test asks for the plan: in a session of Drivine's it is fixed, and in a session of Oracle's defaults the same
  * read is planned adaptive.
  */
+@Nightly
 @OracleTests
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OracleAdaptivePlansTest {

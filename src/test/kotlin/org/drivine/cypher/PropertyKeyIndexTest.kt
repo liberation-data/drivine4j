@@ -12,6 +12,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.UniquenessConstraintSpec
+import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -289,6 +290,7 @@ class PostgresPropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val storesInfinity = false
 }
 
+@Nightly
 @OracleTests
 class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val pm by lazy { OracleTestDatabase.graphManager(GRAPH) }

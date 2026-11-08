@@ -3,7 +3,7 @@
 # - A push to main that raises build.gradle's version (the merge of a "Release vX.Y.Z" PR) publishes it, and tags
 #   the commit vX.Y.Z. A push to main that changes build.gradle without raising the version publishes nothing.
 # - A push of a tag vX.Y.Z, by hand, publishes too: the fallback.
-# - Either way, the full CI runs, unless CI has already passed on the same tree; every published module is built,
+# - Either way, the full CI runs, unless a full run of CI has already passed on the same tree; every published module is built,
 #   signed and checked, and nmcp uploads them to the Central Portal in one bundle, as one deployment.
 # - workflow_dispatch, and a pull request that changes the release machinery, are dry runs: everything but the
 #   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundle left as the run's
@@ -168,12 +168,15 @@ jobs:
           tree=$(git rev-parse 'HEAD^{tree}')
           python3 scripts/ci_trust.py "$GITHUB_REPOSITORY" "$tree" "$(git rev-parse HEAD)" "$PR_HEAD"
 
-  # The full CI, as ci.yml runs it on a push or a pull request, unless trust found it has already passed on this tree.
-  # A push that releases nothing stops at check: ci.yml runs on the same push to main by itself.
+  # The full CI, as ci.yml runs it on a push to main, with the nightly part of each variant a pull request's run leaves
+  # out, unless trust found it has already passed on this tree. A push that releases nothing stops at check: ci.yml runs
+  # on the same push to main by itself.
   gate:
     needs: [check, trust]
     if: needs.trust.outputs.trusted != 'true'
     uses: ./.github/workflows/ci.yml
+    with:
+      full: true
     permissions:
       contents: read
       # ci.yml's test reports are check runs (mikepenz/action-junit-report).

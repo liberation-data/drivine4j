@@ -226,6 +226,25 @@ class TestAssess(unittest.TestCase):
         self.assertEqual(result.decision, "gate")
         self.assertIn("it recorded no tree", result.text)
 
+    def test_doesnt_trust_a_pull_requests_run_of_the_pull_request_set_alone_nor_wait_for_one_still_going(self) -> None:
+        result = decide(
+            {
+                runs_on(SHA): workflow_runs(),
+                runs_on(HEAD): workflow_runs(
+                    run(9, event="pull_request", head_sha=HEAD), going(10, event="pull_request", head_sha=HEAD)
+                ),
+                RECORDS: record_on(),
+                artifacts_of(9): recorded(f"pr-set-{TREE}"),
+                artifacts_of(10): recorded(f"pr-set-{TREE}"),
+            },
+            [SHA, HEAD],
+        )
+
+        self.assertEqual(result.decision, "gate")
+        self.assertEqual(result.sleeps, [])
+        self.assertIn("it ran the pull request set alone, without the nightly parts", result.text)
+        self.assertNotIn(jobs_of(9), result.asked)
+
     def test_counts_neither_a_scheduled_run_nor_a_run_of_another_workflow(self) -> None:
         result = decide(
             {

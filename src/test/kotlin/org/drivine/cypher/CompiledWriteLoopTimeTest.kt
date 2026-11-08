@@ -9,6 +9,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.sqlite.SqliteTestDatabase
+import org.drivine.test.Nightly
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -108,6 +109,7 @@ abstract class CompiledWriteLoopTimeContract {
  * runs: an autoanalyze of the rows the writes made, landing before it, put the statistics right, and the test passed
  * without the fix. The tables are truncated first, so they start as small as in a database new to the test.
  */
+@Nightly
 @PostgresTests
 class CompiledWriteLoopTimePostgresTest : CompiledWriteLoopTimeContract() {
     override val pm = PostgresTestDatabase.graphManager("cy_loop")
@@ -132,6 +134,7 @@ class CompiledWriteLoopTimePostgresTest : CompiledWriteLoopTimeContract() {
  * [CompiledWriteLoopTimeContract] times a write, from an empty graph vacuumed, that [nodes] makes the nodes of where it
  * reads them.
  */
+@Nightly
 @PostgresTests
 class CompiledWriteKeyedReadTimePostgresTest {
 
@@ -176,6 +179,7 @@ class CompiledWriteKeyedReadTimePostgresTest {
     }
 }
 
+@Nightly
 @OracleTests
 class CompiledWriteLoopTimeOracleTest : CompiledWriteLoopTimeContract() {
     override val pm = OracleTestDatabase.graphManager("cy_loop")
@@ -183,6 +187,7 @@ class CompiledWriteLoopTimeOracleTest : CompiledWriteLoopTimeContract() {
     override fun clear() = OracleTestDatabase.clear(pm)
 }
 
+@Nightly
 class CompiledWriteLoopTimeSqliteTest : CompiledWriteLoopTimeContract() {
     override val pm = SqliteTestDatabase.graphManager("cy_loop")
 
