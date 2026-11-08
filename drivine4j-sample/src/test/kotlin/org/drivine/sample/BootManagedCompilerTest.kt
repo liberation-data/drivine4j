@@ -22,7 +22,8 @@ class BootManagedCompilerTest {
 
     @Test
     fun `the JSON library on the class path is the one Spring Boot's BOM manages`() {
-        val managed = requireNotNull(System.getProperty("drivine.boot.kotlinSerialization")) { "The build passes no drivine.boot.kotlinSerialization" }
+        // Blank where the BOM names no kotlin-serialization.version: Gradle passes a null property as -D with no value.
+        val managed = requireNotNull(System.getProperty("drivine.boot.kotlinSerialization")?.takeIf { it.isNotBlank() }) { "The build passes no drivine.boot.kotlinSerialization" }
         // The compiler's runtime dependency, as it is an application's: not on the compile class path.
         val json = Class.forName("kotlinx.serialization.json.Json")
         val jar = File(json.protectionDomain.codeSource.location.toURI()).name
