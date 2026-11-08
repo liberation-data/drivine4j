@@ -617,7 +617,7 @@ ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
 ```
 
 Without it, each test task prints `Oracle tests skipped: set ORACLE_TESTS=true to run them`. CI runs
-the same command, in a job of its own (`test (Oracle)`).
+the same command, split over the jobs `test (Oracle, 1/2)` and `test (Oracle, 2/2)`.
 
 ### Postgres
 

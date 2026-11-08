@@ -199,7 +199,8 @@ jobs:
               echo "This PR was opened with GITHUB_TOKEN, so CI hasn't started on it. Push an empty commit to the branch, or close and reopen the PR, to start it."
             fi
           } > "$body"
-          url=$(gh pr create --repo "$REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "Release $TAG" --body-file "$body")
+          # Labelled full-ci, so its CI runs the nightly parts too, and a release of its tree can trust that run.
+          url=$(gh pr create --repo "$REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "Release $TAG" --body-file "$body" --label full-ci)
           echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
           if [[ "$HAS_PR_TOKEN" != true ]]; then
             note="Opened with GITHUB_TOKEN, so CI doesn't run on it by itself. Push an empty commit to $BRANCH, or close and reopen the PR, to start it."

@@ -8,6 +8,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SqlParameters
+import org.drivine.test.Nightly
 import org.drivine.test.PostgresTestContainer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -73,6 +74,7 @@ class PostgresKeyProbeTest {
  * Each write runs on a connection of its own, as PL/pgSQL keeps a plan for its session: a pooled connection that planned the
  * statement before, with the statistics right, keeps that plan. The plans are logged by auto_explain, as notices.
  */
+@Nightly
 @PostgresTests
 class PostgresKeyProbePlanTest {
 

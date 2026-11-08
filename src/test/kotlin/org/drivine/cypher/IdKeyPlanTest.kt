@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.sqlite.SqliteTestDatabase
+import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -260,6 +261,7 @@ class PostgresIdKeyPlanTest : IdKeyPlanContract() {
     override fun analyze() = PostgresTestDatabase.run("ANALYZE ${GRAPH}_node", "ANALYZE ${GRAPH}_edge")
 }
 
+@Nightly
 @OracleTests
 class OracleIdKeyPlanTest : IdKeyPlanContract() {
     override val pm by lazy { OracleTestDatabase.graphManager(GRAPH) }
