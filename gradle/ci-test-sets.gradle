@@ -1,0 +1,138 @@
+// Picks the tests one of CI's test jobs runs, as an init script, so the build itself is unchanged: a plain
+// `./gradlew test` runs every test, as it did. ci.yml's jobs run scripts/ci-test-part.sh, which passes it:
+//
+//   ./gradlew --init-script gradle/ci-test-sets.gradle test -Pdrivine.test.set=pr -Pdrivine.test.shard=2/3 \
+//       -Pdrivine.test.weights=APOC_SORT_MAPS
+//
+// - drivine.test.set: `pr` leaves out the tests marked @Nightly (org.drivine.test.Nightly, the JUnit tag `nightly`),
+//   `nightly` runs those alone, and `all`, the default, runs both. A pull request's CI runs `pr` in each job; a full run
+//   adds a job of `nightly` to each variant's.
+// - drivine.test.shard: `i/n` runs the i-th of n shards. The root module's classes are dealt out over the shards, a
+//   class and its nested classes to one, and each class to exactly one. The other modules' tests run whole in the
+//   last shard, and the others neither run nor compile them. The classes are dealt by the seconds they took in CI,
+//   from gradle/test-times.tsv, the column drivine.test.weights names, the longest first, each to the shard with the
+//   fewest seconds so far: each shard works out the same deal from the same classes. The last shard starts with the
+//   seconds of the other modules (the file's row `:modules`). A class the file doesn't name weighs a fifth of a
+//   second, so a new class changes the deal of the short ones alone.
+//
+// The task ciTestClasses, which this adds to each project, lists the classes each test task would run in the shard,
+// by their class files: scripts/ci_test_sets.py lists them so, to show each class runs in one job.
+import org.gradle.api.tasks.testing.junitplatform.JUnitPlatformOptions
+
+def properties = gradle.startParameter.projectProperties
+def set = properties['drivine.test.set'] ?: 'all'
+def shard = properties['drivine.test.shard']
+def weights = properties['drivine.test.weights']
+
+if (!(set in ['all', 'pr', 'nightly'])) {
+	throw new GradleException("drivine.test.set is all, pr or nightly, not '$set'")
+}
+int index = 0
+int count = 1
+if (shard) {
+	def parts = (shard =~ /^([1-9][0-9]*)\/([1-9][0-9]*)$/)
+	if (!parts.matches() || (parts.group(1) as int) > (parts.group(2) as int)) {
+		throw new GradleException("drivine.test.shard is i/n, the i-th of n shards, not '$shard'")
+	}
+	index = (parts.group(1) as int) - 1
+	count = parts.group(2) as int
+}
+
+// The seconds of each class in the column drivine.test.weights names, from gradle/test-times.tsv.
+Map<String, Double> seconds = [:]
+gradle.rootProject { root ->
+	if (count > 1) {
+		def file = root.file('gradle/test-times.tsv')
+		def lines = file.readLines().findAll { !it.startsWith('#') }
+		def columns = lines.head().split('\t').toList()
+		def column = columns.indexOf(weights)
+		if (column < 1) {
+			throw new GradleException("drivine.test.weights names a column of ${file}, one of ${columns.drop(1)}, not '$weights'")
+		}
+		lines.tail().each { line ->
+			def cells = line.split('\t')
+			seconds[cells[0]] = cells[column] as double
+		}
+	}
+}
+
+// The top-level class a class file is of, by name: org/drivine/A$B.class is org.drivine.A.
+def topLevel = { String path -> path.replaceFirst(/\.class$/, '').replaceFirst(/\$.*$/, '').replace('/', '.') }
+
+// The shard of each top-level class of a test task, the longest first to the shard with the fewest seconds.
+def deal = { Test task ->
+	def classes = new TreeSet<String>()
+	task.testClassesDirs.each { dir ->
+		if (dir.directory) {
+			dir.eachFileRecurse(groovy.io.FileType.FILES) { file ->
+				if (file.name.endsWith('.class')) classes << topLevel(dir.toPath().relativize(file.toPath()).toString().replace(File.separator, '/'))
+			}
+		}
+	}
+	def load = new double[count]
+	load[count - 1] += seconds.get(':modules', 0d)
+	Map<String, Integer> shards = [:]
+	classes.toList().sort { a, b -> (seconds.get(b, 0.2d) <=> seconds.get(a, 0.2d)) ?: a <=> b }.each { name ->
+		int least = (0..<count).min { load[it] }
+		load[least] += seconds.get(name, 0.2d)
+		shards[name] = least
+	}
+	shards
+}
+
+gradle.allprojects { project ->
+	// Lists the classes each test task of the project would run, by its class files, a line `<task> <class>` each: the
+	// shard's, with drivine.test.shard. What a class holds is JUnit's to find, and its tags to pick by, at run time.
+	project.tasks.register('ciTestClasses') { listing ->
+		listing.description = 'Lists the test classes each test task would run, in this shard.'
+		listing.dependsOn project.tasks.withType(Test).collect { it.testClassesDirs }
+		listing.doLast {
+			project.tasks.withType(Test).each { Test task ->
+				def names = new TreeSet<String>()
+				task.candidateClassFiles.visit { FileVisitDetails details ->
+					if (!details.directory && details.name.endsWith('.class')) names << topLevel(details.relativePath.pathString)
+				}
+				names.each { println "${task.path}\t$it" }
+			}
+		}
+	}
+	project.afterEvaluate {
+		project.tasks.withType(Test).configureEach { Test task ->
+			task.inputs.property('drivine.test.set', set)
+			task.inputs.property('drivine.test.shard', shard ?: '')
+			if (set != 'all') {
+				def options = task.options
+				if (options instanceof JUnitPlatformOptions) {
+					if (set == 'pr') options.excludeTags('nightly') else options.includeTags('nightly')
+				} else if (set == 'nightly') {
+					// A task not on the JUnit Platform, as drivine4j-spring's, which has no tests, has no tag either.
+					task.enabled = false
+				}
+			}
+			if (set != 'all' || count > 1) {
+				// A shard, or a set, can leave a module with no test to run, and that isn't a failure here.
+				task.failOnNoDiscoveredTests = false
+			}
+			if (count > 1 && project == project.rootProject) {
+				Map<String, Integer> shards = null
+				task.exclude { FileTreeElement element ->
+					if (element.directory || !element.name.endsWith('.class')) return false
+					if (shards == null) shards = deal(task)
+					shards[topLevel(element.relativePath.pathString)] != index
+				}
+			} else if (count > 1 && index != count - 1) {
+				task.exclude '**/*'
+			}
+		}
+	}
+}
+
+// The other modules' test tasks are left out of a shard but the last, as -x leaves them out, so that the shard
+// compiles none of what they alone need.
+if (count > 1 && index != count - 1) {
+	gradle.settingsEvaluated { settings ->
+		def excluded = gradle.startParameter.excludedTaskNames.toList()
+		settings.rootProject.children.each { child -> excluded << "${child.path}:test".toString() }
+		gradle.startParameter.excludedTaskNames = excluded
+	}
+}

@@ -4,6 +4,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.test.Nightly
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.Test
 import java.sql.DriverManager
@@ -14,6 +15,7 @@ import kotlin.test.assertTrue
  * Compiled Cypher statements that read a text past 32 KB, many of them on one session, as an application runs them:
  * each statement's memory goes back to the instance when it ends.
  */
+@Nightly
 @OracleTests
 class OracleLongTextMemoryTest {
 

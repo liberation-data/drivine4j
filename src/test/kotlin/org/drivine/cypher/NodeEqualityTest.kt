@@ -10,6 +10,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -200,6 +201,7 @@ class NodeEqualityTest {
  * On Oracle, a node with a label equal to a node matched before it is still joined, and so found when it has more than one
  * label (#576). The plan's outline names each join Oracle eliminates.
  */
+@Nightly
 @OracleTests
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OracleNodeEqualityPlanTest {
@@ -267,6 +269,7 @@ class OracleNodeEqualityPlanTest {
  * and filtered it on the key: `MATCH (a:Big) MATCH (b:Big) WHERE a = b` took 1.5 s over 4,000 nodes, growing with their
  * square. The plan's outline names each join Oracle eliminates, which #576 keeps it from doing to the later node.
  */
+@Nightly
 @OracleTests
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OracleKeyedLabelPlanTest {

@@ -232,10 +232,16 @@ class StatelessSaveThenVectorSearchOracleTest {
     @Test fun `saveAll then loadNearest on Oracle`() = verifyBatchSave(fixtures, registry)
 }
 
+/**
+ * On a graph of its own, and not the shared `contracts`, so its `Doc` index holds its own four nodes alone.
+ * pgvector's HNSW index is approximate: a scan yields at most `hnsw.ef_search` entries, a deleted row's among
+ * them until a vacuum, and over `contracts`, where other classes write and delete `Doc` nodes near the query,
+ * it sometimes left out `C`, the farthest of the four ("expected [A, B, C, D] but was [A, D, B]").
+ */
 @PostgresTests
 class StatelessSaveThenVectorSearchPostgresTest {
     private val registry = SubtypeRegistry()
-    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val pm = PostgresTestDatabase.graphManager("savevector", registry)
     private val fixtures = PostgresTestDatabase.fixtures(pm)
 
     @BeforeEach
