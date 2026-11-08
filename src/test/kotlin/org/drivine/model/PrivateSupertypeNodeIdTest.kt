@@ -41,6 +41,26 @@ class PrivateSupertypeNodeIdTest {
     @NodeFragment(labels = ["Inheriting"])
     class Inheriting : Public() { val name: String = "" }
 
+    @NodeFragment(labels = ["OwnId"])
+    class OwnId : Hidden() { @NodeId val uuid: String = "" }
+
+    @NodeFragment(labels = ["HiddenGetter"])
+    open class HiddenGetter { @get:NodeId private val key: String get() = "" }
+
+    @NodeFragment(labels = ["NotOverriddenGetter"])
+    class NotOverriddenGetter : HiddenGetter() { val key: String = "" }
+
+    interface HiddenInInterface { @get:NodeId private val key: String get() = "" }
+
+    @NodeFragment(labels = ["Implementing"])
+    class Implementing : HiddenInInterface { val key: String = "" }
+
+    @NodeFragment(labels = ["Middle"])
+    open class Middle : Hidden() { val name: String = "" }
+
+    @NodeFragment(labels = ["Deep"])
+    class Deep : Middle() { val key: String = "" }
+
     private val logger = LoggerFactory.getLogger(FragmentModel::class.java) as Logger
     private val appender = ListAppender<ILoggingEvent>()
 
@@ -83,6 +103,28 @@ class PrivateSupertypeNodeIdTest {
     @Test
     fun `a public @NodeId inherited by a subclass is its id`() {
         assertEquals("key", FragmentModel.from(Inheriting::class.java).nodeIdField)
+    }
+
+    @Test
+    fun `a subclass that marks its own @NodeId has it, and isn't warned of`() {
+        assertEquals("uuid", FragmentModel.from(OwnId::class.java).nodeIdField)
+        assertTrue(warningsOf(OwnId::class.java).isEmpty())
+    }
+
+    @Test
+    fun `a supertype's private @get-NodeId getter isn't a subclass's id`() {
+        assertEquals("key", FragmentModel.from(HiddenGetter::class.java).nodeIdField)
+        assertNull(FragmentModel.from(NotOverriddenGetter::class.java).nodeIdField)
+    }
+
+    @Test
+    fun `an interface's private @NodeId isn't an implementing class's id`() {
+        assertNull(FragmentModel.from(Implementing::class.java).nodeIdField)
+    }
+
+    @Test
+    fun `a private @NodeId further up the hierarchy isn't a subclass's id`() {
+        assertNull(FragmentModel.from(Deep::class.java).nodeIdField)
     }
 
     /** Read only by the warning's test, as a class is warned of only once in a JVM. */

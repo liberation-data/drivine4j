@@ -563,8 +563,8 @@ data class FragmentModel(
         private val warnedOfPrivateNodeId: MutableSet<Class<*>> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
         /**
-         * Warns, once a class, of a class with no node id whose Kotlin supertype has a private `@NodeId`: before
-         * #628 that was taken as the class's id, and a private property isn't inherited as one.
+         * Warns, once a class, of a class with no node id whose Kotlin supertype has a private `@NodeId`, which isn't
+         * inherited as one (#628): before #628 it was taken as the id of a subclass property of the same name.
          */
         private fun warnOfPrivateNodeId(kClass: KClass<*>) {
             val hidden = kClass.allSuperclasses.firstNotNullOfOrNull { supertype ->
