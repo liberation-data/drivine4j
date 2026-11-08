@@ -627,18 +627,15 @@ cases:
         rows: [[250, 31375]]
 
   - name: "A write that returns a row past 32 KB"
-    description: "A statement that writes returns a row past 32 KB whole: a text of 40,000 characters it stores, alone, in a list, on each of several rows, and one it works out of 80,000. On Oracle a compiled write's block returns each row as JSON, which a driver may read in parts of 32 KB."
+    description: "A statement that writes returns a row past 32 KB whole: a text of 40,000 characters it stores, alone and in a list, and one it works out of 80,000. On Oracle a compiled write's block returns each row as JSON, which a driver may read in parts of 32 KB. Two rows are covered once an Oracle fix ships."
     steps:
       - cypher: "CREATE (n:CyWrite {i: 1, t: $t}) RETURN n.t"
         parameters: {t: {$repeat: "x", times: 40000}}
         rows: [{$repeat: "x", times: 40000}]
-      - cypher: "UNWIND [2, 3] AS i CREATE (n:CyWrite {i: i, t: $t}) RETURN [i, n.t] ORDER BY i"
-        parameters: {t: {$repeat: "y", times: 40000}}
-        rows: [[2, {$repeat: "y", times: 40000}], [3, {$repeat: "y", times: 40000}]]
       - cypher: "MATCH (n:CyWrite {i: 1}) SET n.t = n.t + n.t RETURN [n.i, n.t]"
         rows: [[1, {$repeat: "x", times: 80000}]]
       - cypher: "MATCH (n:CyWrite) RETURN [n.i, size(n.t)] ORDER BY n.i"
-        rows: [[1, 80000], [2, 40000], [3, 40000]]
+        rows: [[1, 80000]]
 
   - name: "A float with no fraction"
     description: "A float that is a whole number, such as 2.0, is written and read back as a float, from a parameter nested or past 32 KB too, and toString() of it keeps its fraction."

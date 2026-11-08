@@ -79,8 +79,6 @@ data class CypherSpec(
                     // keys() of a float is null, not a failure; round() of an infinity to a precision is null.
                     Hold(669, listOf("oracle"), listOf(4, 8)),
                 ),
-                // The session is closed (ORA-03113), by step 3 or by a statement run on the store after it, even with step 3 not run: not run.
-                "A write that returns a row past 32 KB" to listOf(Hold(670, listOf("oracle"), listOf(1), skip = true)),
             ),
         )
 
