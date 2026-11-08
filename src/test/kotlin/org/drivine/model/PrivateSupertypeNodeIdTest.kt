@@ -120,6 +120,13 @@ class PrivateSupertypeNodeIdTest {
     @Test
     fun `an interface's private @NodeId isn't an implementing class's id`() {
         assertNull(FragmentModel.from(Implementing::class.java).nodeIdField)
+        // An interface's member can't be protected, so the warning doesn't offer it.
+        assertEquals(
+            "${Implementing::class.qualifiedName} has no @NodeId: ${HiddenInInterface::class.qualifiedName}.key is " +
+                "private, and a supertype's private property isn't inherited as a node id. Make it public, or put " +
+                "@NodeId on Implementing's own property.",
+            warningsOf(Implementing::class.java).single().formattedMessage,
+        )
     }
 
     @Test

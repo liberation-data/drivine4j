@@ -567,16 +567,18 @@ data class FragmentModel(
          * inherited as one (#628): before #628 it was taken as the id of a subclass property of the same name.
          */
         private fun warnOfPrivateNodeId(kClass: KClass<*>) {
-            val hidden = kClass.allSuperclasses.firstNotNullOfOrNull { supertype ->
+            val (supertype, hidden) = kClass.allSuperclasses.firstNotNullOfOrNull { supertype ->
                 supertype.memberProperties
                     .firstOrNull { it.visibility == KVisibility.PRIVATE && it.isNodeId() }
-                    ?.let { "${supertype.qualifiedName}.${it.name}" }
+                    ?.let { supertype to it }
             } ?: return
             if (warnedOfPrivateNodeId.add(kClass.java)) {
+                // An interface's member can't be protected.
+                val visible = if (supertype.java.isInterface) "public" else "protected or public"
                 logger.warn(
                     "{} has no @NodeId: {} is private, and a supertype's private property isn't inherited as a node id. " +
-                        "Make it protected or public, or put @NodeId on {}'s own property.",
-                    kClass.qualifiedName, hidden, kClass.simpleName,
+                        "Make it {}, or put @NodeId on {}'s own property.",
+                    kClass.qualifiedName, "${supertype.qualifiedName}.${hidden.name}", visible, kClass.simpleName,
                 )
             }
         }
