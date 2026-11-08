@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # The shards each variant's job runs, as in ci.yml. ORACLE's spring part and POSTGRES aren't sharded.
-SHARDS = {"APOC_SORT_MAPS": 3, "CALL_SUBQUERY": 2, "FALKORDB": 2, "MEMGRAPH": 2, "ORACLE": 2}
+SHARDS = {"APOC_SORT_MAPS": 3, "CALL_SUBQUERY": 3, "FALKORDB": 3, "MEMGRAPH": 3, "ORACLE": 2}
 VARIANTS = (*SHARDS, "POSTGRES")
 # The step, by result directory, of a variant whose root module ran in shards: the others ran named classes.
 SHARDED = {
@@ -227,6 +227,11 @@ def compare(before: str, pull_request: str, full: str | None) -> int:
             if name not in seen and name not in nightly:
                 print(f"{variant} {step}: {name} ran before, and in no job now")
                 failed = True
+        if key not in runs["before"]:
+            # A step the run before kept no results of, as it uploaded none of standaloneTest's: counted apart.
+            count = sum(t for classes in pr.values() for t in classes.values())
+            print(f"{variant} {step}: not in the run before; {count} tests in the pull request's run")
+            continue
         totals[variant]["before"] += sum(old.values())
         totals[variant]["pr"] += sum(t for classes in pr.values() for t in classes.values())
         totals[variant]["nightly"] += sum(nightly.values())
