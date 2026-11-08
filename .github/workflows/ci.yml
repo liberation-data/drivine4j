@@ -111,7 +111,7 @@ jobs:
 
   # The whole suite on Neo4j, as `./gradlew test standaloneTest` runs it, with each collection sort strategy. The
   # Postgres tests don't read the strategy, so this job runs them, and CALL_SUBQUERY's doesn't.
-  test-apoc-part:
+  test-apoc:
     name: test (APOC_SORT_MAPS, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
@@ -127,21 +127,8 @@ jobs:
           part: ${{ matrix.part }}
           name: APOC_SORT_MAPS
 
-  # The check the job gave before it was split: it passes when every part passed. It runs whatever they concluded,
-  # as no job here may be skipped (see `tree`).
-  test-apoc:
-    name: test (APOC_SORT_MAPS)
-    needs: test-apoc-part
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Every part passed
-        run: |
-          echo "The parts concluded ${{ needs.test-apoc-part.result }}."
-          [ "${{ needs.test-apoc-part.result }}" = success ]
-
   # The whole suite on Neo4j again, with the strategy CALL_SUBQUERY.
-  test-call-subquery-part:
+  test-call-subquery:
     name: test (CALL_SUBQUERY, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
@@ -157,22 +144,9 @@ jobs:
           part: ${{ matrix.part }}
           name: CALL_SUBQUERY
 
-  # The check the job gave before it was split: it passes when every part passed. It runs whatever they concluded,
-  # as no job here may be skipped (see `tree`).
-  test-call-subquery:
-    name: test (CALL_SUBQUERY)
-    needs: test-call-subquery-part
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Every part passed
-        run: |
-          echo "The parts concluded ${{ needs.test-call-subquery-part.result }}."
-          [ "${{ needs.test-call-subquery-part.result }}" = success ]
-
   # The sample module on FalkorDB, and the rest as a plain `./gradlew test` runs it; then, in the first part, the root
   # module's Spring tests FalkorDB can run, on a FalkorDB datasource.
-  test-falkordb-part:
+  test-falkordb:
     name: test (FalkorDB, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
@@ -188,21 +162,8 @@ jobs:
           part: ${{ matrix.part }}
           name: FalkorDB
 
-  # The check the job gave before it was split: it passes when every part passed. It runs whatever they concluded,
-  # as no job here may be skipped (see `tree`).
-  test-falkordb:
-    name: test (FalkorDB)
-    needs: test-falkordb-part
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Every part passed
-        run: |
-          echo "The parts concluded ${{ needs.test-falkordb-part.result }}."
-          [ "${{ needs.test-falkordb-part.result }}" = success ]
-
   # The same on Memgraph.
-  test-memgraph-part:
+  test-memgraph:
     name: test (Memgraph, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
@@ -218,24 +179,11 @@ jobs:
           part: ${{ matrix.part }}
           name: Memgraph
 
-  # The check the job gave before it was split: it passes when every part passed. It runs whatever they concluded,
-  # as no job here may be skipped (see `tree`).
-  test-memgraph:
-    name: test (Memgraph)
-    needs: test-memgraph-part
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Every part passed
-        run: |
-          echo "The parts concluded ${{ needs.test-memgraph-part.result }}."
-          [ "${{ needs.test-memgraph-part.result }}" = success ]
-
   # The Oracle tests are left out of a plain `./gradlew test`, which the jobs above run: ORACLE_TESTS enables them.
   # Its shards run the root module's; its part `spring` the sample app's, the coroutines module's and the root module's
   # Spring tests on an Oracle datasource, as the Postgres job does: a graph engine's job proves nothing of the SQL
   # Drivine writes for Oracle.
-  test-oracle-part:
+  test-oracle:
     name: test (Oracle, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.part == 'nightly' && 75 || 45 }}
@@ -250,19 +198,6 @@ jobs:
           variant: ORACLE
           part: ${{ matrix.part }}
           name: Oracle
-
-  # The check the job gave before it was split: it passes when every part passed. It runs whatever they concluded,
-  # as no job here may be skipped (see `tree`).
-  test-oracle:
-    name: test (Oracle)
-    needs: test-oracle-part
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Every part passed
-        run: |
-          echo "The parts concluded ${{ needs.test-oracle-part.result }}."
-          [ "${{ needs.test-oracle-part.result }}" = success ]
 
   # The Postgres tests run in a plain `./gradlew test`, so APOC_SORT_MAPS's job runs them. This runs the sample app's and
   # the root module's Spring tests on a Postgres datasource, which no other job does. It isn't split: it has no nightly

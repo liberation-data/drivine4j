@@ -5,11 +5,11 @@ gradle/ci-test-sets.gradle reads to deal a job's classes out to its shards evenl
     python scripts/ci_test_times.py <run id> [<owner/repo>]
 
 <run id> is a run of ci.yml. It downloads the run's test results, the artifacts test-results-<variant>-<part>, with
-`gh run download`, and sums each class's time over the parts of each variant. Only the results of the sharded run count:
-not the Oracle job's `spring` part, nor the root module's run of named classes on FalkorDB or Memgraph, whose results
-are the job's build/test-results/test (the sharded run's were moved to build/test-results-default before it). A class
-under a second in every job is left out, and weighs a fifth of a second; so is a class marked @Nightly, which no shard
-runs. Run it when a job's shards grow uneven, and commit the file. A run from before the shards, whose artifacts are
+`gh run download`, and sums each root module class's time over the shards of each variant. The other modules' times
+are summed into the row `:modules`, and those of the classes FalkorDB's and Memgraph's first shard runs by name into
+`:named`, each with what the step costs beside them. The nightly part and Oracle's `spring` aren't sharded, and don't
+count. A class under a second in every job is left out, and weighs a fifth of a second; so is a class marked @Nightly,
+which no shard runs. Run it when a job's shards grow uneven, and commit the file. A run from before the shards, whose artifacts are
 test-results-<variant>, is read too.
 """
 
@@ -26,6 +26,10 @@ import xml.etree.ElementTree as ET
 VARIANTS = ("APOC_SORT_MAPS", "CALL_SUBQUERY", "FALKORDB", "MEMGRAPH", "ORACLE")
 OUT = pathlib.Path(__file__).resolve().parent.parent / "gradle" / "test-times.tsv"
 FLOOR = 1.0
+# The seconds the last shard spends compiling the other modules, and the first starting Gradle again for the named
+# classes, as CI's logs showed them.
+MODULES_OVERHEAD = 60.0
+NAMED_OVERHEAD = 40.0
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -40,17 +44,25 @@ def nightly() -> set[str]:
     return found
 
 
-def counts(variant: str, artifact: str, xml: pathlib.Path) -> bool:
-    """Whether a result, at its path within its artifact, is of the variant's sharded run."""
+def bucket(variant: str, artifact: str, xml: pathlib.Path) -> str | None:
+    """
+    What a result, at its path within its artifact, counts toward: `class`, a class of the root module the shards deal
+    out; `:modules`, the other modules, which the last shard runs whole; `:named`, the classes scripts/ci-test-part.sh
+    runs by name in the first shard; or None, a part that isn't sharded (the nightly part, and Oracle's spring).
+    """
     part = artifact[len(f"test-results-{variant}") :].lstrip("-")
     root = not xml.parts[0].startswith("drivine4j-")
     directory = xml.parent.name
+    if part in ("nightly", "spring"):
+        return None
     if variant == "ORACLE":
-        # Before the shards one job ran it all, the sharded run's results copied to test-results-default.
-        return directory == "test-results-default" if not part else part != "spring" and root
+        # The root module's sharded run, moved to test-results-default; before the shards, the rest ran beside it.
+        return "class" if root and directory == "test-results-default" else None
+    if not root:
+        return ":modules"
     if variant in ("FALKORDB", "MEMGRAPH"):
-        return not root or directory == "test-results-default"
-    return True
+        return "class" if directory == "test-results-default" else ":named"
+    return "class"
 
 
 def main(args: list[str]) -> int:
@@ -75,9 +87,15 @@ def main(args: list[str]) -> int:
             if variant is None:
                 continue
             for xml in artifact.rglob("TEST-*.xml"):
-                if counts(variant, artifact.name, xml.relative_to(artifact)):
+                counted = bucket(variant, artifact.name, xml.relative_to(artifact))
+                if counted is not None:
                     suite = ET.parse(xml).getroot()
-                    times[suite.get("name", "").split("$")[0]][variant] += float(suite.get("time") or 0)
+                    name = suite.get("name", "").split("$")[0] if counted == "class" else counted
+                    times[name][variant] += float(suite.get("time") or 0)
+    # What a step costs beside its tests' own seconds: the modules' compiling, and a second Gradle run.
+    for name, overhead in ((":modules", MODULES_OVERHEAD), (":named", NAMED_OVERHEAD)):
+        for variant in list(times.get(name, {})):
+            times[name][variant] += overhead
     left_out = nightly()
     rows = sorted(name for name, by in times.items() if max(by.values()) >= FLOOR and name not in left_out)
     with OUT.open("w") as out:
