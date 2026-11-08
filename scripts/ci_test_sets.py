@@ -8,9 +8,10 @@ still runs.
 
 `list` asks Gradle which classes each shard of each variant would run, with the selection the jobs make
 (gradle/ci-test-sets.gradle's ciTestClasses task, over the compiled classes, so it builds them first and runs no test),
-and marks the classes whose source marks them @Nightly (a class with one test marked so is in a shard, its test in the
-nightly set as well). Given a run of ci.yml from before the shards, it maps each test
-class that run ran to the shard, or the nightly set, of its variant that now runs it, and fails if one has none or two.
+fails if a class the task would run unsharded is in no shard or in two, and marks the classes whose source marks them
+@Nightly (a class with one test marked so is in a shard, its test in the nightly set as well). Given a run of ci.yml
+from before the shards, it maps each test class that run ran to the shard, or the nightly set, of its variant that now
+runs it, and fails if one has none or two.
 
 `runs` reads the JUnit results the jobs of ci.yml runs uploaded (`gh run download`): a run from before the shards, a
 pull request's run, and a full run. For each variant and step it counts the tests and the classes each ran, and fails
@@ -44,6 +45,10 @@ SHARDED = {"APOC_SORT_MAPS": "test", "CALL_SUBQUERY": "test", "ORACLE": "test-re
 REPEATS = ("FALKORDB", "MEMGRAPH")
 # An object's identity in a parameter's name, `[1] MemgraphSchemaGrammar@dd6882f`, which differs from run to run.
 IDENTITY = re.compile(r"@[0-9a-f]{5,8}\b")
+USAGE = (
+    "Usage: python scripts/ci_test_sets.py list [<before run>]\n"
+    "       python scripts/ci_test_sets.py runs <before run> <pull request run> [<full run>]"
+)
 
 
 def gradle_list(shard: str, weights: str) -> dict[str, set[str]]:
@@ -176,6 +181,8 @@ def listing(before: str | None) -> int:
     for name in sorted(nightly):
         print(f"  {name}")
     shards: dict[str, dict[str, dict[str, int]]] = {}
+    # Every class each test task would run unsharded, which the shards between them must run.
+    whole = gradle_list("1/1", "")
     for variant, count in SHARDS.items():
         owner: dict[str, dict[str, int]] = collections.defaultdict(lambda: collections.defaultdict(int))
         for i in range(1, count + 1):
@@ -184,11 +191,14 @@ def listing(before: str | None) -> int:
                     owner[task][name] |= 1 << (i - 1)
         shards[variant] = owner
         twice = [(t, n) for t, names in owner.items() for n, bits in names.items() if bits & (bits - 1)]
+        none = sorted((t, n) for t, names in whole.items() for n in names if not owner.get(t, {}).get(n))
         print(
             f"{variant}: {sum(len(n) for n in owner.values())} classes in {count} shards, "
-            f"{len(twice)} in more than one" + "".join(f"\n  twice: {t} {n}" for t, n in twice)
+            f"{len(twice)} in more than one, {len(none)} in none"
+            + "".join(f"\n  twice: {t} {n}" for t, n in twice)
+            + "".join(f"\n  in no shard: {t} {n}" for t, n in none)
         )
-        if twice:
+        if twice or none:
             return 1
     if before is None:
         return 0
@@ -294,7 +304,7 @@ def main(args: list[str]) -> int:
         return listing(args[1] if len(args) == 2 else None)
     if args[:1] == ["runs"] and len(args) in (3, 4):
         return compare(args[1], args[2], args[3] if len(args) == 4 else None)
-    print(__doc__.strip().splitlines()[3].strip() + "\n" + __doc__.strip().splitlines()[4].strip(), file=sys.stderr)
+    print(USAGE, file=sys.stderr)
     return 2
 
 

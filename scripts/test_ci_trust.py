@@ -201,6 +201,20 @@ class TestAssess(unittest.TestCase):
         self.assertEqual(result.decision, "gate")
         self.assertIn(f"it tested its merge ref, tree {OTHER}, as its base had moved on", result.text)
 
+    def test_names_the_tree_a_pull_requests_run_of_the_pull_request_set_tested_when_its_base_had_moved_on(self) -> None:
+        result = decide(
+            {
+                runs_on(SHA): workflow_runs(),
+                RECORDS: record_on(),
+                runs_on(HEAD): workflow_runs(run(4, event="pull_request", head_sha=HEAD)),
+                artifacts_of(4): recorded(f"pr-set-{OTHER}"),
+            },
+            [SHA, HEAD],
+        )
+
+        self.assertEqual(result.decision, "gate")
+        self.assertIn(f"it tested its merge ref, tree {OTHER}, as its base had moved on", result.text)
+
     def test_doesnt_believe_a_record_on_a_run_whose_head_commit_is_another_tree_as_a_forks_ci_could_make_it(
         self,
     ) -> None:

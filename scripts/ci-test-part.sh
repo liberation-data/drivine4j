@@ -9,7 +9,7 @@
 # - i/n, the i-th of n shards of the pull request set: the variant's tests without the classes marked @Nightly
 #   (org.drivine.test.Nightly), dealt out over n jobs by gradle/ci-test-sets.gradle;
 # - nightly, the classes marked @Nightly alone, which a full run adds to the shards: each night (nightly.yml), on a push
-#   to main, in a release's gate, and on a pull request labelled full-ci;
+#   to main or develop, in a release's gate, and on a pull request labelled full-ci;
 # - spring, on ORACLE alone: the sample app's, the coroutines module's and the root module's Spring tests on an Oracle
 #   datasource, which hold no nightly class;
 # - all, on FALKORDB, MEMGRAPH and POSTGRES: their jobs, which hold no nightly class either.

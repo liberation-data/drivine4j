@@ -165,7 +165,9 @@ def classify(gathered: Gathered, tree: str) -> Look:
         )
     if run.get("event") == "pull_request" and tree not in trees:
         if trees:
-            return look("ignored", f"it tested its merge ref, tree {trees[0]}, as its base had moved on")
+            return look(
+                "ignored", f"it tested its merge ref, tree {trees[0].removeprefix(PR_SET)}, as its base had moved on"
+            )
         if not done:
             return look("maybe", "it has not yet recorded the tree of the merge ref it tests")
         return look(

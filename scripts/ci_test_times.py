@@ -36,8 +36,8 @@ def nightly() -> set[str]:
     found: set[str] = set()
     for source in ROOT.glob("**/src/test/**/*.kt"):
         text = source.read_text()
-        package = re.search(r"^package (\S+)", text, re.M)
-        for name in re.findall(r"^@Nightly\n(?:@.*\n)*(?:abstract |open )?class (\w+)", text, re.M):
+        package = re.search(r"^package (\S+)", text, re.MULTILINE)
+        for name in re.findall(r"^@Nightly\n(?:@.*\n)*(?:abstract |open )?class (\w+)", text, re.MULTILINE):
             found.add(f"{package.group(1)}.{name}" if package else name)
     return found
 

@@ -8,9 +8,9 @@
 #
 # A pull request's run leaves out the tests marked @Nightly (org.drivine.test.Nightly): the timings, the plans Oracle
 # makes, the texts past 32 KB on Oracle, the Postgres tests that vacuum or analyze a table to a state, and Oracle's
-# slow APOC batch. A full run adds a `nightly` part to the Neo4j and Oracle variants: a push to main, a pull request
-# labelled `full-ci`, nightly.yml each night, and release.yml's gate. release.yml calls this as its gate, on the commit
-# it releases, unless a full push or pull_request run of it has already passed on the same tree.
+# slow APOC batch. A full run adds a `nightly` part to the Neo4j and Oracle variants: a push to main or develop, a pull
+# request labelled `full-ci`, nightly.yml each night, and release.yml's gate. release.yml calls this as its gate, on the
+# commit it releases, unless a full push or pull_request run of it has already passed on the same tree.
 name: CI
 
 on:
@@ -71,7 +71,8 @@ jobs:
 
   # The version script's tests, which also check that its list of the files naming the version (the sample's model
   # file and the README's install snippets) matches them, so a snippet added or reworded fails here and not in the
-  # next Prepare release. And the tests of release.yml's other script, ci_trust.py.
+  # next Prepare release. And the tests of release.yml's other script, ci_trust.py, and of the shards' check,
+  # ci_test_sets.py.
   release-version:
     runs-on: ubuntu-latest
     steps:
@@ -83,6 +84,9 @@ jobs:
 
       - name: Test the CI trust script
         run: python3 scripts/test_ci_trust.py
+
+      - name: Test the test sets script
+        run: python3 scripts/test_ci_test_sets.py
 
   # The whole suite on Neo4j, as `./gradlew test standaloneTest` runs it, with each collection sort strategy. The
   # Postgres tests don't read the strategy, so this job runs them, and CALL_SUBQUERY's doesn't.
