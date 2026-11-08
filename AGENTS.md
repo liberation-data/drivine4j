@@ -26,8 +26,9 @@ These are read by all three libraries. Change them here only together with the o
 The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`) is not in this repository:
 it is [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)'s `compiler/` module, which the other
 two libraries are to share, and drivine4j builds against its JVM artifact, `org.drivine:drivine-cypher-compiler-jvm`.
-`gradle/cypher-compiler.properties` pins the commit; `scripts/compiler-local.sh` publishes that commit into `.compiler-repo`
-in the checkout, where the build reads it until the module is on Maven Central.
+`gradle/cypher-compiler.properties` pins a release, which the build reads from Maven Central: a spec tag `vX.Y.Z` is the
+compiler's release `X.Y.Z`. Between releases it can pin a commit, `0.0.0-<commit>`, which `scripts/compiler-local.sh`
+publishes into `.compiler-repo` in the checkout for the build to read; drivine4j can't release on one.
 
 - **A compiler bug is fixed in the module,** with its tests there, and drivine4j takes the fix by moving the pin.
 - **drivine4j calls the compiler to compile at one place,** `org.drivine.connection.CypherCompile`, which writes the

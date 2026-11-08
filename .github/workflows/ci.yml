@@ -88,8 +88,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # The Cypher compiler, drivine-cypher-spec's compiler/ module at the commit gradle/cypher-compiler.properties pins,
-      # published into .compiler-repo for the build to read until the module is on Maven Central: see the script.
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
       - name: Cache the pinned Cypher compiler
         uses: actions/cache@v4
         with:
@@ -216,8 +216,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # The Cypher compiler, drivine-cypher-spec's compiler/ module at the commit gradle/cypher-compiler.properties pins,
-      # published into .compiler-repo for the build to read until the module is on Maven Central: see the script.
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
       - name: Cache the pinned Cypher compiler
         uses: actions/cache@v4
         with:
@@ -324,8 +324,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # The Cypher compiler, drivine-cypher-spec's compiler/ module at the commit gradle/cypher-compiler.properties pins,
-      # published into .compiler-repo for the build to read until the module is on Maven Central: see the script.
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
       - name: Cache the pinned Cypher compiler
         uses: actions/cache@v4
         with:
@@ -453,8 +453,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # The Cypher compiler, drivine-cypher-spec's compiler/ module at the commit gradle/cypher-compiler.properties pins,
-      # published into .compiler-repo for the build to read until the module is on Maven Central: see the script.
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
       - name: Cache the pinned Cypher compiler
         uses: actions/cache@v4
         with:
@@ -602,8 +602,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # The Cypher compiler, drivine-cypher-spec's compiler/ module at the commit gradle/cypher-compiler.properties pins,
-      # published into .compiler-repo for the build to read until the module is on Maven Central: see the script.
+      # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
+      # between releases is published into .compiler-repo for the build to read: see the script.
       - name: Cache the pinned Cypher compiler
         uses: actions/cache@v4
         with:
