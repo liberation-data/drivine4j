@@ -232,7 +232,7 @@ abstract class PropertyKeyIndexContract {
             "MATCH (start:`$IMPORT_LABEL` {`$IMPORT_ID`: row.start._id}) MATCH (finish:`$IMPORT_LABEL` {`$IMPORT_ID`: row.end._id}) $write"
 
     @Test
-    fun `a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`() {
+    open fun `a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`() {
         // Its reads, planned as a query: a write compiles to a procedure, which no EXPLAIN takes.
         val plan = plan(compiled(apocBatch(0, 20, "RETURN start, finish"), emptyMap()))
         println("apoc\n$plan\n")
@@ -290,7 +290,6 @@ class PostgresPropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val storesInfinity = false
 }
 
-@Nightly
 @OracleTests
 class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val pm by lazy { OracleTestDatabase.graphManager(GRAPH) }
@@ -318,6 +317,12 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val whereProbesIndex = false
 
     override fun analyze() = OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE'); END;")
+
+    /** Nightly alone: its two writes of 20 relationships take about 16 minutes on Oracle (#675). */
+    @Nightly
+    @Test
+    override fun `a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`() =
+        super.`a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`()
 
     @Test
     fun `a statement compiled without the graph's indexes compares the property as JSON alone, and tests the labels through their index`() {

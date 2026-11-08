@@ -4,7 +4,7 @@
 //   ./gradlew --init-script gradle/ci-test-sets.gradle test -Pdrivine.test.set=pr -Pdrivine.test.shard=2/3 \
 //       -Pdrivine.test.weights=APOC_SORT_MAPS
 //
-// - drivine.test.set: `pr` leaves out the classes marked @Nightly (org.drivine.test.Nightly, the JUnit tag `nightly`),
+// - drivine.test.set: `pr` leaves out the tests marked @Nightly (org.drivine.test.Nightly, the JUnit tag `nightly`),
 //   `nightly` runs those alone, and `all`, the default, runs both. A pull request's CI runs `pr` in each job; a full run
 //   adds a job of `nightly` to each variant's.
 // - drivine.test.shard: `i/n` runs the i-th of n shards. The root module's classes are dealt out over the shards, a
@@ -12,9 +12,8 @@
 //   last shard, and the others neither run nor compile them. The classes are dealt by the seconds they took in CI,
 //   from gradle/test-times.tsv, the column drivine.test.weights names, the longest first, each to the shard with the
 //   fewest seconds so far: each shard works out the same deal from the same classes. The last shard starts with the
-//   seconds of the other modules (the file's row `:modules`), and the first with those of the classes
-//   scripts/ci-test-part.sh runs there by name (`:named`). A class the file doesn't name weighs a fifth of a second,
-//   so a new class changes the deal of the short ones alone.
+//   seconds of the other modules (the file's row `:modules`). A class the file doesn't name weighs a fifth of a
+//   second, so a new class changes the deal of the short ones alone.
 //
 // The task ciTestClasses, which this adds to each project, lists the classes each test task would run in the shard,
 // by their class files: scripts/ci_test_sets.py lists them so, to show each class runs in one job.
@@ -72,7 +71,6 @@ def deal = { Test task ->
 	}
 	def load = new double[count]
 	load[count - 1] += seconds.get(':modules', 0d)
-	load[0] += seconds.get(':named', 0d)
 	Map<String, Integer> shards = [:]
 	classes.toList().sort { a, b -> (seconds.get(b, 0.2d) <=> seconds.get(a, 0.2d)) ?: a <=> b }.each { name ->
 		int least = (0..<count).min { load[it] }

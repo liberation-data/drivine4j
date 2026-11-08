@@ -1,14 +1,16 @@
 # Builds and tests drivine4j. The tests run on test containers (see TEST_CONTAINERS.md), in a job for each variant:
 # Neo4j with each collection sort strategy (APOC_SORT_MAPS, CALL_SUBQUERY), FalkorDB, Memgraph, Oracle and Postgres.
-# Each variant's job is split over parallel jobs, each with containers of its own, and scripts/ci-test-part.sh says
-# what each part runs. nightly-latest.yml runs each variant's tests each night, whole, on the latest engine images:
-# keep it in step.
+# The Neo4j variants' jobs run the whole suite, its cross-engine tests on FalkorDB, Memgraph, SQLite and (in
+# APOC_SORT_MAPS's) Postgres among it. FalkorDB's and Memgraph's jobs run what only they run, on a datasource of their
+# engine. The Neo4j and Oracle jobs are split over parallel jobs, each with containers of its own, and
+# scripts/ci-test-part.sh says what each part runs. nightly-latest.yml runs each variant's tests each night, unsplit,
+# on the latest engine images: keep it in step.
 #
-# A pull request's run leaves out the classes marked @Nightly (org.drivine.test.Nightly): the timings, the plans Oracle
-# makes, the texts past 32 KB on Oracle, and the Postgres tests that vacuum or analyze a table to a state. A full run
-# adds a `nightly` part to each variant: a push to main, a pull request labelled `full-ci`, nightly.yml each night, and
-# release.yml's gate. release.yml calls this as its gate, on the commit it releases, unless a full push or pull_request
-# run of it has already passed on the same tree.
+# A pull request's run leaves out the tests marked @Nightly (org.drivine.test.Nightly): the timings, the plans Oracle
+# makes, the texts past 32 KB on Oracle, the Postgres tests that vacuum or analyze a table to a state, and Oracle's
+# slow APOC batch. A full run adds a `nightly` part to the Neo4j and Oracle variants: a push to main, a pull request
+# labelled `full-ci`, nightly.yml each night, and release.yml's gate. release.yml calls this as its gate, on the commit
+# it releases, unless a full push or pull_request run of it has already passed on the same tree.
 name: CI
 
 on:
@@ -117,39 +119,32 @@ jobs:
           part: ${{ matrix.part }}
           name: CALL_SUBQUERY
 
-  # The sample module on FalkorDB, and the rest as a plain `./gradlew test` runs it; then, in the first part, the root
-  # module's Spring tests FalkorDB can run, on a FalkorDB datasource.
+  # What only FalkorDB's job runs: the sample module on a FalkorDB datasource, and the root module's Spring tests
+  # FalkorDB can run, on one. The suite's cross-engine tests on FalkorDB run in the two jobs above, which start its
+  # container as this job's run of the whole suite did. It has no nightly class, so a full run adds nothing here.
   test-falkordb:
-    name: test (FalkorDB, ${{ matrix.part }})
+    name: test (FalkorDB)
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        part: ${{ fromJSON((inputs.full || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["1/3", "2/3", "3/3", "nightly"]' || '["1/3", "2/3", "3/3"]') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/test-part
         with:
           variant: FALKORDB
-          part: ${{ matrix.part }}
+          part: all
           name: FalkorDB
 
   # The same on Memgraph.
   test-memgraph:
-    name: test (Memgraph, ${{ matrix.part }})
+    name: test (Memgraph)
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.part == 'nightly' && 60 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        part: ${{ fromJSON((inputs.full || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["1/3", "2/3", "3/3", "nightly"]' || '["1/3", "2/3", "3/3"]') }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/test-part
         with:
           variant: MEMGRAPH
-          part: ${{ matrix.part }}
+          part: all
           name: Memgraph
 
   # The Oracle tests are left out of a plain `./gradlew test`, which the jobs above run: ORACLE_TESTS enables them.

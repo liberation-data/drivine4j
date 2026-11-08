@@ -1,18 +1,23 @@
 """
 Shows that CI's test jobs run each test class once: every class in one job of a pull request's run, or in the nightly
-set, and none in two jobs of a pull request's run of the same variant and step.
+set, and none in two jobs of a pull request's run of the same variant and step; and that every test that ran before
+still runs.
 
     python scripts/ci_test_sets.py list [<before run>]
     python scripts/ci_test_sets.py runs <before run> <pull request run> [<full run>]
 
 `list` asks Gradle which classes each shard of each variant would run, with the selection the jobs make
 (gradle/ci-test-sets.gradle's ciTestClasses task, over the compiled classes, so it builds them first and runs no test),
-and marks the classes whose class file carries @Nightly. Given a run of ci.yml from before the shards, it maps each test
+and marks the classes whose source marks them @Nightly (a class with one test marked so is in a shard, its test in the
+nightly set as well). Given a run of ci.yml from before the shards, it maps each test
 class that run ran to the shard, or the nightly set, of its variant that now runs it, and fails if one has none or two.
 
 `runs` reads the JUnit results the jobs of ci.yml runs uploaded (`gh run download`): a run from before the shards, a
 pull request's run, and a full run. For each variant and step it counts the tests and the classes each ran, and fails
 if a class ran in two jobs of the pull request's run, or if a class of the run before ran in neither of the new ones.
+FalkorDB's and Memgraph's jobs no longer run the whole suite on Neo4j, which the Neo4j jobs run: those steps are
+counted apart, and instead every test they ran, not skipped, must run, not skipped, in a job of the new runs. So must
+every test any job ran before: a test is its class and its name, an object's identity in a parameter's name left out.
 
 A step is the result directory: build/test-results/test of the root module or another, or build/test-results-<name>,
 where a job moved the root module's results before it ran the module again (see scripts/ci-test-part.sh).
@@ -29,18 +34,16 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# The shards each variant's job runs, as in ci.yml. ORACLE's spring part and POSTGRES aren't sharded.
-SHARDS = {"APOC_SORT_MAPS": 3, "CALL_SUBQUERY": 3, "FALKORDB": 3, "MEMGRAPH": 3, "ORACLE": 2}
-VARIANTS = (*SHARDS, "POSTGRES")
+# The shards each variant's job runs, as in ci.yml. ORACLE's spring part, FALKORDB, MEMGRAPH and POSTGRES aren't.
+SHARDS = {"APOC_SORT_MAPS": 3, "CALL_SUBQUERY": 3, "ORACLE": 2}
+VARIANTS = (*SHARDS, "FALKORDB", "MEMGRAPH", "POSTGRES")
 # The step, by result directory, of a variant whose root module ran in shards: the others ran named classes.
-SHARDED = {
-    "APOC_SORT_MAPS": "test",
-    "CALL_SUBQUERY": "test",
-    "FALKORDB": "test-results-default",
-    "MEMGRAPH": "test-results-default",
-    "ORACLE": "test-results-default",
-}
-NIGHTLY = b"Lorg/drivine/test/Nightly;"
+SHARDED = {"APOC_SORT_MAPS": "test", "CALL_SUBQUERY": "test", "ORACLE": "test-results-default"}
+# The steps of FalkorDB's and Memgraph's jobs before that ran the suite again on Neo4j: the root module's whole run,
+# whose results moved to test-results-default, and the modules but the sample app, whose datasource was the engine's.
+REPEATS = ("FALKORDB", "MEMGRAPH")
+# An object's identity in a parameter's name, `[1] MemgraphSchemaGrammar@dd6882f`, which differs from run to run.
+IDENTITY = re.compile(r"@[0-9a-f]{5,8}\b")
 
 
 def gradle_list(shard: str, weights: str) -> dict[str, set[str]]:
@@ -69,14 +72,19 @@ def gradle_list(shard: str, weights: str) -> dict[str, set[str]]:
 
 
 def marked_nightly() -> set[str]:
-    """The top-level classes whose class file holds the annotation @Nightly."""
-    found = set()
-    for classes in ROOT.glob("**/build/classes/*/test"):
-        for path in classes.rglob("*.class"):
-            name = str(path.relative_to(classes).with_suffix("")).replace("/", ".")
-            if "$" not in name and name != "org.drivine.test.Nightly" and NIGHTLY in path.read_bytes():
-                found.add(name)
-    return found
+    """The classes marked @Nightly, as scripts/ci_test_times.py finds them in the sources."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from ci_test_times import nightly
+
+    return nightly()
+
+
+def repeated(variant: str, step: str) -> bool:
+    """Whether a step of the run before was FalkorDB's or Memgraph's run of the suite again, on Neo4j."""
+    module, _, directory = step.rpartition("/")
+    if variant not in REPEATS:
+        return False
+    return module not in ("", "drivine4j-sample") if module else directory == "test-results-default"
 
 
 def task_of(step: str) -> str:
@@ -105,8 +113,16 @@ def download(run: str, into: pathlib.Path) -> None:
     )
 
 
-def results(directory: pathlib.Path) -> dict[tuple[str, str, str], dict[str, int]]:
-    """(variant, part, step) to the tests of each class, from a run's artifacts test-results-<variant>[-<part>]."""
+Test = tuple[str, str]
+
+
+def results(
+    directory: pathlib.Path, ran: dict[tuple[str, str], set[Test]] | None = None
+) -> dict[tuple[str, str, str], dict[str, int]]:
+    """
+    (variant, part, step) to the tests of each class, from a run's artifacts test-results-<variant>[-<part>]. Into
+    [ran] go the tests each (variant, step) ran and didn't skip, as (class, name).
+    """
     found: dict[tuple[str, str, str], dict[str, int]] = collections.defaultdict(lambda: collections.defaultdict(int))
     for artifact in sorted(directory.iterdir()):
         variant = next(
@@ -126,6 +142,11 @@ def results(directory: pathlib.Path) -> dict[tuple[str, str, str], dict[str, int
             step = f"{module}/{xml.parent.name}" if module else xml.parent.name
             suite = ET.parse(xml).getroot()
             found[(variant, part, step)][suite.get("name", "").split("$")[0]] += int(suite.get("tests") or 0)
+            if ran is not None:
+                for case in suite.iter("testcase"):
+                    if case.find("skipped") is None:
+                        name = IDENTITY.sub("", case.get("name", ""))
+                        ran.setdefault((variant, step), set()).add((case.get("classname", ""), name))
     return found
 
 
@@ -202,12 +223,14 @@ def listing(before: str | None) -> int:
 
 
 def compare(before: str, pull_request: str, full: str | None) -> int:
+    ran: dict[str, dict[tuple[str, str], set[Test]]] = {}
     with tempfile.TemporaryDirectory() as tmp:
         runs = {}
         for name, run in (("before", before), ("pr", pull_request), ("full", full)):
             if run:
                 download(run, pathlib.Path(tmp) / name)
-                runs[name] = by_step(results(pathlib.Path(tmp) / name))
+                ran[name] = {}
+                runs[name] = by_step(results(pathlib.Path(tmp) / name, ran[name]))
     failed = False
     totals: dict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
     for key in sorted(set().union(*(r.keys() for r in runs.values()))):
@@ -222,6 +245,10 @@ def compare(before: str, pull_request: str, full: str | None) -> int:
             if len(parts) > 1:
                 print(f"{variant} {step}: {name} ran in {', '.join(sorted(parts))} of the pull request's run")
                 failed = True
+        if repeated(variant, step):
+            # Checked test by test below, against every job of the new runs.
+            totals[variant]["repeated"] += sum(old.values())
+            continue
         nightly = runs.get("full", {}).get(key, {}).get("nightly", {})
         for name in old:
             if name not in seen and name not in nightly:
@@ -239,11 +266,26 @@ def compare(before: str, pull_request: str, full: str | None) -> int:
             totals[variant]["full"] += sum(
                 t for classes in runs["full"].get(key, {}).values() for t in classes.values()
             )
-    print("variant\tbefore\tpull request\tnightly\tpull request + nightly\tfull")
+    # Every test that ran before, not skipped, runs in some job now: those of the repeated steps most of all.
+    now: set[Test] = set().union(*(tests for name in ("pr", "full") for tests in ran.get(name, {}).values()))
+    for label, keys in (
+        ("FalkorDB's and Memgraph's runs of the suite on Neo4j", [k for k in ran["before"] if repeated(*k)]),
+        ("all the jobs", list(ran["before"])),
+    ):
+        tests = set().union(*(ran["before"][k] for k in keys)) if keys else set()
+        lost = sorted(tests - now)
+        print(f"Tests {label} ran before: {len(tests)}; ran in no job now: {len(lost)}")
+        for test in lost[:50]:
+            print(f"  {test[0]} > {test[1]}")
+        failed |= bool(lost)
+    print("variant\tbefore\tpull request\tnightly\tpull request + nightly\tfull\trun again on Neo4j before, dropped")
     for variant in VARIANTS:
         t = totals[variant]
         full_count = t["full"] if "full" in runs else "-"
-        print(f"{variant}\t{t['before']}\t{t['pr']}\t{t['nightly']}\t{t['pr'] + t['nightly']}\t{full_count}")
+        print(
+            f"{variant}\t{t['before']}\t{t['pr']}\t{t['nightly']}\t{t['pr'] + t['nightly']}\t{full_count}"
+            f"\t{t['repeated']}"
+        )
     return 1 if failed else 0
 
 

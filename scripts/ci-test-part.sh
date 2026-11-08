@@ -12,11 +12,12 @@
 #   to main, in a release's gate, and on a pull request labelled full-ci;
 # - spring, on ORACLE alone: the sample app's, the coroutines module's and the root module's Spring tests on an Oracle
 #   datasource, which hold no nightly class;
-# - all, on POSTGRES alone: its job, which holds no nightly class either.
+# - all, on FALKORDB, MEMGRAPH and POSTGRES: their jobs, which hold no nightly class either.
 #
 # Each variant runs what its job ran before the shards, in the same steps, and leaves its results where that job did:
 # before a step runs the root module again, the results of the one before move to build/test-results-<name>, and so
-# do the root module's results of a FalkorDB, Memgraph or Oracle shard, as there they were moved for the step after.
+# do the root module's results of an Oracle shard, as there they were moved for the step after. FalkorDB's and
+# Memgraph's jobs no longer run the whole suite again: the jobs on Neo4j run it, its cross-engine tests on every engine.
 set -euo pipefail
 
 variant=${1:?Usage: scripts/ci-test-part.sh <variant> <part>}
@@ -106,12 +107,13 @@ case "$variant" in
     DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY=$variant "${gradle[@]}" test standaloneTest "${select[@]}"
     ;;
 
-  # The sample module on the engine, and the rest as a plain `./gradlew test` runs it. Then the root module's Spring
-  # tests the engine can run, on a datasource 'neo' the environment points at it, in the first shard: FalkorDB's are
-  # those that don't rely on a rolled-back transaction to clean up after themselves, which it doesn't have; Memgraph's
-  # leave out the tests that use DELETE_ORPHAN or sort a collection in a way it doesn't support.
+  # What only the engine's job runs: the sample module on a datasource of the engine, and the root module's Spring
+  # tests the engine can run, on a datasource 'neo' the environment points at it. FalkorDB's are those that don't rely
+  # on a rolled-back transaction to clean up after themselves, which it doesn't have; Memgraph's leave out the tests
+  # that use DELETE_ORPHAN or sort a collection in a way it doesn't support. The rest of the suite, the cross-engine
+  # tests on FalkorDB and Memgraph among it, runs in APOC_SORT_MAPS's and CALL_SUBQUERY's jobs, as it did here too.
   FALKORDB | MEMGRAPH)
-    kinds shard nightly
+    kinds all
     export POSTGRES_TESTS=false
     if [[ "$variant" == FALKORDB ]]; then
       sample_on << 'EOF'
@@ -151,19 +153,16 @@ database:
       password: ""
 EOF
     fi
-    "${gradle[@]}" test "${select[@]}"
-    keep default
-    if [[ "$part" == 1/* ]]; then
-      if [[ "$variant" == FALKORDB ]]; then
-        DATABASE_DATASOURCES_NEO_TYPE=FALKORDB DATABASE_DATASOURCES_NEO_PORT=6379 DATABASE_DATASOURCES_NEO_DATABASE_NAME=testgraph \
-          "${gradle[@]}" :test \
-          --tests 'org.drivine.manager.StatelessTransactionTests' \
-          --tests 'org.drivine.manager.UndeclaredReadOnlyFieldSaveTest' \
-          --tests 'sample.JavaStatelessSaveTests'
-      else
-        DATABASE_DATASOURCES_NEO_TYPE=MEMGRAPH DATABASE_DATASOURCES_NEO_USER_NAME="" DATABASE_DATASOURCES_NEO_PASSWORD="" \
-          DATABASE_DATASOURCES_NEO_DATABASE_NAME=memgraph "${gradle[@]}" :test "${stateless[@]}"
-      fi
+    "${gradle[@]}" :drivine4j-sample:test
+    if [[ "$variant" == FALKORDB ]]; then
+      DATABASE_DATASOURCES_NEO_TYPE=FALKORDB DATABASE_DATASOURCES_NEO_PORT=6379 DATABASE_DATASOURCES_NEO_DATABASE_NAME=testgraph \
+        "${gradle[@]}" :test \
+        --tests 'org.drivine.manager.StatelessTransactionTests' \
+        --tests 'org.drivine.manager.UndeclaredReadOnlyFieldSaveTest' \
+        --tests 'sample.JavaStatelessSaveTests'
+    else
+      DATABASE_DATASOURCES_NEO_TYPE=MEMGRAPH DATABASE_DATASOURCES_NEO_USER_NAME="" DATABASE_DATASOURCES_NEO_PASSWORD="" \
+        DATABASE_DATASOURCES_NEO_DATABASE_NAME=memgraph "${gradle[@]}" :test "${stateless[@]}"
     fi
     ;;
 
