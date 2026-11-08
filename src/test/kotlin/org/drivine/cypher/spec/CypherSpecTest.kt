@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 
 /**
  * The spec runner, with no store: a held step must still fail, by an assertion or as the store fails, and a hold must
@@ -47,6 +48,17 @@ class CypherSpecTest {
     fun `a held step the runner crashes on is no hold`() {
         val unreadable = Step(cypher = "RETURN \$p", parameters = mapOf("p" to mapOf("\$float" to "nan?")), rows = listOf(1L))
         assertThrows<NumberFormatException> { run(spec(unreadable), "postgres", heldOnSql) { listOf(1L) } }
+    }
+
+    @Test
+    fun `a skipped step is not run, nor any step after it on that store`() {
+        val skipped = mapOf("a case" to listOf(Hold(1, listOf("sql"), listOf(2), skip = true)))
+        val ran = mutableListOf<String>()
+        run(spec(step, Step(cypher = "RETURN 2"), Step(cypher = "RETURN 3")), "postgres", skipped) { ran += it.cypher; listOf(1L) }
+        assertEquals(listOf("RETURN 1"), ran)
+        ran.clear()
+        run(spec(step, Step(cypher = "RETURN 2"), Step(cypher = "RETURN 3")), "neo4j", skipped) { ran += it.cypher; listOf(1L) }
+        assertEquals(listOf("RETURN 1", "RETURN 2", "RETURN 3"), ran)
     }
 
     @Test

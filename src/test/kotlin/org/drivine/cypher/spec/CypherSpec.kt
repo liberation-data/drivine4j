@@ -69,16 +69,31 @@ data class CypherSpec(
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
-         * taken out when the fix lands.
+         * taken out when the fix lands. One that would [skip][Hold.skip] is not run.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
+            "writes.yaml" to mapOf(
+                "NaN worked out from stored infinities" to listOf(
+                    // A statement given no NaN that works one out from stored infinities is compiled as given none, and reads the tag as a map.
+                    Hold(668, listOf("sqlite"), listOf(2, 3, 4, 5, 7)),
+                    // keys() of a float is null, not a failure; round() of an infinity to a precision is null.
+                    Hold(669, listOf("oracle"), listOf(4, 8)),
+                ),
+                // The session is closed (ORA-03113), by step 3 or by a statement run on the store after it, even with step 3 not run: not run.
+                "A write that returns a row past 32 KB" to listOf(Hold(670, listOf("oracle"), listOf(1), skip = true)),
+            ),
+        )
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
     }
 
-    /** Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. */
-    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null)
+    /**
+     * Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. Where
+     * [skip], the step is not run, as running it harms the store for what runs after it, and the case ends there on that
+     * store, as the steps after it read what it would have written.
+     */
+    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
 
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
@@ -105,13 +120,14 @@ data class CypherSpec(
         DynamicTest.dynamicTest(case.name) {
             before()
             val passing = mutableListOf<String>()
-            case.steps.forEachIndexed { index, step ->
-                if (!step.runsOn(store)) return@forEachIndexed
-                val issue = holds.firstOrNull { hold ->
+            for ((index, step) in case.steps.withIndex()) {
+                if (!step.runsOn(store)) continue
+                val hold = holds.firstOrNull { hold ->
                     Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
-                }?.issue
-                if (issue == null) check(case, index, step, store, run)
-                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#$issue)"
+                }
+                if (hold == null) check(case, index, step, store, run)
+                else if (hold.skip) break
+                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#${hold.issue})"
             }
             if (passing.isNotEmpty()) {
                 fail("$file, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")

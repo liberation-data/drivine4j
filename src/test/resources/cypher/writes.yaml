@@ -605,6 +605,41 @@ cases:
       - cypher: "MATCH (n:CyWrite) WITH n.id AS id, n.text AS text RETURN [id, text] ORDER BY id"
         rows: [[1, {$repeat: "x", times: 40000}], [2, {$repeat: "x", times: 40000}]]
 
+  - name: "A write that returns more rows than a driver fetches at once"
+    description: "A statement that writes returns every row it gives, in order, however many: more than any driver fetches in one round trip. On Oracle a compiled write's block returns its rows as a cursor, which a driver may read only a first fetch of, and give no error."
+    steps:
+      - cypher: "UNWIND range(1, 250) AS i CREATE (:CyWrite {i: i}) RETURN i ORDER BY i"
+        rows: [
+          1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+          26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+          51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
+          76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+          101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
+          126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150,
+          151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
+          176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200,
+          201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225,
+          226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250
+        ]
+      - cypher: "MATCH (n:CyWrite) SET n.j = n.i RETURN count(*)"
+        rows: [250]
+      - cypher: "MATCH (n:CyWrite) RETURN [count(n), sum(n.j)]"
+        rows: [[250, 31375]]
+
+  - name: "A write that returns a row past 32 KB"
+    description: "A statement that writes returns a row past 32 KB whole: a text of 40,000 characters it stores, alone, in a list, on each of several rows, and one it works out of 80,000. On Oracle a compiled write's block returns each row as JSON, which a driver may read in parts of 32 KB."
+    steps:
+      - cypher: "CREATE (n:CyWrite {i: 1, t: $t}) RETURN n.t"
+        parameters: {t: {$repeat: "x", times: 40000}}
+        rows: [{$repeat: "x", times: 40000}]
+      - cypher: "UNWIND [2, 3] AS i CREATE (n:CyWrite {i: i, t: $t}) RETURN [i, n.t] ORDER BY i"
+        parameters: {t: {$repeat: "y", times: 40000}}
+        rows: [[2, {$repeat: "y", times: 40000}], [3, {$repeat: "y", times: 40000}]]
+      - cypher: "MATCH (n:CyWrite {i: 1}) SET n.t = n.t + n.t RETURN [n.i, n.t]"
+        rows: [[1, {$repeat: "x", times: 80000}]]
+      - cypher: "MATCH (n:CyWrite) RETURN [n.i, size(n.t)] ORDER BY n.i"
+        rows: [[1, 80000], [2, 40000], [3, 40000]]
+
   - name: "A float with no fraction"
     description: "A float that is a whole number, such as 2.0, is written and read back as a float, from a parameter nested or past 32 KB too, and toString() of it keeps its fraction."
     steps:
@@ -872,6 +907,49 @@ cases:
       - only: [neo4j, oracle]
         cypher: "MATCH (n:CyWrite) WHERE n.l IS NOT NULL RETURN count(n)"
         rows: [2]
+
+  - name: "NaN worked out from stored infinities"
+    description: "NaN that a statement given no NaN or infinity works out, from infinities stored, is the float it is, as NaN given is: equal to nothing and ordered with nothing, kept by `+`, written by toString() as Java writes it, no map, sorted after every number, and NaN in a sum and a max(). SQLite's JSON holds no NaN, so its rows give it back from the value it stands in for it (see host.yaml), and it refuses a write of it. Postgres stores no infinity to start from."
+    steps:
+      - only: [neo4j, oracle, sqlite]
+        cypher: "CREATE (:CyWrite {b: $i, c: [$n], s: 'a'})"
+        parameters: {i: {$float: "Infinity"}, n: {$float: "-Infinity"}}
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) WITH n.b + n.c[0] AS x RETURN [x, x = x, x <> x, x > 1.0, x IN [x], [x] = [x], {k: x} = {k: x}, [x, 1] < [x, 2], [1, x] < [2, x]]"
+        rows: [[{$float: "NaN"}, false, true, false, false, false, false, null, true]]
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) WITH n, n.b + n.c[0] AS x RETURN [x + 1, n.s + x, x + n.s, n.b + 1, [x] + x, toString(x), toString(n.b)]"
+        rows: [[{$float: "NaN"}, "aNaN", "NaNa", {$float: "Infinity"}, [{$float: "NaN"}, {$float: "NaN"}], "NaN", "Infinity"]]
+      - note: "keys() of a float fails, as of any value that is no map, node or relationship."
+        only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) WITH n.b + n.c[0] AS x RETURN keys(x)"
+        error: true
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) UNWIND [n.b + n.c[0], n.b, 1.0, n.c[0]] AS x RETURN x ORDER BY x"
+        rows: [{$float: "-Infinity"}, 1.0, {$float: "Infinity"}, {$float: "NaN"}]
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) UNWIND [[n.b + n.c[0]], [n.b], [1.0], [n.c[0]], [1.0, n.b + n.c[0]]] AS l RETURN l ORDER BY l"
+        rows: [[{$float: "-Infinity"}], [1.0], [1.0, {$float: "NaN"}], [{$float: "Infinity"}], [{$float: "NaN"}]]
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) UNWIND [n.b + n.c[0], 1.0, 2.0] AS x RETURN [min(x), max(x), sum(x), count(x)]"
+        rows: [[1.0, {$float: "NaN"}, {$float: "NaN"}, 3]]
+      - only: [neo4j, oracle, sqlite]
+        cypher: "MATCH (n:CyWrite) RETURN [round(n.b, 2, 'HALF_DOWN'), round(n.c[0], 0, 'UP')]"
+        rows: [[{$float: "Infinity"}, {$float: "-Infinity"}]]
+      - only: [neo4j, oracle]
+        cypher: "MATCH (n:CyWrite) SET n.x = n.b + n.c[0] RETURN [n.x, n.x = n.x]"
+        rows: [[{$float: "NaN"}, false]]
+      - note: "The store fails as the statement runs: \"A statement that writes works out NaN, which SQLite's JSON holds as no number: it would store another value in its place.\""
+        only: [sqlite]
+        cypher: "MATCH (n:CyWrite) SET n.x = n.b + n.c[0]"
+        error: true
+      - note: "As above."
+        only: [sqlite]
+        cypher: "MATCH (n:CyWrite) CREATE (:CyWrite {l: [n.b + n.c[0]]})"
+        error: true
+      - only: [sqlite]
+        cypher: "MATCH (n) RETURN [count(n), collect(n.x)]"
+        rows: [[1, []]]
 
   - name: "Relationships as APOC's export writes them"
     description: "apoc.export.cypher writes each batch of relationships as an UNWIND of rows that names its nodes start and end by a key of spaces, and the stores make them (drivine4j#635, drivine4j#617)."
