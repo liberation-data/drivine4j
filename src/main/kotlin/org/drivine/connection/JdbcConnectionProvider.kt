@@ -264,8 +264,9 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * Runs [graph]'s statements on a connection of its own that commits each statement, whatever the data source's
      * connections do of themselves: on one that commits nothing (`autoCommit = false`, as an application's pool may be
      * set), what they make would be rolled back as the connection goes back to its pool (#365). The connection is put
-     * back as it was before it is closed. Where the data source hands out a Spring transaction's connection instead, none
-     * is run on it, and the tables are left for the next connection ([tablesHeldBack], #395).
+     * back as it was before it is closed. Where the data source hands out a Spring transaction's connection instead, only the
+     * reads of [SqlGraph.refuse] are run on it, so that a store [ReusedIdsException] refuses is refused there too (#713),
+     * and the tables are left for the next connection ([tablesHeldBack], #395).
      *
      * On Oracle it first reads the database's version from the session's metadata, which needs no grant: see
      * [oracleRefusal].
@@ -284,11 +285,18 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             // statement: that would commit the transaction partway through (#395). The tables are made on the next
             // connection had outside one.
             if (!committing && SpringTransactions.holds(session)) {
-                // A look alone, which commits nothing: a store an earlier Drivine made is refused here too (#713).
-                graph.refuse(connection)
+                // A look alone, which commits nothing: a store an earlier Drivine made is refused here too (#713). A look
+                // that fails refuses nothing, as where the tables are made: the next connection looks again.
+                val looked = try {
+                    graph.refuse(connection)
+                    null
+                } catch (e: Exception) {
+                    if (e is ReusedIdsException) throw e
+                    e
+                }
                 connection.release()
                 tablesHeldBack = true
-                logger.debug("The tables of graph '{}' on {} database '{}' are not made on a Spring transaction's connection: the next connection tries again.", graphName, type, name)
+                logger.debug("The tables of graph '{}' on {} database '{}' are not made on a Spring transaction's connection: the next connection tries again.", graphName, type, name, looked)
                 return false
             }
             // Turning auto-commit on commits what the session has pending. A connection just had from the pool has

@@ -854,6 +854,40 @@ class JdbcConnectionProviderTest {
         }
     }
 
+    /**
+     * On SQLite a Spring transaction's connection is looked at for a store to refuse (#713). A look that fails is not a
+     * refusal: the connection is handed out, as where the tables are made, and the next connection looks again.
+     */
+    @Test
+    fun `on SQLite a Spring transaction's connection whose look for a store to refuse fails is handed out, and the next connection looks again`() {
+        val look = SqliteGraph(JdbcConnectionProvider.DEFAULT_GRAPH).made
+        val held = moded(committing = false).also { c ->
+            `when`(c.prepareStatement(look)).thenThrow(SQLException("database is locked", null, 5))
+        }
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("default", DatabaseType.SQLITE, TransactionAwareDataSourceProxy(source))
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            repeat(2) {
+                provider.connect().apply {
+                    query(insert)
+                    release()
+                }
+            }
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+
+        verify(held, never()).autoCommit = Mockito.anyBoolean()
+        verify(held, never()).commit()
+        assertEquals(listOf(look, "INSERT INTO t VALUES (1)", look, "INSERT INTO t VALUES (1)"), statementsOn(held))
+    }
+
     /** [inner] in a wrapper of another library's, as a statement logger wraps a data source's connections, which unwraps to it. */
     private fun wrapping(inner: java.sql.Connection): java.sql.Connection =
         java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, args ->
