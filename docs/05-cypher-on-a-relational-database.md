@@ -224,20 +224,25 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
   total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store. A
   number divided by a float zero is the NaN or infinity Neo4j gives on each (`0.0 / 0.0` is NaN, `$x / 0.0` an
-  infinity), and taken `%` by one is NaN, but on Oracle, which gives the number taken, as its `MOD` does. Neo4j fails a
-  division or `%` by an integer zero, but where both numbers are written in the statement, which it works out before it
-  runs, as Java does: `1.0 / 0` and `1.0 / (1 - 1)` are an infinity there and on each SQL store, and `1 / 0` fails.
-  `$x / 0` and `WITH 0 AS z RETURN 1.0 / z` fail on Neo4j and Postgres, are null on SQLite, as an integer divided or taken
-  `%` by zero is there, and are the infinity on Oracle, which gives the number taken `%` by any zero. On Postgres, a
-  statement that writes and divides a float by zero fails, as its `jsonb` holds neither. `toFloat` reads a text that
-  names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`) on each SQL store, but is null in a statement that
-  writes on Postgres; Oracle reads `'nan'`, `'inf'` and `'INFINITY'` so too, where Neo4j gives null.
+  infinity), and taken `%` by one is NaN. Neo4j fails a division or `%` by an integer zero, but where both numbers are
+  written in the statement, which it works out before it runs, as Java does: `1.0 / 0` and `1.0 / (1 - 1)` are an
+  infinity there and on each SQL store, and `1 / 0` fails. `$x / 0`, `WITH 0 AS z RETURN 1.0 / z` and `5.0 % $z` given
+  `0` fail on Neo4j and on each SQL store. On Postgres, a statement that writes and divides a float by zero fails, as
+  its `jsonb` holds neither. `toFloat` reads a text that names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`)
+  on each SQL store, but is null in a statement that writes on Postgres; Oracle reads `'nan'`, `'inf'` and
+  `'INFINITY'` so too, where Neo4j gives null.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
-  nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `%`,
-  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a
-  function of numbers, and for an infinity it gives the infinity from `^`, `abs`, `round` and `floor`, and fails from
-  `sqrt`, `log` and `exp`; its `%` gives NaN, as Neo4j does. Oracle stores them too. SQLite stores an infinity, and
-  refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
+  nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `^` or
+  a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a function
+  of numbers, and for an infinity it gives the infinity from `^`, `abs`, `round` and `floor`, and fails from `sqrt`,
+  `log` and `exp`. `%` given one gives what Neo4j gives on each SQL store. Oracle stores them too. SQLite stores an
+  infinity, and refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb`
+  holds neither. `DISTINCT`, a grouping key and a statement's `UNION` without `ALL` keep each NaN apart on each SQL
+  store, which can't tell one NaN from another: `UNWIND [$p, $p] AS x RETURN count(DISTINCT x)` given NaN is 2, where
+  Neo4j, keeping a NaN given once and read twice once, gives 1. A `UNION` without `ALL` in `CALL { … }` keeps rows
+  that are NaN once on each SQL store, where Neo4j gives each. `DISTINCT` keeps once two lists or maps holding NaN
+  that two items of one list make (`UNWIND [[0.0/0.0], [0.0/0.0]] AS r`) on each SQL store, and two stored NaNs on
+  Oracle where the statement works out none, where Neo4j keeps each apart.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold
   lists. Two maps compare as null, and two that differ do in a list too, where Neo4j orders them.
