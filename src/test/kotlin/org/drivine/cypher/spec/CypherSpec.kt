@@ -71,16 +71,7 @@ data class CypherSpec(
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
          * taken out when the fix lands. One that would [skip][Hold.skip] is not run.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            "writes.yaml" to mapOf(
-                "NaN worked out from stored infinities" to listOf(
-                    // A statement given no NaN that works one out from stored infinities is compiled as given none, and reads the tag as a map.
-                    Hold(668, listOf("sqlite"), listOf(2, 3, 4, 5, 7)),
-                    // keys() of a float is null, not a failure; round() of an infinity to a precision is null.
-                    Hold(669, listOf("oracle"), listOf(4, 8)),
-                ),
-            ),
-        )
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()

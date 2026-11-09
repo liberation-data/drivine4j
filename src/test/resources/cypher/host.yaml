@@ -158,6 +158,7 @@ cases:
           - '["a"]'
           - '[true]'
           - '[-9e999]'
+          - '[-2.5]'
           - '[1.0]'
           - '[1.0,{"$numberDouble":"NaN"}]'
           - '[1.5]'
@@ -198,6 +199,25 @@ cases:
       - function: "drivine_round"
         args: [null, 2, "UP"]
         result: null
+      - function: "drivine_round"
+        args: [2.5, null, "UP"]
+        result: null
+
+  - name: "drivine_float_text"
+    description: "drivine_float_text(real) is the text of a SQL float as Java writes a double, as toString() gives it: an infinity, which SQLite stores, as Infinity or -Infinity. Null of null."
+    pairs:
+      writes.yaml: ["NaN worked out from stored infinities"]
+      queries.yaml: ["NaN and the infinities as parameters"]
+    steps:
+      - function: "drivine_float_text"
+        args: [{$float: "Infinity"}]
+        result: "Infinity"
+      - function: "drivine_float_text"
+        args: [{$float: "-Infinity"}]
+        result: "-Infinity"
+      - function: "drivine_float_text"
+        args: [null]
+        result: null
 
   - name: "Postgres rows of a statement given NaN or an infinity"
     description: "Postgres's jsonb holds neither NaN nor an infinity, so a statement given one (nonFinite) writes stand-in numbers past any double's: NaN is exactly 2e309 + 0.5, a number at or past 1e309 is an infinity, and one at or below -1e309 the negative infinity. They are read as such only in the rows of a statement given one; elsewhere a column is read as JSON is. The tag SQLite writes for NaN is a map on Postgres."
@@ -226,6 +246,9 @@ cases:
       - note: "Exactly 1e309, where the infinities begin."
         read: {store: "postgres", nonFinite: true, column: ["1", {$repeat: "0", times: 309}]}
         value: {$float: "Infinity"}
+      - note: "Exactly -1e309, where the negative infinities begin."
+        read: {store: "postgres", nonFinite: true, column: ["-1", {$repeat: "0", times: 309}]}
+        value: {$float: "-Infinity"}
       - note: "Near miss: below 1e309, and within a double's range."
         read: {store: "postgres", nonFinite: true, column: ["1", {$repeat: "0", times: 308}]}
         value: 1.0E308
