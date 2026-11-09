@@ -69,16 +69,37 @@ data class CypherSpec(
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
-         * taken out when the fix lands.
+         * taken out when the fix lands. One that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
         private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
+
+        /**
+         * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
+         * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
+         */
+        @Suppress("UNCHECKED_CAST")
+        internal fun <T> expanded(value: T): T = when (value) {
+            is Map<*, *> -> (
+                when (value.keys) {
+                    setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
+                    setOf("\$float") -> (value["\$float"] as String).toDouble()
+                    else -> value.mapValues { (_, item) -> expanded(item) }
+                }
+            ) as T
+            is List<*> -> value.map { expanded(it) } as T
+            else -> value
+        }
     }
 
-    /** Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. */
-    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null)
+    /**
+     * Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. Where
+     * [skip], the step is not run, as running it harms the store for what runs after it, and the case ends there on that
+     * store, as the steps after it read what it would have written.
+     */
+    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
 
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
@@ -105,13 +126,14 @@ data class CypherSpec(
         DynamicTest.dynamicTest(case.name) {
             before()
             val passing = mutableListOf<String>()
-            case.steps.forEachIndexed { index, step ->
-                if (!step.runsOn(store)) return@forEachIndexed
-                val issue = holds.firstOrNull { hold ->
+            for ((index, step) in case.steps.withIndex()) {
+                if (!step.runsOn(store)) continue
+                val hold = holds.filter { hold ->
                     Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
-                }?.issue
-                if (issue == null) check(case, index, step, store, run)
-                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#$issue)"
+                }.let { matching -> matching.firstOrNull { it.skip } ?: matching.firstOrNull() }
+                if (hold == null) check(case, index, step, store, run)
+                else if (hold.skip) break
+                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#${hold.issue})"
             }
             if (passing.isNotEmpty()) {
                 fail("$file, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")
@@ -145,23 +167,6 @@ data class CypherSpec(
         val rows = run(step.copy(parameters = expanded(step.parameters)))
         val expected = step.rows ?: return
         assertEquals(canonical(expanded(expected), step, step.unordered), canonical(rows, step, step.unordered), where)
-    }
-
-    /**
-     * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
-     * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun <T> expanded(value: T): T = when (value) {
-        is Map<*, *> -> (
-            when (value.keys) {
-                setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
-                setOf("\$float") -> (value["\$float"] as String).toDouble()
-                else -> value.mapValues { (_, item) -> expanded(item) }
-            }
-        ) as T
-        is List<*> -> value.map { expanded(it) } as T
-        else -> value
     }
 
     /**
