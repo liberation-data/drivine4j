@@ -8,7 +8,7 @@ Drivine's transaction manager and the auto-configuration (see [Configuration](04
 
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j-spring-boot-starter:0.6.1")
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.6.2")
 }
 ```
 
@@ -24,14 +24,14 @@ and it can be used on its own too, with another framework or none (see [Other fr
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.6.1")
+    implementation("org.drivine:drivine4j:0.6.2")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.6.1'
+    implementation 'org.drivine:drivine4j:0.6.2'
 }
 ```
 
@@ -40,7 +40,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.6.1</version>
+    <version>0.6.2</version>
 </dependency>
 ```
 
@@ -73,8 +73,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.6.1")
-    ksp("org.drivine:drivine4j-codegen:0.6.1")
+    implementation("org.drivine:drivine4j:0.6.2")
+    ksp("org.drivine:drivine4j-codegen:0.6.2")
 }
 ```
 
@@ -108,7 +108,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.6.1</version>
+                    <version>0.6.2</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -148,7 +148,7 @@ ksp {
 ```groovy
 // The Java processor, in Gradle
 dependencies {
-    annotationProcessor 'org.drivine:drivine4j-codegen-java:0.6.1'
+    annotationProcessor 'org.drivine:drivine4j-codegen-java:0.6.2'
 }
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['-Adrivine.model.module=orders']
