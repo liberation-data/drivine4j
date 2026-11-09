@@ -76,4 +76,13 @@ class CypherCompileIteratorTest {
         assertEquals(mapOf("p" to mapOf("rows" to listOf(mapOf("t" to listOf("a"))), "beside" to beside)), drained)
         assertSame(beside, (drained["p"] as Map<*, *>)["beside"])
     }
+
+    @Test
+    fun `an iterator or a sequence of iterators is the list of their items' lists`() {
+        val drained = CypherCompile.drained(mapOf(
+            "i" to listOf(listOf("a").iterator()).iterator(),
+            "s" to sequenceOf(listOf("b").iterator()),
+        ))
+        assertEquals(mapOf("i" to listOf(listOf("a")), "s" to listOf(listOf("b"))), drained)
+    }
 }
