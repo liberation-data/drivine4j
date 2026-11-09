@@ -325,14 +325,15 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
     /**
      * `lower_props`: the lowercased copy of each property a step names under `lower`, from what the
      * node holds once the step has written it, and none where it holds nothing. Oracle lowercases it,
-     * as it lowercases what a lookup compares the copy with. See [LowerCopies].
+     * as it lowercases what a lookup compares the copy with. It is read and written as a `CLOB`, so a
+     * text past what a `VARCHAR2` holds has its copy too. See [LowerCopies].
      */
     private fun lowering(): String = """
     -- Writes to a node's properties the lowercased copy of each property the step names, from the
     -- property as it now is, and removes the copy of one that has no value.
     PROCEDURE lower_props(p_keys JSON_ARRAY_T, p_props IN OUT NOCOPY JSON_OBJECT_T) IS
         v_key   VARCHAR2(4000);
-        v_lower VARCHAR2(32767);
+        v_lower CLOB;
     BEGIN
         IF p_keys IS NULL THEN
             RETURN;
@@ -341,10 +342,10 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             v_key := p_keys.get_string(i);
             v_lower := NULL;
             IF p_props.has(v_key) AND NOT p_props.get(v_key).is_null THEN
-                v_lower := LOWER(p_props.get_string(v_key));
+                v_lower := LOWER(p_props.get_clob(v_key));
             END IF;
             -- Oracle keeps an empty text as null, so an empty property has no copy.
-            IF v_lower IS NULL THEN
+            IF v_lower IS NULL OR LENGTH(v_lower) = 0 THEN
                 p_props.remove('${LowerCopies.PREFIX}' || v_key);
             ELSE
                 p_props.put('${LowerCopies.PREFIX}' || v_key, v_lower);

@@ -143,6 +143,11 @@ class CaseInsensitiveStatementsTest {
             labelled.predicate(listOf(equal), indexed = true),
         )
         assertEquals("INSTR(JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"'), LOWER(\$_p0)) > 0", OracleSelect(oracle, CiAccount::class.java).predicate(listOf(contains)))
+        // A value that may lowercase past the 4,000 bytes the index holds is compared as a CLOB, not through the index.
+        fun lowered(length: Int) = OracleSelect(oracle, CiAccount::class.java, labelled = LabelledIndexes(listOf(LabelledIndex("CiAccount", listOf(LowerCopies.of("email"))))))
+            .predicate(listOf(PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.EQUALS_LOWERED, "a".repeat(length))), indexed = true)
+        assertEquals("DBMS_LOB.COMPARE(JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"' RETURNING CLOB), LOWER(TO_CLOB(\$_p0))) = 0", lowered(1_334))
+        assertEquals("CASE WHEN JSON_EXISTS(n_.labels, '\$[*]?(@ == \"CiAccount\")') THEN JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"') END = LOWER(\$_p0)", lowered(1_333))
         assertEquals(
             "(n_.props ->> '__drivine.lower.email') = lower(CAST(\$_p0 AS text))",
             PostgresSelect(PostgresGraph("g"), CiAccount::class.java).predicate(listOf(equal)),
@@ -359,7 +364,9 @@ class CaseInsensitiveStatementsTest {
     @Test
     fun `Oracle, Postgres and SQLite fill a copy in with their own lowercasing, and record it in the graph's catalog`() {
         val oracle = OracleLowerCopies(OracleGraph("g"))
-        assertContains(oracle.fill("CiAccount", "email"), "SET n.props = JSON_TRANSFORM(n.props, SET '\$.\"__drivine.lower.email\"' = LOWER(JSON_VALUE(n.props, '\$.email')) REMOVE ON NULL)")
+        assertContains(oracle.fill("CiAccount", "email"), "SET n.props = JSON_TRANSFORM(n.props, SET '\$.\"__drivine.lower.email\"' = LOWER(JSON_VALUE(n.props, '\$.email' RETURNING CLOB)) REMOVE ON NULL)")
+        // Read as CLOBs, a text past 4,000 bytes has its copy too.
+        assertContains(oracle.fill("CiAccount", "email"), "AND DBMS_LOB.COMPARE(JSON_VALUE(n.props, '\$.\"__drivine.lower.email\"' RETURNING CLOB) || ' ', LOWER(JSON_VALUE(n.props, '\$.email' RETURNING CLOB)) || ' ') <> 0")
         assertContains(oracle.fill("CiAccount", "email"), "AND ROWNUM <= \$batch")
         assertContains(oracle.record, "MERGE INTO g_schema c")
         assertEquals("SELECT JSON_OBJECT('label' VALUE label, 'properties' VALUE JSON(properties) RETURNING JSON) FROM g_schema WHERE kind = 'LOWER_COPY'", oracle.read)

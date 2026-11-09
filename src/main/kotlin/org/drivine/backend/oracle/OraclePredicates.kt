@@ -79,7 +79,8 @@ internal class OraclePredicates(
         val key = condition.propertyPath.substringAfter('.')
         val value = condition.value
         val answerable = condition.operator in RANGE && key != Stamps.PROPERTY &&
-            value != null && value != "" && SqlKind.ofValue(value) == SqlKind.TEXT && value !is Collection<*>
+            value != null && value != "" && SqlKind.ofValue(value) == SqlKind.TEXT && value !is Collection<*> &&
+            !(condition.operator == ComparisonOperator.EQUALS_LOWERED && pastText(value))
         if (!answerable) return null
         return rootLabels().firstOrNull { labelled.leads(it, key) }?.let { key to it }
     }
@@ -262,7 +263,12 @@ internal class OraclePredicates(
             ComparisonOperator.CONTAINS_IGNORE_CASE -> if (empty) anyText else "INSTR(LOWER($text), ${scope.bound(value?.toString()?.lowercase())}) > 0"
             ComparisonOperator.EQUALS_IGNORE_CASE -> if (empty) storedEmpty(row, key) else "LOWER($text) = ${scope.bound(value?.toString()?.lowercase())}"
             // A lowercased copy, compared with the value as Oracle lowercases it. A copy is never empty: see LowerCopies.
-            ComparisonOperator.EQUALS_LOWERED -> "$text = LOWER(${scope.bound(value?.toString())})"
+            // One past what the index holds is compared as a CLOB, and the index does not answer it.
+            ComparisonOperator.EQUALS_LOWERED -> if (pastText(value)) {
+                "DBMS_LOB.COMPARE(JSON_VALUE($row.props, ${path(key)} RETURNING CLOB), LOWER(TO_CLOB(${scope.bound(value?.toString())}))) = 0"
+            } else {
+                "$text = LOWER(${scope.bound(value?.toString())})"
+            }
             ComparisonOperator.CONTAINS_LOWERED -> "INSTR($text, LOWER(${scope.bound(value?.toString())})) > 0"
             ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
         }
@@ -462,6 +468,13 @@ internal class OraclePredicates(
         KeysetPredicate.after(orders, values, collectionSortCount, scope.inferredKinds, ::declaredKind, { scope.bound(scalar(it)) }, ::ordered)
 
     private companion object {
+        /**
+         * Whether [value], lowercased, may be past the 4,000 bytes `JSON_VALUE` reads a text as, and an
+         * index over it holds: a character takes three bytes at most. A copy that long reads as null, so
+         * an equality with it is compared as a `CLOB`.
+         */
+        fun pastText(value: Any?): Boolean = value is String && value.length * 3 > 4000
+
         /** The comparisons an index answers: an equality with a lowercased copy among them. */
         val RANGE = setOf(
             ComparisonOperator.EQUALS, ComparisonOperator.GREATER_THAN, ComparisonOperator.GREATER_THAN_OR_EQUAL,

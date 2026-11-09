@@ -101,10 +101,15 @@ internal class OracleLowerCopies(private val graph: OracleGraph) : LowerCopyStat
     /** The copies are on the graph's nodes and their record in its catalog, so the graph is made first where it is not yet. */
     override val prepare: String = graph.ensuring
 
-    /** The number of nodes written is handed back as a row, from a block of its own. */
+    /**
+     * The number of nodes written is handed back as a row, from a block of its own. The property and
+     * its copy are read as `CLOB`s, so a text past the 4,000 bytes `JSON_VALUE` reads by default has
+     * its copy too; each is compared with a space after it, which makes a missing copy, a null and an
+     * empty text alike.
+     */
     override fun fill(label: String, property: String): String {
-        val value = "JSON_VALUE(n.props, ${OracleSql.path(property)})"
-        val copy = "JSON_VALUE(n.props, ${OracleSql.path(LowerCopies.of(property))})"
+        val value = "JSON_VALUE(n.props, ${OracleSql.path(property)} RETURNING CLOB)"
+        val copy = "JSON_VALUE(n.props, ${OracleSql.path(LowerCopies.of(property))} RETURNING CLOB)"
         return """
             DECLARE
                 v_written NUMBER;
@@ -113,7 +118,7 @@ internal class OracleLowerCopies(private val graph: OracleGraph) : LowerCopyStat
                 UPDATE ${graph.nodes} n
                 SET n.props = JSON_TRANSFORM(n.props, SET ${OracleSql.path(LowerCopies.of(property))} = LOWER($value) REMOVE ON NULL)
                 WHERE ${OracleSql.hasLabel("n", label)}
-                  AND DECODE($copy, LOWER($value), 1, 0) = 0
+                  AND DBMS_LOB.COMPARE($copy || ' ', LOWER($value) || ' ') <> 0
                   AND ROWNUM <= ${'$'}batch;
                 v_written := SQL%ROWCOUNT;
                 OPEN v_result FOR SELECT v_written FROM dual;

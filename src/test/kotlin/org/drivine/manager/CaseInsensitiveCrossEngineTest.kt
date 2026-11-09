@@ -60,6 +60,8 @@ import sample.caseinsensitive.CiAccountView
 import sample.caseinsensitive.CiAccountViewQueryDsl
 import sample.caseinsensitive.CiEmailQueryDsl
 import sample.caseinsensitive.CiLate
+import sample.caseinsensitive.CiLong
+import sample.caseinsensitive.CiLongLate
 import sample.caseinsensitive.CiMember
 import sample.caseinsensitive.CiPlanned
 import sample.caseinsensitive.CiRedone
@@ -234,6 +236,69 @@ abstract class CaseInsensitiveContract {
         assertFalse(readsCopy(lookup(CiLate::class.java, "")))
         // Ensured again, the index is there and the copies are recorded: nothing is filled in.
         assertTrue(pm.indexes.ensure(RangeIndexSpec("CiLate", "email", ignoreCase = true)) is EnsureResult.AlreadyMatching)
+    }
+
+    @Test
+    fun `a text of 40,001 characters is saved with its copy, and found by eqIgnoreCase once the index is there`() {
+        assumeFalse(this is CaseInsensitiveFalkorDbTest, "FalkorDB finds no node by eqIgnoreCase on a text this long")
+        val spec = RangeIndexSpec("CiLong", "email", ignoreCase = true)
+        pm.indexes.drop(spec)
+        val long = "Ab".repeat(20_000) + "C"
+        stateless.saveAll(listOf(CiLong("g1", long), CiLong("g2", "Ann@X.com"), CiLong("g3", long + "d")))
+        assertEquals(long.lowercase(), copy("CiLong", "g1"))
+
+        // Neo4j cannot hold a text this long in a range index: the index fails, and the lookup reads the label's nodes.
+        pm.indexes.ensure(spec)
+        try {
+            assertLongFound(long)
+        } finally {
+            // Dropped, so that a failed index on Neo4j is not waited for by a test after this one.
+            pm.indexes.drop(spec)
+        }
+    }
+
+    private fun assertLongFound(long: String) {
+        fun found(email: String): Set<String> = stateless.loadAll(CiLong::class.java, CiEmailQueryDsl.INSTANCE) {
+            where { query.email eqIgnoreCase email }
+        }.map { it.id }.toSet()
+        assertTrue(readsCopy(lookup(CiLong::class.java, long.uppercase())))
+        assertEquals(setOf("g1"), found(long.uppercase()))
+        assertEquals(setOf("g2"), found("ann@x.COM"))
+        assertEquals(emptySet(), found(long.dropLast(1)))
+        assertEquals(long, assertNotNull(stateless.load("g1", CiLong::class.java)).email)
+    }
+
+    @Test
+    fun `ensuring the index fills in the copy of a node saved before with a text of 5,000 bytes, and a lookup finds it`() {
+        assumeFalse(this is CaseInsensitiveFalkorDbTest, "FalkorDB finds no node by eqIgnoreCase on a text this long")
+        val spec = RangeIndexSpec("CiLongLate", "email", ignoreCase = true)
+        pm.indexes.drop(spec)
+        val long = "Ab".repeat(2_500)
+        pm.execute(
+            QuerySpecification.withStatement(
+                "CREATE (:CiLongLate {id: 'l1', email: \$long}), (:CiLongLate {id: 'l2', email: 'Bob@X.com'}), " +
+                    "(:CiLongLate {id: 'l3', email: ''}), (:CiLongLate {id: 'l4', email: '', `${LowerCopies.of("email")}`: 'stale'})",
+            ).bind(mapOf("long" to long)),
+        )
+        assertNull(copy("CiLongLate", "l1"))
+
+        pm.indexes.ensure(spec)
+        assertEquals(long.lowercase(), copy("CiLongLate", "l1"))
+        assertEquals("bob@x.com", copy("CiLongLate", "l2"))
+        // The copy of an empty text is empty, or on Oracle, which keeps an empty text as null, there is none.
+        assertTrue(copy("CiLongLate", "l3").isNullOrEmpty())
+        assertTrue(copy("CiLongLate", "l4").isNullOrEmpty())
+        assertContains(recorded(), "CiLongLate" to "email")
+        fun found(email: String): Set<String> = stateless.loadAll(CiLongLate::class.java, CiEmailQueryDsl.INSTANCE) {
+            where { query.email eqIgnoreCase email }
+        }.map { it.id }.toSet()
+        assertTrue(readsCopy(lookup(CiLongLate::class.java, long.uppercase())))
+        assertEquals(setOf("l1"), found(long.uppercase()))
+        assertEquals(setOf("l2"), found("BOB@x.com"))
+        // Filled in again, the copies stay as the properties are.
+        assertNotNull(pm.indexes.lowerCopies).fillIn("CiLongLate", listOf("email"), again = true)
+        assertEquals(long.lowercase(), copy("CiLongLate", "l1"))
+        assertTrue(copy("CiLongLate", "l4").isNullOrEmpty())
     }
 
     @Test
@@ -508,6 +573,23 @@ class CaseInsensitiveNeo4jTest : CaseInsensitiveContract() {
         val plan = plan(lookup(CiPlanned::class.java, "NED-7@", contains = true))
         assertTrue(plan.any { it.startsWith("NodeIndexContainsScan") }, "$plan")
     }
+
+    /** The reference for a text too long for a range index: once there is the index over the copy, Neo4j refuses the save. */
+    @Test
+    fun `under the index over the copy, Neo4j refuses to save a text of 40,001 characters`() {
+        val spec = RangeIndexSpec("CiLong", "email", ignoreCase = true)
+        pm.indexes.drop(spec)
+        pm.indexes.ensure(spec)
+        prepareForPlan()
+        try {
+            val refused = assertFailsWith<DrivineException> {
+                StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry()).save(CiLong("g1", "Ab".repeat(20_000) + "C"))
+            }
+            assertContains(refused.message!!, "is too large for the index")
+        } finally {
+            pm.indexes.drop(spec)
+        }
+    }
 }
 
 class CaseInsensitiveFalkorDbTest : CaseInsensitiveContract() {
@@ -598,7 +680,7 @@ class CaseInsensitiveOracleTest : CaseInsensitiveContract() {
 
     override fun forgetCopies() {
         OracleTestDatabase.run("DELETE FROM ${graph.catalog} WHERE kind = 'LOWER_COPY'")
-        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone", "CiLong", "CiLongLate").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
         pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
     }
 
@@ -643,7 +725,7 @@ class CaseInsensitivePostgresTest : CaseInsensitiveContract() {
 
     override fun forgetCopies() {
         PostgresTestDatabase.run("DELETE FROM contracts_schema WHERE kind = 'LOWER_COPY'")
-        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone", "CiLong", "CiLongLate").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
         pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
     }
 
@@ -668,7 +750,7 @@ class CaseInsensitiveSqliteTest : CaseInsensitiveContract() {
 
     override fun forgetCopies() {
         SqliteTestDatabase.run("DELETE FROM ${graph.catalog} WHERE kind = 'LOWER_COPY'")
-        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone", "CiLong", "CiLongLate").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
         pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
     }
 
