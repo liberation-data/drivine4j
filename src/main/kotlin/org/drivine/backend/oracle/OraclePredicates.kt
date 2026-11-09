@@ -71,7 +71,7 @@ internal class OraclePredicates(
     /**
      * The property [condition] compares and the label of the root whose labelled index answers it,
      * for a condition every root meets; null when none does. An index answers a comparison with a text of the property it begins with: `=`, `<`,
-     * `<=`, `>`, `>=`, and `=` with a lowercased copy. Not `IN`, which Oracle answers by reading every node, and not a negation, a
+     * `<=`, `>`, `>=`, and `=` with a lowercased copy, but for a value that may lowercase past what the index holds ([pastText]). Not `IN`, which Oracle answers by reading every node, and not a negation, a
      * test for no value or a test of part of the text, which no index answers.
      */
     private fun answeredBy(condition: WhereCondition): Pair<String, String>? {
