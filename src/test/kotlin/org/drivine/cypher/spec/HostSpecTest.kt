@@ -22,6 +22,7 @@ import java.sql.Types
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -32,7 +33,8 @@ import kotlin.test.fail
  * each `read` step reads a column's text as [JdbcResultMapper] reads a compiled statement's rows. Each case's `pairs` must
  * name store cases the other spec files have, whose statements rely on its steps: one of them compiles, as Drivine compiles
  * it ([CypherCompile]), on SQLite, to SQL
- * that calls each function the case's steps call, and one compiles, on each store its steps read, with the `nonFinite`
+ * that calls each function the case's steps call (for `regexp`, which SQLite calls for its `REGEXP` operator, SQL that holds the
+ * operator), and one compiles, on each store its steps read, with the `nonFinite`
  * each read step says. The three libraries read the same file.
  */
 class HostSpecTest {
@@ -52,6 +54,14 @@ class HostSpecTest {
         /** The keys of each kind of step, beside its optional `note`: a function's result, its order, and a read. */
         val SHAPES = setOf(setOf("function", "args", "result"), setOf("function", "ascending"), setOf("read", "value"))
         val READ = setOf("store", "nonFinite", "column")
+        /** Drivine's functions, and `regexp`, which SQLite calls, as `regexp(pattern, text)`, for its operator `text REGEXP pattern`. */
+        val FUNCTION = Regex("drivine_[a-z_]+|regexp")
+        val REGEXP_OPERATOR = Regex("""\bREGEXP\b""", RegexOption.IGNORE_CASE)
+        /**
+         * SQL's quoted texts and names. A quote inside one is written twice, so splits it into two that touch, each matched
+         * here; matching them one by one, not as a repeated group, keeps a long one from overflowing the stack.
+         */
+        val QUOTED = Regex("""'[^']*'|"[^"]*"""")
     }
 
     private val spec: Spec = ObjectMapper(YAMLFactory()).registerKotlinModule()
@@ -95,6 +105,40 @@ class HostSpecTest {
         assertContains(assertFails { check(case(read, pairs = unrelated)) }.message!!, "compiles on postgres with nonFinite true")
     }
 
+    @Test
+    fun `regexp is called with the pattern first, and is paired by SQL that holds the REGEXP operator`() {
+        val regexp = mapOf("queries.yaml" to listOf("Regular expressions and more functions"))
+        val steps = listOf(
+            mapOf("function" to "regexp", "args" to listOf("b", "abc"), "result" to 1L),
+            mapOf("function" to "regexp", "args" to listOf("abc", "b"), "result" to 0L),
+            mapOf("function" to "regexp", "args" to listOf(null, "a"), "result" to null),
+            mapOf("function" to "regexp", "args" to listOf("^a\\z", "a\n"), "result" to 0L),
+            mapOf("function" to "regexp", "args" to listOf("^(?:(?i)keanu)\\z", "Keanu"), "result" to 1L),
+        )
+        check(Case("regexp", pairs = regexp, steps = steps))
+        assertFails { check(case(mapOf("function" to "regexp", "args" to listOf("abc", "b"), "result" to 1L), pairs = regexp)) }
+        val unrelated = mapOf("queries.yaml" to listOf("Returning nodes and properties"))
+        assertContains(assertFails { check(case(steps.first(), pairs = unrelated)) }.message!!, "compiles on SQLite to SQL that calls regexp")
+        assertContains(assertFails { check(case(steps.first() + ("function" to "regexpx"))) }.message!!, "no function of Drivine's")
+    }
+
+    @Test
+    fun `regexp is paired by the REGEXP operator, not by a text or a name that says regexp`() {
+        assertTrue(holdsRegexp("SELECT ('x' ->> '$') REGEXP '^a\\z'"))
+        assertTrue(holdsRegexp("SELECT 'x' not regexp 'a'"))
+        assertFalse(holdsRegexp("SELECT json_quote('a REGEXP b')"))
+        assertFalse(holdsRegexp("SELECT json_object('regexp', 1) AS \"regexp\""))
+        assertFalse(holdsRegexp("SELECT drivine_regexp_count('a', 'b')"))
+        assertFalse(holdsRegexp("SELECT 'it''s REGEXP', \"a\"\"REGEXP\""))
+        assertTrue(holdsRegexp("SELECT 'a\\' REGEXP 'b'"))
+    }
+
+    @Test
+    fun `a long quoted text, or one of many doubled quotes, is passed over without overflowing the stack`() {
+        assertTrue(holdsRegexp("SELECT '${"x".repeat(200_000)}' REGEXP 'a'"))
+        assertFalse(holdsRegexp("SELECT '${"''".repeat(100_000)} REGEXP'"))
+    }
+
     private fun case(step: Map<String, Any?>, pairs: Map<String, List<String>> = mapOf("writes.yaml" to listOf("NaN and the infinities written"))) =
         Case("a case", pairs = pairs, steps = listOf(step))
 
@@ -120,7 +164,7 @@ class HostSpecTest {
     /** The step's function, called with its `args`, gives its `result`; or, called on each of its `ascending` in turn, gives texts that ascend. */
     private fun function(connection: Connection, step: Map<String, Any?>, where: String) {
         val name = step["function"] as String
-        require(name.matches(Regex("drivine_[a-z_]+"))) { "$where: no function of Drivine's" }
+        require(name.matches(FUNCTION)) { "$where: no function of Drivine's" }
         if ("ascending" in step) {
             val values = (step["ascending"] as List<*>).map(::expanded)
             require(values.size >= 2) { "$where: ascending has two values or more, each before the next" }
@@ -200,7 +244,7 @@ class HostSpecTest {
 
     /**
      * The case's pairs are cases of their files, and rely on its steps: one of them compiles on SQLite to SQL that calls each
-     * function its steps call, and one compiles on each store its steps read with the `nonFinite` each read step says.
+     * function its steps call (for `regexp`, SQL that holds the operator `REGEXP`), and one compiles on each store its steps read with the `nonFinite` each read step says.
      */
     private fun paired(case: Case) {
         require(case.pairs.isNotEmpty()) { "${case.name}: pairs no store case" }
@@ -212,7 +256,8 @@ class HostSpecTest {
             .mapNotNull { step -> runCatching { compile(step.cypher, expanded(step.parameters)) }.getOrNull() }
         val sqlite by lazy { compiled("sqlite") { cypher, parameters -> CypherCompile.sqlite("g", cypher, parameters) } }
         case.steps.mapNotNull { it["function"] as String? }.distinct().forEach { function ->
-            assertTrue(sqlite.any { "$function(" in it.sql }, "${case.name}: no step of ${case.pairs} compiles on SQLite to SQL that calls $function")
+            val calls: (String) -> Boolean = if (function == "regexp") ::holdsRegexp else { sql -> "$function(" in sql }
+            assertTrue(sqlite.any { calls(it.sql) }, "${case.name}: no step of ${case.pairs} compiles on SQLite to SQL that calls $function")
         }
         case.steps.mapNotNull { it["read"] as Map<*, *>? }.map { it["store"] as String to it["nonFinite"] as Boolean }.distinct().forEach { (store, nonFinite) ->
             val statements = when (store) {
@@ -223,6 +268,9 @@ class HostSpecTest {
             assertTrue(statements.any { it.nonFinite == nonFinite }, "${case.name}: no step of ${case.pairs} compiles on $store with nonFinite $nonFinite")
         }
     }
+
+    /** The SQL holds SQLite's operator `REGEXP`, or `NOT REGEXP`, outside its quoted texts and names. */
+    private fun holdsRegexp(sql: String) = REGEXP_OPERATOR.containsMatchIn(sql.replace(QUOTED, " "))
 
     /** A whole number as a Long, whatever gave it. */
     private fun canonical(value: Any?): Any? = when (value) {
