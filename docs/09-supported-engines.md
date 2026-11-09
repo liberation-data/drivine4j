@@ -251,14 +251,15 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed, searched,
   reversed or compared (`=`, `<>`, `<`, `IN` …), but not in a statement that writes or the step of a `reduce`, where a
   comparison of one past 32 KB is refused, as is one of a list or a map that holds it anywhere. An empty text that a text function gives is null, and `=~`
-  of one is null; `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `size()` and `isEmpty()` of one give what Neo4j gives. `reduce` is a function the
+  of any empty text is null; `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `size()` and `isEmpty()` of any other give what Neo4j gives. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists ordered with `<`, `<=`, `>` or `>=` are walked item by item by a function the query declares too, so such a
   comparison is refused in a statement that writes and in the step of a `reduce`.
   Two lists or maps that may hold a null are compared item by item, as Cypher compares them: where one holds a null, two
   written as the same JSON are null at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
   writes and the step of a `reduce` too. `list[i]` reads an item where an expression gives
-  the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
+  the index, and `map[key]` the entry where an expression gives the key, but none where the key is a parameter given
+  the empty text (`m[$k]`, `$k` `''`), as Oracle's paths read no empty key.
   What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
@@ -280,8 +281,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   where Neo4j gives NaN or an infinity. `%` gives what Neo4j gives: a finite number taken `%` by an infinity is that
   number, as a float, any other `%` of NaN or an infinity is NaN, and so is one by a float zero, not the number taken
   that Oracle's `MOD` gives. A number divided or taken `%` by an integer zero fails, as in Neo4j, but a float where both
-  are written in the statement (`1.0 / 0` is an infinity). `toFloat` reads `'nan'`, `'inf'` and `'INFINITY'` as NaN and
-  the infinities too, where Neo4j gives null. A `MERGE` that would make a property NaN fails, as in Neo4j.
+  are written in the statement (`1.0 / 0` is an infinity). `toFloat` reads NaN and the infinities by Java's names alone
+  (`'NaN'`, `'-Infinity'`), as Neo4j does: `'nan'`, `'inf'` and `'INFINITY'` are null. A `MERGE` that would make a property NaN fails, as in Neo4j.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed

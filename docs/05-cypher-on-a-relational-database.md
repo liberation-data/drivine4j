@@ -226,8 +226,8 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
 - [SQLite](09-supported-engines.md#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null where a text function gives one (`'' + ''`,
-  `toUpper('')`, `trim(' ')` …) and in `=~`. `STARTS WITH`, `ENDS WITH` and `CONTAINS` of one, and `size()` and
-  `isEmpty()` of one, give what the other stores give.
+  `toUpper('')`, `trim(' ')` …) and in `=~`. `STARTS WITH`, `ENDS WITH` and `CONTAINS` of any other empty text, and
+  `size()` and `isEmpty()` of one, give what the other stores give.
 - A `sum()` of integers past a long's range is a float on Oracle and Postgres, as on Neo4j. Neo4j goes on as a
   double from the row where a long would overflow, so a sum that passes the range on the way and comes back into it,
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
@@ -239,8 +239,8 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
   infinity there and on each SQL store, and `1 / 0` fails. `$x / 0`, `WITH 0 AS z RETURN 1.0 / z` and `5.0 % $z` given
   `0` fail on Neo4j and on each SQL store. On Postgres, a statement that writes and divides a float by zero fails, as
   its `jsonb` holds neither. `toFloat` reads a text that names NaN or an infinity as Java does (`'NaN'`, `'-Infinity'`)
-  on each SQL store, but is null in a statement that writes on Postgres; Oracle reads `'nan'`, `'inf'` and
-  `'INFINITY'` so too, where Neo4j gives null.
+  on each SQL store, but is null in a statement that writes on Postgres. Other spellings (`'nan'`, `'inf'`,
+  `'INFINITY'`) are null, as on Neo4j.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `^` or
   a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN from `^` and a function
