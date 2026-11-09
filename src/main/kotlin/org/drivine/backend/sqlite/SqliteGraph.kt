@@ -70,12 +70,13 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
      * NOT EXISTS` even over a table that is there, so the store is looked for first.
      *
      * The count is [REUSES_IDS] where the table of nodes or of relationships is there and was made without
-     * `AUTOINCREMENT`, as SQLite keeps the statement that made it: one look finds both.
+     * `AUTOINCREMENT`, as SQLite keeps the statement that made it: one look finds both. It looks for `KEY AUTOINCREMENT`,
+     * so that a graph whose name holds the word is not taken for one made with it.
      */
     val made: String = run {
         val names = ddl.map { Regex("IF NOT EXISTS (\\w+)").find(it)!!.groupValues[1].lowercase() }.joinToString(", ") { "'$it'" }
         val keyed = listOf(nodes, edges).joinToString(", ") { "'${it.lowercase()}'" }
-        "SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(name) IN ($keyed) AND sql NOT LIKE '%AUTOINCREMENT%')" +
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(name) IN ($keyed) AND sql NOT LIKE '%KEY AUTOINCREMENT%')" +
             " THEN $REUSES_IDS ELSE COUNT(*) END FROM sqlite_master WHERE lower(name) IN ($names)"
     }
 

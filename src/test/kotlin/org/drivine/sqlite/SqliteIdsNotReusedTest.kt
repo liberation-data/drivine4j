@@ -9,6 +9,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.connection.ReusedIdsException
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -16,6 +17,7 @@ import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
 import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
@@ -199,6 +201,17 @@ class SqliteIdsNotReusedTest {
     }
 
     @Test
+    fun `a graph whose name holds AUTOINCREMENT, made by an earlier Drivine, is refused`(@TempDir directory: Path) {
+        // The name is in the statement SQLite keeps for each table; the look is for the key's AUTOINCREMENT alone.
+        val path = earlierFile(directory, "autoincrement")
+        val graph = SqliteGraph("autoincrement")
+        val refused = DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
+            assertFailsWith<ReusedIdsException> { graph.ensure(recording(c, mutableListOf())) }
+        }
+        assertEquals("autoincrement", refused.graph)
+    }
+
+    @Test
     fun `an in-memory database an earlier Drivine made is refused as one`() {
         val graph = SqliteGraph("g")
         val refused = DriverManager.getConnection("jdbc:sqlite::memory:").use { c ->
@@ -221,6 +234,23 @@ class SqliteIdsNotReusedTest {
             }
             assertEquals(refusal("drivine", fileOf(path)), refused.message)
             assertFailsWith<ReusedIdsException> { SqliteBackend(pm, Neo4jObjectMapper.instance) }
+        } finally {
+            provider.end()
+        }
+    }
+
+    @Test
+    fun `a first connection taken inside a transaction gives the refusal as it is`(@TempDir directory: Path) {
+        val path = earlierFile(directory, "drivine")
+        val provider = JdbcConnectionProvider.sqlite("earlier", path)
+        try {
+            val registry = DatabaseRegistry(DataSourceMap()).also { it.register(provider) }
+            val holder = TransactionContextHolder(registry)
+            val tpm = PersistenceManagerFactory(registry, holder).get("earlier", PersistenceManagerType.TRANSACTIONAL)
+            val refused = assertFailsWith<ReusedIdsException> {
+                Transactions(holder).transaction { tpm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN n"))) }
+            }
+            assertEquals(refusal("drivine", fileOf(path)), refused.message)
         } finally {
             provider.end()
         }
