@@ -35,6 +35,8 @@ class IndexManager internal constructor(
     private val asyncPollInterval: Duration = Duration.ofMillis(200),
     /** The auto-commit manager this one is of, which an item that ignores case fills its copies in through; null for none. */
     private val owner: PersistenceManager? = null,
+    /** How long [ensure] and [recreate] wait for an index made in the background (Neo4j, FalkorDB) to be built: see [awaitBuilt]. */
+    private val buildTimeout: Duration = DEFAULT_BUILD_TIMEOUT,
 ) {
 
     internal constructor(connectionProvider: ConnectionProvider, owner: PersistenceManager? = null) :
@@ -80,22 +82,29 @@ class IndexManager internal constructor(
      * Ensures an index matching [spec] exists. Idempotent — safe to call on every startup.
      *
      * Never destructive: if an index exists with a different shape, returns [EnsureResult.Drift]
-     * and changes nothing; call [recreate] to replace it. An index that ignores case (see
-     * [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
+     * and changes nothing; call [recreate] to replace it. On an engine that builds an index in the
+     * background (Neo4j, FalkorDB), returns once the index, made here or there already, is built: see
+     * [awaitBuilt]. A build that failed, or did not end within the timeout (60 seconds), is thrown, as a
+     * [DrivineException] that names the index. ([SchemaManager] waits as long as it is told to, and under
+     * [SchemaMode.WARN] logs such an index and goes on.)
+     * An index that ignores case (see [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
      * have none, and records that they all have it, whatever the result. Where the index is not there
      * yet, the copies are filled in again even if recorded, as by [recreate], since those a field kept
      * before it lost `@CaseInsensitive` went out of step meanwhile.
      */
-    fun ensure(spec: IndexSpec): EnsureResult {
+    fun ensure(spec: IndexSpec): EnsureResult = ensure(spec, IndexBuild(buildTimeout))
+
+    /** [ensure], waiting for the index to be built as [build] says, and handing it one that is not. */
+    internal fun ensure(spec: IndexSpec, build: IndexBuild): EnsureResult {
         requireSupported(spec)
         // An index that ignores case is made over copies that every node of its label has. One made
         // anew fills them in again, recorded or not: they may have gone out of step while it was gone.
         fillIn(spec) { find(spec) == null }
-        return ensureMade(spec.made())
+        return ensureMade(spec.made(), build)
     }
 
     /** [ensure], of [spec] as it is made. */
-    private fun ensureMade(spec: IndexSpec): EnsureResult {
+    private fun ensureMade(spec: IndexSpec, build: IndexBuild): EnsureResult {
         val items = introspectIndexes(spec.kind)
         val existing = items.firstOrNull { grammar.matchesIdentity(it, spec) }
         if (existing == null) {
@@ -104,19 +113,20 @@ class IndexManager internal constructor(
             val related = items.firstOrNull { it.kind == spec.kind && it.label == spec.label }
             warnUnsupportedTuning(spec)
             run(grammar.createIndex(spec, related))
-            val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+            val created = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
             logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
             logEffectiveVectorConfig(spec, created)
             return EnsureResult.Created(created)
         }
         if (grammar.isIncomplete(existing)) {
             run(grammar.createIndex(spec, existing))
-            val completed = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+            val completed = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
             logger.info("Completed {} {} on {}{}: it lacked part of what is made for it", grammar.engine, spec.kind, spec.label, spec.properties)
             return EnsureResult.Created(completed)
         }
         return if (grammar.matchesShape(existing, spec)) {
-            EnsureResult.AlreadyMatching(existing)
+            // Made by another process, or an earlier run, it may still be being built, or its build may have failed.
+            EnsureResult.AlreadyMatching(awaitBuilt(spec, existing, build) ?: existing)
         } else {
             logger.warn(
                 "Index drift on {}{}: existing {} does not match requested {}. " +
@@ -212,17 +222,21 @@ class IndexManager internal constructor(
      * Drops (if present) and recreates the index described by [spec]. Destructive — previously
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
      * An index that ignores case fills the lowercased copies in again on every node of its label,
-     * recorded or not. The index made again keeps the aliases its record kept (see [SchemaAliases]).
+     * recorded or not. The index made again keeps the aliases its record kept (see [SchemaAliases]),
+     * and is returned once it is built, as by [ensure].
      */
-    fun recreate(spec: IndexSpec): EnsureResult.Recreated {
+    fun recreate(spec: IndexSpec): EnsureResult.Recreated = recreate(spec, IndexBuild(buildTimeout))
+
+    /** [recreate], waiting for the index to be built as [build] says, and handing it one that is not. */
+    internal fun recreate(spec: IndexSpec, build: IndexBuild): EnsureResult.Recreated {
         requireSupported(spec)
         // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
         fillIn(spec) { true }
-        return recreateMade(spec.made())
+        return recreateMade(spec.made(), build)
     }
 
     /** [recreate], of [spec] as it is made. The index made again keeps the aliases it had. */
-    private fun recreateMade(spec: IndexSpec): EnsureResult.Recreated {
+    private fun recreateMade(spec: IndexSpec, build: IndexBuild): EnsureResult.Recreated {
         val existing = find(spec)
         val aliases = if (existing != null) aliasesOf(spec) else emptyList()
         if (existing != null) {
@@ -234,7 +248,7 @@ class IndexManager internal constructor(
             .firstOrNull { it.kind == spec.kind && it.label == spec.label }
         warnUnsupportedTuning(spec)
         run(grammar.createIndex(spec, related))
-        val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+        val created = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
         if (aliases.isNotEmpty()) alias(created, aliases)
         logEffectiveVectorConfig(spec, created)
         logger.warn(
@@ -301,6 +315,83 @@ class IndexManager internal constructor(
         logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
     }
 
+    /**
+     * Waits until [item], the index [spec] refers to as introspection last found it (null if it did not), is built,
+     * on an engine that builds an index in the background, and returns it as last found. Neo4j returns from
+     * `CREATE INDEX` while the index is still POPULATING, and a write of a value too large for the index that commits
+     * just as it comes online can stop the database until it is restarted; FalkorDB answers a query from an index
+     * it is still building. So nothing that makes an index hands it back before it is built.
+     *
+     * - Neo4j waits on the server, with [SchemaGrammar.awaitIndexStatement], for the index by its name. The
+     *   procedure takes whole seconds, so the timeout is rounded up to them there ([IndexBuild.timeoutSeconds]).
+     * - FalkorDB is polled ([SchemaGrammar.indexOperationsAreAsync]) until it lists the index as built.
+     *
+     * Either way the wait is at most [IndexBuild.timeout]. An index whose build failed, or did not end in time, is
+     * an [UnbuiltIndex] that names the index and gives the engine's reason: thrown, or given to
+     * [IndexBuild.unbuilt] and the index returned as last found. The index is left as it is.
+     * Elsewhere the DDL returns the index built, and [item] is returned at once.
+     */
+    private fun awaitBuilt(spec: IndexSpec, item: SchemaItemInfo?, build: IndexBuild): SchemaItemInfo? {
+        val awaitIndex = grammar.awaitIndexStatement
+        if (awaitIndex != null) {
+            val name = item?.name ?: spec.effectiveName
+            try {
+                executor.query(awaitIndex, mapOf("name" to name, "timeout" to build.timeoutSeconds))
+            } catch (e: Exception) {
+                // A timeout is told by its code. Any other error is a failed build only where the index is listed FAILED:
+                // one not there, or a connection lost, is thrown as it is, not reported as a build to drop or wait for.
+                val stillBuilding = grammar.isBuildTimeout(e) || when (indexState(name)?.uppercase()) {
+                    "FAILED" -> false
+                    "POPULATING" -> true
+                    else -> throw e
+                }
+                val what = "${grammar.engine} ${spec.kind} '$name' on ${spec.label}${spec.properties}"
+                val message = if (stillBuilding) {
+                    "$what is still being built, having waited ${build.timeout}: ${e.message}"
+                } else {
+                    "$what failed to build: ${e.message}"
+                }
+                return unbuilt(UnbuiltIndex(spec, stillBuilding, DrivineException(message, e)), item, build)
+            }
+            return item
+        }
+        if (!grammar.indexOperationsAreAsync) return item
+        val what = "${grammar.engine} ${spec.kind} on ${spec.label}${spec.properties}"
+        val deadline = System.nanoTime() + build.timeout.toNanos()
+        var info = item
+        while (info == null || info.buildInProgress) {
+            val left = Duration.ofNanos(deadline - System.nanoTime())
+            if (left.isNegative || left.isZero) {
+                val message = "$what is still being built, having waited ${build.timeout}" + (info?.status?.let { ": it is $it" } ?: "")
+                return unbuilt(UnbuiltIndex(spec, stillBuilding = true, DrivineException(message)), info, build)
+            }
+            Thread.sleep(minOf(asyncPollInterval, left).toMillis().coerceAtLeast(1))
+            info = find(spec)
+        }
+        if (info.buildFailed) {
+            return unbuilt(UnbuiltIndex(spec, stillBuilding = false, DrivineException("$what failed to build: it is ${info.status}")), info, build)
+        }
+        return info
+    }
+
+    /** The state [SchemaGrammar.indexStateStatement] gives the index [name], or null where it gives none or fails. */
+    private fun indexState(name: String): String? {
+        val statement = grammar.indexStateStatement ?: return null
+        return try {
+            (executor.query(statement, mapOf("name" to name)).singleOrNull() as? Map<*, *>)?.get("state") as? String
+        } catch (e: Exception) {
+            logger.debug("Reading the state of index '{}' failed: {}", name, e.message)
+            null
+        }
+    }
+
+    /** Throws [index]'s error, or gives it to [build]'s handler and returns [item], where there is one. */
+    private fun unbuilt(index: UnbuiltIndex, item: SchemaItemInfo?, build: IndexBuild): SchemaItemInfo? {
+        val handler = build.unbuilt ?: throw index.error
+        handler(index)
+        return item
+    }
+
     /** Polls until [spec] no longer resolves to an index, on engines whose drops are asynchronous. */
     private fun awaitDropped(spec: IndexSpec) {
         if (!grammar.indexOperationsAreAsync) return
@@ -344,4 +435,36 @@ class IndexManager internal constructor(
         logger.debug("Index introspection failed (treating as no indexes exist): {}", e.message)
         null
     }
+
+    internal companion object {
+        /** The longest an index is waited on to be built, as long as Drivine's own tests wait, with `db.awaitIndexes(60)`. */
+        val DEFAULT_BUILD_TIMEOUT: Duration = Duration.ofSeconds(60)
+    }
 }
+
+/**
+ * How [IndexManager.ensure] and [IndexManager.recreate] wait for an index made in the background to be built: for at
+ * most [timeout], and then, for an index whose build failed or did not end in time, throwing its
+ * [UnbuiltIndex.error], or, where [unbuilt] is given, handing it the index and going on.
+ */
+internal class IndexBuild(
+    val timeout: Duration,
+    val unbuilt: ((UnbuiltIndex) -> Unit)? = null,
+) {
+    /**
+     * [timeout] in the whole seconds Neo4j's `db.awaitIndex` takes, rounded up, so that the wait is at least what was
+     * asked: 500 ms is one second. Only a zero timeout is zero, which `db.awaitIndex` takes as checking once.
+     */
+    val timeoutSeconds: Long
+        get() = timeout.seconds + if (timeout.nano > 0) 1 else 0
+}
+
+/**
+ * An index [IndexManager] made or found but that is not built: its build failed, or it is [stillBuilding] when the
+ * wait ran out. [error] names the index and gives the engine's reason.
+ */
+internal class UnbuiltIndex(
+    val spec: IndexSpec,
+    val stillBuilding: Boolean,
+    val error: DrivineException,
+)

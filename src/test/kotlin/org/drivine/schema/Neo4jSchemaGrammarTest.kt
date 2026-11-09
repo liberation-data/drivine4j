@@ -419,6 +419,15 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
+    fun `a wait for an index that ran out is known by its code, beneath what Drivine wraps it in`() {
+        val timedOut = Neo4jException("Neo.ClientError.Procedure.ProcedureTimedOut", "Timed out waiting for index")
+        assertTrue(grammar.isBuildTimeout(timedOut))
+        assertTrue(grammar.isBuildTimeout(DrivineException(timedOut.message!!, timedOut)))
+        assertFalse(grammar.isBuildTimeout(Neo4jException("Neo.DatabaseError.Schema.IndexCreationFailed", "Index failed")))
+        assertFalse(grammar.isBuildTimeout(DrivineException("no cause")))
+    }
+
+    @Test
     fun `a server older than GQL statuses names a violation by its code alone`() {
         assertTrue(grammar.isConstraintViolation(Neo4jException("Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x' ):")))
         assertFalse(grammar.isConstraintViolation(Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}).")))

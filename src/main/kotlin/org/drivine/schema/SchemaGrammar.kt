@@ -50,10 +50,36 @@ interface SchemaGrammar {
     /**
      * Whether index creation and dropping are asynchronous — the DDL returns immediately while the
      * engine builds or tears the index down in the background, so introspection can still report an
-     * index that has just been dropped (FalkorDB).
+     * index that has just been dropped, and reports one just made as still being built (FalkorDB, whose
+     * [SchemaItemInfo.status] for an index is `UNDER CONSTRUCTION` until it is `OPERATIONAL`).
      */
     val indexOperationsAreAsync: Boolean
         get() = false
+
+    /**
+     * A statement that waits on the server until the index named by the parameter `name` is online, for at most
+     * `timeout` seconds, and fails if its build failed or did not end in time: Neo4j's `db.awaitIndex`. Neo4j builds
+     * an index in the background, so its `CREATE INDEX` returns while the index is still populating, and [IndexManager]
+     * runs this before it hands one back. Null where the DDL returns the index built (Memgraph, the SQL stores), or
+     * where introspection gives the build's status instead ([indexOperationsAreAsync], FalkorDB).
+     */
+    val awaitIndexStatement: String?
+        get() = null
+
+    /**
+     * Whether [e], from [awaitIndexStatement], says the index was still being built when the wait ran out, rather than
+     * that its build failed.
+     */
+    fun isBuildTimeout(e: Throwable): Boolean = false
+
+    /**
+     * With [awaitIndexStatement]: a statement that gives the state of the index named by the parameter `name`, as a row
+     * `{state: …}` (`ONLINE`, `POPULATING`, `FAILED`), read when the wait fails for a reason other than its timeout. The wait fails
+     * for more than a build that failed (an index not there, a connection lost), and only one the engine lists as
+     * `FAILED` is taken for that.
+     */
+    val indexStateStatement: String?
+        get() = null
 
     /**
      * Whether the engine has Neo4j's TEXT index ([TextIndexSpec]). Only Neo4j does; elsewhere

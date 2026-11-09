@@ -250,9 +250,16 @@ abstract class CaseInsensitiveContract {
         stateless.save(CiLong("g4", ""))
         if (this is CaseInsensitiveOracleTest) assertNull(copy("CiLong", "g4")) else assertTrue(copy("CiLong", "g4").isNullOrEmpty())
 
-        // Neo4j cannot hold a text this long in a range index: the index fails, and the lookup reads the label's nodes.
-        pm.indexes.ensure(spec)
         try {
+            if (this is CaseInsensitiveNeo4jTest) {
+                // Neo4j cannot hold a text this long in a range index: the index's build fails, which ensure throws,
+                // naming the index, and the lookup reads the label's nodes.
+                val failed = assertFailsWith<DrivineException> { pm.indexes.ensure(spec) }
+                assertContains(failed.message!!, "'CiLong_email_ci_range'")
+                assertContains(failed.message!!, "too large for the index")
+            } else {
+                pm.indexes.ensure(spec)
+            }
             assertLongFound(long)
         } finally {
             // Dropped, so that a failed index on Neo4j is not waited for by a test after this one.

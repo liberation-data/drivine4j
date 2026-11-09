@@ -34,6 +34,8 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 
 **An item that ignores case** (`ignoreCase = true`) is made over the lowercased copy a `@CaseInsensitive` field keeps, and `ensure` fills the copy in first: see [@CaseInsensitive](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case). The object managers keep the copy in step, but Cypher you send yourself does not: set the copy in the same statement, or `recreate` the item afterwards to fill it in again ([how](09-supported-engines.md#cypher-of-your-own)).
 
+**`ensure` waits for its indexes to be built on Neo4j and FalkorDB.** Both build an index in the background, so `ensure` and `recreate` return only once the index they made, or found there, is built: on Neo4j they wait with `db.awaitIndex`, and on FalkorDB they poll `db.indexes()` until the index is `OPERATIONAL`. The wait is at most 60 seconds (`drivine.schema.index-build-timeout` for the `SchemaManager`; Neo4j's procedure counts whole seconds, so a timeout is rounded up to them, and only a zero timeout checks once). Called on `persistenceManager.indexes`, a build that failed, or one still running when the wait runs out, is thrown as a `DrivineException` that names the index and gives the engine's reason. Applied by the `SchemaManager` (`enforce`, `recreateAll`, `ensure`), it is a problem of its owner, as a drift is: under `FAIL_FAST` it fails the owner, after the owner's other items are applied, and under `WARN` it is logged at WARN as `BUILD FAILED` or `STILL BUILDING`, with the index's name and the engine's reason, and the rest goes on; the item is reported as what was done (`Created`, `AlreadyMatching` or `Recreated`) and counted among those needing attention, and the index is left as it is, to finish building or to stay failed, and waited for again on the next apply. On FalkorDB an index that is still being built answers queries with only part of the rows. Waiting fixes that for the indexes Drivine's own `ensure` makes, but an index made some other way, by another process or by Cypher you send yourself, can still answer with part of the rows until FalkorDB lists it as `OPERATIONAL`.
+
 **A TEXT index is Neo4j's.** `TextIndexSpec` (or `@TextIndex` on a property) makes `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`. That index is over one string property and serves `CONTAINS`, `STARTS WITH` and `ENDS WITH` on it. It is not a full-text index, and Neo4j lists, drift-checks and drops it as a kind of its own (`SchemaItemKind.TEXT_INDEX`), so the two can stand on the same property. No other engine has one. There, `ensure`, `recreate`, `find` and `drop` throw a `DrivineException` before anything runs, rather than make another index in its place, and applying a catalog that declares one fails for its owner. Mind the names: what Memgraph calls a `TEXT INDEX` is a full-text index, declared with `FullTextIndexSpec` / `@FullTextIndex`.
 
 ### Declarative: SchemaCatalog bean
@@ -145,7 +147,7 @@ class PropositionIndex(private val schema: SchemaManager) {
 
 The items are added to what that owner's catalogs declared, for the life of the manager, and applied as `enforce` applies the owner's:
 
-- **Under the same policy.** `drivine.schema.mode`, `recreate-on-drift` and `violation-sample-size` apply: a drift or a violation fails under `FAIL_FAST` and is logged under `WARN`, and the same summary line is logged. Only the items given are applied; the owner's others are left as they are. `ensure` neither adopts nor acts on a change of the owner's version, which is `enforce`'s, and `recreate-on-startup` does not apply to it.
+- **Under the same policy.** `drivine.schema.mode`, `recreate-on-drift`, `violation-sample-size` and `index-build-timeout` apply: a drift, a violation, or an index whose build failed or did not end in time fails under `FAIL_FAST` and is logged under `WARN`, and the same summary line is logged. Only the items given are applied; the owner's others are left as they are. `ensure` neither adopts nor acts on a change of the owner's version, which is `enforce`'s, and `recreate-on-startup` does not apply to it.
 - **In the owner's inventory.** They are recorded in the owner's `_DrivineSchema` marker, marked as ensured at runtime. A later `enforce()` or `enforce("dice")` applies them with the rest, and `recreateAll` recreates them. An `enforce` by a manager built later — the next process, before the item is ensured again — keeps them in the inventory and does not report them as orphans.
 - **Recreated with the owner.** When that later `enforce` recreates the owner's items (its version changed, or `recreateAll`), it cannot recreate a runtime item whose spec it has not been given, so it marks it, and the next `ensure` of the item recreates it.
 - **Checked against other owners.** A declaration that conflicts with another owner's, or with the owner's own, fails naming both, and nothing is added. One identical to another owner's is co-owned, as between catalogs.
@@ -201,12 +203,15 @@ How it works: the last-applied token is stored in a reserved `_DrivineSchema` ma
 drivine:
   schema:
     enabled: true              # master switch for startup initialization
-    mode: FAIL_FAST            # FAIL_FAST (default) or WARN on drift/violations
+    mode: FAIL_FAST            # FAIL_FAST (default) or WARN on drift/violations/indexes not built
     recreate-on-drift: false   # destructive: rebuild items whose shape changed
     recreate-on-startup: false # destructive: rebuild everything every startup
     violation-sample-size: 10  # conflicting rows sampled on constraint violations, and nodes named per row
     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
+    index-build-timeout: 60s   # how long to wait for an index Neo4j or FalkorDB builds in the background
 ```
+
+Without Spring, the timeout is the `SchemaManager`'s last constructor argument: `SchemaManager(factory, registry, catalogs, policy, Duration.ofMinutes(5))`.
 
 ### Per-engine notes
 

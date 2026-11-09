@@ -137,8 +137,8 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
 
     override fun listIndexesQuery(kind: SchemaItemKind): String = """
         CALL db.indexes()
-        YIELD label, properties, types, options, entitytype
-        RETURN {label: label, properties: properties, types: types, options: options, entitytype: entitytype}
+        YIELD label, properties, types, options, entitytype, status
+        RETURN {label: label, properties: properties, types: types, options: options, entitytype: entitytype, status: status}
     """.trimIndent()
 
     /**
@@ -154,6 +154,8 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
         val label = map["label"] as? String ?: return@flatMap emptyList()
         val types = map["types"] as? Map<*, *> ?: return@flatMap emptyList()
         val options = map["options"] as? Map<*, *>
+        // One status for the label's indexes: `UNDER CONSTRUCTION` while any of them is being built.
+        val status = map["status"] as? String
 
         val items = mutableListOf<SchemaItemInfo>()
 
@@ -166,6 +168,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                 label = label,
                 properties = rangeProperties,
                 name = null, // FalkorDB indexes are unnamed
+                status = status,
             )
         }
 
@@ -181,6 +184,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                 label = label,
                 properties = fullTextProperties,
                 name = null, // FalkorDB indexes are unnamed
+                status = status,
             )
         }
 
@@ -203,6 +207,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                     // parameter unverifiable-but-not-drifting: there is no declared value to compare.
                     hnswM = (vectorOptions?.get("M") as? Number)?.toInt(),
                     hnswEfConstruction = (vectorOptions?.get("efConstruction") as? Number)?.toInt(),
+                    status = status,
                 )
             }
 

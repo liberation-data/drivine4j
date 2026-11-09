@@ -7,6 +7,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.PersistenceManagerType
 import org.slf4j.LoggerFactory
+import java.time.Duration
 
 /**
  * Applies declared [SchemaCatalog]s to their target databases.
@@ -39,7 +40,15 @@ import org.slf4j.LoggerFactory
  * another owner's version from being recorded. Any failures are aggregated and rethrown after every
  * owner has been attempted.
  *
- * Outcomes needing attention (drift, violations, an index in the way of a constraint) are handled per [SchemaPolicy].
+ * Outcomes needing attention (drift, violations, an index in the way of a constraint, an index not built) are handled
+ * per [SchemaPolicy].
+ *
+ * **Index builds.** Neo4j and FalkorDB build an index in the background, and an index is applied only once it is
+ * built, waiting at most [indexBuildTimeout] for it (see [IndexManager.ensure]). An index whose build failed, or that
+ * is still being built when the wait runs out, needs attention: under `FAIL_FAST` it fails its owner, naming the
+ * index and giving the engine's reason, and under `WARN` it is logged so and the rest goes on, the index left as it
+ * is and reported as the operation was (created, already matching or recreated). The next [enforce] waits for it
+ * again.
  *
  * **Vector fields.** Before anything is applied, a [VectorIndexSpec] whose label and property a
  * fragment class maps to a field without `@VectorIndex` is refused, naming the class, the field and
@@ -66,8 +75,25 @@ class SchemaManager(
     private val persistenceManagerFactory: PersistenceManagerFactory,
     private val databaseRegistry: DatabaseRegistry,
     private val catalogs: List<SchemaCatalog>,
-    private val policy: SchemaPolicy = SchemaPolicy(),
+    private val policy: SchemaPolicy,
+    /**
+     * How long an index that Neo4j or FalkorDB builds in the background is waited for, each time it is applied,
+     * before it is taken as still being built (`drivine.schema.index-build-timeout`): 60 seconds unless given.
+     */
+    val indexBuildTimeout: Duration,
 ) {
+
+    /** A manager that waits [IndexManager.DEFAULT_BUILD_TIMEOUT], 60 seconds, for an index to be built. */
+    constructor(
+        persistenceManagerFactory: PersistenceManagerFactory,
+        databaseRegistry: DatabaseRegistry,
+        catalogs: List<SchemaCatalog>,
+        policy: SchemaPolicy = SchemaPolicy(),
+    ) : this(persistenceManagerFactory, databaseRegistry, catalogs, policy, IndexManager.DEFAULT_BUILD_TIMEOUT)
+
+    init {
+        require(!indexBuildTimeout.isNegative) { "indexBuildTimeout must not be negative: $indexBuildTimeout" }
+    }
 
     private val logger = LoggerFactory.getLogger(SchemaManager::class.java)
 
@@ -127,10 +153,11 @@ class SchemaManager(
      * and on its databases ([SchemaCatalog.forDatabase]).
      *
      * The items are **added** to what the owner declared at startup, for the life of this manager, and
-     * applied as [enforce] applies the owner's: under the [SchemaPolicy] (a drift or violation fails
-     * under `FAIL_FAST`, is logged under `WARN`, and `recreateOnDrift` recreates a drifted item), with
-     * the same summary line, and recorded in the owner's marker. Only the items given are applied; the
-     * owner's other items are left as they are. Ensuring an item again with the same identity (kind,
+     * applied as [enforce] applies the owner's: under the [SchemaPolicy] (a drift, a violation, or an index
+     * whose build failed or did not end within [indexBuildTimeout] fails under `FAIL_FAST` and is logged
+     * under `WARN`, and `recreateOnDrift` recreates a drifted item), with the same summary line, and
+     * recorded in the owner's marker. Only the items given are applied; the owner's other items are left
+     * as they are. Ensuring an item again with the same identity (kind,
      * label, properties) but a different shape replaces it — a drift, handled per the policy.
      *
      * From then on the owner's [enforce] and [recreateAll] apply these items with the rest, and they
@@ -507,6 +534,8 @@ class SchemaManager(
         }
 
         val outcomes = mutableListOf<Pair<SchemaItemSpec, EnsureResult>>()
+        val unbuilt = mutableListOf<UnbuiltIndex>()
+        val build = IndexBuild(indexBuildTimeout) { unbuilt += it }
         toApply.forEach { spec ->
             // A co-owned item is never dropped by a single owner's version bump — ensure it instead.
             // Only an explicit recreateAll (forceRecreate) rebuilds a co-owned item. A runtime item
@@ -514,12 +543,12 @@ class SchemaManager(
             val coOwned = spec.inventoryKey in coOwnedKeys
             val recreate = forceRecreate || ((recreateOwner || spec.inventoryKey in stale) && !coOwned)
             outcomes += spec to when (spec) {
-                is IndexSpec -> applyIndex(manager, spec, recreate)
+                is IndexSpec -> applyIndex(manager, spec, recreate, build)
                 is ConstraintSpec -> applyConstraint(manager, spec, recreate)
             }
         }
 
-        finish(database, ownerLabel, outcomes) {
+        finish(database, ownerLabel, outcomes, unbuilt) {
             // A carried item misses a recreate of its owner, having no spec here: mark it, so that it
             // is recreated when next ensured. A version change spares one another owner declares, as
             // it spares a co-owned item. A runtime item not applied this time keeps its mark.
@@ -597,13 +626,14 @@ class SchemaManager(
         }
     }
 
-    private fun applyIndex(manager: PersistenceManager, spec: IndexSpec, recreate: Boolean): EnsureResult {
+    /** Ensures or recreates [spec], waiting for it to be built as [build] says, which collects an index that is not. */
+    private fun applyIndex(manager: PersistenceManager, spec: IndexSpec, recreate: Boolean, build: IndexBuild): EnsureResult {
         if (recreate) {
-            return manager.indexes.recreate(spec)
+            return manager.indexes.recreate(spec, build)
         }
-        val result = manager.indexes.ensure(spec)
+        val result = manager.indexes.ensure(spec, build)
         return if (result is EnsureResult.Drift && policy.recreateOnDrift) {
-            manager.indexes.recreate(spec)
+            manager.indexes.recreate(spec, build)
         } else {
             result
         }
@@ -624,13 +654,15 @@ class SchemaManager(
     /**
      * Reports outcomes and records the owner's version and inventory ([record]). The marker is written
      * only on success — if FAIL_FAST throws on a problem, the marker is left untouched so the next
-     * enforce retries. The inventory is recorded even when this owner has no version token, so orphan
-     * detection works for un-versioned owners too.
+     * enforce retries. An index that is [unbuilt] is a problem too, while its outcome counts as what was
+     * done. The inventory is recorded even when this owner has no version token, so orphan detection
+     * works for un-versioned owners too.
      */
     private fun finish(
         database: String,
         ownerLabel: String,
         outcomes: List<Pair<SchemaItemSpec, EnsureResult>>,
+        unbuilt: List<UnbuiltIndex>,
         record: () -> Unit,
     ) {
         val created = outcomes.count { it.second is EnsureResult.Created }
@@ -638,7 +670,7 @@ class SchemaManager(
         val recreated = outcomes.count { it.second is EnsureResult.Recreated }
         val problems = outcomes.filter {
             it.second is EnsureResult.Drift || it.second is EnsureResult.Violation || it.second is EnsureResult.BlockedByIndex
-        }
+        }.map { (spec, result) -> describe(spec, result) } + unbuilt.map(::describe)
 
         logger.info(
             "Schema for owner '{}' on '{}': {} created, {} already matching, {} recreated, {} needing attention",
@@ -648,18 +680,27 @@ class SchemaManager(
         if (problems.isNotEmpty() && policy.mode == SchemaMode.FAIL_FAST) {
             throw DrivineException(
                 "Schema application for owner '$ownerLabel' on database '$database' found problems:\n" +
-                    problems.joinToString("\n") { (spec, result) -> describe(spec, result) } + "\n" +
+                    problems.joinToString("\n") + "\n" +
                     "Resolve them, set drivine.schema.recreate-on-drift=true (destructive), " +
                     "drivine.schema.replace-blocking-index=true for an index in the way of a constraint, " +
-                    "or set drivine.schema.mode=WARN to continue with warnings."
+                    "drivine.schema.index-build-timeout longer for an index still being built, " +
+                    "or set drivine.schema.mode=WARN to continue with warnings.",
+                unbuilt.firstOrNull()?.error,
             )
         }
 
         // Record what this owner applied, versioned or not, so its inventory ties to the marker.
         record()
 
-        problems.forEach { (spec, result) -> logger.warn(describe(spec, result)) }
+        problems.forEach { logger.warn(it) }
     }
+
+    private fun describe(index: UnbuiltIndex): String =
+        if (index.stillBuilding) {
+            "  - STILL BUILDING: ${index.error.message}. It is left to be built, and waited for again on the next enforce"
+        } else {
+            "  - BUILD FAILED: ${index.error.message}. It is left in place, failed: drop or recreate it once the data it failed on is fixed"
+        }
 
     private fun describe(spec: SchemaItemSpec, result: EnsureResult): String = when (result) {
         is EnsureResult.Drift ->

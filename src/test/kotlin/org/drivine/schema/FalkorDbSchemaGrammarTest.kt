@@ -279,6 +279,27 @@ class FalkorDbSchemaGrammarTest {
     }
 
     @Test
+    fun `every index of a label has the status db indexes gives the label, so one still being built is waited on`() {
+        fun row(status: String) = mapOf(
+            "label" to "Chunk",
+            "properties" to listOf("k", "title", "embedding"),
+            "types" to mapOf("k" to listOf("RANGE"), "title" to listOf("FULLTEXT"), "embedding" to listOf("VECTOR")),
+            "options" to mapOf("embedding" to mapOf("dimension" to 4L, "similarityFunction" to "cosine")),
+            "entitytype" to "NODE",
+            "status" to status,
+        )
+
+        // FalkorDB gives the build's progress before UNDER CONSTRUCTION.
+        val building = grammar.parseIndexRows(listOf(row("[Indexing] 0/20000: UNDER CONSTRUCTION")))
+        assertEquals(3, building.size)
+        assertTrue(building.all { it.buildInProgress && !it.buildFailed })
+
+        val built = grammar.parseIndexRows(listOf(row("OPERATIONAL")))
+        assertTrue(built.none { it.buildInProgress || it.buildFailed })
+        assertTrue(grammar.listIndexesQuery(SchemaItemKind.RANGE_INDEX).contains("status"))
+    }
+
+    @Test
     fun `vector options also parse from the legacy flat options shape`() {
         val rows = listOf(
             mapOf(
