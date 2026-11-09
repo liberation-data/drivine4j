@@ -49,27 +49,28 @@ internal object CypherCompile {
     }
 
     /**
-     * [parameters], with each [Iterator] in a value turned into the list of its items, at any depth in a list, an array or
-     * a map. An iterator gives its items only once, and the compiler asks [JacksonEncoder] for a parameter's tree and then
-     * for its text, so the text it binds would be an empty list (drivine4j#722). A value with no iterator in it is kept as
-     * it is.
+     * [parameters], with each [Iterator] or [Sequence] in a value turned into the list of its items, at any depth in a list,
+     * an array or a map. An iterator gives its items only once, and the compiler asks [JacksonEncoder] for a parameter's tree
+     * and then for its text, so the text it binds would be an empty list (drivine4j#722); a sequence that can be consumed
+     * only once, as `iterator.asSequence()` makes, throws the second time. A value with neither in it is kept as it is.
      */
     @Suppress("UNCHECKED_CAST")
     fun drained(parameters: Map<String, Any?>): Map<String, Any?> =
         if (holdsIterator(parameters)) drainedValue(parameters) as Map<String, Any?> else parameters
 
-    /** Whether [value] is, or holds at any depth in a list, an array or a map, an [Iterator]. */
+    /** Whether [value] is, or holds at any depth in a list, an array or a map, an [Iterator] or a [Sequence]. */
     private fun holdsIterator(value: Any?): Boolean = when (value) {
-        is Iterator<*> -> true
+        is Iterator<*>, is Sequence<*> -> true
         is Map<*, *> -> value.values.any(::holdsIterator)
         is Collection<*> -> value.any(::holdsIterator)
         is Array<*> -> value.any(::holdsIterator)
         else -> false
     }
 
-    /** [value], with each iterator in it the list of its items, as [drained]; a value with none in it is itself. */
+    /** [value], with each iterator or sequence in it the list of its items, as [drained]; a value with none in it is itself. */
     private fun drainedValue(value: Any?): Any? = when {
         value is Iterator<*> -> value.asSequence().map(::drainedValue).toList()
+        value is Sequence<*> -> value.map(::drainedValue).toList()
         !holdsIterator(value) -> value
         value is Map<*, *> -> value.mapValues { (_, item) -> drainedValue(item) }
         value is Collection<*> -> value.map(::drainedValue)

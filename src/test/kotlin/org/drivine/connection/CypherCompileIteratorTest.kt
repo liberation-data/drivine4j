@@ -40,6 +40,16 @@ class CypherCompileIteratorTest {
         )
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = ["postgres", "oracle", "sqlite"])
+    fun `a sequence that can be consumed only once, in a map a read looks into, is bound as a list's items`(store: String) {
+        val cypher = "MATCH (n) WHERE n.id IN \$p.ids RETURN n"
+        assertEquals(
+            compiled(store, cypher, mapOf("p" to mapOf("ids" to listOf("a", "b")))),
+            compiled(store, cypher, mapOf("p" to mapOf("ids" to listOf("a", "b").iterator().asSequence()))),
+        )
+    }
+
     @Test
     fun `parameters with no iterator in them are kept as they are`() {
         val parameters = mapOf("p" to mapOf("ids" to setOf("a"), "bytes" to byteArrayOf(1)), "q" to arrayOf(1))
