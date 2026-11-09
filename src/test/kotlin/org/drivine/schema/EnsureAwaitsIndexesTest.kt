@@ -477,6 +477,25 @@ class Neo4jSchemaManagerAwaitsIndexesTest {
     }
 
     @Test
+    fun `under WARN a drifted index that recreate-on-drift makes again, still being built when the wait runs out, is logged`() {
+        manager.seed("AwaitWarnDrift")
+        val drifted = FullTextIndexSpec("AwaitWarnDrift", listOf("s"), analyzer = "english")
+        manager.indexes.ensure(drifted)
+        val declared = FullTextIndexSpec("AwaitWarnDrift", listOf("s"), analyzer = "standard")
+        try {
+            val catalogs = listOf(SchemaCatalog.of(listOf(declared)).named("await").forDatabase("neo"))
+            SchemaManager(factory, registry, catalogs, SchemaPolicy(mode = SchemaMode.WARN, recreateOnDrift = true), Duration.ZERO).enforce()
+
+            val warning = log.warnings().single { "STILL BUILDING" in it }
+            assertContains(warning, declared.effectiveName)
+            assertEquals("Schema for owner 'await' on 'neo': 0 created, 0 already matching, 1 recreated, 1 needing attention", log.summaries().single())
+        } finally {
+            manager.run("CALL db.awaitIndexes(60)")
+            manager.indexes.drop(declared)
+        }
+    }
+
+    @Test
     fun `under FAIL_FAST an index still being built when the wait runs out fails the owner, naming it`() {
         manager.seed("AwaitStrictSlow")
         val slow = FullTextIndexSpec("AwaitStrictSlow", listOf("s"))
