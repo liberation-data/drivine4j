@@ -84,13 +84,15 @@ class HostSpecTest {
     }
 
     @Test
-    fun `a case with no pairs, a pair no file has, or pairs that call none of its functions fails`() {
+    fun `a case with no pairs, a pair no file has, or pairs that call none of its functions or read none of its reads fails`() {
         val step = mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
         assertContains(assertFails { check(case(step, pairs = emptyMap())) }.message!!, "pairs no store case")
         val missing = mapOf("writes.yaml" to listOf("No such case"))
         assertContains(assertFails { check(case(step, pairs = missing)) }.message!!, "writes.yaml has no case \"No such case\"")
         val unrelated = mapOf("queries.yaml" to listOf("Returning nodes and properties"))
         assertContains(assertFails { check(case(step, pairs = unrelated)) }.message!!, "compiles on SQLite to SQL that calls drivine_add")
+        val read = mapOf("read" to mapOf("store" to "postgres", "nonFinite" to true, "column" to "1.5"), "value" to 1.5)
+        assertContains(assertFails { check(case(read, pairs = unrelated)) }.message!!, "compiles on postgres with nonFinite true")
     }
 
     private fun case(step: Map<String, Any?>, pairs: Map<String, List<String>> = mapOf("writes.yaml" to listOf("NaN and the infinities written"))) =
