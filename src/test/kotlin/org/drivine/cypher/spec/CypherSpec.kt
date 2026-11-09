@@ -75,6 +75,23 @@ data class CypherSpec(
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
+
+        /**
+         * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
+         * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
+         */
+        @Suppress("UNCHECKED_CAST")
+        internal fun <T> expanded(value: T): T = when (value) {
+            is Map<*, *> -> (
+                when (value.keys) {
+                    setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
+                    setOf("\$float") -> (value["\$float"] as String).toDouble()
+                    else -> value.mapValues { (_, item) -> expanded(item) }
+                }
+            ) as T
+            is List<*> -> value.map { expanded(it) } as T
+            else -> value
+        }
     }
 
     /**
@@ -150,23 +167,6 @@ data class CypherSpec(
         val rows = run(step.copy(parameters = expanded(step.parameters)))
         val expected = step.rows ?: return
         assertEquals(canonical(expanded(expected), step, step.unordered), canonical(rows, step, step.unordered), where)
-    }
-
-    /**
-     * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
-     * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun <T> expanded(value: T): T = when (value) {
-        is Map<*, *> -> (
-            when (value.keys) {
-                setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
-                setOf("\$float") -> (value["\$float"] as String).toDouble()
-                else -> value.mapValues { (_, item) -> expanded(item) }
-            }
-        ) as T
-        is List<*> -> value.map { expanded(it) } as T
-        else -> value
     }
 
     /**

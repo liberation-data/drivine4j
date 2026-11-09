@@ -6,11 +6,13 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.drivine.backend.sqlite.SqliteFunctions
+import org.drivine.cypher.spec.CypherSpec.Companion.expanded
 import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqlCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.mapper.JdbcResultMapper
 import org.junit.jupiter.api.DynamicTest
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import java.lang.reflect.Proxy
 import java.sql.Connection
@@ -18,7 +20,9 @@ import java.sql.DriverManager
 import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 import java.sql.Types
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -43,40 +47,84 @@ class HostSpecTest {
         val steps: List<Map<String, Any?>>,
     )
 
+    private companion object {
+        /** The keys of each kind of step, beside its optional `note`: a function's result, its order, and a read. */
+        val SHAPES = setOf(setOf("function", "args", "result"), setOf("function", "ascending"), setOf("read", "value"))
+        val READ = setOf("store", "nonFinite", "column")
+    }
+
     private val spec: Spec = ObjectMapper(YAMLFactory()).registerKotlinModule()
         .enable(DeserializationFeature.USE_LONG_FOR_INTS)
         .readValue(requireNotNull(javaClass.getResource("/cypher/host.yaml")) { "No spec file cypher/host.yaml" })
 
     @TestFactory
-    fun host(): List<DynamicTest> = spec.cases.map { case ->
-        DynamicTest.dynamicTest(case.name) {
-            DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
-                SqliteFunctions.register(connection)
-                case.steps.forEachIndexed { index, step ->
-                    val where = "${case.name}, step ${index + 1}: ${step.filterKeys { it != "note" }}"
-                    when {
-                        step["function"] != null -> function(connection, step, where)
-                        step["read"] != null -> read(connection, step, where)
-                        else -> fail("$where: a step has a function or a read")
-                    }
+    fun host(): List<DynamicTest> = spec.cases.map { case -> DynamicTest.dynamicTest(case.name) { check(case) } }
+
+    @Test
+    fun `a step or a read with a key the spec does not have fails`() {
+        val step = mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
+        check(case(step))
+        assertContains(assertFails { check(case(step + ("reslt" to "3"))) }.message!!, "a step has the keys")
+        assertContains(assertFails { check(case(step - "result")) }.message!!, "a step has the keys")
+        assertContains(assertFails { check(case(step + ("read" to mapOf<String, Any>()))) }.message!!, "a step has the keys")
+        val read = mapOf("read" to mapOf("store" to "postgres", "nonFinite" to true, "column" to "1.5"), "value" to 1.5)
+        val pairs = mapOf("queries.yaml" to listOf("NaN and the infinities as parameters"))
+        check(case(read, pairs = pairs))
+        assertContains(assertFails { check(case(read - "value", pairs = pairs)) }.message!!, "a step has the keys")
+        val misspelt = read + ("read" to mapOf("store" to "postgres", "nonfinite" to true, "column" to "1.5"))
+        assertContains(assertFails { check(case(misspelt, pairs = pairs)) }.message!!, "a read has the keys")
+    }
+
+    @Test
+    fun `a function Drivine does not register, or a result it does not give, fails`() {
+        assertFails { check(case(mapOf("function" to "drivine_nothing", "args" to listOf("1"), "result" to "1"))) }
+        assertFails { check(case(mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "4"))) }
+    }
+
+    @Test
+    fun `a case with no pairs, a pair no file has, or pairs that call none of its functions fails`() {
+        val step = mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
+        assertContains(assertFails { check(case(step, pairs = emptyMap())) }.message!!, "pairs no store case")
+        val missing = mapOf("writes.yaml" to listOf("No such case"))
+        assertContains(assertFails { check(case(step, pairs = missing)) }.message!!, "writes.yaml has no case \"No such case\"")
+        val unrelated = mapOf("queries.yaml" to listOf("Returning nodes and properties"))
+        assertContains(assertFails { check(case(step, pairs = unrelated)) }.message!!, "compiles on SQLite to SQL that calls drivine_add")
+    }
+
+    private fun case(step: Map<String, Any?>, pairs: Map<String, List<String>> = mapOf("writes.yaml" to listOf("NaN and the infinities written"))) =
+        Case("a case", pairs = pairs, steps = listOf(step))
+
+    /** The case's steps give what they say, each step of a shape the spec's README gives, and its pairs rely on them. */
+    private fun check(case: Case) {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
+            SqliteFunctions.register(connection)
+            case.steps.forEachIndexed { index, step ->
+                val where = "${case.name}, step ${index + 1}: ${step.filterKeys { it != "note" }}"
+                val keys = step.keys - "note"
+                require(keys in SHAPES) { "$where: a step has the keys of one of $SHAPES, and an optional note" }
+                if ("read" in keys) {
+                    val read = step["read"] as Map<*, *>
+                    require(read.keys == READ) { "$where: a read has the keys $READ" }
+                    read(connection, step, where)
+                } else {
+                    function(connection, step, where)
                 }
             }
-            paired(case)
         }
+        paired(case)
     }
 
     /** The step's function, called with its `args`, gives its `result`; or, called on each of its `ascending` in turn, gives texts that ascend. */
     private fun function(connection: Connection, step: Map<String, Any?>, where: String) {
         val name = step["function"] as String
         require(name.matches(Regex("drivine_[a-z_]+"))) { "$where: no function of Drivine's" }
-        if (step.containsKey("ascending")) {
+        if ("ascending" in step) {
             val values = (step["ascending"] as List<*>).map(::expanded)
             values.zipWithNext().forEach { (a, b) ->
                 assertEquals(1L, canonical(call(connection, "SELECT $name(?) < $name(?)", listOf(a, b))), "$where: $a before $b")
             }
             return
         }
-        require(step.containsKey("result")) { "$where: a function step has a result or ascending" }
         val args = (step["args"] as List<*>).map(::expanded)
         val sql = "SELECT $name(${args.joinToString(", ") { "?" }})"
         assertEquals(canonical(expanded(step["result"])), canonical(call(connection, sql, args)), where)
@@ -160,7 +208,7 @@ class HostSpecTest {
             .mapNotNull { step -> runCatching { compiler().compile(step.cypher, expanded(step.parameters)) }.getOrNull() }
         val sqlite by lazy { compiled("sqlite") { SqliteCypherCompiler("g") } }
         case.steps.mapNotNull { it["function"] as String? }.distinct().forEach { function ->
-            assertTrue(sqlite.any { function in it.sql }, "${case.name}: no step of ${case.pairs} compiles on SQLite to SQL that calls $function")
+            assertTrue(sqlite.any { "$function(" in it.sql }, "${case.name}: no step of ${case.pairs} compiles on SQLite to SQL that calls $function")
         }
         case.steps.mapNotNull { it["read"] as Map<*, *>? }.map { it["store"] as String to it["nonFinite"] as Boolean }.distinct().forEach { (store, nonFinite) ->
             val statements = when (store) {
@@ -170,18 +218,6 @@ class HostSpecTest {
             }
             assertTrue(statements.any { it.nonFinite == nonFinite }, "${case.name}: no step of ${case.pairs} compiles on $store with nonFinite $nonFinite")
         }
-    }
-
-    /** [value] with each `{$repeat: text, times: n}` written out, and each `{$float: …}` the double it names; any other map the map it is. */
-    @Suppress("UNCHECKED_CAST")
-    private fun <T> expanded(value: T): T = when (value) {
-        is Map<*, *> -> when (value.keys) {
-            setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
-            setOf("\$float") -> (value["\$float"] as String).toDouble()
-            else -> value.mapValues { (_, item) -> expanded(item) }
-        } as T
-        is List<*> -> value.map { expanded(it) } as T
-        else -> value
     }
 
     /** A whole number as a Long, whatever gave it. */
