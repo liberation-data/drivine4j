@@ -51,6 +51,19 @@ class CypherCompileIteratorTest {
     }
 
     @Test
+    fun `an iterator is bound as a list's items where Oracle compiles again, without the functions the store doesn't keep`() {
+        val cypher = "MATCH (n) WHERE n.id IN \$p.ids " +
+            "RETURN n, datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: 3}).hour AS h"
+        val asked = mutableListOf<String>()
+        fun compiled(ids: Any) = CypherCompile.oracle("g", cypher, mapOf("p" to mapOf("ids" to ids)), { true }, { asked += "era"; false })
+        val listed = compiled(listOf("a", "b"))
+        val iterated = compiled(listOf("a", "b").iterator())
+        assertEquals(listOf("era", "era"), asked)
+        assertEquals(listed.parameters, iterated.parameters)
+        assertEquals(listed.sql, iterated.sql)
+    }
+
+    @Test
     fun `parameters with no iterator in them are kept as they are`() {
         val parameters = mapOf("p" to mapOf("ids" to setOf("a"), "bytes" to byteArrayOf(1)), "q" to arrayOf(1))
         assertSame(parameters, CypherCompile.drained(parameters))
