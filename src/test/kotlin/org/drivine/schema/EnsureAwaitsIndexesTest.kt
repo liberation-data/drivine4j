@@ -138,6 +138,29 @@ class Neo4jEnsureAwaitsIndexesTest {
         }
     }
 
+    @Test
+    fun `a wait that fails for a reason other than its timeout, with the index still POPULATING, is an index still being built`() {
+        // The timeout's code not recognised: the state SHOW INDEXES gives, POPULATING, says it is still being built.
+        val codeUnknown = object : SchemaGrammar by Neo4jSchemaGrammar() {
+            override fun isBuildTimeout(e: Throwable) = false
+        }
+        val indexes = IndexManager(SchemaExecutor(provider), codeUnknown)
+        manager.seed("AwaitNeoPopulating")
+        val spec = FullTextIndexSpec("AwaitNeoPopulating", listOf("s"))
+        try {
+            val reported = mutableListOf<UnbuiltIndex>()
+            val created = indexes.ensure(spec, IndexBuild(Duration.ZERO) { reported += it })
+            assertTrue(created is EnsureResult.Created, "$created")
+            val unbuilt = reported.single()
+            assertTrue(unbuilt.stillBuilding, unbuilt.error.message)
+            assertContains(unbuilt.error.message!!, "still being built")
+            assertContains(unbuilt.error.message!!, spec.effectiveName)
+        } finally {
+            manager.run("CALL db.awaitIndexes(60)")
+            manager.indexes.drop(spec)
+        }
+    }
+
     // A constraint's own index is listed, as an index over the same property, so it is the one waited for, by its name.
     @Test
     fun `a range index over what a uniqueness constraint's own index covers is ensured, with nothing more to wait for`() {
@@ -245,6 +268,28 @@ class FalkorDbEnsureAwaitsIndexesTest {
         manager.indexes.ensure(spec)
         manager.indexes.recreate(spec)
         assertEquals("OPERATIONAL", status("AwaitFalkorAgain"))
+    }
+
+    @Test
+    fun `an index FalkorDB lists as FAILED is an error naming it, not an index taken as built`() {
+        // FalkorDB has not been seen to fail an index's build; one listed so is not handed back as made.
+        val failed = object : SchemaGrammar by FalkorDbSchemaGrammar() {
+            override fun parseIndexRows(rows: List<Any?>) = FalkorDbSchemaGrammar().parseIndexRows(rows).map { it.copy(status = "FAILED") }
+        }
+        val indexes = IndexManager(SchemaExecutor(provider), failed)
+        val spec = RangeIndexSpec("AwaitFalkorFailed", "k")
+        try {
+            val thrown = assertFailsWith<DrivineException> { indexes.ensure(spec) }
+            assertContains(thrown.message!!, "failed to build")
+            assertContains(thrown.message!!, "AwaitFalkorFailed")
+
+            val reported = mutableListOf<UnbuiltIndex>()
+            val found = indexes.ensure(spec, IndexBuild(Duration.ofSeconds(5)) { reported += it })
+            assertTrue(found is EnsureResult.AlreadyMatching, "$found")
+            assertFalse(reported.single().stillBuilding, reported.single().error.message)
+        } finally {
+            manager.indexes.drop(spec)
+        }
     }
 }
 
