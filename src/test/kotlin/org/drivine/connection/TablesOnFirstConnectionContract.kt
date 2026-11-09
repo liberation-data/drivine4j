@@ -313,6 +313,11 @@ abstract class TablesOnFirstConnectionContract {
 
         assertContains(failure.message!!, "Spring transaction")
         assertContains(failure.message!!, "outside one")
+        // A read, a plain SELECT on every store, where a write on Oracle is a PL/SQL block: it fails saying the same.
+        val read = assertFailsWith<DrivineException> {
+            TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult { names(pm) }
+        }
+        assertContains(read.message!!, "Spring transaction")
         pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
         assertEquals(listOf("Ada"), names(manager(open())))
     }
