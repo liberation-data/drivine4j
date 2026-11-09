@@ -1092,8 +1092,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `texts past 32 KB in a parameter's lists that hold a null compare as texts`() {
-        // A parameter's list with such a text is walked, not written in the statement item by item, past the literal Oracle
-        // takes (ORA-01704) (#303).
+        // A parameter's list with such a text is walked, not written in the statement item by item, which went past the
+        // literal Oracle takes (ORA-01704) before a long text literal was written in CLOB pieces (#303, #419).
         val text = "x".repeat(40_000)
         val given = mapOf("a" to listOf(text, null), "b" to listOf(text, null), "c" to listOf(text + "y", null))
         assertEquals(listOf(listOf(null, false, null, false)), query("RETURN [\$a = \$b, \$a = \$c, \$a IN [\$b], \$a IN [\$c]]", given))
@@ -2049,12 +2049,8 @@ abstract class CypherQueryContract {
             // A long text whose first units are nowhere in the text, so no place is compared.
             long to "c".repeat(33_000),
         )
-        // Oracle's empty text is null, so CONTAINS of one is null there.
-        fun expected(t: String?, x: String?) = when {
-            t == null || x == null -> null
-            pm.type == DatabaseType.ORACLE && (t.isEmpty() || x.isEmpty()) -> null
-            else -> t.contains(x)
-        }
+        // An empty text is in every text, on Oracle too (#416).
+        fun expected(t: String?, x: String?) = if (t == null || x == null) null else t.contains(x)
         val parameters = cases.withIndex().flatMap { (i, case) -> listOf("t$i" to case.first, "x$i" to case.second) }.toMap()
         // One node at a time: on Oracle, UNWIND of a list of texts past 32 KB into CREATE closes the session.
         for ((i, case) in cases.withIndex()) query("CREATE (:CyContains {i: \$i, t: \$t, x: \$x})", mapOf("i" to i, "t" to case.first, "x" to case.second))
