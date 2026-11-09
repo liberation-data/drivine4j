@@ -62,6 +62,17 @@ class CypherSpecTest {
     }
 
     @Test
+    fun `a skip wins over another hold of the step, and a passing hold before it is still reported`() {
+        val held = mapOf("a case" to listOf(Hold(1, listOf("sql")), Hold(2, listOf("postgres"), listOf(2), skip = true)))
+        val ran = mutableListOf<String>()
+        val failure = assertThrows<AssertionError> {
+            run(spec(step, Step(cypher = "RETURN 2"), Step(cypher = "RETURN 3")), "postgres", held) { ran += it.cypher; listOf(1L) }
+        }
+        assertEquals(listOf("RETURN 1"), ran)
+        assertContains(failure.message!!, "step 1 (#1) held on postgres, and passing")
+    }
+
+    @Test
     fun `a step is held only on the stores its hold names`() {
         assertThrows<AssertionError> { run(spec(step), "neo4j", heldOnSql) { listOf(2L) } }
     }

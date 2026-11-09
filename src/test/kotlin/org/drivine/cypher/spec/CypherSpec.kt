@@ -69,7 +69,7 @@ data class CypherSpec(
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
-         * taken out when the fix lands. One that would [skip][Hold.skip] is not run.
+         * taken out when the fix lands. One that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
         private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
 
@@ -128,9 +128,9 @@ data class CypherSpec(
             val passing = mutableListOf<String>()
             for ((index, step) in case.steps.withIndex()) {
                 if (!step.runsOn(store)) continue
-                val hold = holds.firstOrNull { hold ->
+                val hold = holds.filter { hold ->
                     Step(cypher = "", only = hold.on).runsOn(store) && (hold.steps == null || index + 1 in hold.steps)
-                }
+                }.let { matching -> matching.firstOrNull { it.skip } ?: matching.firstOrNull() }
                 if (hold == null) check(case, index, step, store, run)
                 else if (hold.skip) break
                 else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#${hold.issue})"
