@@ -32,6 +32,14 @@ data class CiLate(@NodeId val id: String, @CaseInsensitive val email: String? = 
 @NodeFragment(labels = ["CiRedone"])
 data class CiRedone(@NodeId val id: String, @CaseInsensitive val email: String? = null)
 
+/** Saved with a text past what Oracle reads a text as, through a save of Drivine's. */
+@NodeFragment(labels = ["CiLong"])
+data class CiLong(@NodeId val id: String, @CaseInsensitive val email: String? = null)
+
+/** Saved with a long text before there were copies, by Cypher of the test's own. */
+@NodeFragment(labels = ["CiLongLate"])
+data class CiLongLate(@NodeId val id: String, @CaseInsensitive val email: String? = null)
+
 /** A member whose email is unique whatever its case. */
 @NodeFragment(labels = ["CiMember"])
 data class CiMember(@NodeId val id: String, @CaseInsensitive @Unique(ignoreCase = true) val email: String? = null)
