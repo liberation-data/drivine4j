@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.connection.ReusedIdsException
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
@@ -423,6 +424,9 @@ class SchemaManager(
                         database, manager, owner, ownerSpecs.getValue(owner), cats, plan.coOwnedKeys,
                         plan.runtimeOnlyKeys[owner].orEmpty(), declaredByOthers, forceRecreate, only,
                     )
+                } catch (e: ReusedIdsException) {
+                    // The graph itself is refused, for every owner alike: given as it is, not as an owner's failure.
+                    throw e
                 } catch (e: DrivineException) {
                     // Isolate per owner: record the failure but keep applying other owners so a
                     // library's schema still converges (and records its version) when the app's fails.
