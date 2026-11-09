@@ -502,7 +502,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   regular Free image and not the slim one: without it, or with no index made, a search counts the
   words in the text of every node of the label, scores them by BM25 as Postgres does, and does see
   them. An `analyzer` is recorded with the index and not applied.
-- A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
+- A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate, but for
+  `eqIgnoreCase` on a [`@CaseInsensitive`](#caseinsensitive-lookups-that-ignore-case) field whose copy is recorded.
 - The deprecated `GraphObjectManager.save` and `saveAll` throw `UnsupportedOperationException` on Oracle;
   that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
   neither do the migration tools `RelationshipDirectionRepair` and `PathRelationshipReport`, which are
