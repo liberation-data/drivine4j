@@ -24,6 +24,13 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
     override val supportsNamedItems = true
     override val supportsTextIndex = true
 
+    /**
+     * `db.awaitIndex`, on Neo4j 4.x to 2026: an index is made POPULATING and built in the background, and a write
+     * of a value too large for it that commits just as it comes online can stop the database (Neo4j skips the
+     * key-size check while it populates). It throws, with Neo4j's reason, for an index whose build failed.
+     */
+    override val awaitIndexStatement = "CALL db.awaitIndex(\$name, \$timeout)"
+
     /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
 

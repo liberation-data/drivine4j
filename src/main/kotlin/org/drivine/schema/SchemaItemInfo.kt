@@ -21,8 +21,9 @@ package org.drivine.schema
  * @param analyzer fulltext indexes only: the engine-reported analyzer, or null where the engine
  *   does not surface one (FalkorDB, Memgraph). Null means "unobservable", not "default" — drift is
  *   never reported against an analyzer the engine won't tell us about.
- * @param status engine-reported status where applicable (e.g. FalkorDB constraints:
- *   `OPERATIONAL` / `UNDER CONSTRUCTION` / `FAILED`)
+ * @param status engine-reported status where applicable (FalkorDB constraints:
+ *   `OPERATIONAL` / `UNDER CONSTRUCTION` / `FAILED`; FalkorDB indexes, the status of their label's:
+ *   `OPERATIONAL` / `UNDER CONSTRUCTION`)
  */
 data class SchemaItemInfo(
     val kind: SchemaItemKind,
@@ -47,8 +48,8 @@ data class SchemaItemInfo(
 
     /**
      * Whether the engine reports that this item is still being built (FalkorDB's `UNDER CONSTRUCTION`): it has
-     * a status, and that status is neither `OPERATIONAL` nor failed. Such a constraint may yet fail, so it is
-     * waited on before it is taken as made.
+     * a status, and that status is neither `OPERATIONAL` nor failed. Such a constraint may yet fail, and such an
+     * index answers from what it holds so far, so either is waited on before it is taken as made.
      */
     internal val buildInProgress: Boolean
         get() = status != null && status.uppercase() != "OPERATIONAL" && !buildFailed

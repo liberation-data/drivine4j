@@ -21,8 +21,11 @@ class SchemaExecutor internal constructor(
 ) {
 
     /** Runs an introspection query and returns its raw rows (maps, positional lists, or scalars). */
-    fun query(statement: String): List<Any?> =
-        PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(statement)) }
+    fun query(statement: String): List<Any?> = query(statement, emptyMap())
+
+    /** Runs [statement] with [parameters] bound, and returns its raw rows. */
+    fun query(statement: String, parameters: Map<String, Any?>): List<Any?> =
+        PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(statement).bind(parameters)) }
 
     /** Executes a single DDL statement. */
     fun execute(statement: SchemaStatement) {
