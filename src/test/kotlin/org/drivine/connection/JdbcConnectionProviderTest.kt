@@ -753,6 +753,20 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
+    fun `a connection whose mode cannot be read, and which cannot be closed, fails the connect with its error, the close's kept with it`() {
+        val broken = SQLException("closed by the network")
+        val unclosable = SQLException("already closed")
+        val unreadable = recording().also {
+            `when`(it.autoCommit).thenThrow(broken)
+            Mockito.doThrow(unclosable).`when`(it).close()
+        }
+
+        val failure = assertFailsWith<SQLException> { handingOut(unreadable).connect() }
+        assertSame(broken, failure)
+        assertEquals(listOf<Throwable>(unclosable), failure.suppressed.toList())
+    }
+
+    @Test
     fun `a connection that cannot be given back committing nothing is closed all the same`() {
         val handedOut = moded(committing = false).also { Mockito.doThrow(SQLException("closed by the network")).`when`(it).autoCommit = false }
 
