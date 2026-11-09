@@ -244,8 +244,11 @@ abstract class CaseInsensitiveContract {
         val spec = RangeIndexSpec("CiLong", "email", ignoreCase = true)
         pm.indexes.drop(spec)
         val long = "Ab".repeat(20_000) + "C"
-        stateless.saveAll(listOf(CiLong("g1", long), CiLong("g2", "Ann@X.com"), CiLong("g3", long + "d")))
+        stateless.saveAll(listOf(CiLong("g1", long), CiLong("g2", "Ann@X.com"), CiLong("g3", long + "d"), CiLong("g4", "Ab")))
         assertEquals(long.lowercase(), copy("CiLong", "g1"))
+        // Saved again as an empty text, the copy goes on Oracle, which keeps an empty text as null; elsewhere it is empty.
+        stateless.save(CiLong("g4", ""))
+        if (this is CaseInsensitiveOracleTest) assertNull(copy("CiLong", "g4")) else assertTrue(copy("CiLong", "g4").isNullOrEmpty())
 
         // Neo4j cannot hold a text this long in a range index: the index fails, and the lookup reads the label's nodes.
         pm.indexes.ensure(spec)
@@ -274,11 +277,15 @@ abstract class CaseInsensitiveContract {
         val spec = RangeIndexSpec("CiLongLate", "email", ignoreCase = true)
         pm.indexes.drop(spec)
         val long = "Ab".repeat(2_500)
+        // 2,800 characters of 4,200 bytes: past what Oracle reads a text as, though fewer than 4,000 characters.
+        // Only its ASCII is lowercased, as Memgraph's toLower lowercases nothing else.
+        val wide = "éA".repeat(1_400)
         pm.execute(
             QuerySpecification.withStatement(
                 "CREATE (:CiLongLate {id: 'l1', email: \$long}), (:CiLongLate {id: 'l2', email: 'Bob@X.com'}), " +
-                    "(:CiLongLate {id: 'l3', email: ''}), (:CiLongLate {id: 'l4', email: '', `${LowerCopies.of("email")}`: 'stale'})",
-            ).bind(mapOf("long" to long)),
+                    "(:CiLongLate {id: 'l3', email: ''}), (:CiLongLate {id: 'l4', email: '', `${LowerCopies.of("email")}`: 'stale'}), " +
+                    "(:CiLongLate {id: 'l5', email: \$wide})",
+            ).bind(mapOf("long" to long, "wide" to wide)),
         )
         assertNull(copy("CiLongLate", "l1"))
 
@@ -288,6 +295,8 @@ abstract class CaseInsensitiveContract {
         // The copy of an empty text is empty, or on Oracle, which keeps an empty text as null, there is none.
         assertTrue(copy("CiLongLate", "l3").isNullOrEmpty())
         assertTrue(copy("CiLongLate", "l4").isNullOrEmpty())
+        if (this is CaseInsensitiveOracleTest) assertNull(copy("CiLongLate", "l4"))
+        assertEquals(wide.lowercase(), copy("CiLongLate", "l5"))
         assertContains(recorded(), "CiLongLate" to "email")
         fun found(email: String): Set<String> = stateless.loadAll(CiLongLate::class.java, CiEmailQueryDsl.INSTANCE) {
             where { query.email eqIgnoreCase email }
@@ -295,10 +304,12 @@ abstract class CaseInsensitiveContract {
         assertTrue(readsCopy(lookup(CiLongLate::class.java, long.uppercase())))
         assertEquals(setOf("l1"), found(long.uppercase()))
         assertEquals(setOf("l2"), found("BOB@x.com"))
+        assertEquals(setOf("l5"), found(wide))
         // Filled in again, the copies stay as the properties are.
         assertNotNull(pm.indexes.lowerCopies).fillIn("CiLongLate", listOf("email"), again = true)
         assertEquals(long.lowercase(), copy("CiLongLate", "l1"))
         assertTrue(copy("CiLongLate", "l4").isNullOrEmpty())
+        assertEquals(wide.lowercase(), copy("CiLongLate", "l5"))
     }
 
     @Test
