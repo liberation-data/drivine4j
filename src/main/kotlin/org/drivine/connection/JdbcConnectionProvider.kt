@@ -166,6 +166,9 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * A graph name that cannot name tables makes none, and is logged: every connection is handed out,
      * as before the provider made tables, and a Cypher statement over the graph is refused, naming the
      * graph and why (#364).
+     *
+     * A SQLite graph whose tables an earlier Drivine made, which give a deleted row's id again, is refused with
+     * [ReusedIdsException] on every connection, and no connection is handed out (#713).
      */
     private fun ensureGraph() {
         if (graphEnsured) return
@@ -193,8 +196,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * On Oracle it first reads the database's version from the session's metadata, which needs no grant: see
      * [oracleRefusal].
      *
-     * Whether the statements ran, or are not to be run again ([cannotMake]): a failure of theirs is logged. Called under
-     * [ensuringGraph].
+     * Whether the statements ran, or are not to be run again ([cannotMake]): a failure of theirs is logged, but for a
+     * [ReusedIdsException], which is thrown. Called under [ensuringGraph].
      */
     private fun makeTables(graph: SqlGraph): Boolean {
         val session = withoutAdaptivePlans(dataSource.connection)
@@ -226,6 +229,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         }
         connection.release(failure)
         if (failure == null) return true
+        // A SQLite file whose tables give a deleted row's id again is refused, on every connection: not a failure to make them.
+        if (failure is ReusedIdsException) throw failure
         if (cannotMake(type, failure)) {
             logger.warn(
                 "Could not make the tables of graph '{}' on {} database '{}': the user may not make them, or the database may not be written. Statements over them will fail if they are not there. The provider does not try again.",

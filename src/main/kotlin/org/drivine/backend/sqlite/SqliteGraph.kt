@@ -1,6 +1,7 @@
 package org.drivine.backend.sqlite
 
 import org.drivine.backend.sql.SqlGraph
+import org.drivine.connection.ReusedIdsException
 import org.drivine.manager.PersistenceManager
 
 /**
@@ -17,6 +18,12 @@ import org.drivine.manager.PersistenceManager
  * and each time a backend is made: SQLite opens a transaction for a schema statement as for any other,
  * and two processes that each find the store missing make it one after the other.
  *
+ * A node's `nid` and a relationship's `eid` are `AUTOINCREMENT` keys, so an id is never given again once its row
+ * is deleted, as Oracle's and Postgres's identity keys are never given again: without it SQLite gives a new row the
+ * greatest key plus one, which is the key of the last row deleted when it had the greatest (#713). A file whose
+ * tables were made without it, by an earlier Drivine, is refused as the store is looked for (see [ensure]): there is
+ * no migration, as SQLite cannot change a table's key in place.
+ *
  * SQLite reads a table's name without regard to case, so a graph called `Contracts` is the same graph as
  * one called `contracts`, as on Postgres, which folds both to lower case. The tables keep the case of the
  * name that made them.
@@ -27,7 +34,7 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
     val ddl: List<String> = listOf(
         """
         CREATE TABLE IF NOT EXISTS $nodes (
-            nid    INTEGER PRIMARY KEY,
+            nid    INTEGER PRIMARY KEY AUTOINCREMENT,
             labels TEXT NOT NULL,
             props  TEXT NOT NULL,
             stamp  TEXT
@@ -35,7 +42,7 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
         """,
         """
         CREATE TABLE IF NOT EXISTS $edges (
-            eid   INTEGER PRIMARY KEY,
+            eid   INTEGER PRIMARY KEY AUTOINCREMENT,
             src   INTEGER NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
             dst   INTEGER NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
             type  TEXT NOT NULL,
@@ -61,13 +68,26 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
      * Counts what of the [ddl] makes is there: each table and index, by its name in any case. A user
      * who may only read the file, or a connection with `query_only` set, is refused a `CREATE ... IF
      * NOT EXISTS` even over a table that is there, so the store is looked for first.
+     *
+     * The count is [REUSES_IDS] where the table of nodes or of relationships is there and was made without
+     * `AUTOINCREMENT`, as SQLite keeps the statement that made it: one look finds both.
      */
-    val made: String = ddl.map { Regex("IF NOT EXISTS (\\w+)").find(it)!!.groupValues[1].lowercase() }
-        .joinToString(", ", "SELECT COUNT(*) FROM sqlite_master WHERE lower(name) IN (", ")") { "'$it'" }
+    val made: String = run {
+        val names = ddl.map { Regex("IF NOT EXISTS (\\w+)").find(it)!!.groupValues[1].lowercase() }.joinToString(", ") { "'$it'" }
+        val keyed = listOf(nodes, edges).joinToString(", ") { "'${it.lowercase()}'" }
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(name) IN ($keyed) AND sql NOT LIKE '%AUTOINCREMENT%')" +
+            " THEN $REUSES_IDS ELSE COUNT(*) END FROM sqlite_master WHERE lower(name) IN ($names)"
+    }
 
-    /** Runs the [ddl], each statement on its own, unless [made] finds all it makes there. */
+    /**
+     * Runs the [ddl], each statement on its own, unless [made] finds all it makes there. A store whose tables
+     * give a deleted row's id again is refused with [ReusedIdsException], naming its file ([FILE]), before anything
+     * is made.
+     */
     override fun ensure(run: (String) -> List<Any?>) {
-        if ((run(made).singleOrNull() as? Number)?.toInt() == ddl.size) return
+        val found = (run(made).singleOrNull() as? Number)?.toInt()
+        if (found == REUSES_IDS) throw ReusedIdsException(name, (run(FILE).singleOrNull() as? String)?.ifEmpty { null })
+        if (found == ddl.size) return
         ddl.forEach { run(it) }
     }
 
@@ -77,6 +97,12 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
 
         /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
         fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
+
+        /** What [made] gives for a store whose tables give a deleted row's id again: see [ReusedIdsException]. */
+        internal const val REUSES_IDS = -1
+
+        /** The file of the database a connection is on: an empty text for an in-memory or temporary one, which [ReusedIdsException] holds as null. */
+        internal const val FILE = "SELECT file FROM pragma_database_list WHERE name = 'main'"
 
         /** SQLite takes a name of any length; this keeps one as long as the other stores' do. */
         private const val MAX_OBJECT_NAME = 63

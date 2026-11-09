@@ -875,6 +875,20 @@ schema management made. A save is the plan of steps the other stores carry out, 
 function `drivine_write` that Drivine registers on each connection: applied whole or not at all, and
 stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
 
+`nid` and `eid` are `INTEGER PRIMARY KEY AUTOINCREMENT`, so the id of a node or relationship that is deleted is
+never given to another, within a statement, a transaction or after it, as on Oracle and Postgres: an element id an
+application holds names the element it was read from or nothing. SQLite keeps the greatest id each table has given in
+its own table `sqlite_sequence`; deleting every row, as a test's cleanup does, leaves it, so ids go on from there.
+A file whose graph tables an earlier Drivine made, with `INTEGER PRIMARY KEY` alone, which gives a new row the id of
+the last one deleted, is refused on the provider's first connection and every one after it, with a
+`ReusedIdsException` that names the graph and the file:
+
+```
+The SQLite graph 'drivine' in /data/app.db was made by an earlier Drivine, whose node and relationship ids could be reused after a delete. Make a new file and save the graph into it again.
+```
+
+There is no migration, as SQLite cannot change a table's key in place.
+
 **Notes:**
 - A statement written by hand is SQL. SQLite has no JSON type, so JSON a statement of your own returns is
   text; one that opens with `/* drivine:json */` has each of its text values read as the JSON it is.
