@@ -275,12 +275,12 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   or a variable may be named by a keyword (`$limit`, `MATCH (end)`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
-  are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
-  null, where Neo4j gives NaN or an infinity. A number taken `%` by zero is that number, as Oracle's `MOD` gives it,
-  where Neo4j gives NaN by a float zero and fails by an integer one. A float divided by an integer zero is an infinity,
-  where Neo4j fails but where both are written in the statement (`1.0 / 0`). `toFloat` reads `'nan'`, `'inf'` and
-  `'INFINITY'` as NaN and the infinities too, where Neo4j gives null. A `MERGE` that would make a property NaN fails, as
-  in Neo4j.
+  are the floats they are, and are stored as them, as in Neo4j; but `^` and functions of numbers given one give null,
+  where Neo4j gives NaN or an infinity. `%` gives what Neo4j gives: a finite number taken `%` by an infinity is that
+  number, as a float, any other `%` of NaN or an infinity is NaN, and so is one by a float zero, not the number taken
+  that Oracle's `MOD` gives. A number divided or taken `%` by an integer zero fails, as in Neo4j, but a float where both
+  are written in the statement (`1.0 / 0` is an infinity). `toFloat` reads `'nan'`, `'inf'` and `'INFINITY'` as NaN and
+  the infinities too, where Neo4j gives null. A `MERGE` that would make a property NaN fails, as in Neo4j.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
@@ -320,9 +320,11 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   4,000 characters, at no cost measured (20,000 rows of `WITH properties(n) AS m RETURN m.bio` take 77 to 83 ms,
   against 72 to 78 ms; 2,000 rows of `RETURN head([n]).bio` about 3.2 s either way), and such a text through its text.
   A property of a node or a relationship that a pattern binds, and a value of an unwound item, are read as above.
-  Still not worked around: a map made of a long property and then read (`head([n {.bio}]).bio`), and `=` of a long
-  property with a value that may hold a null (`head([n]).bio = n.bio`), both still close the session, and so does a
-  long text in a map that is itself a property, returned as it is (`RETURN n.meta.bio`).
+  A map made of a long property and then read (`head([n {.bio}]).bio`), `=` of a long property with a value that may
+  hold a null (`head([n]).bio = n.bio`), and a long text in a map that is itself a property (`RETURN n.meta.bio`),
+  which closed the session, are read by that path too ([#533](https://github.com/liberation-data/drivine4j/issues/533),
+  [#534](https://github.com/liberation-data/drivine4j/issues/534),
+  [#536](https://github.com/liberation-data/drivine4j/issues/536)).
 - So are texts `reverse()` gives ([#538](https://github.com/liberation-data/drivine4j/issues/538)), wherever the
   `reverse()` is (returned, passed on, measured, searched, collected, in a `WHERE`, an `ORDER BY` or a write): a text
   past 4,000 bytes, reversed in pieces put together as a list, is taken out of that list through its text, and the kind
@@ -897,9 +899,9 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   out, as on [Postgres](#postgres) (dividing or taking `%` by anything but a number other than 0, `toFloat` of a text),
   is compiled as one given one: a number divided by a float zero is NaN or an infinity, as on Neo4j, and so is a float
   by an integer zero where both are written in the statement (`1.0 / 0`); an infinity it works out is stored. A number
-  divided by any other integer zero is null, where Neo4j fails. NaN worked out from a stored infinity by any other
-  statement (`n.inf - n.inf`, `n.inf * 0`) is null, where Neo4j gives NaN, but for the two infinities added with `+`,
-  summed with `sum()` or averaged with `avg()`, which give NaN.
+  divided or taken `%` by any other integer zero fails, as on Neo4j, where SQLite's own `/` and `%` give null. NaN
+  worked out from a stored infinity by any other statement (`n.inf - n.inf`, `n.inf * 0`, `n.inf % 2`, `sum()` of both
+  infinities) is NaN too, as on Neo4j.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
