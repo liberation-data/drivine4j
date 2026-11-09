@@ -19,12 +19,12 @@ import org.drivine.cypher.sql.SqliteCypherCompiler
 internal object CypherCompile {
 
     fun postgres(graph: String, cypher: String, parameters: Map<String, Any?>): CompiledCypher = refusing {
-        PostgresCypherCompiler(graph, JacksonEncoder).compile(cypher, parameters)
+        PostgresCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters))
     }
 
     /** Its text values are JSON: see JdbcResultMapper.sqliteRows. */
     fun sqlite(graph: String, cypher: String, parameters: Map<String, Any?>): CompiledCypher = refusing {
-        SqliteCypherCompiler(graph, JacksonEncoder).compile(cypher, parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
+        SqliteCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters)).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
     }
 
     /**
@@ -39,12 +39,43 @@ internal object CypherCompile {
         nullsEqualStored: () -> Boolean,
         eraStored: () -> Boolean,
     ): CompiledCypher = refusing {
+        val values = drained(parameters)
         val compiler = OracleCypherCompiler(graph, nullsEqualStored = true, eraStored = true, indexedProperties = emptySet(), encoder = JacksonEncoder)
-        val compiled = compiler.compile(cypher, parameters)
+        val compiled = compiler.compile(cypher, values)
         // Each is asked of apart: a store an earlier version made may have the one and not the others.
         val nullsEqual = !compiler.callsStoredNullsEqual || nullsEqualStored()
         val era = !compiler.callsStoredEra || eraStored()
-        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, parameters)
+        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, values)
+    }
+
+    /**
+     * [parameters], with each [Iterator] or [Sequence] in a value turned into the list of its items, at any depth in a list,
+     * an array or a map. An iterator gives its items only once, and the compiler asks [JacksonEncoder] for a parameter's tree
+     * and then for its text, so the text it binds would be an empty list (drivine4j#722); a sequence that can be consumed
+     * only once, as `iterator.asSequence()` makes, throws the second time. A value with neither in it is kept as it is.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun drained(parameters: Map<String, Any?>): Map<String, Any?> =
+        if (holdsIterator(parameters)) drainedValue(parameters) as Map<String, Any?> else parameters
+
+    /** Whether [value] is, or holds at any depth in a list, an array or a map, an [Iterator] or a [Sequence]. */
+    private fun holdsIterator(value: Any?): Boolean = when (value) {
+        is Iterator<*>, is Sequence<*> -> true
+        is Map<*, *> -> value.values.any(::holdsIterator)
+        is Collection<*> -> value.any(::holdsIterator)
+        is Array<*> -> value.any(::holdsIterator)
+        else -> false
+    }
+
+    /** [value], with each iterator or sequence in it the list of its items, as [drained]; a value with none in it is itself. */
+    private fun drainedValue(value: Any?): Any? = when {
+        value is Iterator<*> -> value.asSequence().map(::drainedValue).toList()
+        value is Sequence<*> -> value.map(::drainedValue).toList()
+        !holdsIterator(value) -> value
+        value is Map<*, *> -> value.mapValues { (_, item) -> drainedValue(item) }
+        value is Collection<*> -> value.map(::drainedValue)
+        value is Array<*> -> value.map(::drainedValue)
+        else -> value
     }
 
     /**

@@ -5,6 +5,7 @@ import org.drivine.NonAtomicBatchException
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.PinnedConnections
+import org.drivine.connection.ReusedIdsException
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
@@ -71,6 +72,9 @@ class NonTransactionalPersistenceManager(
         // On the connection a schema command holds, where one does: see SchemaCommands.
         return try {
             PinnedConnections.on(connectionProvider) { it.query(spec) }
+        } catch (e: ReusedIdsException) {
+            // The graph is refused as the connection is had, not the statement: given as it is (#713).
+            throw e
         } catch (e: Exception) {
             throw DrivineException.withRootCause(e, spec)
         }
