@@ -319,11 +319,12 @@ abstract class TablesOnFirstConnectionContract {
 
     @Test
     fun `on a Spring transaction's connection, a statement run outside a transaction is committed with the transaction, and rolled back with it`() {
+        // Another provider makes the tables, before the pool's first connection, so pm's first connection, in the
+        // transaction, finds them there.
+        val other = manager(open())
+        assertEquals(emptyList(), names(other))
         val pool = notCommittingPool().also { pools += it }
         val pm = manager(JdbcConnectionProvider("fresh", type, TransactionAwareDataSourceProxy(pool)).also { made += it })
-        val other = manager(open())
-        assertEquals(emptyList(), names(pm))
-        assertEquals(emptyList(), names(other))
         val transactions = TransactionTemplate(DataSourceTransactionManager(pool))
 
         transactions.executeWithoutResult {
