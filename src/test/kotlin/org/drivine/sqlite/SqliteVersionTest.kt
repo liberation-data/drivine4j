@@ -2,15 +2,27 @@ package org.drivine.sqlite
 
 import org.drivine.DrivineException
 import org.drivine.backend.sqlite.SqliteVersion
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnection
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
+import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaCatalog
+import org.drivine.schema.SchemaManager
+import org.drivine.schema.SchemaVersionStore
+import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.Test
+import sample.stateless.Claim
 import java.io.PrintWriter
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
@@ -100,6 +112,35 @@ class SqliteVersionTest {
         assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement("SELECT count(*) FROM oldsqlite_node")))
         // The version is read once for the provider, not on each connection or statement.
         assertEquals(1, source.reads.get())
+    }
+
+    @Test
+    fun `on SQLite 3_46_1 the schema manager, schema DDL and the object managers, which write SQL of their own, still work`() {
+        val source = OlderSqlite("3.46.1")
+        SqliteTestDatabase.drop("oldschema")
+        val provider = JdbcConnectionProvider("oldschema", DatabaseType.SQLITE, source, graphName = "oldschema")
+        val registry = DatabaseRegistry(DataSourceMap()).also { it.register(provider) }
+        val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+        val pm = factory.get("oldschema", PersistenceManagerType.NON_TRANSACTIONAL)
+        val app = RangeIndexSpec("Claim", "text")
+        val schema = SchemaManager(factory, registry, listOf(SchemaCatalog.of(app).named("app")))
+
+        schema.enforce()
+        schema.ensure("runtime", RangeIndexSpec("Claim", "id"))
+        // A remove reads the other owners' markers, which a Cypher read would have been refused for.
+        schema.remove("runtime", RangeIndexSpec("Claim", "id"))
+        assertNull(pm.indexes.find(RangeIndexSpec("Claim", "id")))
+        assertEquals(listOf(app.inventoryKey), SchemaVersionStore(pm, "app").storedInventory())
+        // Schema DDL, which Drivine runs itself, and a DROP of it, which is a remove.
+        pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE INDEX claim_kind IF NOT EXISTS FOR (c:Claim) ON (c.kind)")))
+        pm.execute(QuerySpecification.withStatement(CypherStatement("DROP INDEX claim_kind")))
+        assertNull(pm.indexes.find(RangeIndexSpec("Claim", "kind")))
+
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        stateless.save(Claim("old-1", "kept"))
+        assertEquals("kept", stateless.load("old-1", Claim::class.java)?.text)
+        // Cypher of the application's own is still refused.
+        assertEquals(refused("3.46.1"), assertFailsWith<DrivineException> { cypher(pm as NonTransactionalPersistenceManager, "MATCH (n) RETURN n") }.message)
     }
 
     @Test

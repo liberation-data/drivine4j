@@ -55,6 +55,14 @@ interface VersionMarkerStatements : ReservedNodeStatements {
     /** Removes the marker of the scope. */
     val delete: String
 
+    /**
+     * The scope of every marker, a row each, as the store's own SQL; null where they are read as Cypher, which the
+     * graph engines run and Postgres and Oracle compile. SQLite reads them in SQL, since an older SQLite refuses
+     * compiled Cypher, and a remove, which reads them, works there as the rest of the schema manager does.
+     */
+    val scopes: String?
+        get() = null
+
     /** The inventory as the store keeps it; [items] reads it back. A store that cannot keep an empty string marks it. */
     fun storedItems(items: String): String = items
 
