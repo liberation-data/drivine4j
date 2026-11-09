@@ -33,7 +33,9 @@ import javax.sql.DataSource
  * others), each of which looks for the store before it makes anything, so a user who may read the
  * tables but not make them works with a store that is there. It does so once for the provider, that
  * is for its graph over its data source, on a connection of its own set to auto-commit mode for it,
- * whatever the data source's connections start in, and never on a caller's transaction. Threads that ask for their first connections at once wait for the one that
+ * whatever the data source's connections start in, and never on a caller's transaction: where that connection is a
+ * Spring transaction's, handed out by a transaction-aware data source, they are left for the first connection had
+ * outside one, and until then a Cypher statement that finds them missing fails saying so (#395). Threads that ask for their first connections at once wait for the one that
  * makes the tables; two processes are kept apart by the statements themselves, as two object
  * managers are: a lock of the graph's own on Postgres, `ORA-00955` taken as made and `ORA-00054`
  * waited out on Oracle, and SQLite's lock on the file. A block turned away all the same by a
@@ -259,7 +261,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * Runs [graph]'s statements on a connection of its own that commits each statement, whatever the data source's
      * connections do of themselves: on one that commits nothing (`autoCommit = false`, as an application's pool may be
      * set), what they make would be rolled back as the connection goes back to its pool (#365). The connection is put
-     * back as it was before it is closed.
+     * back as it was before it is closed. Where the data source hands out a Spring transaction's connection instead, none
+     * is run on it, and the tables are left for the next connection ([tablesHeldBack], #395).
      *
      * On Oracle it first reads the database's version from the session's metadata, which needs no grant: see
      * [oracleRefusal].

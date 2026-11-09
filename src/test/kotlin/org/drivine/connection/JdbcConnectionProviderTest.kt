@@ -817,7 +817,7 @@ class JdbcConnectionProviderTest {
         val missing = SQLException("relation \"drivine_node\" does not exist", "42P01")
         val other = SQLException("duplicate key value", "23505")
         val held = moded(committing = false).also { c ->
-            `when`(c.prepareStatement(Mockito.anyString())).thenThrow(missing, other)
+            `when`(c.prepareStatement(Mockito.anyString())).thenThrow(missing, other, missing)
         }
         val source = Mockito.mock(DataSource::class.java)
         val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source))
@@ -831,6 +831,8 @@ class JdbcConnectionProviderTest {
             assertContains(first.message!!, "not made on a Spring transaction's connection")
             assertSame(missing, first.cause)
             assertSame(other, assertFailsWith<SQLException> { provider.connect().apply { try { query(create) } finally { release() } } })
+            // Plain SQL over a missing table is the application's own statement: its error is thrown as it is.
+            assertSame(missing, assertFailsWith<SQLException> { provider.connect().apply { try { query(insert) } finally { release() } } })
         } finally {
             TransactionSynchronizationManager.unbindResource(source)
             TransactionSynchronizationManager.setActualTransactionActive(false)

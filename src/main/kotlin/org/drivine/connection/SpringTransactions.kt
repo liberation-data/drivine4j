@@ -25,7 +25,7 @@ internal object SpringTransactions {
     private const val CONNECTION_HOLDER = "org.springframework.jdbc.datasource.ConnectionHolder"
     private const val SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
 
-    /** Whether [connection] is the connection of a Spring transaction active on this thread: see the object. */
+    /** Whether [given], or the `ConnectionProxy` it unwraps to, is the connection of a Spring transaction active on this thread: see the object. */
     fun holds(given: java.sql.Connection): Boolean {
         val connection = proxyInterface(given.javaClass)?.let { given } ?: unwrapped(given) ?: return false
         val proxy = proxyInterface(connection.javaClass) ?: return false
