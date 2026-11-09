@@ -250,7 +250,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed, searched,
   reversed or compared (`=`, `<>`, `<`, `IN` …), but not in a statement that writes or the step of a `reduce`, where a
-  comparison of one past 32 KB is refused, as is one of a list or a map that holds it anywhere; an empty text is null. `reduce` is a function the
+  comparison of one past 32 KB is refused, as is one of a list or a map that holds it anywhere. An empty text that a text function gives is null, and `=~`
+  of one is null; `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `size()` and `isEmpty()` of one give what Neo4j gives. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists ordered with `<`, `<=`, `>` or `>=` are walked item by item by a function the query declares too, so such a
   comparison is refused in a statement that writes and in the step of a `reduce`.
