@@ -11,7 +11,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
 | Oracle 23.9+ | `ORACLE` | Full ACID | In the statement | User and password |
 | Postgres 14+ | `POSTGRES` | Full ACID | In the statement | User and password |
-| SQLite 3.45+ | `SQLITE` | Full ACID, one writer at a time | In the statement | None (a file) |
+| SQLite 3.53.2+ | `SQLITE` | Full ACID, one writer at a time | In the statement | None (a file) |
 
 ### Neo4j
 
@@ -848,10 +848,16 @@ module's stateless Spring tests on a Postgres datasource
 
 ### SQLite
 
-SQLite 3.45 or later, over JDBC with xerial's driver: a graph in a file, with no server to run. Drivine
+SQLite 3.53.2 or later, over JDBC with xerial's driver: a graph in a file, with no server to run. Drivine
 keeps it in the same two tables as on Oracle and Postgres, so models, the query DSL and
 `StatelessGraphObjectManager` are the same as on the other stores. Add the driver yourself:
-`org.xerial:sqlite-jdbc`.
+`org.xerial:sqlite-jdbc`, 3.53.2.0 or later.
+
+Compiled Cypher needs SQLite 3.53.2. Before it, a compiled statement writes a float to 15 digits, so `0.1 + 0.2`
+comes back as `0.3` (`sqlite-jdbc` 3.53.0.0 and 3.53.1.0 still do); SQLite 3.49 refuses a
+`CALL` subquery that groups by a variable it imports; and a SQLite before 3.47 refuses the `-> -1` that `last()` and a
+negative list index compile to (#565). So on an older `sqlite-jdbc` a Cypher statement is refused, saying which SQLite
+it found and that `sqlite-jdbc` is to be upgraded. Plain SQL, the schema manager and the rest work there as before.
 
 ```yaml
 database:

@@ -49,4 +49,6 @@ internal class SqliteVersionMarker(private val graph: SqliteGraph, private val l
     """.trimIndent()
 
     override val delete: String = "DELETE FROM ${graph.nodes} WHERE nid IN (SELECT n.nid FROM ${graph.nodes} n WHERE ${marker()})"
+
+    override val scopes: String = "SELECT DISTINCT ${SqliteSql.property("n", scopeProperty)} FROM ${graph.nodes} n WHERE ${SqliteSql.hasLabel("n", label)}"
 }
