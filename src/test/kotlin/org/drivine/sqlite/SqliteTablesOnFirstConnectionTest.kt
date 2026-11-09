@@ -24,13 +24,15 @@ class SqliteTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
 
     override fun provider(graph: String): JdbcConnectionProvider = JdbcConnectionProvider.sqlite("fresh", path, graphName = graph)
 
-    override fun notCommitting(graph: String): JdbcConnectionProvider = JdbcConnectionProvider(
-        "fresh",
-        DatabaseType.SQLITE,
-        HikariDataSource(HikariConfig().apply { dataSource = SqliteDataSource(path); isAutoCommit = false }),
-        ownsDataSource = true,
-        graphName = graph,
-    )
+    override val type = DatabaseType.SQLITE
+
+    /**
+     * One connection: each of the pool's connections, committing nothing of itself, holds a transaction open as it
+     * idles, and Drivine's SQLite transactions take the file's write lock as they begin (`BEGIN IMMEDIATE`), so a
+     * second would wait for the first's, whichever the pool handed out.
+     */
+    override fun notCommittingPool(): HikariDataSource =
+        HikariDataSource(HikariConfig().apply { dataSource = SqliteDataSource(path); isAutoCommit = false; maximumPoolSize = 1 })
 
     /** Connections that refuse to write (`query_only`): SQLite has no users, and a file's own permissions are the platform's. */
     override fun readOnly(graph: String): JdbcConnectionProvider {

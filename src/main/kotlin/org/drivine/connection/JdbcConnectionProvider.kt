@@ -48,6 +48,12 @@ import javax.sql.DataSource
  * Cypher over the graph is refused with why. So does an Oracle older than 23.9, found from the first
  * connection's metadata: plain SQL works, and Cypher, which needs Oracle's `UUID()`, is refused with why.
  *
+ * Each connection it hands out commits each statement run outside a transaction, as a connection that commits each
+ * one of itself does, also where the data source's connections start with `autoCommit = false`: it is turned on as
+ * the connection is had, and back off as it is given back. Not where the connection is a transaction's of the
+ * application's own, a Spring transaction's handed out by a transaction-aware data source or a distributed (JTA)
+ * one's: what Drivine runs on it is that transaction's to commit (see [committingEach], #395).
+ *
  * Java sees a constructor for each arity, so a caller compiled against fewer parameters still builds after one is added
  * last.
  */
@@ -148,9 +154,63 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         return open()
     }
 
-    /** A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]). */
-    private fun open(): JdbcConnection =
-        JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
+    /**
+     * A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]), that
+     * commits each statement run outside a transaction (see [committingEach]). A session whose mode cannot be read is
+     * closed and its error thrown, rather than given out.
+     */
+    private fun open(): JdbcConnection {
+        val session = withoutAdaptivePlans(dataSource.connection)
+        val turned = try {
+            committingEach(session)
+        } catch (e: Exception) {
+            runCatching { session.close() }.exceptionOrNull()?.let(e::addSuppressed)
+            throw e
+        }
+        return JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
+            .also { it.restoresAutoCommit = turned }
+    }
+
+    /** Whether a connection that is a distributed transaction's, which refused to commit each statement, has been logged. */
+    @Volatile
+    private var warnedOfEnlisted = false
+
+    /**
+     * Turns [session] to commit each statement as it runs, where its pool gave it committing nothing of itself
+     * (`autoCommit = false`, as `spring.datasource.hikari.auto-commit=false` sets): a statement Drivine runs outside a
+     * transaction would otherwise be rolled back as the connection goes back to the pool, after it was reported done
+     * (#395). Whether it did: the connection is then given back as the pool gave it (see [JdbcConnection.release]). A
+     * Drivine transaction on it turns it off and back on, as on any other.
+     *
+     * Turning it on commits what the session has pending, so it is not turned on where the session is another
+     * transaction's, and what Drivine runs on it is left to that transaction to commit or roll back:
+     * - a Spring transaction's, handed out by Spring's `TransactionAwareDataSourceProxy` (see [SpringTransactions]);
+     * - a distributed (JTA) transaction's, where JDBC refuses to turn it on: that refusal is logged once, as a warning.
+     *
+     * A connection that is neither, and which its pool hands out with nothing pending, as a pool does, commits nothing
+     * of anyone's as it is turned on. One that commits each statement already is left as it is, at the cost of reading
+     * its mode, which HikariCP and the drivers answer without asking the database.
+     */
+    private fun committingEach(session: java.sql.Connection): Boolean {
+        if (session.autoCommit) return false
+        if (SpringTransactions.holds(session)) {
+            logger.debug("A connection of {} database '{}' is a Spring transaction's: what Drivine runs on it outside a transaction of its own is the Spring transaction's to commit.", type, name)
+            return false
+        }
+        try {
+            session.autoCommit = true
+        } catch (e: java.sql.SQLException) {
+            if (!warnedOfEnlisted) {
+                warnedOfEnlisted = true
+                logger.warn(
+                    "A connection of {} database '{}' commits nothing of itself, and refused to commit each statement, as JDBC refuses on a connection in a distributed (JTA) transaction: what Drivine runs on it outside a transaction of its own is left to that transaction to commit.",
+                    type, name, e,
+                )
+            }
+            return false
+        }
+        return true
+    }
 
     /**
      * Makes the graph's tables when they are not there, once for this provider: after the first time
@@ -202,6 +262,14 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
         val failure = try {
             val committing = session.autoCommit
+            // A Spring transaction's connection, from a transaction-aware data source, is not turned to commit each
+            // statement: that would commit the transaction partway through (#395). The tables are made on the next
+            // connection had outside one.
+            if (!committing && SpringTransactions.holds(session)) {
+                connection.release()
+                logger.debug("The tables of graph '{}' on {} database '{}' are not made on a Spring transaction's connection: the next connection tries again.", graphName, type, name)
+                return false
+            }
             // Turning auto-commit on commits what the session has pending. A connection just had from the pool has
             // nothing pending: only the provider's own `ALTER SESSION`, which commits nothing.
             if (!committing) session.autoCommit = true

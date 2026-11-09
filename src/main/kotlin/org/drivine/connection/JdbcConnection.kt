@@ -67,6 +67,13 @@ class JdbcConnection(
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
     private var inTransaction = false
 
+    /**
+     * Whether [release] turns the connection back to committing nothing of itself before it closes it: its pool gave it
+     * so (`autoCommit = false`), and [JdbcConnectionProvider] turned it to commit each statement as it ran, as Drivine
+     * runs a statement outside a transaction (#395).
+     */
+    internal var restoresAutoCommit = false
+
     /** When the open transaction began, by [System.nanoTime]. */
     private var startedAt = 0L
 
@@ -236,12 +243,21 @@ class JdbcConnection(
         connection.autoCommit = true
     }
 
-    /** Returns the connection to its pool. A transaction left open is rolled back: nothing is committed by closing. */
+    /**
+     * Returns the connection to its pool. A transaction left open is rolled back: nothing is committed by closing. A
+     * connection the pool gave committing nothing of itself is given back so ([restoresAutoCommit]); where it cannot be,
+     * that is logged, and it is closed all the same.
+     */
     override fun release(err: Throwable?) {
         err?.let { logger.warn("Closing connection with error: $it") }
         if (inTransaction) {
             runCatching { rollback() }
             runCatching { endTransaction() }
+        }
+        if (restoresAutoCommit) {
+            runCatching { connection.autoCommit = false }.onFailure {
+                logger.warn("Could not give the connection back to its pool committing nothing of itself, as the pool gave it: $it")
+            }
         }
         connection.close()
     }
