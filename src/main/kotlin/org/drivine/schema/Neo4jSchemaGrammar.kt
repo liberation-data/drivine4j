@@ -31,6 +31,10 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
      */
     override val awaitIndexStatement = "CALL db.awaitIndex(\$name, \$timeout)"
 
+    /** `db.awaitIndex` gives `ProcedureTimedOut` for an index still populating when the wait ran out, and another code for one that failed. */
+    override fun isBuildTimeout(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().any { it.code() == PROCEDURE_TIMED_OUT }
+
     /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
 
@@ -303,5 +307,8 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
 
         /** An index over the schema a constraint would make its own index over. */
         const val INDEX_ALREADY_EXISTS = "Neo.ClientError.Schema.IndexAlreadyExists"
+
+        /** A procedure whose wait ran out: `db.awaitIndex`'s, for an index still populating. */
+        const val PROCEDURE_TIMED_OUT = "Neo.ClientError.Procedure.ProcedureTimedOut"
     }
 }

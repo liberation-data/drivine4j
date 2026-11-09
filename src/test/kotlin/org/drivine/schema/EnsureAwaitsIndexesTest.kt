@@ -1,25 +1,40 @@
 package org.drivine.schema
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
+import org.drivine.connection.ConnectionProperties
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
+import org.drivine.transaction.TransactionContextHolder
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
+import org.slf4j.LoggerFactory
+import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** Nodes enough that an index over them takes a while to build. */
@@ -220,5 +235,220 @@ class MemgraphEnsureAwaitsIndexesTest {
         assertContains(plan, "ScanAllByLabelPropert")
         val info = manager.rows("SHOW INDEX INFO").map { it.toString() }.single { "AwaitMemgraph" in it }
         assertContains(info, "$SEEDED")
+    }
+}
+
+
+/** What [SchemaManager] logs, kept for a test to read. */
+private class SchemaManagerLog {
+    private val logger = LoggerFactory.getLogger(SchemaManager::class.java) as Logger
+    private val appender = ListAppender<ILoggingEvent>()
+
+    fun start() {
+        appender.list.clear()
+        appender.start()
+        logger.addAppender(appender)
+    }
+
+    fun stop() {
+        logger.detachAppender(appender)
+        appender.stop()
+    }
+
+    fun warnings(): List<String> = appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+
+    fun summaries(): List<String> = appender.list.map { it.formattedMessage }.filter { it.startsWith("Schema for owner") }
+}
+
+/**
+ * [SchemaManager] waits for each index it applies to be built, as [IndexManager.ensure] does, as long as its
+ * `indexBuildTimeout` says. An index whose build failed, or that is still being built when the wait runs out, fails
+ * its owner under `FAIL_FAST`, and is logged under `WARN`, which goes on.
+ */
+class Neo4jSchemaManagerAwaitsIndexesTest {
+
+    companion object {
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
+
+        private lateinit var registry: DatabaseRegistry
+        private lateinit var factory: PersistenceManagerFactory
+        private lateinit var manager: PersistenceManager
+
+        @JvmStatic
+        @BeforeAll
+        fun setup() {
+            val props = ConnectionProperties(
+                type = DatabaseType.NEO4J, host = container.host, port = container.getMappedPort(7687),
+                userName = "neo4j", password = SharedNeo4j.PASSWORD, databaseName = "neo4j",
+                cypherDialect = CypherDialect.NEO4J_5,
+            )
+            registry = DatabaseRegistry(DataSourceMap(mapOf("neo" to props)))
+            factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+            manager = factory.get("neo", PersistenceManagerType.NON_TRANSACTIONAL)
+        }
+    }
+
+    private val log = SchemaManagerLog()
+
+    @BeforeEach
+    fun startLog() = log.start()
+
+    @AfterEach
+    fun stopLog() = log.stop()
+
+    private fun schemaManager(mode: SchemaMode, timeout: Duration? = null, vararg specs: SchemaItemSpec): SchemaManager {
+        val catalogs = listOf(SchemaCatalog.of(specs.toList()).named("await").forDatabase("neo"))
+        return if (timeout == null) SchemaManager(factory, registry, catalogs, SchemaPolicy(mode = mode))
+        else SchemaManager(factory, registry, catalogs, SchemaPolicy(mode = mode), timeout)
+    }
+
+    /** The state SHOW INDEXES gives the index [name], or null where there is none. */
+    private fun state(name: String): String? =
+        manager.rows("SHOW INDEXES YIELD name, state WHERE name = \$name RETURN state", mapOf("name" to name)).singleOrNull() as String?
+
+    /** A text too large for a range index, there before the index is: its build fails, and the index stays FAILED. */
+    private fun tooLarge(label: String) = manager.run("CREATE (:$label {s: \$s, k: 1})", mapOf("s" to "x".repeat(40_000)))
+
+    @Test
+    fun `under WARN an index whose build failed is logged with Neo4j's reason, and the rest is applied`() {
+        tooLarge("AwaitWarnFailed")
+        val failing = RangeIndexSpec("AwaitWarnFailed", "s")
+        val other = RangeIndexSpec("AwaitWarnFailed", "k")
+        try {
+            val schema = schemaManager(SchemaMode.WARN, null, failing, other)
+            schema.enforce()
+
+            assertEquals("FAILED", state(failing.effectiveName))
+            assertEquals("ONLINE", state(other.effectiveName), "the item after it is applied")
+            val warning = log.warnings().single { "BUILD FAILED" in it }
+            assertContains(warning, failing.effectiveName)
+            assertContains(warning, "too large", ignoreCase = true)
+            assertEquals("Schema for owner 'await' on 'neo': 2 created, 0 already matching, 0 recreated, 1 needing attention", log.summaries().single())
+            assertNotNull(SchemaVersionStore(manager, SchemaVersionStore.scopeFor("await")).storedRecord(), "the owner is recorded")
+
+            // Found again, the failed index is not taken for one that serves: it is logged again.
+            schema.enforce()
+            assertEquals(2, log.warnings().count { "BUILD FAILED" in it && failing.effectiveName in it })
+            assertEquals("Schema for owner 'await' on 'neo': 0 created, 2 already matching, 0 recreated, 1 needing attention", log.summaries().last())
+        } finally {
+            manager.indexes.drop(failing)
+            manager.indexes.drop(other)
+        }
+    }
+
+    @Test
+    fun `under FAIL_FAST an index whose build failed fails the owner, naming it and giving Neo4j's reason`() {
+        tooLarge("AwaitStrictFailed")
+        val failing = RangeIndexSpec("AwaitStrictFailed", "s")
+        try {
+            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, null, failing).enforce() }
+            assertContains(failed.message!!, "BUILD FAILED")
+            assertContains(failed.message!!, failing.effectiveName)
+            assertContains(failed.message!!, "too large", ignoreCase = true)
+            assertEquals("FAILED", state(failing.effectiveName))
+        } finally {
+            manager.indexes.drop(failing)
+        }
+    }
+
+    @Test
+    fun `under WARN an index still being built when the wait runs out is logged, and left to be built`() {
+        manager.seed("AwaitWarnSlow")
+        val slow = FullTextIndexSpec("AwaitWarnSlow", listOf("s"))
+        try {
+            schemaManager(SchemaMode.WARN, Duration.ofMillis(5), slow).enforce()
+
+            val warning = log.warnings().single { "STILL BUILDING" in it }
+            assertContains(warning, slow.effectiveName)
+            assertContains(warning, "PT0.005S")
+            assertEquals("Schema for owner 'await' on 'neo': 1 created, 0 already matching, 0 recreated, 1 needing attention", log.summaries().single())
+            manager.run("CALL db.awaitIndexes(60)")
+            assertEquals("ONLINE", state(slow.effectiveName), "left to be built")
+        } finally {
+            manager.indexes.drop(slow)
+        }
+    }
+
+    @Test
+    fun `under FAIL_FAST an index still being built when the wait runs out fails the owner, naming it`() {
+        manager.seed("AwaitStrictSlow")
+        val slow = FullTextIndexSpec("AwaitStrictSlow", listOf("s"))
+        try {
+            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, Duration.ofMillis(5), slow).enforce() }
+            assertContains(failed.message!!, "STILL BUILDING")
+            assertContains(failed.message!!, slow.effectiveName)
+            assertContains(failed.message!!, "index-build-timeout")
+        } finally {
+            manager.run("CALL db.awaitIndexes(60)")
+            manager.indexes.drop(slow)
+        }
+    }
+}
+
+/** [Neo4jSchemaManagerAwaitsIndexesTest]'s wait that runs out, on FalkorDB, which is polled until the index is OPERATIONAL. */
+class FalkorDbSchemaManagerAwaitsIndexesTest {
+
+    companion object {
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
+
+        private lateinit var registry: DatabaseRegistry
+        private lateinit var factory: PersistenceManagerFactory
+        private lateinit var manager: PersistenceManager
+
+        @JvmStatic
+        @BeforeAll
+        fun setup() {
+            val props = ConnectionProperties(
+                type = DatabaseType.FALKORDB, host = container.host, port = container.getMappedPort(6379),
+                databaseName = "awaitschema",
+            )
+            registry = DatabaseRegistry(DataSourceMap(mapOf("falkor" to props)))
+            factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+            manager = factory.get("falkor", PersistenceManagerType.NON_TRANSACTIONAL)
+        }
+    }
+
+    private val log = SchemaManagerLog()
+
+    @BeforeEach
+    fun startLog() = log.start()
+
+    @AfterEach
+    fun stopLog() = log.stop()
+
+    private fun schemaManager(mode: SchemaMode, spec: SchemaItemSpec) = SchemaManager(
+        factory, registry, listOf(SchemaCatalog.of(spec).named("await").forDatabase("falkor")),
+        SchemaPolicy(mode = mode), Duration.ofMillis(2),
+    )
+
+    @Test
+    fun `under WARN an index still being built when the wait runs out is logged`() {
+        manager.seed("AwaitFalkorWarnSlow")
+        val slow = VectorIndexSpec("AwaitFalkorWarnSlow", "e", 4)
+        try {
+            schemaManager(SchemaMode.WARN, slow).enforce()
+            val warning = log.warnings().single { "STILL BUILDING" in it }
+            assertContains(warning, "AwaitFalkorWarnSlow")
+            assertContains(warning, "UNDER CONSTRUCTION")
+        } finally {
+            manager.indexes.ensure(slow) // waits, so the drop is of a built index
+            manager.indexes.drop(slow)
+        }
+    }
+
+    @Test
+    fun `under FAIL_FAST an index still being built when the wait runs out fails the owner`() {
+        manager.seed("AwaitFalkorStrictSlow")
+        val slow = VectorIndexSpec("AwaitFalkorStrictSlow", "e", 4)
+        try {
+            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, slow).enforce() }
+            assertContains(failed.message!!, "STILL BUILDING")
+            assertContains(failed.message!!, "AwaitFalkorStrictSlow")
+        } finally {
+            manager.indexes.ensure(slow)
+            manager.indexes.drop(slow)
+        }
     }
 }

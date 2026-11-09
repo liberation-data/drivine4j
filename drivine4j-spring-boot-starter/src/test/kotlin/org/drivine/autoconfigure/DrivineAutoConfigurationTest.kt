@@ -28,6 +28,7 @@ import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionStatus
 import org.springframework.transaction.support.SimpleTransactionStatus
 import org.springframework.transaction.support.TransactionTemplate
+import java.time.Duration
 
 class DrivineAutoConfigurationTest {
 
@@ -190,6 +191,23 @@ class DrivineAutoConfigurationTest {
             assertThat(context).hasSingleBean(SchemaManager::class.java)
             assertThat(context).doesNotHaveBean(ApplicationRunner::class.java)
         }
+    }
+
+    @Test
+    fun `the schema manager waits 60 seconds for an index to be built, or as long as drivine schema index-build-timeout says`() {
+        runner.withPropertyValues(*datasourceProperties).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(context.getBean(SchemaManager::class.java).indexBuildTimeout).isEqualTo(Duration.ofSeconds(60))
+        }
+        runner.withPropertyValues(*datasourceProperties, "drivine.schema.index-build-timeout=5m").run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(context.getBean(SchemaManager::class.java).indexBuildTimeout).isEqualTo(Duration.ofMinutes(5))
+        }
+        runner.withPropertyValues(*datasourceProperties).withEnvironmentVariables(mapOf("DRIVINE_SCHEMA_INDEXBUILDTIMEOUT" to "90s"))
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context.getBean(SchemaManager::class.java).indexBuildTimeout).isEqualTo(Duration.ofSeconds(90))
+            }
     }
 
     @Test

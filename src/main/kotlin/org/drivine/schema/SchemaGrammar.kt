@@ -67,6 +67,12 @@ interface SchemaGrammar {
         get() = null
 
     /**
+     * Whether [e], from [awaitIndexStatement], says the index was still being built when the wait ran out, rather than
+     * that its build failed.
+     */
+    fun isBuildTimeout(e: Throwable): Boolean = false
+
+    /**
      * Whether the engine has Neo4j's TEXT index ([TextIndexSpec]). Only Neo4j does; elsewhere
      * [IndexManager] refuses the spec ([unsupportedTextIndex]) rather than make another index in
      * its place. Memgraph's `TEXT INDEX` is a full-text index, made from a [FullTextIndexSpec].

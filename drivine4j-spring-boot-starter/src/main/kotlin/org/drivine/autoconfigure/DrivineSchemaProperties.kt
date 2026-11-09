@@ -16,7 +16,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *     recreate-on-startup: false # destructive: rebuild all declared items every startup
  *     violation-sample-size: 10
  *     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
+ *     index-build-timeout: 60s   # how long to wait for an index Neo4j or FalkorDB builds in the background
  * ```
+ *
+ * `index-build-timeout` is read by [DrivineSchemaConfiguration] and given to the
+ * [org.drivine.schema.SchemaManager], not held here: a parameter added to this data class would change
+ * its constructors and `copy` for code compiled against them, and Spring binds it through its constructor.
  *
  * [enabled] gates only the startup run; the [org.drivine.schema.SchemaManager] bean is always
  * available, so an application can call `enforce()` / `recreateAll()` at runtime regardless.
