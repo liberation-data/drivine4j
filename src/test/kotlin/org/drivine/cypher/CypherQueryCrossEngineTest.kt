@@ -2049,12 +2049,8 @@ abstract class CypherQueryContract {
             // A long text whose first units are nowhere in the text, so no place is compared.
             long to "c".repeat(33_000),
         )
-        // Oracle's empty text is null, so CONTAINS of one is null there.
-        fun expected(t: String?, x: String?) = when {
-            t == null || x == null -> null
-            pm.type == DatabaseType.ORACLE && (t.isEmpty() || x.isEmpty()) -> null
-            else -> t.contains(x)
-        }
+        // An empty text is in every text, on Oracle too (#416).
+        fun expected(t: String?, x: String?) = if (t == null || x == null) null else t.contains(x)
         val parameters = cases.withIndex().flatMap { (i, case) -> listOf("t$i" to case.first, "x$i" to case.second) }.toMap()
         // One node at a time: on Oracle, UNWIND of a list of texts past 32 KB into CREATE closes the session.
         for ((i, case) in cases.withIndex()) query("CREATE (:CyContains {i: \$i, t: \$t, x: \$x})", mapOf("i" to i, "t" to case.first, "x" to case.second))
