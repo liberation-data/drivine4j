@@ -73,6 +73,15 @@ interface SchemaGrammar {
     fun isBuildTimeout(e: Throwable): Boolean = false
 
     /**
+     * With [awaitIndexStatement]: a statement that gives the state of the index named by the parameter `name`, as a row
+     * `{state: …}` (`ONLINE`, `POPULATING`, `FAILED`), read when the wait fails for a reason other than its timeout. The wait fails
+     * for more than a build that failed (an index not there, a connection lost), and only one the engine lists as
+     * `FAILED` is taken for that.
+     */
+    val indexStateStatement: String?
+        get() = null
+
+    /**
      * Whether the engine has Neo4j's TEXT index ([TextIndexSpec]). Only Neo4j does; elsewhere
      * [IndexManager] refuses the spec ([unsupportedTextIndex]) rather than make another index in
      * its place. Memgraph's `TEXT INDEX` is a full-text index, made from a [FullTextIndexSpec].

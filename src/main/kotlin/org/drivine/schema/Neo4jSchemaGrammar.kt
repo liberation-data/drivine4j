@@ -35,6 +35,8 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
     override fun isBuildTimeout(e: Throwable): Boolean =
         generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().any { it.code() == PROCEDURE_TIMED_OUT }
 
+    override val indexStateStatement = "SHOW INDEXES YIELD name, state WHERE name = \$name RETURN {state: state}"
+
     /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
 

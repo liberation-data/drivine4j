@@ -323,7 +323,7 @@ class IndexManager internal constructor(
      * it is still building. So nothing that makes an index hands it back before it is built.
      *
      * - Neo4j waits on the server, with [SchemaGrammar.awaitIndexStatement], for the index by its name. The
-     *   procedure takes whole seconds, so the timeout is rounded down to them there: one under a second checks once.
+     *   procedure takes whole seconds, so the timeout is rounded up to them there ([IndexBuild.timeoutSeconds]).
      * - FalkorDB is polled ([SchemaGrammar.indexOperationsAreAsync]) until it lists the index as built.
      *
      * Either way the wait is at most [IndexBuild.timeout]. An index whose build failed, or did not end in time, is
@@ -336,9 +336,15 @@ class IndexManager internal constructor(
         if (awaitIndex != null) {
             val name = item?.name ?: spec.effectiveName
             try {
-                executor.query(awaitIndex, mapOf("name" to name, "timeout" to build.timeout.seconds))
+                executor.query(awaitIndex, mapOf("name" to name, "timeout" to build.timeoutSeconds))
             } catch (e: Exception) {
-                val stillBuilding = grammar.isBuildTimeout(e)
+                // A timeout is told by its code. Any other error is a failed build only where the index is listed FAILED:
+                // one not there, or a connection lost, is thrown as it is, not reported as a build to drop or wait for.
+                val stillBuilding = grammar.isBuildTimeout(e) || when (indexState(name)?.uppercase()) {
+                    "FAILED" -> false
+                    "POPULATING" -> true
+                    else -> throw e
+                }
                 val what = "${grammar.engine} ${spec.kind} '$name' on ${spec.label}${spec.properties}"
                 val message = if (stillBuilding) {
                     "$what is still being built, having waited ${build.timeout}: ${e.message}"
@@ -366,6 +372,17 @@ class IndexManager internal constructor(
             return unbuilt(UnbuiltIndex(spec, stillBuilding = false, DrivineException("$what failed to build: it is ${info.status}")), info, build)
         }
         return info
+    }
+
+    /** The state [SchemaGrammar.indexStateStatement] gives the index [name], or null where it gives none or fails. */
+    private fun indexState(name: String): String? {
+        val statement = grammar.indexStateStatement ?: return null
+        return try {
+            (executor.query(statement, mapOf("name" to name)).singleOrNull() as? Map<*, *>)?.get("state") as? String
+        } catch (e: Exception) {
+            logger.debug("Reading the state of index '{}' failed: {}", name, e.message)
+            null
+        }
     }
 
     /** Throws [index]'s error, or gives it to [build]'s handler and returns [item], where there is one. */
@@ -433,7 +450,14 @@ class IndexManager internal constructor(
 internal class IndexBuild(
     val timeout: Duration,
     val unbuilt: ((UnbuiltIndex) -> Unit)? = null,
-)
+) {
+    /**
+     * [timeout] in the whole seconds Neo4j's `db.awaitIndex` takes, rounded up, so that the wait is at least what was
+     * asked: 500 ms is one second. Only a zero timeout is zero, which `db.awaitIndex` takes as checking once.
+     */
+    val timeoutSeconds: Long
+        get() = timeout.seconds + if (timeout.nano > 0) 1 else 0
+}
 
 /**
  * An index [IndexManager] made or found but that is not built: its build failed, or it is [stillBuilding] when the

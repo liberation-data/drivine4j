@@ -33,7 +33,9 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -118,6 +120,42 @@ class Neo4jEnsureAwaitsIndexesTest {
     }
 
     @Test
+    fun `a wait that fails for a reason other than the build is thrown as it is, not taken for a failed build`() {
+        // A wait on an index that is not there: Neo4j fails it, and the index ensure made is ONLINE, not FAILED.
+        val noSuchIndex = object : SchemaGrammar by Neo4jSchemaGrammar() {
+            override val awaitIndexStatement = "CALL db.awaitIndex('AwaitNeoNoSuchIndex', \$timeout)"
+        }
+        val indexes = IndexManager(SchemaExecutor(provider), noSuchIndex)
+        val spec = RangeIndexSpec("AwaitNeoOtherError", "k")
+        try {
+            val reported = mutableListOf<UnbuiltIndex>()
+            val thrown = assertFails { indexes.ensure(spec, IndexBuild(Duration.ofSeconds(5)) { reported += it }) }
+            assertTrue(reported.isEmpty(), "not reported as unbuilt: ${reported.map { it.error.message }}")
+            assertFalse("failed to build" in thrown.message.orEmpty(), thrown.message)
+            assertContains(thrown.message.orEmpty(), "AwaitNeoNoSuchIndex")
+        } finally {
+            manager.indexes.drop(spec)
+        }
+    }
+
+    // A constraint's own index is listed, as an index over the same property, so it is the one waited for, by its name.
+    @Test
+    fun `a range index over what a uniqueness constraint's own index covers is ensured, with nothing more to wait for`() {
+        manager.seed("AwaitNeoCovered")
+        val constraint = UniquenessConstraintSpec("AwaitNeoCovered", "k")
+        val index = RangeIndexSpec("AwaitNeoCovered", "k")
+        try {
+            manager.constraints.ensure(constraint)
+            val ensured = manager.indexes.ensure(index)
+            assertTrue(ensured !is EnsureResult.Drift, "$ensured")
+            assertEquals(ensured, manager.indexes.ensure(index), "and again")
+        } finally {
+            manager.constraints.drop(constraint)
+            manager.indexes.drop(index)
+        }
+    }
+
+    @Test
     fun `an index whose build fails is an error naming it and giving Neo4j's reason, on ensure and on every ensure after`() {
         // A text too large for a range index, there before the index is: its build fails, and the index stays FAILED.
         manager.run("CREATE (:AwaitNeoFailed {s: \$s})", mapOf("s" to "x".repeat(40_000)))
@@ -182,6 +220,21 @@ class FalkorDbEnsureAwaitsIndexesTest {
             val created = manager.indexes.ensure(spec)
             assertTrue(created is EnsureResult.Created, "$created")
             assertEquals("OPERATIONAL", status(spec.label), "${spec.kind} right after ensure")
+        }
+    }
+
+    @Test
+    fun `each index ensure makes on a label that has others is OPERATIONAL when it returns`() {
+        // db.indexes() gives one row, and one status, for a label's range, fulltext and vector indexes alike.
+        manager.seed("AwaitFalkorShared")
+        listOf(
+            RangeIndexSpec("AwaitFalkorShared", listOf("k", "s")),
+            FullTextIndexSpec("AwaitFalkorShared", listOf("s")),
+            VectorIndexSpec("AwaitFalkorShared", "e", 4),
+        ).forEach { spec ->
+            val created = manager.indexes.ensure(spec)
+            assertTrue(created is EnsureResult.Created, "$created")
+            assertEquals("OPERATIONAL", status("AwaitFalkorShared"), "${spec.kind} right after ensure")
         }
     }
 
@@ -341,14 +394,21 @@ class Neo4jSchemaManagerAwaitsIndexesTest {
     fun `under FAIL_FAST an index whose build failed fails the owner, naming it and giving Neo4j's reason`() {
         tooLarge("AwaitStrictFailed")
         val failing = RangeIndexSpec("AwaitStrictFailed", "s")
+        val other = RangeIndexSpec("AwaitStrictFailed", "k")
+        val marker = SchemaVersionStore(manager, SchemaVersionStore.scopeFor("await"))
+        val recorded = marker.storedRecord() // another test of the class may have recorded the owner
         try {
-            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, null, failing).enforce() }
+            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, null, failing, other).enforce() }
             assertContains(failed.message!!, "BUILD FAILED")
             assertContains(failed.message!!, failing.effectiveName)
             assertContains(failed.message!!, "too large", ignoreCase = true)
             assertEquals("FAILED", state(failing.effectiveName))
+            // As with a drift, the owner's other items are applied before it fails, and its marker is not written.
+            assertEquals("ONLINE", state(other.effectiveName), "the item after it is applied")
+            assertEquals(recorded, marker.storedRecord(), "the owner's marker is left as it was")
         } finally {
             manager.indexes.drop(failing)
+            manager.indexes.drop(other)
         }
     }
 
@@ -357,11 +417,12 @@ class Neo4jSchemaManagerAwaitsIndexesTest {
         manager.seed("AwaitWarnSlow")
         val slow = FullTextIndexSpec("AwaitWarnSlow", listOf("s"))
         try {
-            schemaManager(SchemaMode.WARN, Duration.ofMillis(5), slow).enforce()
+            // Zero: db.awaitIndex checks once. A timeout under a second is waited as a whole second.
+            schemaManager(SchemaMode.WARN, Duration.ZERO, slow).enforce()
 
             val warning = log.warnings().single { "STILL BUILDING" in it }
             assertContains(warning, slow.effectiveName)
-            assertContains(warning, "PT0.005S")
+            assertContains(warning, "PT0S")
             assertEquals("Schema for owner 'await' on 'neo': 1 created, 0 already matching, 0 recreated, 1 needing attention", log.summaries().single())
             manager.run("CALL db.awaitIndexes(60)")
             assertEquals("ONLINE", state(slow.effectiveName), "left to be built")
@@ -375,7 +436,7 @@ class Neo4jSchemaManagerAwaitsIndexesTest {
         manager.seed("AwaitStrictSlow")
         val slow = FullTextIndexSpec("AwaitStrictSlow", listOf("s"))
         try {
-            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, Duration.ofMillis(5), slow).enforce() }
+            val failed = assertFailsWith<DrivineException> { schemaManager(SchemaMode.FAIL_FAST, Duration.ZERO, slow).enforce() }
             assertContains(failed.message!!, "STILL BUILDING")
             assertContains(failed.message!!, slow.effectiveName)
             assertContains(failed.message!!, "index-build-timeout")
@@ -450,5 +511,32 @@ class FalkorDbSchemaManagerAwaitsIndexesTest {
             manager.indexes.ensure(slow)
             manager.indexes.drop(slow)
         }
+    }
+}
+
+/** The timeout a [SchemaManager] is given, as Neo4j's `db.awaitIndex` is given it. No database is spoken to. */
+class IndexBuildTimeoutTest {
+
+    private val registry = DatabaseRegistry(DataSourceMap(emptyMap()))
+    private val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+
+    @Test
+    fun `the timeout is rounded up to the whole seconds db awaitIndex takes, so the wait is at least what was asked`() {
+        assertEquals(0L, IndexBuild(Duration.ZERO).timeoutSeconds, "zero checks once")
+        assertEquals(1L, IndexBuild(Duration.ofMillis(1)).timeoutSeconds)
+        assertEquals(1L, IndexBuild(Duration.ofMillis(500)).timeoutSeconds)
+        assertEquals(1L, IndexBuild(Duration.ofSeconds(1)).timeoutSeconds)
+        assertEquals(2L, IndexBuild(Duration.ofMillis(1001)).timeoutSeconds)
+        assertEquals(60L, IndexBuild(Duration.ofSeconds(60)).timeoutSeconds)
+    }
+
+    @Test
+    fun `a manager built as before waits 60 seconds, and a negative timeout is refused`() {
+        assertEquals(Duration.ofSeconds(60), SchemaManager(factory, registry, emptyList()).indexBuildTimeout)
+        assertEquals(Duration.ofSeconds(60), SchemaManager(factory, registry, emptyList(), SchemaPolicy()).indexBuildTimeout)
+        val refused = assertFailsWith<IllegalArgumentException> {
+            SchemaManager(factory, registry, emptyList(), SchemaPolicy(), Duration.ofSeconds(-1))
+        }
+        assertContains(refused.message!!, "indexBuildTimeout")
     }
 }
