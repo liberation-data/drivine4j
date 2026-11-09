@@ -5,18 +5,17 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import org.drivine.backend.sqlite.SqliteDataSource
 import org.drivine.backend.sqlite.SqliteFunctions
+import org.drivine.connection.CypherCompile
 import org.drivine.cypher.spec.CypherSpec.Companion.expanded
-import org.drivine.cypher.sql.PostgresCypherCompiler
-import org.drivine.cypher.sql.SqlCypherCompiler
-import org.drivine.cypher.sql.SqliteCypherCompiler
+import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.mapper.JdbcResultMapper
 import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import java.lang.reflect.Proxy
 import java.sql.Connection
-import java.sql.DriverManager
 import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 import java.sql.Types
@@ -28,9 +27,11 @@ import kotlin.test.fail
 
 /**
  * The spec's `cypher/host.yaml`: what Drivine's own code does with the values compiled SQL hands it, with no store. Each
- * `function` step calls one of the functions Drivine registers on SQLite ([SqliteFunctions]), on an in-memory database, and
+ * `function` step calls one of the functions Drivine registers on SQLite ([SqliteFunctions]), on an in-memory database Drivine
+ * opens ([SqliteDataSource]), and
  * each `read` step reads a column's text as [JdbcResultMapper] reads a compiled statement's rows. Each case's `pairs` must
- * name store cases the other spec files have, whose statements rely on its steps: one of them compiles, on SQLite, to SQL
+ * name store cases the other spec files have, whose statements rely on its steps: one of them compiles, as Drivine compiles
+ * it ([CypherCompile]), on SQLite, to SQL
  * that calls each function the case's steps call, and one compiles, on each store its steps read, with the `nonFinite`
  * each read step says. The three libraries read the same file.
  */
@@ -79,6 +80,7 @@ class HostSpecTest {
     fun `a function Drivine does not register, or a result it does not give, fails`() {
         assertFails { check(case(mapOf("function" to "drivine_nothing", "args" to listOf("1"), "result" to "1"))) }
         assertFails { check(case(mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "4"))) }
+        assertContains(assertFails { check(case(mapOf("function" to "drivine_nothing", "ascending" to listOf("[1]")))) }.message!!, "two values or more")
     }
 
     @Test
@@ -96,8 +98,7 @@ class HostSpecTest {
 
     /** The case's steps give what they say, each step of a shape the spec's README gives, and its pairs rely on them. */
     private fun check(case: Case) {
-        DriverManager.getConnection("jdbc:sqlite::memory:").use { connection ->
-            SqliteFunctions.register(connection)
+        SqliteDataSource(":memory:").connection.use { connection ->
             case.steps.forEachIndexed { index, step ->
                 val where = "${case.name}, step ${index + 1}: ${step.filterKeys { it != "note" }}"
                 val keys = step.keys - "note"
@@ -120,6 +121,7 @@ class HostSpecTest {
         require(name.matches(Regex("drivine_[a-z_]+"))) { "$where: no function of Drivine's" }
         if ("ascending" in step) {
             val values = (step["ascending"] as List<*>).map(::expanded)
+            require(values.size >= 2) { "$where: ascending has two values or more, each before the next" }
             values.zipWithNext().forEach { (a, b) ->
                 assertEquals(1L, canonical(call(connection, "SELECT $name(?) < $name(?)", listOf(a, b))), "$where: $a before $b")
             }
@@ -204,16 +206,16 @@ class HostSpecTest {
             val cypher = CypherSpec.load(file)
             names.map { name -> requireNotNull(cypher.cases.find { it.name == name }) { "${case.name}: $file has no case \"$name\"" } }
         }
-        fun compiled(store: String, compiler: () -> SqlCypherCompiler) = paired.flatMap { it.steps }.filter { it.runsOn(store) }
-            .mapNotNull { step -> runCatching { compiler().compile(step.cypher, expanded(step.parameters)) }.getOrNull() }
-        val sqlite by lazy { compiled("sqlite") { SqliteCypherCompiler("g") } }
+        fun compiled(store: String, compile: (String, Map<String, Any?>) -> CompiledCypher) = paired.flatMap { it.steps }.filter { it.runsOn(store) }
+            .mapNotNull { step -> runCatching { compile(step.cypher, expanded(step.parameters)) }.getOrNull() }
+        val sqlite by lazy { compiled("sqlite") { cypher, parameters -> CypherCompile.sqlite("g", cypher, parameters) } }
         case.steps.mapNotNull { it["function"] as String? }.distinct().forEach { function ->
             assertTrue(sqlite.any { "$function(" in it.sql }, "${case.name}: no step of ${case.pairs} compiles on SQLite to SQL that calls $function")
         }
         case.steps.mapNotNull { it["read"] as Map<*, *>? }.map { it["store"] as String to it["nonFinite"] as Boolean }.distinct().forEach { (store, nonFinite) ->
             val statements = when (store) {
                 "sqlite" -> sqlite
-                "postgres" -> compiled("postgres") { PostgresCypherCompiler("g") }
+                "postgres" -> compiled("postgres") { cypher, parameters -> CypherCompile.postgres("g", cypher, parameters) }
                 else -> fail("${case.name}: no compiler for $store")
             }
             assertTrue(statements.any { it.nonFinite == nonFinite }, "${case.name}: no step of ${case.pairs} compiles on $store with nonFinite $nonFinite")
