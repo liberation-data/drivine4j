@@ -227,7 +227,8 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null where a text function gives one (`'' + ''`,
   `toUpper('')`, `trim(' ')` …) and in `=~`. `STARTS WITH`, `ENDS WITH` and `CONTAINS` of any other empty text, and
-  `size()` and `isEmpty()` of one, give what the other stores give.
+  `size()` and `isEmpty()` of one, give what the other stores give. `size()` of a text past 4,000 bytes counts a
+  character past U+FFFF, an emoji say, as 2 ([#729](https://github.com/liberation-data/drivine4j/issues/729)).
 - A `sum()` of integers past a long's range is a float on Oracle and Postgres, as on Neo4j. Neo4j goes on as a
   double from the row where a long would overflow, so a sum that passes the range on the way and comes back into it,
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
