@@ -32,6 +32,7 @@ import java.util.logging.Logger
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -131,6 +132,12 @@ class SqliteVersionTest {
         schema.remove("runtime", RangeIndexSpec("Claim", "id"))
         assertNull(pm.indexes.find(RangeIndexSpec("Claim", "id")))
         assertEquals(listOf(app.inventoryKey), SchemaVersionStore(pm, "app").storedInventory())
+        // A manager not given the app's catalog, as another process's, finds the app's marker in that read, and leaves its item.
+        SchemaManager(factory, registry, emptyList()).run {
+            ensure("lib", app)
+            remove("lib", app)
+        }
+        assertNotNull(pm.indexes.find(app))
         // Schema DDL, which Drivine runs itself, and a DROP of it, which is a remove.
         pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE INDEX claim_kind IF NOT EXISTS FOR (c:Claim) ON (c.kind)")))
         pm.execute(QuerySpecification.withStatement(CypherStatement("DROP INDEX claim_kind")))
@@ -182,5 +189,24 @@ class SqliteVersionTest {
         cypher(pm, "CREATE (:New {name: 'Ada'})")
         assertEquals(listOf("Ada"), cypher(pm, "MATCH (n:New) RETURN n.name"))
         assertEquals(1, source.reads.get())
+    }
+
+    @Test
+    fun `on the SQLite the tests run, the other owners' scopes read as SQL are those the Cypher read gave`() {
+        SqliteTestDatabase.drop("scopesqlite")
+        val pm = SqliteTestDatabase.graphManager("scopesqlite")
+        val store = SchemaVersionStore(pm, "a")
+        // No marker: nothing, as the Cypher read gives on a graph with no node.
+        assertEquals(emptyList(), store.otherScopes())
+        // Several owners, one with two markers, one of a node of two labels, and one with no scope; nodes of another label are not markers.
+        cypher(
+            pm,
+            "CREATE (:`_DrivineSchema` {scope: 'a'}), (:`_DrivineSchema` {scope: 'b'}), (:`_DrivineSchema` {scope: 'b'}), " +
+                "(:Other:`_DrivineSchema` {scope: 'c'}), (:`_DrivineSchema` {version: '1'}), (:`_DrivineSchemaX` {scope: 'd'}), (:Other {scope: 'e'})"
+        )
+        val cypher = pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (m:`_DrivineSchema`) RETURN DISTINCT m.scope")).transform(String::class.java))
+        assertEquals(setOf("b", "c", null), store.otherScopes().toSet<String?>())
+        assertEquals(cypher.filter { it != "a" }.toSet(), store.otherScopes().toSet())
+        assertEquals(cypher.size - 1, store.otherScopes().size)
     }
 }
