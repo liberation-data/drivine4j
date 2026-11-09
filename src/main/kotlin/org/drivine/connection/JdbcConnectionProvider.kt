@@ -284,6 +284,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             // statement: that would commit the transaction partway through (#395). The tables are made on the next
             // connection had outside one.
             if (!committing && SpringTransactions.holds(session)) {
+                // A look alone, which commits nothing: a store an earlier Drivine made is refused here too (#713).
+                graph.refuse(connection)
                 connection.release()
                 tablesHeldBack = true
                 logger.debug("The tables of graph '{}' on {} database '{}' are not made on a Spring transaction's connection: the next connection tries again.", graphName, type, name)
