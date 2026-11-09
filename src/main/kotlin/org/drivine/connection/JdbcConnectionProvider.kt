@@ -50,7 +50,7 @@ import javax.sql.DataSource
  * as a user that cannot make tables, where the check finds nothing to go on, works as before. So does a graph name that cannot name tables: plain SQL works whatever the name, and
  * Cypher over the graph is refused with why. So does an Oracle older than 23.9, found from the first
  * connection's metadata: plain SQL works, and Cypher, which needs Oracle's `UUID()`, is refused with why. So does a SQLite
- * older than 3.53, found the first time a Cypher statement is compiled (see [SqliteVersion]).
+ * older than 3.53.2, found the first time a Cypher statement is compiled (see [SqliteVersion]).
  *
  * Each connection it hands out commits each statement run outside a transaction, as a connection that commits each
  * one of itself does, also where the data source's connections start with `autoCommit = false`: it is turned on as
@@ -116,7 +116,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     @Volatile
     private var cypherRefusal: String? = null
 
-    /** On SQLite, the version its connections run, read once for the provider: compiled Cypher needs 3.53 (see [SqliteVersion]). */
+    /** On SQLite, the version its connections run, read once for the provider: compiled Cypher needs 3.53.2 (see [SqliteVersion]). */
     private val sqliteVersion = SqliteVersion()
 
     /** The data source behind this provider. Closed by [end] only if this provider made it. */
@@ -468,7 +468,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
          * A provider over a pool of connections to the SQLite file at [path], made if it is not there,
          * closed by [end]. Each connection is opened as Drivine's statements want it, with the functions
          * they call registered on it (see `SqliteDataSource`): the driver is xerial's,
-         * `org.xerial:sqlite-jdbc`, which the application adds. SQLite 3.53 or later, `sqlite-jdbc` 3.53.0.0 or later:
+         * `org.xerial:sqlite-jdbc`, which the application adds. SQLite 3.53.2 or later, `sqlite-jdbc` 3.53.2.0 or later:
          * on an older SQLite, Cypher is refused with why, and plain SQL runs (see [SqliteVersion]).
          *
          * A path that names no file is refused: blank, or an in-memory database. Each connection of the

@@ -23,18 +23,19 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Compiled Cypher needs SQLite 3.53 (#565): an older one, which the application's sqlite-jdbc may be, refuses Cypher alone. */
+/** Compiled Cypher needs SQLite 3.53.2 (#565): an older one, which the application's sqlite-jdbc may be, refuses Cypher alone. */
 class SqliteVersionTest {
 
     private fun refused(version: String) =
-        "Compiled Cypher needs SQLite 3.53 or later; this is SQLite $version. " +
-            "Upgrade sqlite-jdbc (org.xerial:sqlite-jdbc 3.53.0.0 or later). Plain SQL over this provider still runs; Cypher does not."
+        "Compiled Cypher needs SQLite 3.53.2 or later; this is SQLite $version. " +
+            "Upgrade sqlite-jdbc (org.xerial:sqlite-jdbc 3.53.2.0 or later). Plain SQL over this provider still runs; Cypher does not."
 
     /**
      * Connections of the test JVM's SQLite that answer `sqlite_version()` with [version], as an older sqlite-jdbc's would:
-     * every other statement runs on the real one. [reads] counts the times the version is asked for.
+     * every other statement runs on the real one. [reads] counts the times the version is asked for. A null [version]
+     * cannot be read: asking for it fails.
      */
-    private class OlderSqlite(private val version: String, val reads: AtomicInteger = AtomicInteger()) : DataSource {
+    private class OlderSqlite(private val version: String?, val reads: AtomicInteger = AtomicInteger()) : DataSource {
         private val real = SqliteTestDatabase.provider.nativeDriver
 
         override fun getConnection(): java.sql.Connection {
@@ -43,6 +44,7 @@ class SqliteVersionTest {
                 val given = args ?: emptyArray()
                 if (method.name == "prepareStatement" && given.firstOrNull() == SqliteVersion.QUERY) {
                     reads.incrementAndGet()
+                    if (version == null) throw java.sql.SQLException("The version cannot be read.")
                     given[0] = "select '$version'"
                 }
                 try {
@@ -70,9 +72,12 @@ class SqliteVersionTest {
         pm.query(QuerySpecification.withStatement(CypherStatement(statement)))
 
     @Test
-    fun `a SQLite older than 3_53 refuses compiled Cypher, saying which and what to upgrade, and 3_53 or later refuses nothing`() {
-        listOf("3.45.0", "3.46.1", "3.47.0", "3.49.1", "3.52.9", "2.8.17").forEach { assertEquals(refused(it), SqliteVersion.refusal(it), it) }
-        listOf("3.53.0", "3.53.2", "3.54.1", "3.100.0", "4.0.0", " 3.53.0\n").forEach { assertNull(SqliteVersion.refusal(it), it) }
+    fun `a SQLite older than 3_53_2 refuses compiled Cypher, saying which and what to upgrade, and 3_53_2 or later refuses nothing`() {
+        // 3.53.0 and 3.53.1, as sqlite-jdbc 3.53.0.0 and 3.53.1.0 bring them, still write a float to 15 digits.
+        listOf("3.45.0", "3.46.1", "3.47.0", "3.49.1", "3.52.9", "2.8.17", "3.53.0", "3.53.1", "3.53", "3.46.1-rc1").forEach {
+            assertEquals(refused(it), SqliteVersion.refusal(it), it)
+        }
+        listOf("3.53.2", "3.53.2.1", "3.53.2-beta", "3.53.4", "3.54.0", "3.54.1", "3.100.0", "4.0.0", " 3.53.2\n").forEach { assertNull(SqliteVersion.refusal(it), it) }
         // A version that is no version refuses nothing: the statement says what is wrong as it runs.
         listOf("", "3", "unknown", "3.x.1").forEach { assertNull(SqliteVersion.refusal(it), it) }
     }
@@ -112,10 +117,21 @@ class SqliteVersionTest {
     }
 
     @Test
-    fun `on the SQLite the tests run, 3_53 or later, compiled Cypher runs as before, last() and a negative index with it`() {
+    fun `where the version cannot be read, Cypher runs, and the version is read again on the next statement`() {
+        val source = OlderSqlite(null)
+        val pm = manager(source, "unreadsqlite")
+        SqliteTestDatabase.drop("unreadsqlite")
+        assertEquals(listOf(1L), cypher(pm, "RETURN 1 AS one"))
+        assertEquals(listOf(2L), cypher(pm, "RETURN 2 AS two"))
+        // Not kept: a version that could not be read once, as on a connection that failed, is read on the next.
+        assertEquals(2, source.reads.get())
+    }
+
+    @Test
+    fun `on the SQLite the tests run, 3_53_2 or later, compiled Cypher runs as before, last() and a negative index with it`() {
         val version = SqliteTestDatabase.pm.query(QuerySpecification.withStatement("SELECT sqlite_version()").transform(String::class.java)).single()
-        val (major, minor) = version.split('.').map(String::toInt)
-        assertTrue(major > 3 || (major == 3 && minor >= 53), version)
+        val (major, minor, patch) = version.split('.').map(String::toInt)
+        assertTrue(major > 3 || (major == 3 && (minor > 53 || (minor == 53 && patch >= 2))), version)
         assertNull(SqliteVersion.refusal(version))
 
         val source = OlderSqlite(version)

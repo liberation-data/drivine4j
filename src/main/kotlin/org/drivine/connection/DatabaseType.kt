@@ -33,10 +33,10 @@ enum class DatabaseType(
     ORACLE("ORACLE", speaksCypher = false),
 
     /**
-     * SQLite, 3.53 or later, over JDBC with xerial's driver: a graph is the same two tables Oracle and
+     * SQLite, 3.53.2 or later, over JDBC with xerial's driver: a graph is the same two tables Oracle and
      * Postgres keep, in a file, read with joins over them and written through functions Drivine
      * registers on each connection. Built from properties with the file's path as the database name.
-     * On an older SQLite, Cypher is refused with why and plain SQL runs (see `SqliteVersion`): before 3.53
+     * On an older SQLite, Cypher is refused with why and plain SQL runs (see `SqliteVersion`): before 3.53.2
      * compiled Cypher writes a float to 15 digits, 3.49 refuses a grouped `CALL`, and before 3.47 `last()` and a
      * negative list index are refused (#565).
      */

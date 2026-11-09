@@ -6,7 +6,7 @@ graph in, and it gives the rows a graph engine gives.
 
 ### Configuration
 
-SQLite is the quickest to try: the graph is a file, with no server to run. Add `org.xerial:sqlite-jdbc`, 3.53.0.0 or
+SQLite is the quickest to try: the graph is a file, with no server to run. Add `org.xerial:sqlite-jdbc`, 3.53.2.0 or
 later (an older SQLite refuses Cypher: see [Supported engines](09-supported-engines.md#sqlite)), and name the file:
 
 ```yaml

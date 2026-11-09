@@ -82,7 +82,7 @@ class JdbcConnection(
     internal var tablesPending: String? = null
 
     /**
-     * On SQLite, the version the connection runs, read the first time a Cypher statement is compiled: one older than 3.53
+     * On SQLite, the version the connection runs, read the first time a Cypher statement is compiled: one older than 3.53.2
      * refuses compiled Cypher (see [SqliteVersion]). Its provider gives each of its connections the one it keeps, so it is
      * read once for the provider.
      */
@@ -174,7 +174,7 @@ class JdbcConnection(
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
             )
             DatabaseType.SQLITE -> {
-                // So is a SQLite older than 3.53, which the application's sqlite-jdbc may be: plain SQL runs on it.
+                // So is a SQLite older than 3.53.2, which the application's sqlite-jdbc may be: plain SQL runs on it.
                 sqliteVersion.refusal(connection)?.let { throw DrivineException(it, spec = spec) }
                 CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters)
             }
