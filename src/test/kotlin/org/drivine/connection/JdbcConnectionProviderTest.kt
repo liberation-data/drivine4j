@@ -808,6 +808,36 @@ class JdbcConnectionProviderTest {
         order.verify(fresh).close()
     }
 
+    /**
+     * With the tables left unmade on a Spring transaction's connection, a Cypher statement that finds them missing fails
+     * saying why and what makes them; any other failure is thrown as it is.
+     */
+    @Test
+    fun `on a Spring transaction's connection, Cypher that finds no tables fails saying they are not made on it, and another failure is thrown as it is`() {
+        val missing = SQLException("relation \"drivine_node\" does not exist", "42P01")
+        val other = SQLException("duplicate key value", "23505")
+        val held = moded(committing = false).also { c ->
+            `when`(c.prepareStatement(Mockito.anyString())).thenThrow(missing, other)
+        }
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source))
+        val create = QuerySpecification.withStatement(org.drivine.query.CypherStatement("CREATE (:Person {name: 'Ada'})"))
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            val first = assertFailsWith<DrivineException> { provider.connect().apply { try { query(create) } finally { release() } } }
+            assertContains(first.message!!, "not made on a Spring transaction's connection")
+            assertSame(missing, first.cause)
+            assertSame(other, assertFailsWith<SQLException> { provider.connect().apply { try { query(create) } finally { release() } } })
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
     /** [inner] in a wrapper of another library's, as a statement logger wraps a data source's connections, which unwraps to it. */
     private fun wrapping(inner: java.sql.Connection): java.sql.Connection =
         java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, args ->

@@ -168,8 +168,19 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             throw e
         }
         return JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
-            .also { it.restoresAutoCommit = turned }
+            .also {
+                it.restoresAutoCommit = turned
+                if (tablesHeldBack && !graphEnsured) it.tablesPending = tablesPending()
+            }
     }
+
+    /** Whether the graph's tables were last left unmade, as the connection they were to be made on was a Spring transaction's. */
+    @Volatile
+    private var tablesHeldBack = false
+
+    /** Why a Cypher statement on a store with no graph finds no tables, while [tablesHeldBack], and what makes them. */
+    private fun tablesPending(): String =
+        "The tables of graph '$graphName' on $type database '$name' are not made yet: they are not made on a Spring transaction's connection, which making them would commit partway through, and this provider has had no connection outside one. Have a connection of it outside a Spring transaction first, as with a statement at the application's start, and they are made."
 
     /** Whether a connection that is a distributed transaction's, which refused to commit each statement, has been logged. */
     @Volatile
@@ -260,6 +271,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         val session = withoutAdaptivePlans(dataSource.connection)
         if (type == DatabaseType.ORACLE) checkVersion(session)
         val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
+        tablesHeldBack = false
         val failure = try {
             val committing = session.autoCommit
             // A Spring transaction's connection, from a transaction-aware data source, is not turned to commit each
@@ -267,6 +279,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             // connection had outside one.
             if (!committing && SpringTransactions.holds(session)) {
                 connection.release()
+                tablesHeldBack = true
                 logger.debug("The tables of graph '{}' on {} database '{}' are not made on a Spring transaction's connection: the next connection tries again.", graphName, type, name)
                 return false
             }

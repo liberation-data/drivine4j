@@ -51,10 +51,11 @@ transaction's of the application's own, which Spring's `TransactionAwareDataSour
 transaction (also in a wrapper that unwraps to it), and a distributed (JTA) transaction's: a statement run on it is
 committed, or rolled back, with that transaction. Nor are the graph's tables made on a Spring transaction's connection,
 which would commit it partway: they are made on the first connection had outside one, so on a new store a Cypher
-statement in the application's transaction fails until then. A graph name that can't name tables, such as `my-graph`,
-makes no tables: plain SQL still works, a Cypher statement fails with a `DrivineException`, naming the graph and saying
-why, and an object manager over the graph is refused with an `IllegalArgumentException` that says the same. A schema
-catalog for every database skips the datasource, and one that names it fails.
+statement in the application's transaction fails until then, with a `DrivineException` that says so. A graph name that
+can't name tables, such as `my-graph`, makes no tables: plain SQL still works, a Cypher statement fails with a
+`DrivineException`, naming the graph and saying why, and an object manager over the graph is refused with an
+`IllegalArgumentException` that says the same. A schema catalog for every database skips the datasource, and one that
+names it fails.
 
 ### A write and a read
 

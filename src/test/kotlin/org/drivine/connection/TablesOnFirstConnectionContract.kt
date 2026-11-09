@@ -296,6 +296,27 @@ abstract class TablesOnFirstConnectionContract {
         assertEquals(listOf("Ada"), names(other))
     }
 
+    /**
+     * On a new store whose first connection is a Spring transaction's, the tables are not made yet: a Cypher statement
+     * in the transaction fails, saying why they are not there and how to have them made.
+     */
+    @Test
+    fun `on a new store, Cypher in a Spring transaction fails saying the tables are not made on its connection, and how to have them made`() {
+        val pool = notCommittingPool().also { pools += it }
+        val pm = manager(JdbcConnectionProvider("fresh", type, TransactionAwareDataSourceProxy(pool)).also { made += it })
+
+        val failure = assertFailsWith<DrivineException> {
+            TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult {
+                pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+            }
+        }
+
+        assertContains(failure.message!!, "Spring transaction")
+        assertContains(failure.message!!, "outside one")
+        pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+        assertEquals(listOf("Ada"), names(manager(open())))
+    }
+
     @Test
     fun `on a Spring transaction's connection, a statement run outside a transaction is committed with the transaction, and rolled back with it`() {
         val pool = notCommittingPool().also { pools += it }
