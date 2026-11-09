@@ -112,6 +112,20 @@ class Neo4jEnsureAwaitsIndexesTest {
     }
 
     @Test
+    fun `an index another process made, found by ensure, is waited for by the name it was made with`() {
+        manager.seed("AwaitNeoFound")
+        manager.run("CREATE FULLTEXT INDEX AwaitNeoFoundElsewhere FOR (n:AwaitNeoFound) ON EACH [n.s]")
+        val spec = FullTextIndexSpec("AwaitNeoFound", listOf("s"))
+        try {
+            val found = manager.indexes.ensure(spec)
+            assertTrue(found is EnsureResult.AlreadyMatching, "$found")
+            assertEquals("ONLINE", state("AwaitNeoFoundElsewhere"))
+        } finally {
+            manager.indexes.drop(spec)
+        }
+    }
+
+    @Test
     fun `a constraint's own index is ONLINE once ensure returns`() {
         manager.seed("AwaitNeoUnique")
         val created = manager.constraints.ensure(UniquenessConstraintSpec("AwaitNeoUnique", "k"))
@@ -268,6 +282,20 @@ class FalkorDbEnsureAwaitsIndexesTest {
         manager.indexes.ensure(spec)
         manager.indexes.recreate(spec)
         assertEquals("OPERATIONAL", status("AwaitFalkorAgain"))
+    }
+
+    @Test
+    fun `an index another process made, found by ensure, is OPERATIONAL when it returns`() {
+        manager.seed("AwaitFalkorFound")
+        manager.run("CREATE VECTOR INDEX FOR (n:AwaitFalkorFound) ON (n.e) OPTIONS {dimension: 4, similarityFunction: 'cosine'}")
+        val spec = VectorIndexSpec("AwaitFalkorFound", "e", 4)
+        try {
+            val found = manager.indexes.ensure(spec)
+            assertTrue(found is EnsureResult.AlreadyMatching, "$found")
+            assertEquals("OPERATIONAL", status("AwaitFalkorFound"))
+        } finally {
+            manager.indexes.drop(spec)
+        }
     }
 
     @Test
