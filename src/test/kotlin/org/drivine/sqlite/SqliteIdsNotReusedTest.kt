@@ -240,6 +240,20 @@ class SqliteIdsNotReusedTest {
     }
 
     @Test
+    fun `a statement run outside a transaction over a file an earlier Drivine made gives the refusal as it is`(@TempDir directory: Path) {
+        val path = earlierFile(directory, "drivine")
+        val provider = JdbcConnectionProvider.sqlite("earlier", path)
+        try {
+            val pm = NonTransactionalPersistenceManager(provider, "earlier", DatabaseType.SQLITE, SubtypeRegistry())
+            val refused = assertFailsWith<ReusedIdsException> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN n"))) }
+            assertEquals(refusal("drivine", fileOf(path)), refused.message)
+            assertFailsWith<ReusedIdsException> { pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Person)"))) }
+        } finally {
+            provider.end()
+        }
+    }
+
+    @Test
     fun `a first connection taken inside a transaction gives the refusal as it is`(@TempDir directory: Path) {
         val path = earlierFile(directory, "drivine")
         val provider = JdbcConnectionProvider.sqlite("earlier", path)
