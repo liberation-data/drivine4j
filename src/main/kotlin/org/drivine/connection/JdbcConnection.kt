@@ -6,6 +6,7 @@ import org.drivine.backend.oracle.OracleStoredFunctions
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSql
+import org.drivine.backend.sqlite.SqliteVersion
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
@@ -79,6 +80,13 @@ class JdbcConnection(
      * (#395); null where they were made, or tried for. A Cypher statement that finds them missing fails with this.
      */
     internal var tablesPending: String? = null
+
+    /**
+     * On SQLite, the version the connection runs, read the first time a Cypher statement is compiled: one older than 3.53
+     * refuses compiled Cypher (see [SqliteVersion]). Its provider gives each of its connections the one it keeps, so it is
+     * read once for the provider.
+     */
+    internal var sqliteVersion = SqliteVersion()
 
     /** When the open transaction began, by [System.nanoTime]. */
     private var startedAt = 0L
@@ -165,7 +173,11 @@ class JdbcConnection(
                 nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
             )
-            DatabaseType.SQLITE -> CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters)
+            DatabaseType.SQLITE -> {
+                // So is a SQLite older than 3.53, which the application's sqlite-jdbc may be: plain SQL runs on it.
+                sqliteVersion.refusal(connection)?.let { throw DrivineException(it, spec = spec) }
+                CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters)
+            }
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
     }
