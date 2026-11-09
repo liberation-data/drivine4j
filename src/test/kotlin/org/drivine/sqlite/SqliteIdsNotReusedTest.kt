@@ -2,6 +2,12 @@ package org.drivine.sqlite
 
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteBackend
+import org.drivine.backend.sqlite.SqliteDataSource
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionTemplate
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
@@ -327,6 +333,26 @@ class SqliteIdsNotReusedTest {
                     assertEquals(listOf("drivine_edge", "drivine_node"), generateSequence { if (rows.next()) rows.getString(1) else null }.toList())
                 }
             }
+        }
+    }
+
+    @Test
+    fun `a first connection inside a Spring transaction, which makes no tables, still gives the refusal`(@TempDir directory: Path) {
+        val path = earlierFile(directory, "drivine")
+        // A pool that commits nothing of itself, behind Spring's transaction-aware proxy: the provider makes no tables on
+        // a Spring transaction's connection (#395), but the refusal is a look, and is made on it (#713).
+        val pool = HikariDataSource(HikariConfig().apply { dataSource = SqliteDataSource(path); isAutoCommit = false; maximumPoolSize = 1 })
+        val provider = JdbcConnectionProvider("earlier", DatabaseType.SQLITE, TransactionAwareDataSourceProxy(pool))
+        try {
+            repeat(2) {
+                TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult {
+                    val refused = assertFailsWith<ReusedIdsException> { provider.connect() }
+                    assertEquals(refusal("drivine", fileOf(path)), refused.message)
+                }
+            }
+        } finally {
+            provider.end()
+            pool.close()
         }
     }
 }

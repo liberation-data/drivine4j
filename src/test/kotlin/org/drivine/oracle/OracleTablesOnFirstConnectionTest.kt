@@ -61,21 +61,17 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
     override fun provider(graph: String): JdbcConnectionProvider =
         JdbcConnectionProvider.pooled("fresh", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), user, PASSWORD, poolMax = POOL_MAX, graphName = graph)
 
+    override val type = DatabaseType.ORACLE
+
     /** Oracle commits a schema statement as it runs it, whatever the session does of itself. */
-    override fun notCommitting(graph: String): JdbcConnectionProvider = JdbcConnectionProvider(
-        "fresh",
-        DatabaseType.ORACLE,
-        HikariDataSource(
-            HikariConfig().apply {
-                jdbcUrl = OracleTestContainer.getJdbcUrl()
-                username = user
-                password = PASSWORD
-                maximumPoolSize = POOL_MAX
-                isAutoCommit = false
-            },
-        ),
-        ownsDataSource = true,
-        graphName = graph,
+    override fun notCommittingPool(): HikariDataSource = HikariDataSource(
+        HikariConfig().apply {
+            jdbcUrl = OracleTestContainer.getJdbcUrl()
+            username = user
+            password = PASSWORD
+            maximumPoolSize = POOL_MAX
+            isAutoCommit = false
+        },
     )
 
     /** The same user, with what it may make taken from it: it may connect, and read what it owns. */

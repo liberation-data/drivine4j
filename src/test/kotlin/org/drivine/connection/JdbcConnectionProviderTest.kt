@@ -16,6 +16,9 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
+import org.springframework.jdbc.datasource.ConnectionHolder
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.io.PrintWriter
 import java.sql.DatabaseMetaData
 import java.sql.PreparedStatement
@@ -649,6 +652,282 @@ class JdbcConnectionProviderTest {
         JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, ownsDataSource = true).end()
 
         Mockito.verifyNoInteractions(dataSource)
+    }
+
+    // ----- Connections whose pool gives them committing nothing of themselves (#395) -----
+
+    /** A [recording] connection whose mode is as it was last set, from [committing]. */
+    private fun moded(committing: Boolean): java.sql.Connection = recording().also { connection ->
+        var mode = committing
+        `when`(connection.autoCommit).thenAnswer { mode }
+        Mockito.doAnswer { mode = it.getArgument(0); null }.`when`(connection).autoCommit = Mockito.anyBoolean()
+    }
+
+    /** A provider over [connections] in turn, for a graph whose name makes no tables, so no connection is taken for them. */
+    private fun handingOut(vararg connections: java.sql.Connection): JdbcConnectionProvider {
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(connections.first(), *connections.drop(1).toTypedArray()) }
+        return JdbcConnectionProvider("default", DatabaseType.POSTGRES, source, graphName = "my-graph")
+    }
+
+    private val insert = QuerySpecification.withStatement(sqlStatement("INSERT INTO t VALUES (1)"))
+
+    @Test
+    fun `a connection its pool gives committing nothing commits each statement run outside a transaction, and is given back as the pool gave it`() {
+        val handedOut = moded(committing = false)
+
+        handingOut(handedOut).connect().apply {
+            query(insert)
+            release()
+        }
+
+        val order = Mockito.inOrder(handedOut)
+        order.verify(handedOut).autoCommit = true
+        order.verify(handedOut).prepareStatement(Mockito.anyString())
+        order.verify(handedOut).autoCommit = false
+        order.verify(handedOut).close()
+    }
+
+    @Test
+    fun `a connection that commits each statement already is handed out and given back as it is`() {
+        val handedOut = moded(committing = true)
+
+        handingOut(handedOut).connect().apply {
+            query(insert)
+            release()
+        }
+
+        verify(handedOut).prepareStatement(Mockito.anyString())
+        verify(handedOut, never()).autoCommit = Mockito.anyBoolean()
+        verify(handedOut).close()
+    }
+
+    @Test
+    fun `a Drivine transaction on a connection its pool gives committing nothing is committed by Drivine, and the connection given back as the pool gave it`() {
+        val handedOut = moded(committing = false)
+
+        handingOut(handedOut).connect().apply {
+            startTransaction()
+            query(insert)
+            commitTransaction()
+            release()
+        }
+
+        val order = Mockito.inOrder(handedOut)
+        order.verify(handedOut).autoCommit = true
+        order.verify(handedOut).autoCommit = false
+        order.verify(handedOut).prepareStatement(Mockito.anyString())
+        order.verify(handedOut).commit()
+        order.verify(handedOut).autoCommit = true
+        order.verify(handedOut).autoCommit = false
+        order.verify(handedOut).close()
+    }
+
+    @Test
+    fun `a connection that refuses to commit each statement, as one in a distributed transaction does, is left to that transaction`() {
+        val enlisted = recording().also {
+            `when`(it.autoCommit).thenReturn(false)
+            Mockito.doThrow(SQLException("Cannot set autocommit during a global transaction")).`when`(it).autoCommit = true
+        }
+        val provider = handingOut(enlisted, enlisted)
+
+        repeat(2) {
+            provider.connect().apply {
+                query(insert)
+                release()
+            }
+        }
+
+        verify(enlisted, times(2)).prepareStatement(Mockito.anyString())
+        verify(enlisted, never()).autoCommit = false
+        verify(enlisted, never()).commit()
+        verify(enlisted, times(2)).close()
+    }
+
+    @Test
+    fun `a connection whose mode cannot be read fails the connect with its error, and is closed`() {
+        val broken = SQLException("closed by the network")
+        val unreadable = recording().also { `when`(it.autoCommit).thenThrow(broken) }
+
+        assertSame(broken, assertFailsWith<SQLException> { handingOut(unreadable).connect() })
+        verify(unreadable).close()
+    }
+
+    @Test
+    fun `a connection whose mode cannot be read, and which cannot be closed, fails the connect with its error, the close's kept with it`() {
+        val broken = SQLException("closed by the network")
+        val unclosable = SQLException("already closed")
+        val unreadable = recording().also {
+            `when`(it.autoCommit).thenThrow(broken)
+            Mockito.doThrow(unclosable).`when`(it).close()
+        }
+
+        val failure = assertFailsWith<SQLException> { handingOut(unreadable).connect() }
+        assertSame(broken, failure)
+        assertEquals(listOf<Throwable>(unclosable), failure.suppressed.toList())
+    }
+
+    @Test
+    fun `a connection that cannot be given back committing nothing is closed all the same`() {
+        val handedOut = moded(committing = false).also { Mockito.doThrow(SQLException("closed by the network")).`when`(it).autoCommit = false }
+
+        handingOut(handedOut).connect().apply {
+            query(insert)
+            release()
+        }
+
+        verify(handedOut).close()
+    }
+
+    /**
+     * Spring's transaction-aware data source hands out the connection a Spring transaction on the thread holds. It is not
+     * turned to commit each statement, nor are the tables made on it: either would commit the transaction partway through.
+     * Once the transaction is over, the proxy hands out a connection of the pool's, which is.
+     */
+    @Test
+    fun `a Spring transaction's connection from a transaction-aware data source is left to the transaction, and the tables are made after it`() {
+        val held = moded(committing = false)
+        val fresh = moded(committing = false)
+        val ensuring = moded(committing = false)
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, fresh) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source))
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            provider.connect().apply {
+                query(insert)
+                release()
+            }
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+
+        verify(held, never()).autoCommit = Mockito.anyBoolean()
+        verify(held, never()).commit()
+        verify(held, never()).close()
+        assertEquals(listOf("INSERT INTO t VALUES (1)"), statementsOn(held))
+
+        provider.connect().apply {
+            query(insert)
+            release()
+        }
+        assertEquals(1, statementsOn(ensuring).size)
+        val order = Mockito.inOrder(fresh)
+        order.verify(fresh).autoCommit = true
+        order.verify(fresh).prepareStatement(Mockito.anyString())
+        order.verify(fresh).autoCommit = false
+        order.verify(fresh).close()
+    }
+
+    /**
+     * With the tables left unmade on a Spring transaction's connection, a Cypher statement that finds them missing fails
+     * saying why and what makes them; any other failure is thrown as it is.
+     */
+    @Test
+    fun `on a Spring transaction's connection, Cypher that finds no tables fails saying they are not made on it, and another failure is thrown as it is`() {
+        val missing = SQLException("relation \"drivine_node\" does not exist", "42P01")
+        val other = SQLException("duplicate key value", "23505")
+        val held = moded(committing = false).also { c ->
+            `when`(c.prepareStatement(Mockito.anyString())).thenThrow(missing, other, missing)
+        }
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source))
+        val create = QuerySpecification.withStatement(org.drivine.query.CypherStatement("CREATE (:Person {name: 'Ada'})"))
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            val first = assertFailsWith<DrivineException> { provider.connect().apply { try { query(create) } finally { release() } } }
+            assertContains(first.message!!, "not made on a Spring transaction's connection")
+            assertSame(missing, first.cause)
+            assertSame(other, assertFailsWith<SQLException> { provider.connect().apply { try { query(create) } finally { release() } } })
+            // Plain SQL over a missing table is the application's own statement: its error is thrown as it is.
+            assertSame(missing, assertFailsWith<SQLException> { provider.connect().apply { try { query(insert) } finally { release() } } })
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
+    /**
+     * On SQLite a Spring transaction's connection is looked at for a store to refuse (#713). A look that fails is not a
+     * refusal: the connection is handed out, as where the tables are made, and the next connection looks again.
+     */
+    @Test
+    fun `on SQLite a Spring transaction's connection whose look for a store to refuse fails is handed out, and the next connection looks again`() {
+        val look = SqliteGraph(JdbcConnectionProvider.DEFAULT_GRAPH).made
+        val held = moded(committing = false).also { c ->
+            `when`(c.prepareStatement(look)).thenThrow(SQLException("database is locked", null, 5))
+        }
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("default", DatabaseType.SQLITE, TransactionAwareDataSourceProxy(source))
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            repeat(2) {
+                provider.connect().apply {
+                    query(insert)
+                    release()
+                }
+            }
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+
+        verify(held, never()).autoCommit = Mockito.anyBoolean()
+        verify(held, never()).commit()
+        assertEquals(listOf(look, "INSERT INTO t VALUES (1)", look, "INSERT INTO t VALUES (1)"), statementsOn(held))
+    }
+
+    /** [inner] in a wrapper of another library's, as a statement logger wraps a data source's connections, which unwraps to it. */
+    private fun wrapping(inner: java.sql.Connection): java.sql.Connection =
+        java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, args ->
+            when (method.name) {
+                "isWrapperFor" -> (args[0] as Class<*>).isInstance(inner) || inner.isWrapperFor(args[0] as Class<*>)
+                "unwrap" -> if ((args[0] as Class<*>).isInstance(inner)) inner else inner.unwrap(args[0] as Class<*>)
+                else -> try {
+                    method.invoke(inner, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.cause!!
+                }
+            }
+        } as java.sql.Connection
+
+    @Test
+    fun `a Spring transaction's connection wrapped again by another data source is left to the transaction`() {
+        val held = moded(committing = false)
+        val source = Mockito.mock(DataSource::class.java)
+        val aware = TransactionAwareDataSourceProxy(source)
+        val wrapped = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenAnswer { wrapping(aware.connection) } }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, wrapped, graphName = "my-graph")
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            provider.connect().apply {
+                query(insert)
+                release()
+            }
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+
+        verify(held, never()).autoCommit = Mockito.anyBoolean()
+        verify(held, never()).commit()
+        verify(held, never()).close()
+        assertEquals(listOf("INSERT INTO t VALUES (1)"), statementsOn(held))
     }
 
     // ----- The Oracle version, read on the first connection -----

@@ -112,6 +112,8 @@ dependencies {
 	testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.5.7')
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-aop'
+	// An application's own transactions over a transaction-aware DataSource, which a provider leaves alone (#395).
+	testImplementation 'org.springframework:spring-jdbc'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	// The Cypher spec's files (src/test/resources/cypher) are YAML.
 	testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'

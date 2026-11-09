@@ -39,20 +39,16 @@ class PostgresTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
         "fresh", DatabaseType.POSTGRES, url(), PostgresTestContainer.getConnectionUsername(), PostgresTestContainer.getConnectionPassword(), graphName = graph,
     )
 
-    override fun notCommitting(graph: String): JdbcConnectionProvider = JdbcConnectionProvider(
-        "fresh",
-        DatabaseType.POSTGRES,
-        HikariDataSource(
-            HikariConfig().apply {
-                jdbcUrl = url()
-                username = PostgresTestContainer.getConnectionUsername()
-                password = PostgresTestContainer.getConnectionPassword()
-                isAutoCommit = false
-                addDataSourceProperty("stringtype", "unspecified")
-            },
-        ),
-        ownsDataSource = true,
-        graphName = graph,
+    override val type = DatabaseType.POSTGRES
+
+    override fun notCommittingPool(): HikariDataSource = HikariDataSource(
+        HikariConfig().apply {
+            jdbcUrl = url()
+            username = PostgresTestContainer.getConnectionUsername()
+            password = PostgresTestContainer.getConnectionPassword()
+            isAutoCommit = false
+            addDataSourceProperty("stringtype", "unspecified")
+        },
     )
 
     /** A role that may read the tables of [graph] and make nothing: no role but the owner may make a table in `public` here. */

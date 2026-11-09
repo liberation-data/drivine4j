@@ -67,6 +67,19 @@ class JdbcConnection(
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
     private var inTransaction = false
 
+    /**
+     * Whether [release] turns the connection back to committing nothing of itself before it closes it: its pool gave it
+     * so (`autoCommit = false`), and [JdbcConnectionProvider] turned it to commit each statement as it ran, as Drivine
+     * runs a statement outside a transaction (#395).
+     */
+    internal var restoresAutoCommit = false
+
+    /**
+     * Why the graph's tables may not be there yet, as its provider left them unmade on a Spring transaction's connection
+     * (#395); null where they were made, or tried for. A Cypher statement that finds them missing fails with this.
+     */
+    internal var tablesPending: String? = null
+
     /** When the open transaction began, by [System.nanoTime]. */
     private var startedAt = 0L
 
@@ -119,9 +132,20 @@ class JdbcConnection(
             return mapped
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
+            tablesPending?.takeIf { compiledFromCypher && missingTable(e) }?.let { throw DrivineException("$it ${e.message}", e, spec) }
             throw e
         }
     }
+
+    /** Whether [e] is the store's error for a table that is not there. */
+    private fun missingTable(e: Exception): Boolean =
+        e is java.sql.SQLException && when (type) {
+            DatabaseType.POSTGRES -> e.sqlState == "42P01"
+            // A compiled write is a PL/SQL block, which reports the table among its own errors.
+            DatabaseType.ORACLE -> e.errorCode == 942 || e.message.orEmpty().contains("ORA-00942")
+            DatabaseType.SQLITE -> e.message.orEmpty().contains("no such table")
+            else -> false
+        }
 
     /**
      * A Cypher statement compiled to the store's SQL over the graph's tables, so a statement written for a
@@ -236,12 +260,21 @@ class JdbcConnection(
         connection.autoCommit = true
     }
 
-    /** Returns the connection to its pool. A transaction left open is rolled back: nothing is committed by closing. */
+    /**
+     * Returns the connection to its pool. A transaction left open is rolled back: nothing is committed by closing. A
+     * connection the pool gave committing nothing of itself is given back so ([restoresAutoCommit]); where it cannot be,
+     * that is logged, and it is closed all the same.
+     */
     override fun release(err: Throwable?) {
         err?.let { logger.warn("Closing connection with error: $it") }
         if (inTransaction) {
             runCatching { rollback() }
             runCatching { endTransaction() }
+        }
+        if (restoresAutoCommit) {
+            runCatching { connection.autoCommit = false }.onFailure {
+                logger.warn("Could not give the connection back to its pool committing nothing of itself, as the pool gave it: $it")
+            }
         }
         connection.close()
     }

@@ -1,5 +1,6 @@
 package org.drivine.connection
 
+import com.zaxxer.hikari.HikariDataSource
 import org.drivine.DrivineException
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
@@ -10,6 +11,10 @@ import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionTemplate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -34,12 +39,19 @@ abstract class TablesOnFirstConnectionContract {
      */
     protected abstract fun readOnly(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider
 
+    /** The store the test was given. */
+    protected abstract val type: DatabaseType
+
     /**
-     * A provider to the same store, for [graph], over a HikariCP pool the application made whose connections commit
-     * nothing of themselves (`autoCommit = false`, as `spring.datasource.hikari.auto-commit=false` sets): what a
-     * connection leaves uncommitted, the pool rolls back as it takes it back. The provider ends the pool.
+     * A HikariCP pool the application made, to the same store, whose connections commit nothing of themselves
+     * (`autoCommit = false`, as `spring.datasource.hikari.auto-commit=false` sets): what a connection leaves
+     * uncommitted, the pool rolls back as it takes it back.
      */
-    protected abstract fun notCommitting(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider
+    protected abstract fun notCommittingPool(): HikariDataSource
+
+    /** A provider for [graph] over a [notCommittingPool], which the provider ends. */
+    protected fun notCommitting(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider =
+        JdbcConnectionProvider("fresh", type, notCommittingPool(), ownsDataSource = true, graphName = graph)
 
     /** The tables in the store whose names start with [graph]'s, in lower case, in order. */
     protected abstract fun tables(graph: String): List<String>
@@ -47,13 +59,18 @@ abstract class TablesOnFirstConnectionContract {
     /** Every provider a test made, ended after it. */
     private val made = mutableListOf<JdbcConnectionProvider>()
 
+    /** Every pool a test made outside a provider, closed after it. */
+    private val pools = mutableListOf<HikariDataSource>()
+
     /** [provider], ended after the test. */
     protected fun open(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider = provider(graph).also { made += it }
 
-    /** Ends the pools a test made. */
+    /** Ends the providers a test made, and closes the pools it made outside one. */
     protected fun endAll() {
         made.forEach { runCatching { it.end() } }
         made.clear()
+        pools.forEach { runCatching { it.close() } }
+        pools.clear()
     }
 
     @AfterEach
@@ -220,6 +237,117 @@ abstract class TablesOnFirstConnectionContract {
             release()
         }
         assertEquals(listOf("Ada"), names(pm))
+    }
+
+    /** Run outside a transaction, a statement commits as it runs, as on a pool whose connections commit each one (#395). */
+    @Test
+    fun `on a pool whose connections commit nothing of themselves, Cypher and SQL run outside a transaction are committed, and another session sees them`() {
+        val pm = manager(notCommitting().also { made += it })
+        pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+        pm.execute(QuerySpecification.withStatement("CREATE TABLE written (n INTEGER)"))
+        pm.execute(QuerySpecification.withStatement("INSERT INTO written (n) VALUES (1)"))
+
+        val other = manager(open())
+        assertEquals(listOf("Ada"), names(other))
+        assertEquals(1, other.query(QuerySpecification.withStatement("SELECT n FROM written")).size)
+    }
+
+    @Test
+    fun `on a pool whose connections commit nothing of themselves, a Drivine transaction rolled back leaves nothing`() {
+        val provider = notCommitting().also { made += it }
+        val pm = manager(provider)
+        assertEquals(emptyList(), names(pm))
+
+        provider.connect().apply {
+            startTransaction()
+            query(cypher("CREATE (:Person {name: 'Ada'})"))
+            rollbackTransaction()
+            release()
+        }
+        pm.execute(cypher("CREATE (:Person {name: 'Bob'})"))
+        assertEquals(listOf("Bob"), names(manager(open())))
+    }
+
+    /**
+     * Spring's transaction-aware data source hands a Spring transaction's connection to whoever asks. A statement Drivine
+     * runs on it is the transaction's: committed with it, and rolled back with it. The connection is not turned to commit
+     * each statement, nor are the graph's tables made on it, either of which would commit the transaction partway through.
+     */
+    @Test
+    fun `on a Spring transaction's connection, what the application wrote first is not committed partway, nor are the tables made on it`() {
+        val pool = notCommittingPool().also { pools += it }
+        pool.connection.use { c ->
+            c.createStatement().use { it.execute("CREATE TABLE app_rows (n INTEGER)") }
+            c.commit()
+        }
+        val pm = manager(JdbcConnectionProvider("fresh", type, TransactionAwareDataSourceProxy(pool)).also { made += it })
+
+        TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult { status ->
+            JdbcTemplate(pool).update("INSERT INTO app_rows (n) VALUES (1)")
+            // The provider's first connection, and a statement on it, in the application's transaction.
+            assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT n FROM app_rows")).size)
+            status.setRollbackOnly()
+        }
+
+        val other = manager(open())
+        assertEquals(0, other.query(QuerySpecification.withStatement("SELECT n FROM app_rows")).size)
+        // Outside the application's transaction, the next connection makes the tables, and commits each statement.
+        pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+        assertEquals(listOf("Ada"), names(other))
+    }
+
+    /**
+     * On a new store whose first connection is a Spring transaction's, the tables are not made yet: a Cypher statement
+     * in the transaction fails, saying why they are not there and how to have them made.
+     */
+    @Test
+    fun `on a new store, Cypher in a Spring transaction fails saying the tables are not made on its connection, and how to have them made`() {
+        val pool = notCommittingPool().also { pools += it }
+        val pm = manager(JdbcConnectionProvider("fresh", type, TransactionAwareDataSourceProxy(pool)).also { made += it })
+
+        val failure = assertFailsWith<DrivineException> {
+            TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult {
+                pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+            }
+        }
+
+        assertContains(failure.message!!, "Spring transaction")
+        assertContains(failure.message!!, "outside one")
+        // A read, a plain SELECT on every store, where a write on Oracle is a PL/SQL block: it fails saying the same.
+        val read = assertFailsWith<DrivineException> {
+            TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult { names(pm) }
+        }
+        assertContains(read.message!!, "Spring transaction")
+        pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+        assertEquals(listOf("Ada"), names(manager(open())))
+    }
+
+    @Test
+    fun `on a Spring transaction's connection, a statement run outside a transaction is committed with the transaction, and rolled back with it`() {
+        // Another provider makes the tables, before the pool's first connection, so pm's first connection, in the
+        // transaction, finds them there.
+        val other = manager(open())
+        assertEquals(emptyList(), names(other))
+        val pool = notCommittingPool().also { pools += it }
+        val pm = manager(JdbcConnectionProvider("fresh", type, TransactionAwareDataSourceProxy(pool)).also { made += it })
+        val transactions = TransactionTemplate(DataSourceTransactionManager(pool))
+
+        transactions.executeWithoutResult {
+            pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
+            assertEquals(listOf("Ada"), names(pm))
+            assertEquals(emptyList(), names(other), "not committed before the transaction is")
+        }
+        assertEquals(listOf("Ada"), names(other))
+
+        transactions.executeWithoutResult { status ->
+            pm.execute(cypher("CREATE (:Person {name: 'Bob'})"))
+            status.setRollbackOnly()
+        }
+        assertEquals(listOf("Ada"), names(other))
+
+        // Outside one, the proxy hands out a connection of the pool's own, which commits each statement.
+        pm.execute(cypher("CREATE (:Person {name: 'Cy'})"))
+        assertEquals(listOf("Ada", "Cy"), names(other))
     }
 
     @Test

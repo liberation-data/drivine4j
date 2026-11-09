@@ -83,6 +83,16 @@ internal abstract class SqlGraph(val name: String, engine: String, private val m
      */
     internal fun ensure(connection: Connection) = ensure { connection.query(QuerySpecification.withStatement(it)) }
 
+    /**
+     * Refuses a store that is there but must not be used, by reads alone, each statement given to [run]: what [ensure]
+     * refuses before it makes anything. [JdbcConnectionProvider] asks it on a Spring transaction's connection, where it
+     * makes no tables (#395), so a store is refused there as on any other connection. None is refused by default.
+     */
+    internal open fun refuse(run: (String) -> List<Any?>) {}
+
+    /** [refuse], on [connection]. */
+    internal fun refuse(connection: Connection) = refuse { connection.query(QuerySpecification.withStatement(it)) }
+
     companion object {
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = JdbcConnectionProvider.DEFAULT_GRAPH

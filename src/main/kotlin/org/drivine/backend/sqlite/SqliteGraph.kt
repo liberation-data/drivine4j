@@ -86,10 +86,21 @@ internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAM
      * is made.
      */
     override fun ensure(run: (String) -> List<Any?>) {
-        val found = (run(made).singleOrNull() as? Number)?.toInt()
-        if (found == REUSES_IDS) throw ReusedIdsException(name, (run(FILE).singleOrNull() as? String)?.ifEmpty { null })
+        val found = refused(run)
         if (found == ddl.size) return
         ddl.forEach { run(it) }
+    }
+
+    /** A store whose tables give a deleted row's id again, refused with [ReusedIdsException] as [ensure] refuses it. */
+    override fun refuse(run: (String) -> List<Any?>) {
+        refused(run)
+    }
+
+    /** What [made] counts, once a store whose tables give a deleted row's id again is refused. */
+    private fun refused(run: (String) -> List<Any?>): Int? {
+        val found = (run(made).singleOrNull() as? Number)?.toInt()
+        if (found == REUSES_IDS) throw ReusedIdsException(name, (run(FILE).singleOrNull() as? String)?.ifEmpty { null })
+        return found
     }
 
     companion object {
