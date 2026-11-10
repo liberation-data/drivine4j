@@ -611,7 +611,7 @@ class StatelessGraphObjectManager private constructor(
         // The id as a save stores it: a value class is its value, and a UUID its text.
         val storedId = requireNotNull(objectMapper.toMap(mapOf("id" to id))["id"]) { "The object mapper writes nothing for the id '$id'." }
         val statement = backend.patch(graphClass, storedId, values, patch.conditions)
-        val flags = executor.whenNotContended { persistenceManager.query(statement.spec().transform(String::class.java)) }
+        val flags = executor.whenNotContended { executor.written(statement.spec().transform(String::class.java)) }
             .map { FoundStamp.of(it).found }
         if (flags.isEmpty()) return PatchResult.ABSENT
         return PatchResult(found = true, applied = flags.any { it != PatchOutcomes.UNMET }, changed = flags.any { it == PatchOutcomes.CHANGED })

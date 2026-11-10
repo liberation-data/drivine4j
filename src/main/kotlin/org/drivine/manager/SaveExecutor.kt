@@ -33,7 +33,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
      */
     fun save(statement: SaveStatement): List<String> {
         val rows = try {
-            whenNotContended { persistenceManager.query(spec(statement)) }
+            whenNotContended { written(spec(statement)) }
         } catch (failure: DrivineException) {
             if (statement.rootMode == RootMode.ABSENT) throw presentOr(statement.root, failure)
             // Turned away every time: another writer was changing a node this save writes, and the
@@ -41,7 +41,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
             // wrote nothing, and the answer is the same, to load again and re-apply.
             val root = statement.root
             val expected = root.expected
-            if (expected == null || !failure.isRetryable()) throw failure
+            if (expected == null || failure is LockNotTaken || !failure.isRetryable()) throw failure
             throw StaleObjectException(root.fragmentClass, root.id, expected, foundStamp = null, deleted = false, cause = failure)
         }
         return stamps(statement, rows)
@@ -182,7 +182,8 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
      *
      * A lost connection is not run again, though the driver calls it retryable: the save may have
      * been applied before the connection went, and a second run would find its own stamp and report
-     * a save that was applied as refused.
+     * a save that was applied as refused. Nor is a [written] statement whose transaction of its own could not
+     * begin ([LockNotTaken]): its connection has already waited the busy timeout for another writer.
      */
     fun <T> whenNotContended(statement: () -> T): T {
         var first: DrivineException? = null
@@ -192,7 +193,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
             } catch (failure: DrivineException) {
                 // A refusal is the answer, whatever was turned away before it.
                 if (failure.refusal() != null) throw failure.apply { first?.let(::addSuppressed) }
-                if (!failure.isRetryable()) throw first?.apply { addSuppressed(failure) } ?: failure
+                if (failure is LockNotTaken || !failure.isRetryable()) throw first?.apply { addSuppressed(failure) } ?: failure
                 first = first ?: failure
                 // No pause after the last attempt: nothing follows it.
                 if (attempt < CONTENDED_ATTEMPTS - 1) Thread.sleep(contendedPause(attempt))
@@ -200,6 +201,38 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
         }
         throw checkNotNull(first)
     }
+
+    /**
+     * Runs [spec], one statement that writes, as [PersistenceManager.query] runs it; where the backend
+     * [takes the write lock][GraphBackend.writesTakeTheLock] for a write, SQLite, as a batch of one, which runs in a
+     * transaction of its own (or in the caller's): its transaction takes the file's write lock as it begins, so the
+     * statement reads after another writer's commit and is not turned away for it, and a writer waits its turn on the
+     * busy timeout rather than running out of tries (#330). A connection not had, or a transaction that cannot begin, as
+     * when another writer holds the lock past the busy timeout, is thrown as [PersistenceManager.query] throws it, as a
+     * [DrivineException], where a batch throws it as it is: as [LockNotTaken], which [whenNotContended] does not run
+     * again, since the wait for the lock was the busy timeout's, and a checked [save] does not call stale.
+     */
+    fun <T : Any> written(spec: QuerySpecification<T>): List<T> {
+        if (!backend.writesTakeTheLock) return persistenceManager.query(spec)
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            persistenceManager.queryBatch(listOf(spec)).single() as List<T>
+        } catch (e: DrivineException) {
+            throw e
+        } catch (e: Exception) {
+            throw LockNotTaken(e, spec)
+        }
+    }
+
+    /**
+     * A [written] statement's connection, or its transaction of its own, could not be had: on SQLite, `BEGIN IMMEDIATE`
+     * waited out the busy timeout for another writer's lock. The statement was not run.
+     */
+    internal class LockNotTaken(cause: Throwable, spec: QuerySpecification<*>) : DrivineException(cause.message, cause, spec)
+
+    /** [written], for a statement that gives one row: [PersistenceManager.getOne]'s. */
+    fun <T : Any> writtenOne(spec: QuerySpecification<T>): T =
+        written(spec).singleOrNull() ?: throw DrivineException("Expected exactly one result", null, spec)
 
     /** Whether the backend says a cause of this failure is contention: see [GraphBackend.contended]. */
     private fun DrivineException.isRetryable(): Boolean =

@@ -76,7 +76,7 @@ class EdgeOperations internal constructor(
      * or found, or those it removed. It is run again when the engine turns it away as contended.
      */
     private fun count(statement: GraphStatement): Int =
-        executor.whenNotContended { persistenceManager.getOne(statement.spec().transform(Long::class.java)) }.toInt()
+        executor.whenNotContended { executor.writtenOne(statement.spec().transform(Long::class.java)) }.toInt()
 
     /**
      * Loads the [targetClass] nodes joined to [from] by a [type] relationship in [direction].
