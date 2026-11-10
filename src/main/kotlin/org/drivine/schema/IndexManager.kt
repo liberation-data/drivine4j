@@ -358,15 +358,23 @@ class IndexManager internal constructor(
         if (!grammar.indexOperationsAreAsync) return item
         val what = "${grammar.engine} ${spec.kind} on ${spec.label}${spec.properties}"
         val deadline = System.nanoTime() + build.timeout.toNanos()
-        var info = item
-        while (info == null || info.buildInProgress) {
-            val left = Duration.ofNanos(deadline - System.nanoTime())
-            if (left.isNegative || left.isZero) {
-                val message = "$what is still being built, having waited ${build.timeout}" + (info?.status?.let { ": it is $it" } ?: "")
-                return unbuilt(UnbuiltIndex(spec, stillBuilding = true, DrivineException(message)), info, build)
+        val (info, timedOut) = executor.poll("index build", ::pollOutcome) {
+            var info = item
+            var timedOut = false
+            while (info == null || info.buildInProgress) {
+                val left = Duration.ofNanos(deadline - System.nanoTime())
+                if (left.isNegative || left.isZero) {
+                    timedOut = true
+                    break
+                }
+                Thread.sleep(minOf(asyncPollInterval, left).toMillis().coerceAtLeast(1))
+                info = find(spec)
             }
-            Thread.sleep(minOf(asyncPollInterval, left).toMillis().coerceAtLeast(1))
-            info = find(spec)
+            info to timedOut
+        }
+        if (timedOut || info == null) {
+            val message = "$what is still being built, having waited ${build.timeout}" + (info?.status?.let { ": it is $it" } ?: "")
+            return unbuilt(UnbuiltIndex(spec, stillBuilding = true, DrivineException(message)), info, build)
         }
         if (info.buildFailed) {
             return unbuilt(UnbuiltIndex(spec, stillBuilding = false, DrivineException("$what failed to build: it is ${info.status}")), info, build)
@@ -396,15 +404,24 @@ class IndexManager internal constructor(
     private fun awaitDropped(spec: IndexSpec) {
         if (!grammar.indexOperationsAreAsync) return
         val deadline = System.currentTimeMillis() + asyncDropTimeout.toMillis()
-        while (find(spec) != null) {
-            if (System.currentTimeMillis() >= deadline) {
-                throw DrivineException(
-                    "Timed out after $asyncDropTimeout waiting for ${spec.kind} on " +
-                        "${spec.label}${spec.properties} to be dropped"
-                )
+        executor.poll("index drop", { "dropped" }) {
+            while (find(spec) != null) {
+                if (System.currentTimeMillis() >= deadline) {
+                    throw DrivineException(
+                        "Timed out after $asyncDropTimeout waiting for ${spec.kind} on " +
+                            "${spec.label}${spec.properties} to be dropped"
+                    )
+                }
+                Thread.sleep(asyncPollInterval.toMillis())
             }
-            Thread.sleep(asyncPollInterval.toMillis())
         }
+    }
+
+    /** How a poll of an index's build ended, as a [SchemaStatementTrace] observer is told. */
+    private fun pollOutcome(polled: Pair<SchemaItemInfo?, Boolean>): String = when {
+        polled.second || polled.first == null -> "still building"
+        polled.first!!.buildFailed -> "failed"
+        else -> "built"
     }
 
     /**

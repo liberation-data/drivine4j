@@ -167,9 +167,8 @@ internal class LowerCopyCatalog(
         properties.filter { again || label to it !in stored }.forEach { property ->
             var filled = 0L
             do {
-                val written = owner.getOne(
-                    QuerySpecification.withStatement(statements.fill(label, property)).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
-                ).toLong()
+                val fill = QuerySpecification.withStatement(statements.fill(label, property)).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
+                val written = SchemaStatementTrace.traced(owner, fill) { owner.getOne(fill) }.toLong()
                 filled += written
             } while (written >= BATCH)
             // The graph engines keep the record on the store's own node, which is made when it is not there.
@@ -178,10 +177,9 @@ internal class LowerCopyCatalog(
             // Memgraph turns away the second of two processes recording at once rather than wait for the
             // node's lock; recording again is harmless, so it is run again, as a contended save is.
             recording.whenNotContended {
-                owner.execute(
-                    QuerySpecification.withStatement(statements.record)
-                        .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
-                )
+                val record = QuerySpecification.withStatement(statements.record)
+                    .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
+                SchemaStatementTrace.traced(owner, record) { owner.execute(record) }
             }
             recorded += label to property
             logger.info("Filled in the lowercased copy of {}.{} on {} node(s), and recorded every node has it", label, property, filled)

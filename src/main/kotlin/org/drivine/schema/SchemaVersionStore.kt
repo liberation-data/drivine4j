@@ -68,12 +68,13 @@ class SchemaVersionStore(
      * If duplicate markers exist (a pre-constraint race), the most recently applied wins rather
      * than failing the read — [ensureSingleton] repairs the duplication itself.
      */
-    fun storedVersion(): String? = manager.maybeGetOne(
-        QuerySpecification
+    fun storedVersion(): String? {
+        val spec = QuerySpecification
             .withStatement(statements.read(SchemaMarker.VERSION))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
-    )
+        return SchemaStatementTrace.traced(manager, spec) { manager.maybeGetOne(spec) }
+    }
 
     /**
      * The inventory keys last applied under this scope, or null if the marker predates inventory
@@ -88,12 +89,11 @@ class SchemaVersionStore(
      * ([SchemaManager.ensure]) and which of those wait to be recreated; null as for [storedInventory].
      */
     internal fun storedRecord(): MarkerInventory? {
-        val raw = manager.maybeGetOne(
-            QuerySpecification
-                .withStatement(statements.read(SchemaMarker.ITEMS))
-                .bind(mapOf("scope" to scope))
-                .transform(String::class.java)
-        ) ?: return null
+        val spec = QuerySpecification
+            .withStatement(statements.read(SchemaMarker.ITEMS))
+            .bind(mapOf("scope" to scope))
+            .transform(String::class.java)
+        val raw = SchemaStatementTrace.traced(manager, spec) { manager.maybeGetOne(spec) } ?: return null
         // The store's mark is taken off by the statements a grammar gave, which may be a grammar of the caller's.
         return MarkerInventory.parse(statements.items(raw))
     }
@@ -106,11 +106,10 @@ class SchemaVersionStore(
      */
     internal fun otherScopes(): List<String> {
         statements // The graph is made first, where it is not yet.
-        return manager.query(
-            QuerySpecification
-                .withStatement(statements.scopes?.let(::SqlStatement) ?: CypherStatement(MarkerStatements.SCOPES_CYPHER))
-                .transform(String::class.java)
-        ).filter { it != scope }
+        val spec = QuerySpecification
+            .withStatement(statements.scopes?.let(::SqlStatement) ?: CypherStatement(MarkerStatements.SCOPES_CYPHER))
+            .transform(String::class.java)
+        return SchemaStatementTrace.traced(manager, spec) { manager.query(spec) }.filter { it != scope }
     }
 
     /** Records [version] with an empty inventory. Convenience for callers that only track a version. */
@@ -143,7 +142,7 @@ class SchemaVersionStore(
      * scopes (it is on the `scope` property), so it is installed once and shared by every owner.
      */
     fun ensureSingleton() {
-        manager.execute(
+        execute(
             QuerySpecification
                 .withStatement(statements.deleteAllButNewest)
                 .bind(mapOf("scope" to scope))
@@ -155,17 +154,20 @@ class SchemaVersionStore(
     }
 
     private fun merge(version: String?, items: String) {
-        manager.execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
+        execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
     }
 
     /** Removes this scope's marker (e.g. to force the next enforce to treat the schema as un-versioned). */
     fun clear() {
-        manager.execute(
+        execute(
             QuerySpecification
                 .withStatement(statements.delete)
                 .bind(mapOf("scope" to scope))
         )
     }
+
+    /** Runs [spec], a statement of the marker's, on the manager. */
+    private fun execute(spec: QuerySpecification<*>) = SchemaStatementTrace.traced(manager, spec) { manager.execute(spec) }
 
     /** The marker's names, which are the module's ([SchemaMarker]): drivine4j's names for them are kept for callers. */
     companion object {

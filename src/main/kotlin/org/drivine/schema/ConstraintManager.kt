@@ -281,6 +281,13 @@ class ConstraintManager internal constructor(
      */
     private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean): SchemaItemInfo? {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
+        return executor.poll("constraint build", ::pollOutcome) {
+            awaitBuild(spec, untilListed, deadline)
+        }
+    }
+
+    /** [awaitBuild], polling until [deadline]. */
+    private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean, deadline: Long): SchemaItemInfo? {
         while (System.currentTimeMillis() < deadline) {
             val info = find(spec)
             if (info == null && !untilListed) return null
@@ -300,6 +307,13 @@ class ConstraintManager internal constructor(
      * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
      * why the data could not be read.
      */
+    /** How a poll of a constraint's build ended, as a [SchemaStatementTrace] observer is told. */
+    private fun pollOutcome(polled: SchemaItemInfo?): String = when {
+        polled == null -> "absent"
+        polled.buildFailed -> "failed"
+        else -> "built"
+    }
+
     private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? =
         repeatedKeys(spec, limit, failure)?.takeIf { it.isNotEmpty() }?.let { violation(spec, it, limit) }
 
