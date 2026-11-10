@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.drivine.cypher.spec.SearchSpec.Case
 import org.drivine.cypher.spec.SearchSpec.Hold
+import org.drivine.cypher.spec.SearchSpec.Where
 import org.drivine.cypher.spec.SearchSpec.Search
 import org.drivine.cypher.spec.SearchSpec.Ranking.Bar
 import org.drivine.cypher.spec.SearchSpec.Step
@@ -54,6 +55,15 @@ class SearchSpecTest {
     fun `a held step that passes fails the case, naming the step and its issue`() {
         val failure = assertThrows<AssertionError> { run(spec(step), "oracle-text", heldOnSql) { listOf("a", "b") } }
         assertContains(failure.message!!, "a case: step 1 (liberation-data/drivine4j#1) held on oracle-text, and passing")
+    }
+
+    @Test
+    fun `a hold applies only where its where says, and elsewhere the step is checked and must pass`() {
+        fun heldWhere(applies: Boolean) = mapOf("a case" to listOf(Hold("liberation-data/drivine4j#1", listOf("sql"), listOf(1), Where("here") { applies })))
+        run(spec(step), "postgres", heldWhere(applies = false)) { listOf("a", "b") }
+        assertThrows<AssertionError> { run(spec(step), "postgres", heldWhere(applies = false)) { listOf("a") } }
+        run(spec(step), "postgres", heldWhere(applies = true)) { listOf("a") }
+        assertThrows<AssertionError> { run(spec(step), "postgres", heldWhere(applies = true)) { listOf("a", "b") } }
     }
 
     @Test

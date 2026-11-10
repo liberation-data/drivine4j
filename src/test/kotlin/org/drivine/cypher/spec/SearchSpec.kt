@@ -120,7 +120,13 @@ data class SearchSpec(
      * run, and must fail as the store fails today; one that passes fails its case, so that the hold is taken out when the
      * issue's fix lands.
      */
-    internal data class Hold(val issue: String, val on: List<String>, val steps: List<Int>? = null)
+    internal data class Hold(val issue: String, val on: List<String>, val steps: List<Int>? = null, val where: Where? = null)
+
+    /**
+     * Where a hold applies, when a store fails a step on one platform only: elsewhere the step is checked as any other is,
+     * and must pass. [described] says where, for the reader of [HELD].
+     */
+    internal data class Where(val described: String, val applies: () -> Boolean)
 
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a search's hits, by id, best first,
@@ -158,7 +164,9 @@ data class SearchSpec(
             val passing = mutableListOf<String>()
             for ((index, step) in case.steps.withIndex()) {
                 if (!step.runsOn(store)) continue
-                val hold = holds.firstOrNull { hold -> named(hold.on, store) && (hold.steps == null || index + 1 in hold.steps) }
+                val hold = holds.firstOrNull { hold ->
+                    named(hold.on, store) && (hold.steps == null || index + 1 in hold.steps) && hold.where?.applies?.invoke() != false
+                }
                 if (hold == null) check(case, index, step, store, run)
                 else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (${hold.issue})"
             }
@@ -213,6 +221,8 @@ data class SearchSpec(
         private const val GRAPH_ENGINES = "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"
         private const val FALKORDB = "liberation-data/drivine4j#666"
         private const val MEMGRAPH = "liberation-data/drivine4j#762"
+        /** Where Docker runs arm64 builds of the stores' images: the JVM's own architecture, as Docker runs the host's. */
+        private val ARM64 = Where("on arm64") { System.getProperty("os.arch") in setOf("aarch64", "arm64") }
         private const val ORACLE_TEXT = "liberation-data/drivine4j#763"
 
         /**
@@ -244,7 +254,9 @@ data class SearchSpec(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 4)),
                 Hold("liberation-data/drivine4j#761", listOf("sql"), listOf(2, 3, 4)),
             ),
-            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3)), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
+            // Memgraph 3.14.0's arm64 build searches only the first property of an index over several; its amd64 build, CI's,
+            // searches them all, as Neo4j does (#762). The box and the laptop run arm64, where Docker runs the host's build.
+            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3), ARM64), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
             "Escapes" to listOf(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 5, 6)),
                 Hold("liberation-data/drivine4j#765", listOf("sql", "memgraph"), listOf(6)),
