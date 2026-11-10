@@ -120,7 +120,7 @@ class SearchSpecTest {
     fun `a bar for neo4j holds it, and a bar naming no store, or a second bar for a store, fails at once`() {
         val ranking = SearchSpec.spec.ranking
         val neo4j = Bar(listOf("neo4j"), 21, 4.95)
-        assertSame(neo4j, ranking.copy(bars = ranking.bars + neo4j).bar("neo4j"))
+        assertSame(neo4j, ranking.copy(bars = ranking.bars.filterNot { "neo4j" in it.stores } + neo4j).bar("neo4j"))
         assertContains(assertThrows<IllegalArgumentException> { Bar(listOf("neptune"), 1, 1.0) }.message!!, "[neptune]")
         val twice = assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("sql"), 1, 1.0)) }
         assertContains(twice.message!!, "more than one bar")
