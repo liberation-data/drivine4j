@@ -1116,24 +1116,6 @@
       "type": "jdk.management.VirtualThreadSchedulerMXBean"
     },
     {
-      "type": "jdk.management.jfr.ConfigurationInfo"
-    },
-    {
-      "type": "jdk.management.jfr.EventTypeInfo"
-    },
-    {
-      "type": "jdk.management.jfr.FlightRecorderMXBean"
-    },
-    {
-      "type": "jdk.management.jfr.FlightRecorderMXBeanImpl"
-    },
-    {
-      "type": "jdk.management.jfr.RecordingInfo"
-    },
-    {
-      "type": "jdk.management.jfr.SettingDescriptorInfo"
-    },
-    {
       "type": "kotlin.Any"
     },
     {
@@ -1572,9 +1554,6 @@
       "glob": "org/slf4j/impl/StaticLoggerBinder.class"
     },
     {
-      "glob": "org/sqlite/native/Linux/x86_64/libsqlitejdbc.so"
-    },
-    {
       "glob": "META-INF/services/java.net.spi.URLStreamHandlerProvider"
     },
     {
@@ -1661,10 +1640,6 @@
     {
       "glob": "jdk/internal/icu/impl/data/icudt76b/nfkc.nrm",
       "module": "java.base"
-    },
-    {
-      "glob": "jdk/jfr/internal/query/view.ini",
-      "module": "jdk.jfr"
     },
     {
       "bundle": "oracle.jdbc.driver.ErrorMessages"

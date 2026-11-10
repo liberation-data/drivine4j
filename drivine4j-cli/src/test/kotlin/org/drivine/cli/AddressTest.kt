@@ -60,6 +60,16 @@ class AddressTest {
     }
 
     @Test
+    fun `a refusal of DRIVINE_ADDRESS's address doesn't print its password`() {
+        fun refusedFromEnv(text: String, type: StoreType? = null) = assertFailsWith<BadInvocation> { parse(text, type, fromCommandLine = false) }.message!!
+        assertEquals("drivine: the address postgresql://u:***@h:x/db has no port number after its host", refusedFromEnv("postgresql://u:secret@h:x/db"))
+        assertEquals("drivine: a neo4j address names no database: neo4j://u:***@h/db", refusedFromEnv("neo4j://u:s@cret@h/db"))
+        assertTrue("secret" !in refusedFromEnv("postgresql://u:secret@h/db", StoreType.NEO4J))
+        assertTrue("secret" !in refusedFromEnv("postgresql://u:sec ret@h/db"))
+        assertTrue("u@h" in refusedFromEnv("neo4j://u@h/db"))
+    }
+
+    @Test
     fun `a host with a _ in its name, as a Docker Compose service's, is read with its port and user`() {
         assertEquals(Address(StoreType.POSTGRES, null, "pg_main", 5432, "graphs", "u"), parse("postgresql://u@pg_main:5432/graphs"))
         assertEquals(Address(StoreType.NEO4J, "neo4j", "neo4j_db", null), parse("neo4j://neo4j_db"))

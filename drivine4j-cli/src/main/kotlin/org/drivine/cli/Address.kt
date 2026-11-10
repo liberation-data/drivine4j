@@ -46,32 +46,34 @@ data class Address(
                 if (path.isBlank()) throw BadInvocation("drivine: give SQLite's file, as sqlite:path, or sqlite::memory:")
                 return Address(agreeing(StoreType.SQLITE, type, text), database = path)
             }
+            // The address as a refusal prints it, with no password: DRIVINE_ADDRESS's may hold one.
+            val shown = shown(text)
             val uri = try {
                 URI(text)
             } catch (e: URISyntaxException) {
-                throw BadInvocation("drivine: the address $text isn't a URI: ${e.reason}")
+                throw BadInvocation("drivine: the address $shown isn't a URI: ${e.reason}")
             }
-            val scheme = uri.scheme?.lowercase() ?: throw BadInvocation("drivine: the address $text has no scheme, such as neo4j:// or postgresql://")
+            val scheme = uri.scheme?.lowercase() ?: throw BadInvocation("drivine: the address $shown has no scheme, such as neo4j:// or postgresql://")
             val (store, protocol) = when (scheme) {
                 in BOLT -> when (type) {
                     null, StoreType.NEO4J -> StoreType.NEO4J
                     StoreType.MEMGRAPH -> StoreType.MEMGRAPH
-                    else -> throw BadInvocation("drivine: --type ${type.flag} doesn't speak Bolt, as the address $text does")
+                    else -> throw BadInvocation("drivine: --type ${type.flag} doesn't speak Bolt, as the address $shown does")
                 } to scheme
-                in NEO4J -> agreeing(StoreType.NEO4J, type, text) to scheme
-                "memgraph" -> agreeing(StoreType.MEMGRAPH, type, text) to "bolt"
-                "falkordb" -> agreeing(StoreType.FALKORDB, type, text) to null
-                "postgresql", "postgres" -> agreeing(StoreType.POSTGRES, type, text) to null
-                "oracle" -> agreeing(StoreType.ORACLE, type, text) to null
+                in NEO4J -> agreeing(StoreType.NEO4J, type, shown) to scheme
+                "memgraph" -> agreeing(StoreType.MEMGRAPH, type, shown) to "bolt"
+                "falkordb" -> agreeing(StoreType.FALKORDB, type, shown) to null
+                "postgresql", "postgres" -> agreeing(StoreType.POSTGRES, type, shown) to null
+                "oracle" -> agreeing(StoreType.ORACLE, type, shown) to null
                 else -> throw BadInvocation("drivine: the address's scheme $scheme:// names no store; see --help")
             }
             // java.net.URI reads no host, port or user from an authority whose host it won't take as a server's, such as
             // a Docker Compose service's name with a `_` in it, so the authority is read here where it doesn't.
-            val authority = uri.rawAuthority ?: throw BadInvocation("drivine: the address $text names no host")
+            val authority = uri.rawAuthority ?: throw BadInvocation("drivine: the address $shown names no host")
             val hostAndPort = authority.substringAfterLast('@')
-            val host = (uri.host ?: hostAndPort.substringBefore(':')).ifEmpty { throw BadInvocation("drivine: the address $text names no host") }
+            val host = (uri.host ?: hostAndPort.substringBefore(':')).ifEmpty { throw BadInvocation("drivine: the address $shown names no host") }
             val port = if (uri.host != null) uri.port.takeIf { it != -1 } else hostAndPort.substringAfter(':', "").ifEmpty { null }?.let {
-                it.toIntOrNull() ?: throw BadInvocation("drivine: the address $text has no port number after its host")
+                it.toIntOrNull() ?: throw BadInvocation("drivine: the address $shown has no port number after its host")
             }
             val (user, password) = (uri.rawUserInfo ?: authority.substringBeforeLast('@', "").ifEmpty { null })?.let { info ->
                 decoded(info.substringBefore(':')).ifEmpty { null } to (if (':' in info) decoded(info.substringAfter(':')) else null)
@@ -79,7 +81,7 @@ data class Address(
             if (password != null && fromCommandLine) throw BadInvocation(Args.PASSWORD_REFUSED)
             val database = uri.path?.removePrefix("/")?.ifEmpty { null }
             if (database != null && store !in setOf(StoreType.POSTGRES, StoreType.ORACLE)) {
-                throw BadInvocation("drivine: a ${store.flag} address names no database: $text")
+                throw BadInvocation("drivine: a ${store.flag} address names no database: $shown")
             }
             // The contract lets -d name the service where the address doesn't: until -d is here, the address must.
             if (database == null && store == StoreType.ORACLE) {
@@ -94,6 +96,15 @@ data class Address(
                 user = user,
                 password = password,
             )
+        }
+
+        /** [text] with the password its authority holds, if any, as `***`. */
+        private fun shown(text: String): String {
+            val start = text.indexOf("://").takeIf { it >= 0 }?.plus(3) ?: return text
+            val end = text.indexOf('/', start).takeIf { it >= 0 } ?: text.length
+            val at = text.lastIndexOf('@', end - 1)
+            val colon = text.indexOf(':', start)
+            return if (at < start || colon < 0 || colon > at) text else text.substring(0, colon + 1) + "***" + text.substring(at)
         }
 
         /** [store], the one the scheme names, where `--type` gives none or the same one. */

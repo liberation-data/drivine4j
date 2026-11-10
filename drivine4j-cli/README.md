@@ -27,6 +27,9 @@ in `GRAALVM_HOME` or else `JAVA_HOME`: CI builds with GraalVM Community 25.0.2, 
 bytecode. The build applies GraalVM's Gradle plugin, `org.graalvm.buildtools.native`, and enables its metadata
 repository: the plugin fetches GraalVM's reachability metadata, for the libraries that carry none of their own such as
 Jackson and the Postgres driver, when it builds the image. Its build args are in `build.gradle`, with why each is there.
+`main` sets `io.netty.allocator.type=pooled` where nothing else set it: the Neo4j driver turns off Netty's use of
+`Unsafe` in a native image, and Netty 4.2's default allocator then fails on Neo4j and Memgraph. `-Dio.netty.allocator.type`
+on the JVM's command line, or `JAVA_OPTS`, sets another.
 
 `.github/workflows/cli-native.yml` builds it on linux x64, records its size and the time `drivine --version` takes to
 start in the run's summary, uploads it as the artifact `drivine-linux-x64`, and runs the tests below against it, on each
@@ -47,7 +50,10 @@ tests. To refresh it:
 2. Read each store's metadata from the log of its job, `trace metadata (<store>)`: the step "Print the metadata" prints
    each file the agent wrote between `=== BEGIN <file> ===` and `=== END ===`. A failing test doesn't stop the trace.
 3. Merge the six stores' files into that `reachability-metadata.json`, one entry for each class or resource, and keep
-   its resource entry for `org/drivine/cli/drivine-cli.properties`, which `--version` reads.
+   its resource entry for `org/drivine/cli/drivine-cli.properties`, which `--version` reads. Leave out what the agent
+   recorded of the JVM it ran on and not of the CLI: sqlite-jdbc's native library, as
+   `org/sqlite/native/Linux/x86_64/libsqlitejdbc.so`, which sqlite-jdbc's own feature adds for the platform the binary
+   is built on, and JFR's `jdk.jfr` and `jdk.management.jfr` entries. `MetadataTest` fails on them.
 
 ## Run
 
@@ -61,6 +67,11 @@ DRIVINE_PASSWORD=… drivine -a postgresql://localhost:5432/graphs -u drivine --
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
 1 when the statement failed, 2 for a bad invocation and 3 when the store can't be reached or refuses the user.
+
+`DRIVINE_TRACE_ERRORS=true` prints the stack trace of a statement's or a connection's failure, its causes' too, on
+stderr after the message: to see why a store or the native binary fails where the message doesn't say. It's not part of
+the contract, and `--log` takes its place when it comes. The password isn't in it, but the statement and the store's
+messages are.
 
 `sqlite::memory:` is a file in a directory of the run's own in the temp dir, as Drivine keeps a SQLite graph in a file
 that each connection opens. It's deleted when the run ends, by Ctrl-C or `kill` too; only `kill -9` leaves it there.
