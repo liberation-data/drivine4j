@@ -60,6 +60,16 @@ class AddressTest {
     }
 
     @Test
+    fun `a host with a _ in its name, as a Docker Compose service's, is read with its port and user`() {
+        assertEquals(Address(StoreType.POSTGRES, null, "pg_main", 5432, "graphs", "u"), parse("postgresql://u@pg_main:5432/graphs"))
+        assertEquals(Address(StoreType.NEO4J, "neo4j", "neo4j_db", null), parse("neo4j://neo4j_db"))
+        assertEquals(Args.PASSWORD_REFUSED, refused("postgresql://u:secret@pg_main/graphs"))
+        assertEquals("secret", parse("postgresql://u:secret@pg_main/graphs", fromCommandLine = false).password)
+        assertTrue("no port number" in refused("neo4j://neo4j_db:x"))
+        assertTrue("names no host" in refused("neo4j://:7687"))
+    }
+
+    @Test
     fun `an address that names no store, no host or a database where none is named is refused`() {
         assertTrue("names no store" in refused("http://h"))
         assertTrue("no scheme" in refused("h/db"))
@@ -67,6 +77,8 @@ class AddressTest {
         assertTrue("names no host" in refused("neo4j:///x"))
         assertTrue("SQLite's file" in refused("sqlite:"))
         assertTrue("names no database" in refused("neo4j://h/db"))
+        assertTrue("names no database" in refused("memgraph://h/db"))
+        assertTrue("names no database" in refused("falkordb://h/graph"))
         assertTrue("Oracle's service" in refused("oracle://h:1521"))
     }
 

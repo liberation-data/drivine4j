@@ -74,6 +74,8 @@ graalvmNative {
                 '--no-fallback',
                 // A build that fails says where, with the stack trace of what failed in the image builder.
                 '-H:+ReportExceptionStackTraces',
+                // Ctrl-C and kill run the shutdown hooks, as on a JVM: sqlite::memory:'s file is deleted then (Store.kt).
+                '--install-exit-handlers',
             )
             // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
             // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is

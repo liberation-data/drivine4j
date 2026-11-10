@@ -75,6 +75,43 @@ class CliSqliteTest {
         assertEquals(2, runCli(listOf("-a", "bolt://localhost:1", "--type", "postgres", "RETURN 1")).exit)
     }
 
+    @Test
+    fun `a store of each kind that can't be reached exits with 3, and prints nothing to stdout`() {
+        // Port 1 on this machine refuses the connection, so no store is needed, and none is started.
+        listOf("bolt://localhost:1", "memgraph://localhost:1", "falkordb://localhost:1", "postgresql://localhost:1/db", "oracle://localhost:1/FREEPDB1")
+            .forEach { address ->
+                val run = runCli(listOf("-a", address, "RETURN 1"), mapOf("DRIVINE_USER" to "u", "DRIVINE_PASSWORD" to "p"))
+                assertEquals(3, run.exit, "$address: ${run.stderr}")
+                assertEquals("", run.stdout, address)
+                assertTrue("can't connect" in run.stderr, "$address: ${run.stderr}")
+            }
+    }
+
+    // On Windows, Process.destroy kills the process outright, as kill -9 does, which no hook outlives.
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    fun `sqlite colon memory's file is deleted when the run is killed`(@org.junit.jupiter.api.io.TempDir tmp: java.nio.file.Path) {
+        // On a JVM of its own, as the binary runs, with a temp dir of the test's: a statement that runs for minutes,
+        // stopped by SIGTERM once the file is there.
+        val jvm = ProcessHandle.current().info().command().orElseThrow()
+        val process = ProcessBuilder(
+            jvm, "-Djava.io.tmpdir=$tmp", "-cp", System.getProperty("java.class.path"), "org.drivine.cli.MainKt",
+            "-a", "sqlite::memory:", "UNWIND range(1, 1000000000) AS x RETURN count(x) AS c",
+        ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        try {
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(60)
+            while (!tmp.toFile().walk().any { it.name == "memory.db" }) {
+                assertTrue(process.isAlive && System.nanoTime() < deadline, "the run made no memory.db in $tmp")
+                Thread.sleep(50)
+            }
+            process.destroy()
+            assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "the run didn't stop on SIGTERM")
+            assertEquals(emptyList(), tmp.toFile().listFiles()!!.map { it.name }, "left behind in $tmp")
+        } finally {
+            process.destroyForcibly()
+        }
+    }
+
     @TestFactory
     fun `the contract's cases`(): List<DynamicTest> = CliCases("sqlite", "sqlite::memory:", clears = false).tests()
 }

@@ -21,7 +21,7 @@ class Unreachable(cause: Throwable) : Exception(cause.message ?: cause.javaClass
  * the [PersistenceManager] that makes. So a statement runs as it would in an application, and on Postgres, Oracle and
  * SQLite Drivine compiles it to SQL over the graph's tables, which the provider makes when the store has none.
  */
-class Store private constructor(private val drivine: Drivine, private val scratch: Path?) : AutoCloseable {
+class Store private constructor(private val drivine: Drivine, private val scratch: Scratch?) : AutoCloseable {
 
     private val manager: PersistenceManager = drivine.persistenceManager(NAME)
 
@@ -44,7 +44,29 @@ class Store private constructor(private val drivine: Drivine, private val scratc
         try {
             drivine.close()
         } finally {
-            scratch?.let(::deleteScratch)
+            scratch?.delete()
+        }
+    }
+
+    /**
+     * The directory that holds `sqlite::memory:`'s file, deleted when the run ends. A run that ends by a signal, as
+     * Ctrl-C or `kill` ends it, runs no `finally`, so a shutdown hook deletes it then; the native image runs the hook
+     * on a signal because it's built with `--install-exit-handlers`. Only a `kill -9` leaves it behind, in the temp dir.
+     */
+    internal class Scratch private constructor(val dir: Path) {
+        private val hook = Thread { dir.toFile().deleteRecursively() }
+
+        fun delete() {
+            dir.toFile().deleteRecursively()
+            try {
+                Runtime.getRuntime().removeShutdownHook(hook)
+            } catch (e: IllegalStateException) {
+                // Already shutting down: the hook deletes it too.
+            }
+        }
+
+        companion object {
+            fun create(): Scratch = Scratch(Files.createTempDirectory("drivine-")).also { Runtime.getRuntime().addShutdownHook(it.hook) }
         }
     }
 
@@ -59,12 +81,12 @@ class Store private constructor(private val drivine: Drivine, private val scratc
         fun open(plan: Plan): Store {
             // Drivine keeps a SQLite graph in a file, which each connection of the pool opens: an in-memory database
             // would be one per connection. So sqlite::memory: is a file of the run's own, deleted when the run ends.
-            val scratch = if (plan.address.inMemory) Files.createTempDirectory("drivine-") else null
-            val properties = properties(plan, scratch?.resolve("memory.db")?.toString())
+            val scratch = if (plan.address.inMemory) Scratch.create() else null
+            val properties = properties(plan, scratch?.dir?.resolve("memory.db")?.toString())
             return try {
                 Store(Drivine(DataSourceMap(mapOf(NAME to properties))), scratch)
             } catch (e: Exception) {
-                scratch?.let(::deleteScratch)
+                scratch?.delete()
                 throw Unreachable(e)
             }
         }
@@ -100,10 +122,6 @@ class Store private constructor(private val drivine: Drivine, private val scratc
                 // One statement runs at a time. SQLite's provider makes the graph's tables on a connection of its own.
                 poolMax = 2,
             )
-        }
-
-        private fun deleteScratch(dir: Path) {
-            dir.toFile().deleteRecursively()
         }
     }
 }

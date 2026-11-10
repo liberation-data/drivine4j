@@ -65,8 +65,15 @@ data class Address(
                 "oracle" -> agreeing(StoreType.ORACLE, type, text) to null
                 else -> throw BadInvocation("drivine: the address's scheme $scheme:// names no store; see --help")
             }
-            val host = uri.host ?: throw BadInvocation("drivine: the address $text names no host")
-            val (user, password) = uri.rawUserInfo?.let { info ->
+            // java.net.URI reads no host, port or user from an authority whose host it won't take as a server's, such as
+            // a Docker Compose service's name with a `_` in it, so the authority is read here where it doesn't.
+            val authority = uri.rawAuthority ?: throw BadInvocation("drivine: the address $text names no host")
+            val hostAndPort = authority.substringAfterLast('@')
+            val host = (uri.host ?: hostAndPort.substringBefore(':')).ifEmpty { throw BadInvocation("drivine: the address $text names no host") }
+            val port = if (uri.host != null) uri.port.takeIf { it != -1 } else hostAndPort.substringAfter(':', "").ifEmpty { null }?.let {
+                it.toIntOrNull() ?: throw BadInvocation("drivine: the address $text has no port number after its host")
+            }
+            val (user, password) = (uri.rawUserInfo ?: authority.substringBeforeLast('@', "").ifEmpty { null })?.let { info ->
                 decoded(info.substringBefore(':')).ifEmpty { null } to (if (':' in info) decoded(info.substringAfter(':')) else null)
             } ?: (null to null)
             if (password != null && fromCommandLine) throw BadInvocation(Args.PASSWORD_REFUSED)
@@ -82,7 +89,7 @@ data class Address(
                 store = store,
                 protocol = protocol,
                 host = host,
-                port = uri.port.takeIf { it != -1 },
+                port = port,
                 database = database,
                 user = user,
                 password = password,

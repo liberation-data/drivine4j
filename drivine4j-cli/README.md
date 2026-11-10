@@ -47,6 +47,9 @@ The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the addre
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
 1 when the statement failed, 2 for a bad invocation and 3 when the store can't be reached or refuses the user.
 
+`sqlite::memory:` is a file in a directory of the run's own in the temp dir, as Drivine keeps a SQLite graph in a file
+that each connection opens. It's deleted when the run ends, by Ctrl-C or `kill` too; only `kill -9` leaves it there.
+
 ## Tests
 
 `./gradlew :drivine4j-cli:test` runs the CLI in process on SQLite in memory, with no container, and the contract's

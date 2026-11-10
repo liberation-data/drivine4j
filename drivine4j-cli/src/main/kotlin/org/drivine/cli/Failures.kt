@@ -11,14 +11,20 @@ import java.sql.SQLException
  */
 internal object Failures {
 
-    /** What the Neo4j driver (Neo4j and Memgraph), FalkorDB's client (Jedis) and the JDK throw for a store not reached or a user refused. */
+    /**
+     * What the Neo4j driver (Neo4j and Memgraph), FalkorDB's client (Jedis) and the JDK throw for a store not reached or a
+     * user refused. Not the Neo4j driver's `SecurityException` as a whole: it also throws one for a statement the user
+     * may not run (`Neo.ClientError.Security.Forbidden`), which is the statement's failure. A TLS handshake that fails is
+     * a `SecurityException` caused by an [javax.net.ssl.SSLException], which is named here.
+     */
     private val UNREACHABLE = setOf(
         "org.neo4j.driver.exceptions.ServiceUnavailableException",
         "org.neo4j.driver.exceptions.AuthenticationException",
-        "org.neo4j.driver.exceptions.SecurityException",
         "org.neo4j.driver.exceptions.AuthorizationExpiredException",
+        "org.neo4j.driver.exceptions.TokenExpiredException",
         "redis.clients.jedis.exceptions.JedisConnectionException",
         "redis.clients.jedis.exceptions.JedisAccessControlException",
+        "javax.net.ssl.SSLException",
         "com.zaxxer.hikari.pool.HikariPool\$PoolInitializationException",
         "java.net.ConnectException",
         "java.net.UnknownHostException",
@@ -36,8 +42,11 @@ internal object Failures {
 
     fun unreachable(failure: Throwable): Boolean =
         generateSequence(failure) { it.cause.takeIf { cause -> cause !== it } }.take(MAX_DEPTH).any { cause ->
-            named(cause.javaClass) || (cause is SQLException && sqlUnreachable(cause))
+            (named(cause.javaClass) && !forbidden(cause)) || (cause is SQLException && sqlUnreachable(cause))
         }
+
+    /** Jedis's `NOPERM`, a command the user, signed in, may not run: the statement's failure, as Neo4j's `Forbidden` is. */
+    private fun forbidden(cause: Throwable) = cause.message.orEmpty().startsWith("NOPERM")
 
     private fun named(type: Class<*>): Boolean =
         generateSequence(type) { it.superclass }.any { it.name in UNREACHABLE }
