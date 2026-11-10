@@ -71,6 +71,26 @@ class SchemaPlanDriverTest {
     }
 
     @Test
+    fun `a grammar of another kind tells a violation by its own rule, from the error the store threw`() {
+        // An error no store's rule takes for a violation: only the grammar's own, given the error itself, does.
+        val refusal = RuntimeException("the application's store refused the key")
+        val grammar = object : SchemaGrammar by Neo4jSchemaGrammar() {
+            override fun isConstraintViolation(e: Throwable) = e === refusal
+        }
+        val repeated = mapOf("properties" to mapOf("k" to "dup"), "count" to 2L)
+        val store = RecordingStore(DatabaseType.NEO4J, ddl = grammar) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> refusal
+                "_count > 1" in ran.statement -> listOf(repeated)
+                else -> emptyList<Any?>()
+            }
+        }
+        val spec = UniquenessConstraintSpec("Violated", "k")
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+    }
+
+    @Test
     fun `a graph refused for every owner is thrown out of the round as it is, and nothing more is run`() {
         val refused = ReusedIdsException("g", null)
         val store = RecordingStore(DatabaseType.SQLITE, ddl = SqliteSchemaGrammar(SqliteGraph("g")), graphName = "g") { refused }

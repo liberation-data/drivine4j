@@ -28,7 +28,8 @@ import java.util.Optional
  *
  * @param ddl the grammar the schema managers write with
  * @param schemaGrammar what the manager says its schema grammar is; null for a manager that has none
- * @param asyncCreationTimeout how long [constraints] waits for a constraint's asynchronous build to end
+ * @param asyncCreationTimeout how long [constraints]' `inForce` waits for a constraint's asynchronous build to end; an
+ *   `ensure` or `recreate` waits as long as the schema planner says (30 seconds), whatever it is
  * @param native whether the store runs FalkorDB's native commands, as FalkorDB's provider does: each is kept in
  *   [schema] as its arguments joined by spaces, and answered as a statement of that text is. Without it, one is refused
  *   as by a provider that has none.
