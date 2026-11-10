@@ -328,10 +328,19 @@ class JdbcConnectionTest {
         verify(jdbc, never()).createStatement()
     }
 
-    /** A Postgres connection whose session reads `max_parallel_maintenance_workers` as [workers], and sets it with [statement]. */
-    private fun postgresReading(workers: String): JdbcConnection {
-        val setting = Mockito.mock(ResultSet::class.java).also { `when`(it.getString(1)).thenReturn(workers) }
-        val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(anyString())).thenReturn(setting) }
+    /** The statement a session made by [postgresReading] reads its setting with, and resets it with. */
+    private lateinit var read: java.sql.Statement
+
+    /**
+     * A Postgres connection whose session reads `max_parallel_maintenance_workers` as [workers], a value the session set
+     * itself where [own], and sets it with [statement].
+     */
+    private fun postgresReading(workers: String, own: Boolean = true): JdbcConnection {
+        val setting = Mockito.mock(ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn(workers)
+            `when`(it.getBoolean(2)).thenReturn(own)
+        }
+        read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(anyString())).thenReturn(setting) }
         `when`(jdbc.createStatement()).thenReturn(read)
         `when`(statement.executeQuery()).thenReturn(setting)
         return JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
@@ -464,5 +473,60 @@ class JdbcConnectionTest {
             assertContains(it, JtaTransactions.REGISTRY)
         }
         verify(jdbc, never()).rollback()
+    }
+
+    /**
+     * A value of `max_parallel_maintenance_workers` the session set itself is set back with `set_config` after a build
+     * with no parallel workers, as the session's own again.
+     */
+    @Test
+    fun `a Postgres session's own parallel workers are set back after an index build with none`() {
+        val postgres = postgresReading("2", own = true).apply { noEviction = "its pool cannot close a session for good" }
+        `when`(jdbc.autoCommit).thenReturn(true)
+
+        postgres.buildingIndex { }
+
+        verify(read).executeQuery(Mockito.contains("pg_settings"))
+        // For the session, not a transaction: outside one, a transaction-local value would end with the statement that set it.
+        verify(jdbc, Mockito.times(2)).prepareStatement("SELECT set_config('max_parallel_maintenance_workers', ?, false)")
+        verify(statement).setString(1, "0")
+        verify(statement).setString(1, "2")
+        verify(read, never()).execute(Mockito.contains("RESET"))
+    }
+
+    /**
+     * A value of `max_parallel_maintenance_workers` the session did not set, from `postgresql.conf`, the role or the
+     * database, or the default, is reset after a build with no parallel workers, not set as the session's own, so that the
+     * session follows a later reload or `ALTER ROLE` as it did before.
+     */
+    @Test
+    fun `parallel workers a Postgres session did not set are reset after an index build with none, not set as its own`() {
+        val postgres = postgresReading("2", own = false).apply { noEviction = "its pool cannot close a session for good" }
+        `when`(jdbc.autoCommit).thenReturn(true)
+
+        postgres.buildingIndex { }
+
+        verify(statement).setString(1, "0")
+        verify(statement, never()).setString(1, "2")
+        verify(read).execute("RESET max_parallel_maintenance_workers")
+    }
+
+    /**
+     * In a transaction, `max_parallel_maintenance_workers` is set to 0 and back for the transaction alone, whatever the
+     * value's source, so that its end undoes both, and a value the transaction set for itself alone (`SET LOCAL`), which
+     * shows as the session's too, is not made the session's own after it.
+     */
+    @Test
+    fun `a Postgres index build in a transaction sets parallel workers to none and back for the transaction alone`() {
+        val postgres = postgresReading("2", own = false).apply { noEviction = "its connection is a transaction's that Drivine did not begin" }
+        `when`(jdbc.autoCommit).thenReturn(false)
+
+        postgres.buildingIndex { }
+
+        verify(jdbc, Mockito.times(2)).prepareStatement("SELECT set_config('max_parallel_maintenance_workers', ?, true)")
+        verify(jdbc, never()).prepareStatement("SELECT set_config('max_parallel_maintenance_workers', ?, false)")
+        verify(statement).setString(1, "0")
+        verify(statement).setString(1, "2")
+        verify(read, never()).execute(Mockito.contains("RESET"))
     }
 }
