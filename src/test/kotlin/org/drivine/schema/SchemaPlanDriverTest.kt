@@ -122,6 +122,22 @@ class SchemaPlanDriverTest {
     }
 
     @Test
+    fun `a grammar of another kind refuses a constraint its store can't make before anything is sent, on ensure and recreate`() {
+        val grammar = object : SchemaGrammar by FalkorDbSchemaGrammar() {
+            override fun requireConstrainable(spec: ConstraintSpec) {
+                if (spec.properties.any { "." in it }) throw DrivineException("This store can't hold ${spec.properties} to a constraint.")
+            }
+        }
+        val store = RecordingStore(DatabaseType.FALKORDB, ddl = grammar, native = true)
+        val dotted = UniquenessConstraintSpec("Person", "address.city")
+        for (call in listOf<() -> Any?>({ store.constraints.ensure(dotted) }, { store.constraints.recreate(dotted) })) {
+            val thrown = assertFailsWith<DrivineException> { call() }
+            assertContains(thrown.message!!, "can't hold [address.city]")
+        }
+        assertEquals(emptyList(), store.schema)
+    }
+
+    @Test
     fun `a listing that fails, which the planner reads as none, is logged at DEBUG under the manager that read it`() {
         val logger = LoggerFactory.getLogger(IndexManager::class.java) as Logger
         val appender = ListAppender<ILoggingEvent>().apply { start() }

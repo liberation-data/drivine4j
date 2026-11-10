@@ -80,7 +80,10 @@ class ConstraintManager internal constructor(
         spec: ConstraintSpec,
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
-    ): EnsureResult = checkNotNull(driver.item(ItemCall.ENSURE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+    ): EnsureResult {
+        refuseUnconstrainable(spec)
+        return checkNotNull(driver.item(ItemCall.ENSURE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+    }
 
     /** Convenience for [ensure] with a [UniquenessConstraintSpec] (single or composite). */
     fun ensureUnique(label: String, vararg properties: String): EnsureResult =
@@ -131,7 +134,18 @@ class ConstraintManager internal constructor(
         spec: ConstraintSpec,
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
-    ): EnsureResult = checkNotNull(driver.item(ItemCall.RECREATE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+    ): EnsureResult {
+        refuseUnconstrainable(spec)
+        return checkNotNull(driver.item(ItemCall.RECREATE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+    }
+
+    /**
+     * The grammar's own refusal of a constraint its store can't make ([SchemaGrammar.requireConstrainable]), asked
+     * before anything is filled in or made for it, as these calls always asked it. The planner refuses such a
+     * constraint itself only where the store is one the module knows (FalkorDB's), so a grammar of the application's
+     * own is asked here. The module is to ask it too (liberation-data/drivine-cypher-spec#170).
+     */
+    private fun refuseUnconstrainable(spec: ConstraintSpec) = grammar.requireConstrainable(spec.made())
 
     /** The call's arguments as the policy an item's plan reads them from. */
     private fun policy(violationSampleSize: Int, replaceBlockingIndex: Boolean) =
