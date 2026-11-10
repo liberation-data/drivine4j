@@ -135,13 +135,17 @@ class Neo4jEnsureAwaitsIndexesTest {
 
     @Test
     fun `a wait that fails for a reason other than the build is thrown as it is, not taken for a failed build`() {
-        // A wait on an index that is not there: Neo4j fails it, and the index ensure made is ONLINE, not FAILED.
+        // A wait on an index that is not there: Neo4j fails it, and the index ensure found is ONLINE, not FAILED.
+        // The index is made and waited for first, so it can't still be POPULATING when the wait fails, which would
+        // rightly make it an index still being built (drivine4j#743).
         val noSuchIndex = object : SchemaGrammar by Neo4jSchemaGrammar() {
             override val awaitIndexStatement = "CALL db.awaitIndex('AwaitNeoNoSuchIndex', \$timeout)"
         }
         val indexes = IndexManager(SchemaExecutor(provider), noSuchIndex)
         val spec = RangeIndexSpec("AwaitNeoOtherError", "k")
         try {
+            assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+            assertEquals("ONLINE", state(spec.effectiveName))
             val reported = mutableListOf<UnbuiltIndex>()
             val thrown = assertFails { indexes.ensure(spec, IndexBuild(Duration.ofSeconds(5)) { reported += it }) }
             assertTrue(reported.isEmpty(), "not reported as unbuilt: ${reported.map { it.error.message }}")
