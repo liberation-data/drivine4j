@@ -76,6 +76,36 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     /** [text] as a schema statement. */
     private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())
 
+    /**
+     * The PL/SQL that runs [ddl], an index over the node table, again a tenth of a second after another session's lock
+     * turns it away (`ORA-00054`), for up to [OracleGraph.BUSY_ATTEMPTS] tries, as [OracleGraph.ensuring] runs its
+     * statements (#517). Oracle's DDL does not wait for a lock: managers starting together each make the store's key
+     * constraint, and one whose statement met another's build over the node table, or a write of its stamp, was turned
+     * away at once, and went on without the constraint where it then looked before the other's build was done. Waited
+     * out, it finds the index the other made. It goes inside a block that declares [BUSY].
+     */
+    private fun waitingOutBusy(ddl: String): String = """
+        FOR attempt IN 1 .. ${OracleGraph.BUSY_ATTEMPTS} LOOP
+            BEGIN
+                EXECUTE IMMEDIATE ${literal(ddl)};
+                EXIT;
+            EXCEPTION
+                WHEN e_busy THEN
+                    IF attempt = ${OracleGraph.BUSY_ATTEMPTS} THEN RAISE; END IF;
+                    DBMS_SESSION.SLEEP(0.1);
+            END;
+        END LOOP;
+    """
+
+    /** [ddl], an index over the node table, as a block of its own that waits out another session's lock: see [waitingOutBusy]. */
+    private fun busyWaiting(ddl: String): String = """
+        DECLARE
+            $BUSY
+        BEGIN
+            ${waitingOutBusy(ddl)}
+        END;
+    """
+
     /** [text] as schema statements, after the one that makes the store when it is not there. */
     private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map(::statement)
 
@@ -163,6 +193,9 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     }
 
     companion object {
+        /** The exception [waitingOutBusy] catches: another session's lock turned the DDL away (`ORA-00054`). */
+        private const val BUSY = "e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);"
+
         /** The keys of a range index's details: the name of its labelled index, or of the uniqueness constraint's index that stands for it. */
         private val RANGE_DETAILS = listOf("labelled", "unique")
 
@@ -188,7 +221,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     private fun sharedIndex(spec: RangeIndexSpec): Pair<String, String> {
         val name = graph.objectName("ix", spec.properties)
         val expressions = spec.properties.joinToString(", ") { "JSON_VALUE(props, ${path(it)})" }
-        return name to "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)"
+        return name to busyWaiting("CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)")
     }
 
     /**
@@ -210,10 +243,11 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             """
             DECLARE
                 v_unique NUMBER;
+                $BUSY
             BEGIN
                 $standing;
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE ${literal("CREATE INDEX IF NOT EXISTS $labelled ON ${graph.nodes} n ($scoped)")};
+                    ${waitingOutBusy("CREATE INDEX IF NOT EXISTS $labelled ON ${graph.nodes} n ($scoped)")}
                 END IF;
             END;
             """,
@@ -321,7 +355,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             val name = graph.objectName("uq", listOf(spec.label) + spec.properties)
             // A node that lacks any of the properties is not constrained, as on the graph engines.
             val expressions = spec.properties.joinToString(", ") { OracleSql.unique("n", spec.label, spec.properties, it) }
-            val unique = "CREATE UNIQUE INDEX IF NOT EXISTS $name ON ${graph.nodes} n ($expressions)"
+            val unique = busyWaiting("CREATE UNIQUE INDEX IF NOT EXISTS $name ON ${graph.nodes} n ($expressions)")
             val range = RangeIndexSpec(spec.label, spec.properties)
             if (spec.properties.size > 1) {
                 statements(*rangeIndex(range).toTypedArray(), unique, recorded(spec, name))

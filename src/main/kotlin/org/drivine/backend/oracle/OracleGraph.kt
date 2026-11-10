@@ -170,7 +170,7 @@ ${made.entries.joinToString("\n") { (function, making) ->
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = SqlGraph.DEFAULT_NAME
 
-        /** How many times [ensuring] tries a statement that another session's lock turns away: thirty seconds' worth. */
+        /** How many times [ensuring], and the schema's index over the node table (see `OracleSchemaGrammar`), tries a statement that another session's lock turns away: thirty seconds' worth. */
         const val BUSY_ATTEMPTS = 300
 
         /** Oracle names are at most 128 characters. */
