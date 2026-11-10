@@ -42,12 +42,9 @@ import kotlin.test.fail
  *
  * Nothing here touches a database.
  *
- * `src/test/resources/cypher/marker.yaml` is drivine-cypher-spec's `marker.yaml` at 625f0c2, the commit
- * `gradle/cypher-compiler.properties` pins, copied unchanged. That commit is tagged v0.38.0, whose compiler isn't released
- * yet, and the other spec files here are still v0.37.0's, so the copy's `VERSION` stays `v0.37.0`: it names the tag every
- * file `scripts/check-cypher-spec.sh` compares was synced from. `marker.yaml` isn't in that script's list, or in
- * `scripts/sync-cypher-spec.sh`'s, until the pin moves to 0.38.0 and the copy is synced from v0.38.0: at v0.37.0 there is
- * no `marker.yaml` to compare it with, and the check would fail.
+ * `src/test/resources/cypher/marker.yaml` is drivine-cypher-spec's `marker.yaml` at the tag the copy's `VERSION` names,
+ * copied unchanged with the spec's other files by `scripts/sync-cypher-spec.sh` and checked against it by
+ * `scripts/check-cypher-spec.sh`; the compiler `gradle/cypher-compiler.properties` pins is that tag's release.
  */
 class StoreMarkerGoldenTest {
 
