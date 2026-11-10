@@ -111,7 +111,7 @@ class OracleSchemaManagementIntegrationTest {
 
     @Disabled(
         "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
-            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index"
+            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
     )
     @Test
     fun `a uniqueness constraint whose index's name an index over something else has is not made or matching`() {
@@ -122,7 +122,7 @@ class OracleSchemaManagementIntegrationTest {
 
     @Disabled(
         "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
-            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index"
+            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
     )
     @Test
     fun `a range index whose name an index over something else has is not made or matching`() {
