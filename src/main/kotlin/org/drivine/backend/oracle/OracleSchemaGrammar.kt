@@ -18,6 +18,8 @@ import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.VersionMarkerStatements
 import org.drivine.schema.catalogItem
+import org.drivine.schema.sharedStoreStamp
+import org.drivine.schema.sharedVersionMarker
 import org.drivine.schema.statementsOf
 import java.sql.SQLException
 
@@ -68,9 +70,13 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     /** What is kept of the catalog to write a read with is read again: see [LabelledIndexCatalog]. */
     override fun changed() = LabelledIndexCatalog.changed(graph.name)
 
-    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = OracleVersionMarker(graph, label, scopeProperty)
+    /** The marker as the module writes it for this graph ([org.drivine.cypher.store.marker.MarkerStatements]). */
+    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements =
+        sharedVersionMarker(label, scopeProperty, graph.store)
 
-    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = OracleStoreStamp(graph, label, keyProperty)
+    /** The store's stamp as the module writes it for this graph ([org.drivine.cypher.store.marker.StoreStampStatements]). */
+    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements =
+        sharedStoreStamp(label, keyProperty, graph.store)
 
     override fun lowerCopies(): LowerCopyStatements = OracleLowerCopies(graph)
 
