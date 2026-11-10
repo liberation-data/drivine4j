@@ -63,7 +63,8 @@ class SearchSpecTest {
         run(spec(step), "postgres", heldWhere(applies = false)) { listOf("a", "b") }
         assertThrows<AssertionError> { run(spec(step), "postgres", heldWhere(applies = false)) { listOf("a") } }
         run(spec(step), "postgres", heldWhere(applies = true)) { listOf("a") }
-        assertThrows<AssertionError> { run(spec(step), "postgres", heldWhere(applies = true)) { listOf("a", "b") } }
+        val passing = assertThrows<AssertionError> { run(spec(step), "postgres", heldWhere(applies = true)) { listOf("a", "b") } }
+        assertContains(passing.message!!, "step 1 (liberation-data/drivine4j#1, here) held on postgres, and passing")
     }
 
     @Test

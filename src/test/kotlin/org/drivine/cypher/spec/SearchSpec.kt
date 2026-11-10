@@ -6,6 +6,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.junit.jupiter.api.DynamicTest
+import org.testcontainers.DockerClientFactory
 import kotlin.test.assertEquals
 import kotlin.test.fail
 
@@ -116,9 +117,9 @@ data class SearchSpec(
     }
 
     /**
-     * Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. Each is
-     * run, and must fail as the store fails today; one that passes fails its case, so that the hold is taken out when the
-     * issue's fix lands.
+     * Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null, and
+     * where [where] applies, or everywhere where null. Each is run, and must fail as the store fails today; one that
+     * passes fails its case, so that the hold is taken out when the issue's fix lands.
      */
     internal data class Hold(val issue: String, val on: List<String>, val steps: List<Int>? = null, val where: Where? = null)
 
@@ -168,7 +169,7 @@ data class SearchSpec(
                     named(hold.on, store) && (hold.steps == null || index + 1 in hold.steps) && hold.where?.applies?.invoke() != false
                 }
                 if (hold == null) check(case, index, step, store, run)
-                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (${hold.issue})"
+                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (${listOfNotNull(hold.issue, hold.where?.described).joinToString()})"
             }
             if (passing.isNotEmpty()) {
                 fail("search.yaml, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")
@@ -221,8 +222,11 @@ data class SearchSpec(
         private const val GRAPH_ENGINES = "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"
         private const val FALKORDB = "liberation-data/drivine4j#666"
         private const val MEMGRAPH = "liberation-data/drivine4j#762"
-        /** Where Docker runs arm64 builds of the stores' images: the JVM's own architecture, as Docker runs the host's. */
-        private val ARM64 = Where("on arm64") { System.getProperty("os.arch") in setOf("aarch64", "arm64") }
+        /**
+         * Where Docker runs arm64 builds of the stores' images: the Docker host's architecture, which Docker pulls for, asked of
+         * Docker rather than read from the JVM's `os.arch`, which differs under Rosetta or with a remote `DOCKER_HOST`.
+         */
+        private val ARM64 = Where("on arm64") { DockerClientFactory.instance().info.architecture in setOf("aarch64", "arm64") }
         private const val ORACLE_TEXT = "liberation-data/drivine4j#763"
 
         /**
