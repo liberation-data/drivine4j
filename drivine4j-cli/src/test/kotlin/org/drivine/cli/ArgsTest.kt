@@ -49,6 +49,16 @@ class ArgsTest {
         // Attached, as getopt and cypher-shell read -psecret, it is refused as -p, and the password isn't printed back.
         assertEquals(Args.PASSWORD_REFUSED, refused("-psecret", "RETURN 1"))
         assertEquals(Args.PASSWORD_REFUSED, refused("--passwordsecret", "RETURN 1"))
+        // An unknown flag is named, never what follows it, and a value that isn't a word isn't printed back.
+        assertTrue("secret" !in refused("-xpostgresql://u:secret@h/db", "RETURN 1"))
+        assertTrue("secret" !in refused("--addresses=postgresql://u:secret@h/db", "RETURN 1"))
+        assertTrue("secret" !in refused("--type", "postgresql://u:secret@h/db", "RETURN 1"))
+        assertTrue("secret" !in refused("--format", "postgresql://u:secret@h/db", "RETURN 1"))
+        assertEquals("drivine: unknown flag -x; see --help", refused("-xpostgresql://u:secret@h/db", "RETURN 1"))
+        // -a with its value attached isn't read, and its address, password and all, isn't printed back.
+        for (attached in listOf("-apostgresql://u:secret@h/db", "-a=postgresql://u:secret@h/db")) {
+            assertEquals("drivine: give -a's value as the next argument, as in -a VALUE; see --help", refused(attached, "RETURN 1"))
+        }
         assertEquals(
             "drivine: a password on the command line shows in ps and in your shell history; use DRIVINE_PASSWORD, a profile or the prompt.",
             Args.PASSWORD_REFUSED,

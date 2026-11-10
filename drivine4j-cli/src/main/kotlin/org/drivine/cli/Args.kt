@@ -123,6 +123,20 @@ data class Plan(
  */
 object Args {
 
+    /**
+     * The flag [flag] as a refusal names it: a short flag's two characters, and a long flag's name up to anything that
+     * isn't a letter, a digit or a `-`. What follows may be a value attached to it, `-aADDRESS` or a mistyped
+     * `--addresspostgresql://u:secret@h`, which may hold a password, and isn't printed back.
+     */
+    internal fun named(flag: String): String =
+        if (!flag.startsWith("--")) flag.take(2) else "--" + flag.drop(2).takeWhile { it.isLetterOrDigit() || it == '-' }
+
+    /**
+     * A flag's value, [value], as a refusal names it, where it reads as a word, as `xml` does: any other is "that value",
+     * as it may be an address or a password given in the wrong place.
+     */
+    internal fun shownValue(value: String): String = if (Regex("[A-Za-z0-9_-]{1,32}").matches(value)) value else "that value"
+
     /** The contract's password refusal, word for word: a password on the command line shows in `ps` and in shell history. */
     const val PASSWORD_REFUSED =
         "drivine: a password on the command line shows in ps and in your shell history; use DRIVINE_PASSWORD, a profile or the prompt."
@@ -145,12 +159,16 @@ object Args {
             }
             // A long flag may give its value after a `=`, as in --format=json.
             val (flag, inline) = if (arg.startsWith("--") && '=' in arg) arg.substringBefore('=') to arg.substringAfter('=') else arg to null
-            fun value(): String = inline ?: args.getOrNull(i++) ?: throw BadInvocation("drivine: $flag needs a value; see --help")
+            fun value(): String = inline ?: args.getOrNull(i++) ?: throw BadInvocation("drivine: ${named(flag)} needs a value; see --help")
             fun noValue() {
-                if (inline != null) throw BadInvocation("drivine: $flag takes no value; see --help")
+                if (inline != null) throw BadInvocation("drivine: ${named(flag)} takes no value; see --help")
             }
             // -pSECRET and --passwordSECRET are a password with its flag, the value attached: refused as -p, not named back.
             if (flag.startsWith("-p") || flag.startsWith("--password")) throw BadInvocation(PASSWORD_REFUSED)
+            // -aVALUE and -a=VALUE aren't read, and aren't named back either: the value may be an address with a password.
+            if (!flag.startsWith("--") && flag.length > 2 && flag.take(2) in setOf("-a", "-c", "-u")) {
+                throw BadInvocation("drivine: give ${flag.take(2)}'s value as the next argument, as in ${flag.take(2)} VALUE; see --help")
+            }
             when (flag) {
                 "-h", "--help" -> { noValue(); return Parsed.Help }
                 "-v", "--version" -> { noValue(); return Parsed.Version }
@@ -161,18 +179,18 @@ object Args {
                 "--type" -> {
                     val named = value()
                     val type = StoreType.named(named)
-                        ?: throw BadInvocation("drivine: --type $named isn't a store: give one of ${StoreType.entries.joinToString { it.flag }}")
+                        ?: throw BadInvocation("drivine: --type ${shownValue(named)} isn't a store: give one of ${StoreType.entries.joinToString { it.flag }}")
                     invocation = invocation.copy(type = type)
                 }
                 "--format" -> {
                     val named = value()
-                    if (named in Format.LATER) throw BadInvocation("drivine: --format $named comes later; give auto, plain or json")
+                    if (named in Format.LATER) throw BadInvocation("drivine: --format ${shownValue(named)} comes later; give auto, plain or json")
                     val format = Format.entries.find { it.flag == named }
-                        ?: throw BadInvocation("drivine: --format $named isn't a format: give auto, plain or json")
+                        ?: throw BadInvocation("drivine: --format ${shownValue(named)} isn't a format: give auto, plain or json")
                     invocation = invocation.copy(format = format)
                 }
                 in LATER -> throw BadInvocation("drivine: $flag comes later, and this build doesn't take it; see --help")
-                else -> throw BadInvocation("drivine: unknown flag $flag; see --help")
+                else -> throw BadInvocation("drivine: unknown flag ${named(flag)}; see --help")
             }
         }
         return Parsed.Run(invocation)
