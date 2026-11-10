@@ -14,9 +14,25 @@ This is the first skeleton of it, for liberation-data/drivine4j#706: files, stdi
 ```
 
 That gives `drivine4j-cli/build/install/drivine/bin/drivine`, a script that runs the CLI on a JDK 21 or later. The
-native-image build, one binary per OS, and the CI that tests it on every store come in
-[#706](https://github.com/liberation-data/drivine4j/issues/706) and [#707](https://github.com/liberation-data/drivine4j/issues/707).
-The module isn't published.
+module isn't published.
+
+### The native binary
+
+```
+./gradlew :drivine4j-cli:nativeCompile
+```
+
+That gives `drivine4j-cli/build/native/nativeCompile/drivine`, one binary that needs no JVM. It needs a local GraalVM,
+in `GRAALVM_HOME` or else `JAVA_HOME`: CI builds with GraalVM Community 25.0.2, which builds the module's JDK 21
+bytecode. The build applies GraalVM's Gradle plugin, `org.graalvm.buildtools.native`, and enables its metadata
+repository: the plugin fetches GraalVM's reachability metadata, for the libraries that carry none of their own such as
+Jackson and the Postgres driver, when it builds the image. Its build args are in `build.gradle`, with why each is there.
+
+`.github/workflows/cli-native.yml` builds it on linux x64, records its size and the time `drivine --version` takes to
+start in the run's summary, uploads it as the artifact `drivine-linux-x64`, and runs the tests below against it, on each
+of the six stores. It runs on a pull request that changes this module, the core's `src/main`, or the build, each night,
+and by hand, apart from `ci.yml`, so a GraalVM problem doesn't block a pull request's CI. The binaries for the other
+operating systems come in [#707](https://github.com/liberation-data/drivine4j/issues/707).
 
 ## Run
 
@@ -40,4 +56,13 @@ Memgraph, FalkorDB and Postgres, and `ORACLE_TESTS=true` with it on Oracle. One 
 
 ```
 CLI_STORE_TESTS=true ./gradlew :drivine4j-cli:test --tests 'org.drivine.cli.CliPostgresTest'
+```
+
+`DRIVINE_CLI_BINARY`, the path of a built `drivine`, runs the same tests against it: each run is a process of the
+binary, with the run's arguments, stdin and environment and nothing of the test's own environment (a contract case's
+in an empty working directory of its own), and its stdout, stderr and exit code are checked. That's how CI tests the native binary:
+
+```
+DRIVINE_CLI_BINARY=$PWD/drivine4j-cli/build/native/nativeCompile/drivine CLI_STORE_TESTS=true \
+  ./gradlew :drivine4j-cli:test --tests 'org.drivine.cli.CliPostgresTest'
 ```

@@ -1,0 +1,175 @@
+# Builds the drivine CLI as a native binary with GraalVM (drivine4j-cli's nativeCompile), and runs the CLI's tests
+# against that binary on each store: drivine4j-cli's tests run it as a process when DRIVINE_CLI_BINARY names it (see
+# drivine4j-cli/README.md). Apart from ci.yml, so a GraalVM problem can't block a pull request's CI. On a pull request
+# that changes the CLI, the core it runs, or the build; each night; and by hand.
+name: CLI native
+
+on:
+  pull_request:
+    paths:
+      - 'drivine4j-cli/**'
+      - 'src/main/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - '.github/workflows/cli-native.yml'
+  # At 18:00 UTC, an hour after nightly.yml starts.
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+# Read only: the tests run with a token that can't write to the repository. The store tests' job adds actions: read,
+# to download the binary this run built.
+permissions:
+  contents: read
+
+# A pull request's newer run takes the place of the one still going.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('cli-native-pr-{0}', github.event.pull_request.number) || format('cli-native-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (linux x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The JDK 21 that compiles the module, as the toolchain asks: setup-java names it in JAVA_HOME_21_X64, which the
+      # build is pointed at below. GraalVM then takes JAVA_HOME, and builds the image from the JDK 21 bytecode.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: '25.0.2'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins, as ci.yml has it.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      - name: Build the native binary
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 :drivine4j-cli:nativeCompile
+
+      - name: Record the binary's size and start
+        run: |
+          binary=drivine4j-cli/build/native/nativeCompile/drivine
+          bytes=$(stat -c %s "$binary")
+          "$binary" --version
+          /usr/bin/time -f '%e s, %M KB at most' -o time.txt "$binary" --version > /dev/null
+          {
+            echo "### drivine, native, linux x64"
+            echo
+            echo "- Size: $bytes bytes ($(du -h "$binary" | cut -f1))"
+            echo "- \`drivine --version\` took $(cat time.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivine-linux-x64
+          path: drivine4j-cli/build/native/nativeCompile/drivine
+          if-no-files-found: error
+          retention-days: 7
+
+  # The CLI's tests on each store, against the binary: drivine4j-cli's CliStoreTest classes, which start the store in
+  # a container as the root module's tests do, and CliSqliteTest, which needs none.
+  store-tests:
+    name: store tests (${{ matrix.store }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.store == 'oracle' && 45 || 30 }}
+    permissions:
+      contents: read
+      # gh run download reads this run's artifacts.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: neo4j
+            tests: org.drivine.cli.CliNeo4jTest
+          - store: memgraph
+            tests: org.drivine.cli.CliMemgraphTest
+          - store: falkordb
+            tests: org.drivine.cli.CliFalkorDbTest
+          - store: postgres
+            tests: org.drivine.cli.CliPostgresTest
+          - store: oracle
+            tests: org.drivine.cli.CliOracleTest
+            oracle: 'true'
+          - store: sqlite
+            tests: org.drivine.cli.CliSqliteTest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      # As .github/actions/test-part has it: Docker 29+ raised the minimum API version to 1.44; Testcontainers 1.x
+      # defaults to 1.32.
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      # Pulled here, as .github/actions/test-part pulls them, so the pull isn't counted against the container's start.
+      - name: Pull the Oracle image
+        if: matrix.store == 'oracle'
+        run: docker pull gvenzl/oracle-free:23-faststart
+      - name: Pull the Postgres image
+        if: matrix.store == 'postgres'
+        run: docker pull pgvector/pgvector:pg17
+
+      # An artifact keeps no file mode, so the binary is made executable again.
+      - name: Download the binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name drivine-linux-x64 --dir "$RUNNER_TEMP/drivine"
+          chmod +x "$RUNNER_TEMP/drivine/drivine"
+          "$RUNNER_TEMP/drivine/drivine" --version
+
+      - name: Run the CLI's tests against the binary
+        env:
+          CLI_STORE_TESTS: 'true'
+          ORACLE_TESTS: ${{ matrix.oracle || 'false' }}
+        run: |
+          export DRIVINE_CLI_BINARY="$RUNNER_TEMP/drivine/drivine"
+          ./gradlew --no-daemon :drivine4j-cli:test --tests '${{ matrix.tests }}'
+
+      - name: Upload the test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-native-test-results-${{ matrix.store }}
+          path: |
+            drivine4j-cli/build/test-results/test/
+            drivine4j-cli/build/reports/tests/test/
+          retention-days: 30

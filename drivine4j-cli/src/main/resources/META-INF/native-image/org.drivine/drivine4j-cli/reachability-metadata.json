@@ -1,0 +1,7 @@
+{
+  "resources": [
+    {
+      "glob": "org/drivine/cli/drivine-cli.properties"
+    }
+  ]
+}

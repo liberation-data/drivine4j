@@ -2,6 +2,8 @@ plugins {
     id 'org.jetbrains.kotlin.jvm'
     // installDist gives build/install/drivine/bin/drivine: see README.md. Not published yet.
     id 'application'
+    // nativeCompile gives build/native/nativeCompile/drivine, one binary, with GraalVM: see README.md.
+    id 'org.graalvm.buildtools.native' version '1.1.17'
 }
 
 group = 'org.drivine'
@@ -43,6 +45,43 @@ dependencies {
     testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
 }
 
+// The root module's `api 'org.testcontainers:neo4j'`, there for its users' tests, brings Testcontainers, docker-java
+// and JUnit 4 into what the CLI runs, which reaches none of them. Left out of the CLI's runtime classpath, so out of
+// installDist's lib/ and the native image; the tests' classpath, which doesn't extend this one, keeps them.
+configurations.runtimeClasspath {
+    exclude group: 'org.testcontainers'
+    exclude group: 'com.github.docker-java'
+    exclude group: 'junit', module: 'junit'
+}
+
+// The native binary: `./gradlew :drivine4j-cli:nativeCompile`, on a GraalVM (GRAALVM_HOME, else JAVA_HOME), gives
+// build/native/nativeCompile/drivine. cli-native.yml builds it and runs the tests against it.
+graalvmNative {
+    // native-image is GRAALVM_HOME's, else JAVA_HOME's, and not a Gradle toolchain's: the module compiles on JDK 21.
+    toolchainDetection = false
+    // The reachability metadata of libraries that carry none of their own, such as Jackson and the Postgres driver,
+    // from GraalVM's metadata repository, which the plugin fetches. ojdbc11, sqlite-jdbc, the Neo4j driver and Netty
+    // carry theirs in META-INF/native-image, which native-image reads from their jars with no flag.
+    metadataRepository {
+        enabled = true
+    }
+    binaries {
+        named('main') {
+            imageName = 'drivine'
+            mainClass = application.mainClass
+            buildArgs.addAll(
+                // A binary that runs on its own or not at all: no fallback image that needs a JVM to run.
+                '--no-fallback',
+                // A build that fails says where, with the stack trace of what failed in the image builder.
+                '-H:+ReportExceptionStackTraces',
+            )
+            // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
+            // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is
+            // the repository's. The CLI's own, the resource --version reads, is in META-INF/native-image.
+        }
+    }
+}
+
 kotlin {
     compilerOptions {
         freeCompilerArgs.addAll '-Xjsr305=strict'
@@ -71,6 +110,11 @@ tasks.named('test') {
         }
     }
     // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    // DRIVINE_CLI_BINARY, the path of a built drivine, runs the tests against it, as a process, and not in process:
+    // see CliCases.kt. It, and the binary it names, are inputs, so a new binary runs them again.
+    def binary = providers.environmentVariable('DRIVINE_CLI_BINARY').orElse('')
+    inputs.property('cliBinary', binary)
+    if (binary.get()) inputs.file(binary.get()).withPropertyName('cliBinaryFile')
     rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
     if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
 }

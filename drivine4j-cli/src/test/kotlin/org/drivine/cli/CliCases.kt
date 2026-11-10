@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.DynamicTest
+import java.io.File
 import java.io.StringWriter
+import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -12,12 +15,40 @@ import kotlin.test.fail
 /** What a run of the CLI gave. */
 data class CliRun(val exit: Int, val stdout: String, val stderr: String)
 
-/** Runs the CLI in process, as the binary runs, with [env] for its environment and nothing of the test's own. */
-fun runCli(args: List<String>, env: Map<String, String> = emptyMap()): CliRun {
+/**
+ * Runs the CLI with [env] for its environment and nothing of the test's own: in process, as the binary runs, or, where
+ * `DRIVINE_CLI_BINARY` names a built `drivine`, that binary, as a process given [stdin] and run in [dir]. In process
+ * the CLI reads no stdin yet, and no case that runs here needs a working directory of its own.
+ */
+fun runCli(args: List<String>, env: Map<String, String> = emptyMap(), stdin: String? = null, dir: File? = null): CliRun {
+    CLI_BINARY?.let { return runBinary(it, args, env, stdin, dir) }
     val out = StringWriter()
     val err = StringWriter()
     val exit = Cli(env, out, err).run(args)
     return CliRun(exit, out.toString(), err.toString())
+}
+
+/** The binary the tests run, where `DRIVINE_CLI_BINARY` names one: see README.md. */
+private val CLI_BINARY: String? = System.getenv("DRIVINE_CLI_BINARY")?.ifBlank { null }
+
+private fun runBinary(binary: String, args: List<String>, env: Map<String, String>, stdin: String?, dir: File?): CliRun {
+    val out = File.createTempFile("drivine-out-", ".txt")
+    val err = File.createTempFile("drivine-err-", ".txt")
+    try {
+        val builder = ProcessBuilder(listOf(binary) + args).directory(dir).redirectOutput(out).redirectError(err)
+        builder.environment().apply { clear(); putAll(env) }
+        val process = builder.start()
+        // Closed, so a run given no stdin reads an empty one, as from a pipe with nothing in it.
+        process.outputStream.use { it.write(stdin.orEmpty().toByteArray(Charsets.UTF_8)) }
+        if (!process.waitFor(5, TimeUnit.MINUTES)) {
+            process.destroyForcibly()
+            fail("$binary ${args.joinToString(" ")} ran past five minutes")
+        }
+        return CliRun(process.exitValue(), out.readText(Charsets.UTF_8), err.readText(Charsets.UTF_8))
+    } finally {
+        out.delete()
+        err.delete()
+    }
 }
 
 /**
@@ -75,7 +106,13 @@ class CliCases(
         (case["env"] as Map<*, *>?)?.forEach { (name, value) ->
             if (value == null) env.remove(name as String) else env[name as String] = substituted(value as String)
         }
-        val run = runCli(args, env)
+        // Each case in an empty working directory of its own, where its files are to be written when files come.
+        val dir = Files.createTempDirectory("drivine-case-").toFile()
+        val run = try {
+            runCli(args, env, case["stdin"] as String?, dir)
+        } finally {
+            dir.deleteRecursively()
+        }
         val name = case["name"]
         (case["stdout"] as String?)?.let { assertEquals(it, run.stdout, "$name: stdout (stderr: ${run.stderr})") }
         (case["stdoutLines"] as List<*>?)?.let { patterns -> matchLines(patterns.map { Regex(it as String) }, run.stdout, name) }
