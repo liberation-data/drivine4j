@@ -298,7 +298,10 @@ class JdbcConnection(
      * and [release] closes the session for good, with whatever ended the build, and the segment goes with it. Where it
      * cannot be ([noEviction]): another pool, which has no way to close one of its sessions for good, or a caller's
      * transaction's session, which closing would end partway through, the build runs with no parallel workers
-     * (`max_parallel_maintenance_workers` 0), set back after to what it was.
+     * (`max_parallel_maintenance_workers` 0), set back after to what it was: to the session's own value where the
+     * session had set one, and otherwise reset, so that a value from `postgresql.conf`, the role or the database, or the
+     * default, is followed again as it was, rather than kept as the session's own. In a transaction both are set for the
+     * transaction alone (`SET LOCAL`), which its end undoes, so that a value it set for itself alone is not kept after it.
      */
     internal fun <T> buildingIndex(block: () -> T): T {
         val refusal = noEviction ?: "it is in a transaction".takeIf { inTransaction } ?: "its pool cannot close a session for good".takeIf { evictor == null }
@@ -307,20 +310,27 @@ class JdbcConnection(
             return block()
         }
         evictionRefused(refusal)
+        val local = !connection.autoCommit
+        // The value to set back: the session's own, or, in a transaction, whatever it is; null where it follows one it did not set.
         val previous = connection.createStatement().use { st ->
-            st.executeQuery("SELECT current_setting('$PARALLEL_WORKERS')").use { it.next(); it.getString(1) }
+            st.executeQuery("SELECT setting, source = 'session' FROM pg_settings WHERE name = '$PARALLEL_WORKERS'").use {
+                it.next()
+                it.getString(1).takeIf { _ -> local || it.getBoolean(2) }
+            }
         }
-        setParallelWorkers("0")
+        setParallelWorkers("0", local)
         try {
             return block()
         } finally {
             // In a caller's transaction that the build failed, this fails too, and the transaction's rollback sets it back.
-            runCatching { setParallelWorkers(previous) }
+            runCatching {
+                if (previous != null) setParallelWorkers(previous, local) else connection.createStatement().use { it.execute("RESET $PARALLEL_WORKERS") }
+            }
         }
     }
 
-    private fun setParallelWorkers(value: String) {
-        connection.prepareStatement("SELECT set_config('$PARALLEL_WORKERS', ?, false)").use { st ->
+    private fun setParallelWorkers(value: String, local: Boolean) {
+        connection.prepareStatement("SELECT set_config('$PARALLEL_WORKERS', ?, $local)").use { st ->
             st.setString(1, value)
             st.executeQuery().close()
         }

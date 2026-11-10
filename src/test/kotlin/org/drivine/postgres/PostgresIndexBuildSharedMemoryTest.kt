@@ -122,7 +122,9 @@ class PostgresIndexBuildSharedMemoryTest {
 
     /**
      * A data source other than HikariCP's has no way to close a session for good, so the build runs with no parallel
-     * workers instead, and the session's own setting, whatever the application set it to, is put back after.
+     * workers instead, and the session's own setting, whatever the application set it to, is put back after. A setting
+     * the session did not set itself, as one from `postgresql.conf`, the role or the database, or the default, is reset
+     * after, not made the session's own, so the session follows a later reload or `ALTER ROLE` as before.
      */
     @Test
     fun `a build on a pool that cannot close a session runs with no parallel workers, and leaves the session as it was`() {
@@ -142,6 +144,13 @@ class PostgresIndexBuildSharedMemoryTest {
             assertEquals(pid, pid(single.connection), "the same session")
             assertEquals(emptySet(), segmentsOf(pid), "the build ran in parallel")
             assertEquals("3", setting(single.connection))
+
+            single.connection.createStatement().use { it.execute("RESET max_parallel_maintenance_workers") }
+            assertTrue(source(single.connection) != "session", "reset, the setting is not the session's own")
+            assertTrue(manager.indexes.ensure(RangeIndexSpec(LABEL, "p")) is EnsureResult.Created)
+
+            assertEquals(pid, pid(single.connection), "the same session")
+            assertTrue(source(single.connection) != "session", "the setting the session did not set is made its own: its source is ${source(single.connection)}")
         } finally {
             single.destroy()
         }
@@ -177,11 +186,44 @@ class PostgresIndexBuildSharedMemoryTest {
         assertEquals(indexes + 1, indexCount(), "the index is there after the commit")
     }
 
+    /**
+     * In a caller's transaction the workers are set to 0 and back for the transaction alone, so a value the transaction
+     * set for itself alone (`SET LOCAL`), which `pg_settings` shows as the session's too, is not kept after it ends.
+     */
+    @Test
+    fun `a build in a caller's transaction leaves a value it set for itself alone to end with it`() {
+        val single = SingleConnectionDataSource(URL, PostgresTestContainer.getConnectionUsername(), PostgresTestContainer.getConnectionPassword(), true)
+        try {
+            val manager = NonTransactionalPersistenceManager(
+                JdbcConnectionProvider("local", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(single), graphName = GRAPH), "local", DatabaseType.POSTGRES, SubtypeRegistry(),
+            )
+            val before = setting(single.connection)
+
+            TransactionTemplate(DataSourceTransactionManager(single)).executeWithoutResult {
+                val session = DataSourceUtils.getConnection(single)
+                session.createStatement().use { it.execute("SET LOCAL max_parallel_maintenance_workers = 3") }
+
+                assertTrue(manager.indexes.ensure(RangeIndexSpec(LABEL, "q")) is EnsureResult.Created)
+
+                assertEquals("3", setting(session), "the setting is put back for the rest of the transaction")
+            }
+
+            assertEquals(before, setting(single.connection), "the transaction's own setting ended with it")
+            assertTrue(source(single.connection) != "session", "the transaction's own setting is made the session's: its source is ${source(single.connection)}")
+        } finally {
+            single.destroy()
+        }
+    }
+
     private fun pid(session: java.sql.Connection): Int =
         session.createStatement().use { st -> st.executeQuery("SELECT pg_backend_pid()").use { it.next(); it.getInt(1) } }
 
     private fun setting(session: java.sql.Connection): String =
         session.createStatement().use { st -> st.executeQuery("SELECT current_setting('max_parallel_maintenance_workers')").use { it.next(); it.getString(1) } }
+
+    /** Where the session's `max_parallel_maintenance_workers` comes from: `session` where the session set it itself. */
+    private fun source(session: java.sql.Connection): String =
+        session.createStatement().use { st -> st.executeQuery("SELECT source FROM pg_settings WHERE name = 'max_parallel_maintenance_workers'").use { it.next(); it.getString(1) } }
 
     /** The indexes over the graph's node table, as Postgres has them. */
     private fun indexCount(): Int = watch("SELECT count(*) FROM pg_indexes WHERE tablename = '${GRAPH}_node'") { it.getInt(1) }.single()
