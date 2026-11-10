@@ -17,6 +17,7 @@ import sample.fulltext.ArticleNodeQueryDsl
 import sample.fulltext.ArticleView
 import sample.fulltext.AuthoredArticleView
 import sample.fulltext.MemoNode
+import sample.multilabel.PublishedPaper
 
 /**
  * A full-text search is bounded where the index yields, not only where the rows are returned.
@@ -124,6 +125,19 @@ class FullTextIndexBoundTest {
 
         assertEquals(8, indexLimit(plan))
         assertEquals(8, plan.indexK)
+    }
+
+    @Test
+    fun `a root of several labels has the module's head check them and over-fetch, as the plan reports`() {
+        // The index is on Paper alone, so it yields a Paper that is not Published, which the head drops before it cuts.
+        val engines = listOf(neo4j, FalkorDbCypherGrammar(CallSubqueryEmitter()), MemgraphGrammar(CallSubqueryEmitter()))
+        engines.forEach { grammar ->
+            val plan = FullTextSearchPlanner.plan(PublishedPaper::class.java, null, "kotlin", 8, 0.0, grammar)
+
+            assertTrue(plan.cypher.contains("WITH node, score WHERE node:`Paper`:`Published`"), "${grammar::class.simpleName}:\n${plan.cypher}")
+            assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, indexLimit(plan))
+            assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, plan.indexK)
+        }
     }
 
     @Test
