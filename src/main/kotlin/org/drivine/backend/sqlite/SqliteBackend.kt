@@ -32,6 +32,9 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     /** How a plan of steps is carried out: by the write function of the connection. */
     override val blocks = SqliteWriteBlocks(graph)
 
+    /** A transaction here begins `IMMEDIATE`, taking the write lock, and waits out another writer on the busy timeout: see [SqliteDataSource]. */
+    override val writesTakeTheLock = true
+
     /** A partial index over the nodes of a label is the planner's to choose, so [indexed] changes nothing here. */
     override fun select(graphClass: Class<*>, collectionSorts: List<CollectionSortSpec>, depthOverrides: Map<String, Int>, indexed: Boolean): SqliteSelect =
         SqliteSelect(graph, graphClass, collectionSorts, depthOverrides)

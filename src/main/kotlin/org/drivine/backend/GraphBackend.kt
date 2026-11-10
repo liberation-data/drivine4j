@@ -63,6 +63,14 @@ internal interface GraphBackend {
     /** Whether a save or delete can cascade to the nodes nothing else refers to (`DELETE_ORPHAN`). */
     val supportsOrphanDelete: Boolean
 
+    /**
+     * Whether a statement that writes is run in a transaction of its own, which takes the store's write lock as it
+     * begins, rather than as it is: see [org.drivine.manager.SaveExecutor.written]. SQLite: a statement run on its own
+     * reads before it writes, and is turned away (`SQLITE_BUSY_SNAPSHOT`, or `SQLITE_BUSY` without the busy timeout's
+     * wait) where another connection wrote in between, so writers on many connections ran out of tries under load (#330).
+     */
+    val writesTakeTheLock: Boolean get() = false
+
     /** What to tell a caller refused `DELETE_ORPHAN`: which engine cannot, and why. */
     val orphanDeleteLimit: String?
 

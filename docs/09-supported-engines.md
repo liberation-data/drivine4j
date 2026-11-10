@@ -954,9 +954,13 @@ There is no migration, as SQLite cannot change a table's key in place.
     is logged as a warning when it ends.
   - A read outside a transaction does not wait for a writer. The file is in WAL mode: a read sees what was committed
     when it started, and nothing of a transaction still open.
-  - Outside a transaction, each statement is a transaction of its own. A save or a delete the file stays
-    locked against for longer than the wait, or that read before another connection wrote, is run again,
-    as a contended save is on the other stores.
+  - Outside a transaction, each statement is a transaction of its own. A save, a patch, a delete or a
+    relationship write runs in one that takes the write lock as it begins, as a transaction does, so it
+    waits for another writer rather than being turned away for what that writer committed. One the file
+    stays locked against for longer than the wait fails, as a `DrivineException`, and is not run again: it has waited.
+    One turned away without the wait is run again, as a contended save is on the other stores.
+    A statement of your own that reads and then writes, run with `query` or `execute`, takes the lock only
+    as it writes: run it in a transaction, or with `executeBatch`, if other connections write at the same time.
   - Each statement Drivine writes applies whole or not at all, in a transaction or outside one: a
     statement that fails part of the way undoes what it wrote.
   - A `DataSource` of your own is opened with none of this: `JdbcConnectionProvider.sqlite(…)` makes
