@@ -18,6 +18,11 @@ import kotlin.system.exitProcess
 fun main(args: Array<String>) {
     // The CLI logs nothing until --log is here, so SLF4J, finding no logger, isn't to say so on stderr.
     System.setProperty("slf4j.internal.verbosity", "ERROR")
+    // Netty's pooled allocator, where nothing else chose one, for the Neo4j driver on Neo4j and Memgraph. The driver
+    // turns Netty's use of Unsafe off in a native image (-Dio.netty.noUnsafe=true), and Netty 4.2's default, adaptive
+    // allocator then fails each buffer with a NullPointerException in PlatformDependent0.safeConstructPutInt, so the Bolt
+    // handshake is never written. The pooled one needs no Unsafe. Set before anything reaches Netty.
+    if (System.getProperty("io.netty.allocator.type") == null) System.setProperty("io.netty.allocator.type", "pooled")
     val out = OutputStreamWriter(FileOutputStream(FileDescriptor.out), Charsets.UTF_8)
     val err = OutputStreamWriter(FileOutputStream(FileDescriptor.err), Charsets.UTF_8)
     // Cli.run flushes both streams.
