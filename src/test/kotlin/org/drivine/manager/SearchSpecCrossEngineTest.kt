@@ -16,6 +16,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedFalkorDb
@@ -62,10 +63,21 @@ abstract class SearchSpecContract {
 
     private val spec = SearchSpec.spec
 
-    /** Empties the graph, makes [indexes] where the store makes them, writes, and waits for the indexes to hold it. */
+    /**
+     * Empties the graph, makes [indexes] where the store makes them, writes, and waits for the indexes to hold it. A
+     * full-text index on one of their labels that another test left on a shared container is dropped first: on CI's shared
+     * Memgraph, MultiLabelRootSearchCrossEngineTest's `Paper(body)` changed what a search of `Paper(title, body)` found.
+     */
     private fun ready(indexes: List<SearchSpec.Index>, write: () -> Unit) {
         clear()
-        if (indexed) indexes.forEach { pm.indexes.ensure(FullTextIndexSpec(it.label, it.properties)) }
+        if (indexed) {
+            val labels = indexes.map { it.label }.toSet()
+            pm.indexes.list()
+                .filter { it.kind == SchemaItemKind.FULLTEXT_INDEX && it.label in labels }
+                .filter { info -> indexes.none { it.label == info.label && it.properties == info.properties } }
+                .forEach { pm.indexes.drop(FullTextIndexSpec(it.label, it.properties)) }
+            indexes.forEach { pm.indexes.ensure(FullTextIndexSpec(it.label, it.properties)) }
+        }
         write()
         if (indexed) settle()
     }
@@ -87,6 +99,20 @@ abstract class SearchSpecContract {
         return spec.tests(store, before = { ready(spec.indexes) { write(spec.graph) } }) {
             search(it.label, it.properties, it.query, it.topK)
         }
+    }
+
+    /** A full-text index of another shape on a label search.yaml searches, left by another test, is gone once a case is ready. */
+    @Test
+    fun `a case searches only the indexes it makes, not one another test left on its label`() {
+        assumeTrue(indexed, "$store makes no full-text index")
+        val several = spec.indexes.filter { it.properties.size > 1 }
+        assertTrue(several.isNotEmpty(), "search.yaml has no index over several properties")
+        several.forEach { pm.indexes.ensure(FullTextIndexSpec(it.label, it.properties.drop(1))) }
+        ready(spec.indexes) {}
+        val labels = spec.indexes.map { it.label }.toSet()
+        val made = pm.indexes.list().filter { it.kind == SchemaItemKind.FULLTEXT_INDEX && it.label in labels }
+            .map { it.label to it.properties }.toSet()
+        assertTrue(made == spec.indexes.map { it.label to it.properties }.toSet(), "$store holds $made")
     }
 
     @Test
