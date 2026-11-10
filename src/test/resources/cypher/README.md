@@ -9,8 +9,10 @@ These files say what a statement in Drivine's flavour of Cypher gives on each st
 - `schema.yaml`: Neo4j's schema commands (`CREATE INDEX`, `CREATE CONSTRAINT`, `DROP …`, `CALL db.awaitIndexes`), and the schema spec a SQL store applies each as, or its refusal. They are read with no store. See [Schema commands](#schema-commands).
 - `store.yaml`: the store layout's DDL: the tables, the probe that finds them made, and each index and constraint as each store makes, drops and lists it, for the graph `drivine` and a set of schema specs, with a read for each index that the compiler must answer from it. Read with no store. See [The store layout](#the-store-layout). It also holds the store's schema: how each store's listings are read back, whether an item is a spec's and in its shape, what each store can do, and what its errors say. See [The store's schema](#the-stores-schema).
 - `marker.yaml`: the schema marker (`_DrivineSchema`) and the stamps: the statements each store reads and writes the marker and the store's stamp (`DrivineStore`) with, the marker's inventory as it is written and read back, the version token, and the form of the stamp each node carries. Read with no store. See [The schema marker and the stamps](#the-schema-marker-and-the-stamps).
+- `plans.yaml`: the schema plan: what a schema manager runs on each store, round by round, for an enforce, a recreate, an ensure or a remove, what the store answers, and what the manager reports, its log lines among it. Read with no store. See [The schema plan](#the-schema-plan).
 - `host.yaml`: what each library's own code does with the values compiled SQL hands it: the functions it registers on SQLite, and how it reads a column of a statement's rows. Read with no store. See [Host functions and readers](#host-functions-and-readers).
 - `search.yaml`: full-text search: the nodes a search finds on each store, over the graph the file's `graph` writes, and how closely each other store ranks a corpus, `search/docs-corpus.json`, as Neo4j's full-text index ranks it. See [Full-text search](#full-text-search).
+- `results.yaml`: a statement's columns, and its values with their kinds kept, a node with its labels and a relationship with its type, as each library's call that gives them reads them (drivine4j#741), over the graph the file's `graph` writes. See [Columns and typed values](#columns-and-typed-values).
 - `cli/`: the `drivine` CLI's contract, which runs Cypher on every store and prints its results as cypher-shell does, and `cli.yaml`, the cases each build of it runs. See `cli/README.md`.
 - `model/`: the model file each library writes of an application's fragments, views and how they are stored, which Drivine Studio reads. See `model/README.md`.
 
@@ -54,6 +56,19 @@ On Neo4j a statement runs in the database's default language, Cypher 25 on Neo4j
 - Any other map is the map it is, even one keyed with `$`, such as `{$numberDouble: "1"}`.
 - Quote every string. A YAML 1.1 parser, such as SnakeYAML or PyYAML, reads a bare `y`, `yes`, `no` or `on` as a boolean.
 - `writes.yaml` binds and expects a whole number beyond 2^53. A library whose language reads YAML numbers as doubles skips those steps, named in its own runner. Otherwise a library skips nothing: a store that differs says so with `except` here.
+
+## Columns and typed values
+
+`results.yaml` is run through each library's call that gives a result's columns and its values with their kinds kept, not through `PersistenceManager.query`. A library that has no such call yet doesn't run it. Its cases are as `queries.yaml`'s, and each step has `columns` too: the result's column names, in order, as a graph engine names them, given for a result with no rows too, and empty for a statement that returns nothing. A row of one column is still its value, and a row of several a list of them.
+
+In its rows:
+
+- `{$t: "node", labels: […], properties: {…}}` is a node, with its labels in any order;
+- `{$t: "relationship", type: "…", properties: {…}}` is a relationship;
+- `{$t: "path", nodes: […], relationships: […]}` is a path, its nodes and relationships in the order it walks them;
+- `{$map: {…}}` is the map it holds, for a map with a `$t` key of its own.
+
+On a SQL store, the compiler gives the columns, and compiled typed (`typed`) it tags each node and relationship as above in the columns that hold them: see the compiler's README. It is opt-in, and untyped every statement compiles as before.
 
 ## Schema commands
 
@@ -237,6 +252,86 @@ nodeStamps: {property: "__drivine.stamp", token: 16, separator: ":", neverStampe
 
 **The moment.** On Postgres, Oracle and SQLite, `merge` binds `appliedAt` as `$now`, milliseconds since the epoch by the caller's clock. The graph engines write their own clock's, with `timestamp()`, as drivine4j always has, and bind none. That split is kept on purpose: one clock for every store would be a change of its own, made in every library at once. On a SQL store the newest marker of a scope is the one with the largest `appliedAt`, a marker with none or with one that isn't a number coming last (Oracle reads a text of a number as the number), and of two with the same, the one made last (`nid`). A graph engine orders by `appliedAt` as it orders any value, which every marker it writes has.
 
+## The schema plan
+
+A schema manager decides, from what a store says, what to make, drop, recreate and record, and what to report: drivine4j's `SchemaManager`, `IndexManager` and `ConstraintManager`. The compiler's module (`org.drivine.cypher.store.plan`) decides it once for every library, as a planner with no store: `SchemaPlanner(store, markers)`, whose `start(request, now)` and `resume(state, outcomes, now)` each give a round of actions for the library to run, or the plan done and its report. `plans.yaml` pins its decisions: drivine4j's, the reference, captured from its managers over a scripted store, with no store, for the design's cases 1 to 29 (drivine-cypher-spec#135), and for the public `IndexManager` and `ConstraintManager` calls (`item`). The module's tests check the planner gives them, round by round, on every target.
+
+It is a file of its own because it is a contract of its own: decisions, not text. Every statement it names is pinned once, by `store.yaml` or `marker.yaml`, and what it pins is when each runs, what it is answered, and what comes of it.
+
+```yaml
+graph: "drivine"
+database: "default"
+cases:
+  - case: "2"
+    name: "An unchanged version"
+    description: "Everything there already: nothing is made, and the marker is written again as it was."
+    stores: ["postgres", "oracle", "sqlite", "neo4j", "memgraph"]
+    catalogs:
+      - {owner: null, version: "v1", items: ["Range index", "Uniqueness constraint"]}
+    steps:
+      - operation: {enforce: "all"}
+        runs:
+          - stores: ["postgres", "sqlite"]
+            rounds:
+              - now: 1000000
+                actions:
+                  - {execute: {marker: "prepare"}}
+                  - {query: {marker: "read.version", scope: "schema"}, rows: ["v1"]}
+                  - {query: {marker: "read.items", scope: "schema"}, rows: ["RANGE_INDEX:Person:name:Person_name_range\n..."]}
+                  - {query: {listing: "indexes.RANGE_INDEX"}, items: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: "Person_name_range"}]}
+                  - {query: {listing: "constraints"}, items: [...]}
+              - now: 1000000
+                actions:
+                  - {execute: {marker: "deleteAllButNewest", scope: "schema"}}
+                  - {writeMarker: {scope: "schema", version: "v1", items: "RANGE_INDEX:Person:name:Person_name_range\n..."}}
+            done: 1000000
+            report:
+              owners:
+                - {owner: null, results: [{spec: "Range index", alreadyMatching: {...}}, ...], marker: {version: "v1", items: "..."}}
+              log:
+                - ["INFO", "SchemaManager", "Applying schema for owner 'schema' on 'default': 2 items (forceRecreate=false, versionChanged=false, version=v1)"]
+                - ["INFO", "SchemaManager", "Schema for owner 'schema' on 'default': 0 created, 2 already matching, 0 recreated, 0 needing attention"]
+```
+
+| Key | What it is |
+|---|---|
+| `stores` | The stores the case runs on. |
+| `catalogs` | The startup catalogs, each its `owner` (null for the unnamed one, whose marker's scope is `schema`), its `version`, and its `items`. |
+| `policy`, `buildTimeoutMillis` | The policy, where it isn't the default (`FAIL_FAST`, nothing recreated, a sample of 10, no index replaced), and the wait for an index built in the background, where it isn't 60 seconds. |
+| `steps` | The operations run in turn, on one store and one manager: each its `operation` (`enforce` or `recreateAll`, of `all` or `{owner}`; `ensure` or `remove`, of an `owner`'s `items`; `item`, a `call`, `ENSURE`, `RECREATE` or `DROP`, of one `spec`, with no marker), the `runtime` items the manager holds then, by owner, and its `runs`; for an ensure or a remove, `runtimeAfter`, the runtime items drivine4j's manager holds after it; or, for an ensure refused before anything is applied, `refused`, the message. |
+| `runs` | The stores that run the step alike, each round's actions with the `now` it is planned at, the `done` moment the plan ends at, and the `report`. |
+| `report` | Each owner applied, in order: what each of its items gave, its `unbuilt` indexes, its `orphans`, the `marker` it wrote (null for none), its `failure`, and for a remove what it `removed`; for an `item`, its `result`, or whether it `dropped` one; the database's `failure`, or the store's error it `rethrown`, from the action of that round; and every `log` line at INFO and above, its level, logger and text. |
+
+A spec is a `store.yaml` case's, by its name, or written as its cases write one. An item, what a store has, is written as `store.yaml`'s listings write one. In a log line, `{engine}` is the store's name.
+
+**Actions.** Each round's actions are what the planner gives, in order, and each is answered as the store answers it:
+
+- `{execute: {create: <case>}}`, `{drop: <case>}` and `{dropUnnamed: <case>}` are a `store.yaml` case's statements on the store, a create after the statements that make the store, as its cases leave them out (Postgres's and Oracle's `ensuring`, SQLite's `ddl`); `{marker: "constraint"}` is `marker.yaml`'s constraint, after them too; `{marker: "prepare"}` and `{marker: "deleteAllButNewest", scope}` are the marker's. One no case pins (a FalkorDB constraint's backing index, an index dropped by the name the store gave it) is given whole, `{statement}` or `{native}`. Each runs as one action a statement, and `failed: {at, causes}` fails the one `at` counts to.
+- `{query: {listing: "indexes.<KIND>"}}` and `{listing: "constraints"}` are `store.yaml`'s `catalog` queries, answered as `items`: each store's rows of them, which read back to them (the module's tests write them, and check every store's rows read back so over `store.yaml`'s listings). `{marker: "read.version"|"read.items", scope}` and `{marker: "scopes"}` are the marker's, `{sample: {spec, limit}}` is `store.yaml`'s sample, and `{indexState: <name>}` Neo4j's; each is answered as `rows`. `delay` is the wait before a poll.
+- `{readLowerCopies: {label, properties}}`, a library's read of its record of the lowercased copies, before it fills in those of `properties` on the nodes of `label`, is answered as `rows`, each a record, `[label, property]`.
+- `{awaitIndex: {name, timeout}}`, Neo4j's wait, `{fillLowerCopies: {label, properties}}`, the lowercased copies a library fills in and records, and `{writeMarker: {scope, version, items}}`, the marker's merge with what it binds (the items behind the store's mark, and on a SQL store the round's `now`).
+
+An action answered `failed` gives its `causes`, as `store.yaml`'s errors write them; the library stops there, and the actions after it in the round are planned and not run. An action given no answer otherwise ran.
+
+**Rounds.** The library runs a round's actions in order, stopping at the first that fails, and hands back what came of each. The first round reads what the plan decides from: the marker's `prepare`, each owner's marker (its version where it is versioned or ensuring, and its items), and each listing the items are found in, each statement once; for a remove, the scope of every marker. The rounds after it walk the owners sorted by name, the unnamed one first, each apart from the others, and within an owner the indexes before the constraints, each in the order declared, each finished before the next. A listing read is used again until the plan's own DDL runs, one that failed only once, as drivine4j reads it again after, and a marker's until its scope's marker is written or the read fails (an owner named `schema` shares the unnamed one's scope, and reads what it wrote, or reads again what failed for it); everything else drivine4j reads after its DDL (an item found after it is made, a constraint's sample, an index's state, a poll of a store that builds in the background) is read then. A state between rounds is JSON, which a library may hold anywhere.
+
+**Running a round.** In the module's API each action is a `PlanAction`, and its `Purpose` says where the library runs it, as drivine4j does:
+
+- `Query`: the statement with its `parameters`, after waiting `delayMillis` (a poll), compiled first where it is `compiled` (the marker's scopes, Cypher, on Postgres and Oracle). A listing (`LISTING`), an index's state (`STATE`) and a sample (`SAMPLE`) run on a schema connection, a marker's read (`MARKER`, `SCOPES`) on the auto-commit manager. It is answered `Rows`: each row a plain value, as [Listings](#the-stores-schema) says (a single column's value, a map, or a list of columns), a number as a number.
+- `Execute`: DDL (`DDL`, `ALIASES`, `PREPARE`) in auto-commit, on a schema connection of its own, a FalkorDB `Native` statement as its driver's command; a marker's statement (`MARKER`) on the auto-commit manager. After DDL or aliases, whether it ran or failed, the library tells its own caches that the store's schema changed, as drivine4j's `SchemaGrammar.changed()` in a `finally`. It is answered `Ran`.
+- `ReadLowerCopies`, the library's own read of its record of the lowercased copies, as drivine4j's `LowerCopyCatalog.stored()`, on a schema connection, after what its statements need made where they need it (drivine4j's `prepare`, run once). It is answered `Rows`, each row a record as the list of its label and its property, as drivine4j's `entries` reads the store's rows; the planner reads those of `label` and `properties`, and leaves the ones recorded out of the fill.
+- `AwaitIndex` (Neo4j), the statement with its `name` and `timeout`, on a schema connection, the `timeout` bound as an integer, which `db.awaitIndex` takes (on the JavaScript driver an `Integer`: a plain number is sent as a float); `FillLowerCopies`, the library's own lowercased copies of `properties` on the nodes of `label`, filled in and recorded through the auto-commit manager, each of them, recorded or not, after the same `prepare` where it hasn't run (a fill can come with no read before it); and `WriteMarker`, the marker's merge with its `parameters`, on the auto-commit manager. Each is answered `Ran`.
+
+An action that throws is answered `Failed`, its `causes` as [a cause](#the-stores-schema) is written, the outermost first; the library keeps the error, and the round stops there. The library runs a failed action again only as an `Execute`'s `retry` says, and swallows no failure: the planner decides which reads as nothing (a listing, a state, a sample), which runs again (the merge) and which is thrown. An error the library raises itself as it has a connection, before a statement reaches the store, which refuses the graph for every owner alike (drivine4j's `ReusedIdsException`: a SQLite graph whose tables give a deleted row's id again, refused on every connection) is not answered: the library throws it out of the round, as it is, and plans nothing more, as drivine4j's `applyToDatabase` rethrows it past its owners' isolation, where the planner would take it, answered `Failed`, as a store's error, and on a marker's read as the owner's failure, the other owners going on. Every other error of an action, the store's or the library's, is answered `Failed`. `now` is the library's clock, in milliseconds since the epoch, at each call: the planner times its waits from it, and a SQL store's marker records it.
+
+**The report.** The library logs each `log` line at its level, under its logger, in order. Then, where `rethrown` is given, it throws the error it kept for the action that failed and ended round `round` (`rethrown.action`), as it got it: drivine4j doesn't catch it. Otherwise, where `failure` is given, it throws its own error (drivine4j's `DrivineException`) with that message; otherwise the operation succeeded. An `ensure` or a `remove` is checked with `validate` on every database before any is planned (an ensure's and a remove's items merged, the indexes before the constraints, as drivine4j's catalog merges them, two that conflict refused), and a refusal is thrown with nothing run; an `ensure` or a `remove` of no items plans nothing. A call plans its databases one at a time, in order of their names, as drivine4j sorts them, and the first whose report throws ends the call: the databases after it aren't planned.
+
+**The runtime items.** The library holds the items ensured at runtime, each a `RuntimeCatalog` of an owner on the databases its ensure named, starting with none, and the module says how they change: `SchemaPlanner.runtimeAfter(operation, runtime, databases)`, the operation given to `databases` (null for all), as the call names them, before the library resolves them to its registered databases. An ensure's items are merged, the declaration that pins engine options or names a constraint's node id property kept, and each replaces the owner's item of its identity on those databases, in its place; a remove takes the owner's items of its items' identities, from every target where it is given to all databases, and from the same databases' otherwise. For an ensure, the library checks each database the call resolves to with `validate`, in order of their names, over what `runtimeAfter` gives, `SchemaPlanner.runtimeOn(database, runtime)` giving each its `runtime`, and keeps the items only where none is refused (the first refusal is thrown, and it, or a target the library refuses, leaves them as they were), and then plans those databases; for a remove, it checks with `validate`, keeps what `runtimeAfter` gives before it resolves the databases (a target refused then leaves the items taken), and then plans each database over it. A library merges no items itself.
+
+**What drivine4j decides, which the plan keeps.** A version that changed recreates the owner's items, but not one another owner declares; a first version is adopted. An ensure records the version the marker has, and `recreateOnStartup` doesn't apply to it. A runtime item a later manager hasn't been given is kept in the inventory; a recreate marks it stale, and the next ensure of it recreates it. A key recorded and no longer declared is an orphan, reported and left; a marker with no inventory has none. Only a versioned owner keeps its marker single. Under `FAIL_FAST`, a drift, a violation, an index in the way or an index not built fails the owner once every item has been tried, and its marker isn't written; under `WARN`, each is logged and the marker written. A failure drivine4j's manager catches (the marker's, the lowercased copies' fill and record, a TEXT index off Neo4j, a wait that ran out) ends the owner there, its marker unwritten, and the other owners go on; one it doesn't (DDL the store refused for a reason the planner doesn't read, a read of the copies' record) ends the plan, and the library throws the store's error. A remove keeps an item another owner declares or records, its properties in any order.
+
+**Where reads differ.** A plan reads less than drivine4j: drivine4j reads a listing again for each item, and runs the marker's `prepare` before each owner's first marker statement, where the plan reads a listing once until its own DDL runs, and prepares once. It also reads a listing in the first round that an item made before its use then makes it read again. What is written, and in which order, is drivine4j's, and so is every log line.
+
 ## Host functions and readers
 
 Compiled SQL calls functions each library registers on SQLite (`drivine_equal`, `drivine_add` …, and `regexp`, which SQLite calls for its `REGEXP` operator), and each library reads the rows itself, where a store's JSON holds no NaN or infinity: SQLite writes NaN as the tag `{"$numberDouble":"NaN"}` and an infinity as `9e999`, and Postgres, in the rows of a statement given NaN or an infinity, writes stand-in numbers past any double's. That code is each library's, not the compiler's, so `host.yaml` pins it, run by each library's unit suite with no container: on an in-memory SQLite with its functions registered, and on its row reader.
@@ -297,7 +392,8 @@ ranking:
   recorded: {image: "neo4j:2026.10.1", digest: "neo4j@sha256:…", statements: [...]}
   bars:
     - {stores: ["postgres", "oracle", "sqlite"], sameTop: 17, overlap: 4.3, target: {sameTop: 21, overlap: 4.5}, measured: {...}}
-    - {stores: ["memgraph"], sameTop: 16, overlap: 4.09, measured: {...}}
+    - {stores: ["neo4j"], sameTop: 21, overlap: 4.95, note: "...", measured: {...}}
+    - {stores: ["memgraph"], sameTop: 16, overlap: 4.09, note: "...", measured: {...}}
     - {stores: ["oracle-text"], sameTop: 5, overlap: 2.57, note: "...", measured: {...}}
     - {stores: ["falkordb"], sameTop: 9, overlap: 2.04, note: "...", measured: {...}}
   queries:
@@ -322,7 +418,7 @@ No step rests on how a store breaks a tie. On Neo4j no two hits that a `ranked` 
 
 A case says what Neo4j's index gives, with Neo4j's default analyzer, `standard-no-stop-words`: words ORed, a phrase, `+` and `-`, `AND`, `OR` and `NOT` (and `&&`, `||`), `word*`, `field:word`, escapes, case and Unicode. A refusal is Drivine's own, not Neo4j's: a query with no word to look for (operators, punctuation or excluded words alone) and an empty one are refused with `A full-text query needs a word to look for: '<query>' has none.`, on every store, where Neo4j gives no hits, every node, or a parse error.
 
-**The ranking.** Scores differ between stores in scale, so the ranking pins ids and order, not scores. A runner writes the corpus (`search/docs-corpus.json`, a section of Drivine's docs to a node, `{id, title, body}`) with `write`, bound as `$rows`, makes `index` and waits for it as the exact cases do (on `oracle`, none; on Postgres, with it and without it), and asks each of `queries` for its best `top`, by `search`. Over the queries whose `neo4j` is not empty, it counts those whose top hit is Neo4j's, and the mean of how many of the top five are in Neo4j's top five, as sets. On each store of a bar, the count must be at least `sameTop` and the mean at least `overlap`. `target` is where the BM25 stores' bar goes once BM25 measures a text's length in words (liberation-data/drivine4j#665), and the other bars have none yet; `measured` is what each store gave when the file was recorded, and is not read, and so is a bar's `note`. Each store's bar is what it gave when the file was recorded, rounded down, so a change can't make any store rank further from Neo4j, and no higher than the store gives however it breaks a tie between hits that score alike, at the top or at the fifth, so a runner needn't break ties of its own (Oracle Text's and FalkorDB's bars are lowered so, as their notes say; on Neo4j no two of a query's first six hits scored alike); Oracle Text's is its own, as it isn't BM25, and Memgraph's and FalkorDB's are their search engines'.
+**The ranking.** Scores differ between stores in scale, so the ranking pins ids and order, not scores. A runner writes the corpus (`search/docs-corpus.json`, a section of Drivine's docs to a node, `{id, title, body}`) with `write`, bound as `$rows`, makes `index` and waits for it as the exact cases do (on `oracle`, none; on Postgres, with it and without it), and asks each of `queries` for its best `top`, by `search`. Over the queries whose `neo4j` is not empty, it counts those whose top hit is Neo4j's, and the mean of how many of the top five are in Neo4j's top five, as sets. Neo4j is asked too, and has a bar of its own at full agreement with the lists, so a Neo4j image that has drifted from the recording fails loudly: the other stores are measured against the lists, not against Neo4j, and wouldn't show it. On each store of a bar, the count must be at least `sameTop` and the mean at least `overlap`. `target` is where the BM25 stores' bar goes once BM25 measures a text's length in words (liberation-data/drivine4j#665), and the other bars have none yet; `measured` is what each store gave when the file was recorded, and is not read, and so is a bar's `note`. Each store's bar is what it gave when the file was recorded, rounded down, so a change can't make any store rank further from Neo4j, and no higher than the store gives however it breaks a tie between hits that score alike, at the top or at the fifth, so a runner needn't break ties of its own (Oracle Text's and FalkorDB's bars are lowered so, and Memgraph's is the worst of its recorded runs, as their notes say; on Neo4j no two of a query's first six hits scored alike); Oracle Text's is its own, as it isn't BM25, and Memgraph's and FalkorDB's are their search engines'.
 
 **The corpus** is drivine4j's `src/test/resources/fulltext/docs-corpus.json` at dd4a66f0, byte for byte (SHA-256 `865f814ceaba8ade6ba604dcb3614aa344529c0f701991c40b6c169ee4c9c0e5`), which drivine4j's `FullTextRankingAgreementTest` reads: the sections of Drivine's own docs at 3a8b0b12, as that test says, each a node. Its `queries` are that test's.
 
