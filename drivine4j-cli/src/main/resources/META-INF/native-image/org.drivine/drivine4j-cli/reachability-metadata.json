@@ -1,7 +1,1727 @@
 {
+  "reflection": [
+    {
+      "type": "android.os.Build$VERSION"
+    },
+    {
+      "jniAccessible": true,
+      "type": "boolean[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.AbstractTypeResolver[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.deser.BeanDeserializerModifier[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.deser.Deserializers[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.deser.KeyDeserializers[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.deser.ValueInstantiators[]"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.fasterxml.jackson.databind.ext.Java7SupportImpl"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.ser.BeanSerializerModifier[]"
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.ser.Serializers[]"
+    },
+    {
+      "fields": [
+        {
+          "name": "catalog"
+        },
+        {
+          "name": "connectionInitSql"
+        },
+        {
+          "name": "connectionTestQuery"
+        },
+        {
+          "name": "connectionTimeout"
+        },
+        {
+          "name": "credentials"
+        },
+        {
+          "name": "dataSource"
+        },
+        {
+          "name": "dataSourceClassName"
+        },
+        {
+          "name": "dataSourceJndiName"
+        },
+        {
+          "name": "dataSourceProperties"
+        },
+        {
+          "name": "driverClassName"
+        },
+        {
+          "name": "exceptionOverride"
+        },
+        {
+          "name": "exceptionOverrideClassName"
+        },
+        {
+          "name": "healthCheckProperties"
+        },
+        {
+          "name": "healthCheckRegistry"
+        },
+        {
+          "name": "idleTimeout"
+        },
+        {
+          "name": "initializationFailTimeout"
+        },
+        {
+          "name": "isAllowPoolSuspension"
+        },
+        {
+          "name": "isAutoCommit"
+        },
+        {
+          "name": "isIsolateInternalQueries"
+        },
+        {
+          "name": "isReadOnly"
+        },
+        {
+          "name": "isRegisterMbeans"
+        },
+        {
+          "name": "jdbcUrl"
+        },
+        {
+          "name": "keepaliveTime"
+        },
+        {
+          "name": "leakDetectionThreshold"
+        },
+        {
+          "name": "maxLifetime"
+        },
+        {
+          "name": "maxPoolSize"
+        },
+        {
+          "name": "metricRegistry"
+        },
+        {
+          "name": "metricsTrackerFactory"
+        },
+        {
+          "name": "minIdle"
+        },
+        {
+          "name": "poolName"
+        },
+        {
+          "name": "scheduledExecutor"
+        },
+        {
+          "name": "schema"
+        },
+        {
+          "name": "sealed"
+        },
+        {
+          "name": "threadFactory"
+        },
+        {
+          "name": "transactionIsolationName"
+        },
+        {
+          "name": "unitTest"
+        },
+        {
+          "name": "validationTimeout"
+        }
+      ],
+      "type": "com.zaxxer.hikari.HikariConfig"
+    },
+    {
+      "type": "com.zaxxer.hikari.pool.PoolBase"
+    },
+    {
+      "type": "com.zaxxer.hikari.pool.PoolEntry"
+    },
+    {
+      "type": "com.zaxxer.hikari.util.ConcurrentBag$IConcurrentBagEntry[]"
+    },
+    {
+      "type": "io.netty.buffer.AbstractByteBufAllocator"
+    },
+    {
+      "type": "io.netty.buffer.AbstractReferenceCountedByteBuf"
+    },
+    {
+      "type": "io.netty.buffer.AdaptivePoolingAllocator$Chunk"
+    },
+    {
+      "type": "io.netty.buffer.AdaptivePoolingAllocator$Magazine"
+    },
+    {
+      "type": "io.netty.channel.AbstractChannelHandlerContext"
+    },
+    {
+      "type": "io.netty.channel.ChannelOutboundBuffer"
+    },
+    {
+      "type": "io.netty.channel.DefaultChannelConfig"
+    },
+    {
+      "type": "io.netty.channel.DefaultChannelPipeline"
+    },
+    {
+      "type": "io.netty.channel.DefaultChannelPipeline$HeadContext"
+    },
+    {
+      "type": "io.netty.channel.DefaultChannelPipeline$TailContext"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "io.netty.channel.socket.nio.NioSocketChannel"
+    },
+    {
+      "type": "io.netty.util.DefaultAttributeMap"
+    },
+    {
+      "type": "io.netty.util.DefaultAttributeMap$DefaultAttribute"
+    },
+    {
+      "type": "io.netty.util.Recycler$DefaultHandle"
+    },
+    {
+      "type": "io.netty.util.ReferenceCountUtil"
+    },
+    {
+      "type": "io.netty.util.ResourceLeakDetector$DefaultResourceLeak"
+    },
+    {
+      "type": "io.netty.util.concurrent.DefaultPromise"
+    },
+    {
+      "type": "io.netty.util.concurrent.SingleThreadEventExecutor"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.AutoCloseable",
+            "java.nio.ByteBuffer"
+          ]
+        }
+      ],
+      "type": "io.netty.util.internal.CleanerJava24$CleanableDirectBufferImpl"
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueColdProducerFields"
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueConsumerFields"
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.BaseMpscLinkedAtomicArrayQueueProducerFields"
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.MpmcAtomicArrayQueueConsumerIndexField"
+    },
+    {
+      "type": "io.netty.util.internal.shaded.org.jctools.queues.atomic.MpmcAtomicArrayQueueProducerIndexField"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ],
+      "type": "java.lang.Boolean"
+    },
+    {
+      "type": "java.lang.ClassValue"
+    },
+    {
+      "methods": [
+        {
+          "name": "current",
+          "parameterTypes": []
+        },
+        {
+          "name": "pid",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.ProcessHandle"
+    },
+    {
+      "methods": [
+        {
+          "name": "isVirtual",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.Thread"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "toString",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.Throwable"
+    },
+    {
+      "methods": [
+        {
+          "name": "allocate",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "ofShared",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.foreign.Arena"
+    },
+    {
+      "methods": [
+        {
+          "name": "asByteBuffer",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.foreign.MemorySegment"
+    },
+    {
+      "methods": [
+        {
+          "name": "getRuntimeMXBean",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.management.ManagementFactory"
+    },
+    {
+      "methods": [
+        {
+          "name": "getInputArguments",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.management.RuntimeMXBean"
+    },
+    {
+      "methods": [
+        {
+          "name": "alignedSlice",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ],
+      "type": "java.nio.ByteBuffer"
+    },
+    {
+      "type": "java.nio.channels.spi.SelectorProvider"
+    },
+    {
+      "type": "java.sql.Statement[]"
+    },
+    {
+      "type": "kotlin.SafePublicationLazyImpl"
+    },
+    {
+      "type": "kotlin.jvm.internal.DefaultConstructorMarker"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "kotlin.reflect.jvm.internal.ReflectionFactoryImpl"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.connection.HandshakeHandler"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.connection.NettyChannelInitializer"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.ChannelErrorHandler"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.ChunkDecoder"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.ConnectTimeoutHandler"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.InboundMessageHandler"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.MessageDecoder"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.outbound.OutboundMessageHandler"
+    },
+    {
+      "type": "org.slf4j.Logger"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "callback",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ],
+      "type": "org.sqlite.BusyHandler"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "xCompare",
+          "parameterTypes": [
+            "java.lang.String",
+            "java.lang.String"
+          ]
+        }
+      ],
+      "type": "org.sqlite.Collation"
+    },
+    {
+      "fields": [
+        {
+          "name": "args"
+        },
+        {
+          "name": "context"
+        },
+        {
+          "name": "value"
+        }
+      ],
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "xFunc",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.sqlite.Function"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "clone",
+          "parameterTypes": []
+        },
+        {
+          "name": "xFinal",
+          "parameterTypes": []
+        },
+        {
+          "name": "xStep",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.sqlite.Function$Aggregate"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "xInverse",
+          "parameterTypes": []
+        },
+        {
+          "name": "xValue",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.sqlite.Function$Window"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "progress",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.sqlite.ProgressHandler"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "onCommit",
+          "parameterTypes": [
+            "boolean"
+          ]
+        },
+        {
+          "name": "onUpdate",
+          "parameterTypes": [
+            "int",
+            "java.lang.String",
+            "java.lang.String",
+            "long"
+          ]
+        },
+        {
+          "name": "throwex",
+          "parameterTypes": []
+        },
+        {
+          "name": "throwex",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ],
+      "type": "org.sqlite.core.DB"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "progress",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        }
+      ],
+      "type": "org.sqlite.core.DB$ProgressObserver"
+    },
+    {
+      "fields": [
+        {
+          "name": "busyHandler"
+        },
+        {
+          "name": "commitListener"
+        },
+        {
+          "name": "pointer"
+        },
+        {
+          "name": "progressHandler"
+        },
+        {
+          "name": "updateListener"
+        }
+      ],
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "stringToUtf8ByteArray",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        },
+        {
+          "name": "throwex",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ],
+      "type": "org.sqlite.core.NativeDB"
+    },
+    {
+      "fields": [
+        {
+          "name": "compTimeMonitoringSupport"
+        },
+        {
+          "name": "currentThreadCpuTimeSupport"
+        },
+        {
+          "name": "objectMonitorUsageSupport"
+        },
+        {
+          "name": "otherThreadCpuTimeSupport"
+        },
+        {
+          "name": "remoteDiagnosticCommandsSupport"
+        },
+        {
+          "name": "synchronizerUsageSupport"
+        },
+        {
+          "name": "threadAllocatedMemorySupport"
+        },
+        {
+          "name": "threadContentionMonitoringSupport"
+        }
+      ],
+      "jniAccessible": true,
+      "type": "sun.management.VMManagementImpl"
+    },
+    {
+      "type": "sun.nio.ch.SelectorImpl"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.security.SecureRandomParameters"
+          ]
+        }
+      ],
+      "type": "sun.security.provider.NativePRNG"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.SHA"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en_US"
+    },
+    {
+      "type": "sun.util.resources.cldr.CalendarData"
+    },
+    {
+      "type": {
+        "proxy": [
+          "java.sql.Connection"
+        ]
+      }
+    },
+    {
+      "type": "byte[]"
+    },
+    {
+      "type": "char[]"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.HmacCore$HmacSHA256"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA1"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA224"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA256"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA384"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.PBKDF2Core$HmacSHA512"
+    },
+    {
+      "type": "com.sun.management.GarbageCollectorMXBean"
+    },
+    {
+      "type": "com.sun.management.GcInfo"
+    },
+    {
+      "type": "com.sun.management.HotSpotDiagnosticMXBean"
+    },
+    {
+      "type": "com.sun.management.ThreadMXBean"
+    },
+    {
+      "type": "com.sun.management.UnixOperatingSystemMXBean"
+    },
+    {
+      "type": "com.sun.management.VMOption"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String",
+            "java.lang.String",
+            "java.lang.String",
+            "java.lang.String",
+            "boolean",
+            "boolean",
+            "boolean",
+            "int"
+          ]
+        }
+      ],
+      "type": "com.sun.management.internal.DiagnosticCommandArgumentInfo"
+    },
+    {
+      "type": "com.sun.management.internal.DiagnosticCommandArgumentInfo[]"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.String",
+            "java.lang.String",
+            "java.lang.String",
+            "boolean",
+            "java.util.List"
+          ]
+        }
+      ],
+      "type": "com.sun.management.internal.DiagnosticCommandInfo"
+    },
+    {
+      "type": "com.sun.management.internal.DiagnosticCommandInfo[]"
+    },
+    {
+      "type": "com.sun.management.internal.GarbageCollectorExtImpl"
+    },
+    {
+      "type": "com.sun.management.internal.HotSpotDiagnostic"
+    },
+    {
+      "type": "com.sun.management.internal.HotSpotThreadImpl"
+    },
+    {
+      "type": "com.sun.management.internal.OperatingSystemImpl"
+    },
+    {
+      "type": "com.sun.management.internal.VirtualThreadSchedulerImpls$VirtualThreadSchedulerImpl"
+    },
+    {
+      "type": "double[]"
+    },
+    {
+      "type": "float[]"
+    },
+    {
+      "type": "int[]"
+    },
+    {
+      "type": "java.io.Serializable"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ],
+      "type": "java.lang.Boolean"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Byte"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Character"
+    },
+    {
+      "methods": [
+        {
+          "name": "getRecordComponents",
+          "parameterTypes": []
+        },
+        {
+          "name": "isRecord",
+          "parameterTypes": []
+        },
+        {
+          "name": "isSealed",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.Class"
+    },
+    {
+      "type": "java.lang.Comparable"
+    },
+    {
+      "type": "java.lang.Deprecated"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Double"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Float"
+    },
+    {
+      "type": "java.lang.FunctionalInterface"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Integer"
+    },
+    {
+      "type": "java.lang.Iterable"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Long"
+    },
+    {
+      "type": "java.lang.Number"
+    },
+    {
+      "type": "java.lang.Object"
+    },
+    {
+      "type": "java.lang.Object[]"
+    },
+    {
+      "methods": [
+        {
+          "name": "checkPermission",
+          "parameterTypes": [
+            "java.security.Permission"
+          ]
+        }
+      ],
+      "type": "java.lang.SecurityManager"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Short"
+    },
+    {
+      "type": "java.lang.StackTraceElement"
+    },
+    {
+      "type": "java.lang.String"
+    },
+    {
+      "type": "java.lang.String[]"
+    },
+    {
+      "methods": [
+        {
+          "name": "getSecurityManager",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.System"
+    },
+    {
+      "fields": [
+        {
+          "name": "TYPE"
+        }
+      ],
+      "type": "java.lang.Void"
+    },
+    {
+      "type": "java.lang.annotation.Documented"
+    },
+    {
+      "methods": [
+        {
+          "name": "value",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.annotation.Retention"
+    },
+    {
+      "methods": [
+        {
+          "name": "value",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.annotation.Target"
+    },
+    {
+      "type": "java.lang.constant.Constable"
+    },
+    {
+      "type": "java.lang.constant.ConstantDesc"
+    },
+    {
+      "type": "java.lang.management.BufferPoolMXBean"
+    },
+    {
+      "type": "java.lang.management.ClassLoadingMXBean"
+    },
+    {
+      "type": "java.lang.management.CompilationMXBean"
+    },
+    {
+      "type": "java.lang.management.LockInfo"
+    },
+    {
+      "type": "java.lang.management.MemoryMXBean"
+    },
+    {
+      "type": "java.lang.management.MemoryManagerMXBean"
+    },
+    {
+      "type": "java.lang.management.MemoryPoolMXBean"
+    },
+    {
+      "type": "java.lang.management.MemoryUsage"
+    },
+    {
+      "type": "java.lang.management.MonitorInfo"
+    },
+    {
+      "type": "java.lang.management.PlatformLoggingMXBean"
+    },
+    {
+      "type": "java.lang.management.ThreadInfo"
+    },
+    {
+      "methods": [
+        {
+          "name": "getParameters",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.reflect.Executable"
+    },
+    {
+      "type": "java.lang.reflect.Method"
+    },
+    {
+      "methods": [
+        {
+          "name": "getName",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.lang.reflect.Parameter"
+    },
+    {
+      "type": "java.math.BigDecimal"
+    },
+    {
+      "type": "java.math.BigInteger"
+    },
+    {
+      "methods": [
+        {
+          "name": "doPrivileged",
+          "parameterTypes": [
+            "java.security.PrivilegedExceptionAction"
+          ]
+        }
+      ],
+      "type": "java.security.AccessController"
+    },
+    {
+      "type": "java.sql.SQLException"
+    },
+    {
+      "type": "java.util.AbstractCollection"
+    },
+    {
+      "type": "java.util.AbstractList"
+    },
+    {
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "asList",
+          "parameterTypes": [
+            "java.lang.Object[]"
+          ]
+        }
+      ],
+      "type": "java.util.Arrays"
+    },
+    {
+      "type": "java.util.Collection"
+    },
+    {
+      "type": "java.util.Collections$SingletonList"
+    },
+    {
+      "type": "java.util.Date"
+    },
+    {
+      "type": "java.util.List"
+    },
+    {
+      "type": "java.util.Map"
+    },
+    {
+      "type": "java.util.RandomAccess"
+    },
+    {
+      "type": "java.util.Set"
+    },
+    {
+      "type": "java.util.function.BiConsumer"
+    },
+    {
+      "type": "java.util.function.BiFunction"
+    },
+    {
+      "type": "java.util.function.Function"
+    },
+    {
+      "type": "javax.management.MBeanOperationInfo"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "javax.management.MBeanServerBuilder"
+    },
+    {
+      "type": "javax.management.MXBean"
+    },
+    {
+      "type": "javax.management.ObjectName"
+    },
+    {
+      "type": "javax.management.StandardEmitterMBean"
+    },
+    {
+      "type": "javax.management.openmbean.CompositeData"
+    },
+    {
+      "type": "javax.management.openmbean.CompositeData[]"
+    },
+    {
+      "type": "javax.management.openmbean.OpenMBeanOperationInfoSupport"
+    },
+    {
+      "type": "javax.management.openmbean.TabularData"
+    },
+    {
+      "type": "jdk.management.VirtualThreadSchedulerMXBean"
+    },
+    {
+      "type": "jdk.management.jfr.ConfigurationInfo"
+    },
+    {
+      "type": "jdk.management.jfr.EventTypeInfo"
+    },
+    {
+      "type": "jdk.management.jfr.FlightRecorderMXBean"
+    },
+    {
+      "type": "jdk.management.jfr.FlightRecorderMXBeanImpl"
+    },
+    {
+      "type": "jdk.management.jfr.RecordingInfo"
+    },
+    {
+      "type": "jdk.management.jfr.SettingDescriptorInfo"
+    },
+    {
+      "type": "kotlin.Any"
+    },
+    {
+      "type": "kotlin.Boolean"
+    },
+    {
+      "type": "kotlin.Int"
+    },
+    {
+      "type": "kotlin.Long"
+    },
+    {
+      "methods": [
+        {
+          "name": "bv",
+          "parameterTypes": []
+        },
+        {
+          "name": "d1",
+          "parameterTypes": []
+        },
+        {
+          "name": "d2",
+          "parameterTypes": []
+        },
+        {
+          "name": "k",
+          "parameterTypes": []
+        },
+        {
+          "name": "mv",
+          "parameterTypes": []
+        },
+        {
+          "name": "pn",
+          "parameterTypes": []
+        },
+        {
+          "name": "xi",
+          "parameterTypes": []
+        },
+        {
+          "name": "xs",
+          "parameterTypes": []
+        }
+      ],
+      "type": "kotlin.Metadata"
+    },
+    {
+      "type": "kotlin.Nothing"
+    },
+    {
+      "type": "kotlin.SinceKotlin"
+    },
+    {
+      "type": "kotlin.String"
+    },
+    {
+      "type": "kotlin.Unit"
+    },
+    {
+      "type": "kotlin.collections.Collection"
+    },
+    {
+      "type": "kotlin.collections.EmptyMap"
+    },
+    {
+      "type": "kotlin.collections.Map"
+    },
+    {
+      "type": "kotlin.collections.Map.Entry"
+    },
+    {
+      "type": "kotlin.collections.MutableCollection"
+    },
+    {
+      "type": "kotlin.collections.MutableMap"
+    },
+    {
+      "type": "kotlin.collections.MutableMap.MutableEntry"
+    },
+    {
+      "type": "kotlin.collections.MutableSet"
+    },
+    {
+      "type": "kotlin.collections.Set"
+    },
+    {
+      "type": "kotlin.internal.PlatformDependent"
+    },
+    {
+      "type": "kotlin.io.Serializable"
+    },
+    {
+      "type": "kotlin.jvm.internal.markers.KMappedMarker"
+    },
+    {
+      "type": "kotlin.reflect.jvm.internal.impl.load.java.ErasedOverridabilityCondition"
+    },
+    {
+      "type": "kotlin.reflect.jvm.internal.impl.load.java.FieldOverridabilityCondition"
+    },
+    {
+      "type": "kotlin.reflect.jvm.internal.impl.load.java.JavaIncompatibilityRulesOverridabilityCondition"
+    },
+    {
+      "fields": [
+        {
+          "name": "ALL"
+        },
+        {
+          "name": "CALLABLES"
+        },
+        {
+          "name": "CLASSIFIERS"
+        },
+        {
+          "name": "Companion"
+        },
+        {
+          "name": "FUNCTIONS"
+        },
+        {
+          "name": "NON_SINGLETON_CLASSIFIERS"
+        },
+        {
+          "name": "PACKAGES"
+        },
+        {
+          "name": "SINGLETON_CLASSIFIERS"
+        },
+        {
+          "name": "TYPE_ALIASES"
+        },
+        {
+          "name": "VALUES"
+        },
+        {
+          "name": "VARIABLES"
+        }
+      ],
+      "type": "kotlin.reflect.jvm.internal.impl.resolve.scopes.DescriptorKindFilter"
+    },
+    {
+      "type": "kotlin.reflect.jvm.internal.impl.serialization.deserialization.builtins.BuiltInsLoaderImpl"
+    },
+    {
+      "type": "long[]"
+    },
+    {
+      "type": "oracle.as.jmx.framework.PortableMBeanFactory"
+    },
+    {
+      "type": "oracle.jdbc.OracleDriver"
+    },
+    {
+      "type": "oracle.jdbc.diagnostics.DiagnosticsMXBean"
+    },
+    {
+      "type": "oracle.jdbc.diagnostics.OracleDiagnosticsMXBean"
+    },
+    {
+      "type": "oracle.sql.AnyDataFactory"
+    },
+    {
+      "type": "oracle.sql.TypeDescriptorFactory"
+    },
+    {
+      "type": "org.postgresql.Driver"
+    },
+    {
+      "type": "org.postgresql.core.QueryExecutorCloseAction"
+    },
+    {
+      "type": "org.postgresql.jdbc.PgStatement"
+    },
+    {
+      "type": "org.sqlite.JDBC"
+    },
+    {
+      "type": "short[]"
+    },
+    {
+      "type": "sun.management.ClassLoadingImpl"
+    },
+    {
+      "type": "sun.management.CompilationImpl"
+    },
+    {
+      "type": "sun.management.ManagementFactoryHelper$1"
+    },
+    {
+      "type": "sun.management.ManagementFactoryHelper$PlatformLoggingImpl"
+    },
+    {
+      "type": "sun.management.MemoryImpl"
+    },
+    {
+      "type": "sun.management.MemoryManagerImpl"
+    },
+    {
+      "type": "sun.management.MemoryPoolImpl"
+    },
+    {
+      "type": "sun.management.RuntimeImpl"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.SHA2$SHA224"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.SHA2$SHA256"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.SHA5$SHA384"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.SHA5$SHA512"
+    },
+    {
+      "type": "org.neo4j.bolt.connection.netty.impl.async.inbound.ConnectionReadTimeoutHandler"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.apache.commons.pool2.impl.DefaultEvictionPolicy"
+    },
+    {
+      "type": "org.apache.commons.pool2.impl.DefaultPooledObjectInfo"
+    },
+    {
+      "type": "org.apache.commons.pool2.impl.GenericObjectPoolMXBean"
+    },
+    {
+      "type": "redis.clients.jedis.JedisPool"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.AESCipher$General"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "com.sun.crypto.provider.HmacCore$HmacSHA512"
+    },
+    {
+      "serializable": true,
+      "type": "int[]"
+    },
+    {
+      "serializable": true,
+      "type": "int[][]"
+    },
+    {
+      "type": "jakarta.json.JsonValue"
+    },
+    {
+      "type": "javax.json.JsonValue"
+    },
+    {
+      "type": "javax.security.auth.kerberos.KerberosCredMessage"
+    },
+    {
+      "type": "oracle.dms.AbstractParameterDescriptor"
+    },
+    {
+      "type": "oracle.i18n.text.OraBoot"
+    },
+    {
+      "type": "oracle.i18n.text.converter.CharacterConverterSJIS"
+    },
+    {
+      "type": "oracle.jdbc.driver.DefaultJsonProvider"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.jdbc.driver.LiveDMSFactory"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.jdbc.driver.T4CDriverExtension"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.net.ano.AuthenticationService"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.net.ano.DataIntegrityService"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.net.ano.EncryptionService"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.net.ano.SupervisorService"
+    },
+    {
+      "type": "oracle.simplefan.FanManager"
+    },
+    {
+      "serializable": true,
+      "type": "oracle.sql.converter.CharacterConverter1Byte"
+    },
+    {
+      "serializable": true,
+      "type": "oracle.sql.converter.CharacterConverterJDBC"
+    },
+    {
+      "type": "oracle.sql.json.OracleJsonDouble"
+    },
+    {
+      "methods": [
+        {
+          "name": "doubleValue",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.sql.json.OracleJsonNumber"
+    },
+    {
+      "methods": [
+        {
+          "name": "getOracleJsonType",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.sql.json.OracleJsonValue"
+    },
+    {
+      "type": "org.drivine.cli.MainKt"
+    },
+    {
+      "type": "sun.security.krb5.internal.APReq"
+    },
+    {
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ],
+      "type": "sun.security.provider.MD5"
+    },
+    {
+      "type": "java.util.AbstractMap"
+    },
+    {
+      "type": "java.util.Collections$SingletonMap"
+    }
+  ],
   "resources": [
     {
+      "glob": "META-INF/maven/org.xerial/sqlite-jdbc/pom.properties"
+    },
+    {
+      "glob": "META-INF/services/java.net.spi.InetAddressResolverProvider"
+    },
+    {
+      "glob": "META-INF/services/java.nio.channels.spi.SelectorProvider"
+    },
+    {
+      "glob": "META-INF/services/org.slf4j.spi.SLF4JServiceProvider"
+    },
+    {
       "glob": "org/drivine/cli/drivine-cli.properties"
+    },
+    {
+      "glob": "org/slf4j/impl/StaticLoggerBinder.class"
+    },
+    {
+      "glob": "org/sqlite/native/Linux/x86_64/libsqlitejdbc.so"
+    },
+    {
+      "glob": "META-INF/services/java.net.spi.URLStreamHandlerProvider"
+    },
+    {
+      "glob": "META-INF/services/java.sql.Driver"
+    },
+    {
+      "glob": "META-INF/services/java.util.spi.ResourceBundleControlProvider"
+    },
+    {
+      "glob": "META-INF/services/kotlin.reflect.jvm.internal.impl.builtins.BuiltInsLoader"
+    },
+    {
+      "glob": "META-INF/services/kotlin.reflect.jvm.internal.impl.resolve.ExternalOverridabilityCondition"
+    },
+    {
+      "glob": "META-INF/services/kotlin.reflect.jvm.internal.impl.util.ModuleVisibilityHelper"
+    },
+    {
+      "glob": "kotlin/annotation/annotation.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/collections/Map/Map.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/collections/MutableMap/MutableMap.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/collections/collections.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/concurrent/atomics/atomics.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/coroutines/coroutines.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/internal/internal.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/io/io.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/kotlin.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/ranges/ranges.kotlin_builtins"
+    },
+    {
+      "glob": "kotlin/reflect/reflect.kotlin_builtins"
+    },
+    {
+      "glob": "oracle/jdbc/defaultConnectionProperties.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/ErrorMessages_en.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/ErrorMessages_en_US.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/Messages.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/Messages_en.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/Messages_en_US.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/errorMap.xml"
+    },
+    {
+      "glob": "org/postgresql/driverconfig.properties"
+    },
+    {
+      "glob": "org/postgresql/translation/messages.properties"
+    },
+    {
+      "glob": "org/postgresql/translation/messages_en.properties"
+    },
+    {
+      "glob": "org/postgresql/translation/messages_en_US.properties"
+    },
+    {
+      "glob": "jdk/internal/icu/impl/data/icudt76b/nfkc.nrm",
+      "module": "java.base"
+    },
+    {
+      "glob": "jdk/jfr/internal/query/view.ini",
+      "module": "jdk.jfr"
+    },
+    {
+      "bundle": "oracle.jdbc.driver.ErrorMessages"
+    },
+    {
+      "bundle": "oracle.jdbc.driver.Messages"
+    },
+    {
+      "bundle": "org.postgresql.translation.messages"
+    },
+    {
+      "glob": "redis/clients/jedis/pom.properties"
+    },
+    {
+      "glob": "META-INF/services/java.time.zone.ZoneRulesProvider"
+    },
+    {
+      "glob": "META-INF/services/oracle.jdbc.spi.JsonProvider"
+    },
+    {
+      "glob": "oracle/jdbc/driver/json/ErrorMessagesJson_en.properties"
+    },
+    {
+      "glob": "oracle/jdbc/driver/json/ErrorMessagesJson_en_US.properties"
+    },
+    {
+      "glob": "oracle/net/jdbc/nl/mesg/NLSR_en_US.properties"
+    },
+    {
+      "glob": "oracle/sql/converter_xcharset/lx20001.glb"
+    },
+    {
+      "glob": "oracle/sql/converter_xcharset/lx20002.glb"
+    },
+    {
+      "glob": "oracle/sql/converter_xcharset/lx2001f.glb"
+    },
+    {
+      "glob": "oracle/sql/converter_xcharset/lx2002e.glb"
+    },
+    {
+      "glob": "oracle/sql/converter_xcharset/lx200b2.glb"
+    },
+    {
+      "bundle": "oracle.jdbc.driver.json.ErrorMessagesJson"
+    },
+    {
+      "bundle": "oracle.net.jdbc.nl.mesg.NLSR"
+    },
+    {
+      "glob": "oracle/net/mesg/NetErrorMessages_en.properties"
+    },
+    {
+      "glob": "oracle/net/mesg/NetErrorMessages_en_US.properties"
+    },
+    {
+      "bundle": "oracle.net.mesg.NetErrorMessages"
     }
   ]
 }

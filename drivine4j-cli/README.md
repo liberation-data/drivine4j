@@ -43,7 +43,7 @@ class the Neo4j driver loads by name, is in
 `DRIVINE_CLI_BINARY` naming a script that runs the CLI on GraalVM's JVM under the agent, so the CLI is traced and not the
 tests. To refresh it:
 
-1. Add the label `cli-trace` to the pull request, or run the workflow by hand (Actions, "CLI native", "Run workflow").
+1. Add the label `cli-trace` to the pull request, put `[cli-trace]` in its title and push, or run the workflow by hand (Actions, "CLI native", "Run workflow").
 2. Read each store's metadata from the log of its job, `trace metadata (<store>)`: the step "Print the metadata" prints
    each file the agent wrote between `=== BEGIN <file> ===` and `=== END ===`. A failing test doesn't stop the trace.
 3. Merge the six stores' files into that `reachability-metadata.json`, one entry for each class or resource, and keep
