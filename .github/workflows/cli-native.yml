@@ -1,0 +1,318 @@
+# Builds the drivine CLI as a native binary with GraalVM (drivine4j-cli's nativeCompile), and runs the CLI's tests
+# against that binary on each store: drivine4j-cli's tests run it as a process when DRIVINE_CLI_BINARY names it (see
+# drivine4j-cli/README.md). Apart from ci.yml, so a GraalVM problem can't block a pull request's CI. On a pull request
+# that changes the CLI, the core it runs, or the build; each night; and by hand. The trace job, which records the
+# binary's reachability metadata, runs by hand, on a pull request labelled cli-trace, and on one whose title holds [cli-trace].
+name: CLI native
+
+on:
+  pull_request:
+    # labeled as well, so adding the label cli-trace runs the trace job below at once: a run for a label runs only that
+    # job (the build skips itself), and none for another label.
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'drivine4j-cli/**'
+      - 'src/main/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - '.github/workflows/cli-native.yml'
+  # At 18:00 UTC, an hour after nightly.yml starts.
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+# Read only: the tests run with a token that can't write to the repository. The store tests' job adds actions: read,
+# to download the binary this run built.
+permissions:
+  contents: read
+
+# A pull request's newer run takes the place of the one still going. A run for a label is in a group of its own, that
+# label's, so adding a label doesn't cancel the build.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('cli-native-pr-{0}{1}', github.event.pull_request.number, github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '') || format('cli-native-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (linux x64)
+    # Not for a label: adding cli-trace runs the trace job alone, and the store tests, which need this, are skipped too.
+    if: github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The JDK 21 that compiles the module, as the toolchain asks: setup-java names it in JAVA_HOME_21_X64, which the
+      # build is pointed at below. GraalVM then takes JAVA_HOME, and builds the image from the JDK 21 bytecode.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: '25.0.2'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # The Cypher compiler gradle/cypher-compiler.properties pins, as ci.yml has it.
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      - name: Build the native binary
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 :drivine4j-cli:nativeCompile
+
+      - name: Record the binary's size and start
+        run: |
+          binary=drivine4j-cli/build/native/nativeCompile/drivine
+          bytes=$(stat -c %s "$binary")
+          "$binary" --version
+          /usr/bin/time -f '%e s, %M KB at most' -o time.txt "$binary" --version > /dev/null
+          {
+            echo "### drivine, native, linux x64"
+            echo
+            echo "- Size: $bytes bytes ($(du -h "$binary" | cut -f1))"
+            echo "- \`drivine --version\` took $(cat time.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run one statement with the binary
+        # What the binary itself prints, in the log: a run-time gap native-image left (a class, a resource or a
+        # reflection it didn't keep) shows here, where the store tests only see a different exit code or output.
+        run: |
+          binary=drivine4j-cli/build/native/nativeCompile/drivine
+          set +e
+          "$binary" -a sqlite::memory: --format json 'RETURN 1 AS n, 1.5 AS f, [1, "b"] AS l'
+          echo "exit $?"
+          "$binary" -a sqlite::memory: --format plain 'RETURN 1/0'
+          echo "exit $?"
+          # The same against Neo4j, with the cause of a failure in full, on the image gradle/test-images.txt pins.
+          image=$(awk '$1 == "neo4j:latest" { print $2 }' gradle/test-images.txt)
+          docker run -d --name cli-smoke-neo4j -p 7687:7687 -e NEO4J_AUTH=neo4j/cli-smoke-password "$image" > /dev/null
+          for i in $(seq 1 60); do docker exec cli-smoke-neo4j cypher-shell -u neo4j -p cli-smoke-password 'RETURN 1' > /dev/null 2>&1 && break; sleep 2; done
+          DRIVINE_TRACE_ERRORS=true DRIVINE_USER=neo4j DRIVINE_PASSWORD=cli-smoke-password "$binary" -a bolt://localhost:7687 --format json 'RETURN 1 AS n'
+          echo "exit $?"
+          docker rm -f cli-smoke-neo4j > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivine-linux-x64
+          path: drivine4j-cli/build/native/nativeCompile/drivine
+          if-no-files-found: error
+          retention-days: 7
+
+  # The CLI's tests on each store, against the binary: drivine4j-cli's CliStoreTest classes, which start the store in
+  # a container as the root module's tests do, and CliSqliteTest, which needs none.
+  store-tests:
+    name: store tests (${{ matrix.store }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.store == 'oracle' && 45 || 30 }}
+    permissions:
+      contents: read
+      # gh run download reads this run's artifacts.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: neo4j
+            tests: org.drivine.cli.CliNeo4jTest
+          - store: memgraph
+            tests: org.drivine.cli.CliMemgraphTest
+          - store: falkordb
+            tests: org.drivine.cli.CliFalkorDbTest
+          - store: postgres
+            tests: org.drivine.cli.CliPostgresTest
+          - store: oracle
+            tests: org.drivine.cli.CliOracleTest
+            oracle: 'true'
+          - store: sqlite
+            tests: org.drivine.cli.CliSqliteTest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      # As .github/actions/test-part has it: Docker 29+ raised the minimum API version to 1.44; Testcontainers 1.x
+      # defaults to 1.32.
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      # Pulled here, as .github/actions/test-part pulls them, so the pull isn't counted against the container's start.
+      - name: Pull the Oracle image
+        if: matrix.store == 'oracle'
+        run: docker pull gvenzl/oracle-free:23-faststart
+      - name: Pull the Postgres image
+        if: matrix.store == 'postgres'
+        run: docker pull pgvector/pgvector:pg17
+
+      # An artifact keeps no file mode, so the binary is made executable again.
+      - name: Download the binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name drivine-linux-x64 --dir "$RUNNER_TEMP/drivine"
+          chmod +x "$RUNNER_TEMP/drivine/drivine"
+          "$RUNNER_TEMP/drivine/drivine" --version
+
+      - name: Run the CLI's tests against the binary
+        env:
+          CLI_STORE_TESTS: 'true'
+          ORACLE_TESTS: ${{ matrix.oracle || 'false' }}
+        run: |
+          export DRIVINE_CLI_BINARY="$RUNNER_TEMP/drivine/drivine"
+          ./gradlew --no-daemon :drivine4j-cli:test --tests '${{ matrix.tests }}'
+
+      - name: Upload the test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-native-test-results-${{ matrix.store }}
+          path: |
+            drivine4j-cli/build/test-results/test/
+            drivine4j-cli/build/reports/tests/test/
+          retention-days: 30
+
+  # The reachability metadata the binary needs at run time, recorded by GraalVM's tracing agent: the CLI's tests on each
+  # store run the CLI on GraalVM's JVM under the agent, through DRIVINE_CLI_BINARY, and not the binary. The CLI itself is
+  # traced, and not the tests: the plugin's agent mode would trace JUnit and the test harness too. Each store's metadata
+  # is printed in its job's log, to be merged into drivine4j-cli's reachability-metadata.json: see drivine4j-cli/README.md.
+  # By hand, on a pull request that carries the label cli-trace, or on a push to one whose title holds [cli-trace]. The
+  # tests may fail here: the trace is what's wanted.
+  trace:
+    name: trace metadata (${{ matrix.store }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'cli-trace') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'cli-trace')) ||
+      (github.event_name == 'pull_request' && github.event.action != 'labeled' &&
+       contains(github.event.pull_request.title, '[cli-trace]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.store == 'oracle' && 45 || 30 }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: neo4j
+            tests: org.drivine.cli.CliNeo4jTest
+          - store: memgraph
+            tests: org.drivine.cli.CliMemgraphTest
+          - store: falkordb
+            tests: org.drivine.cli.CliFalkorDbTest
+          - store: postgres
+            tests: org.drivine.cli.CliPostgresTest
+          - store: oracle
+            tests: org.drivine.cli.CliOracleTest
+            oracle: 'true'
+          - store: sqlite
+            tests: org.drivine.cli.CliSqliteTest
+    steps:
+      - uses: actions/checkout@v4
+
+      # As the build job sets them up: JDK 21 compiles the module, and GraalVM, in JAVA_HOME and GRAALVM_HOME, has the agent.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: '25.0.2'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      # As the store tests' job has them.
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+      - name: Pull the Oracle image
+        if: matrix.store == 'oracle'
+        run: docker pull gvenzl/oracle-free:23-faststart
+      - name: Pull the Postgres image
+        if: matrix.store == 'postgres'
+        run: docker pull pgvector/pgvector:pg17
+
+      - name: Build the CLI's jars
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 :drivine4j-cli:installDist
+
+      # The tests run the binary with an environment of the case's own and nothing else, so the script names every path
+      # in full. The main class is build.gradle's application.mainClass; --enable-native-access is its
+      # applicationDefaultJvmArgs', so SQLite warns of nothing on stderr. Every run merges what it reached into one dir.
+      - name: Write the traced CLI
+        run: |
+          trace="$RUNNER_TEMP/trace"
+          lib="$GITHUB_WORKSPACE/drivine4j-cli/build/install/drivine/lib"
+          mkdir -p "$trace"
+          cat > "$RUNNER_TEMP/drivine-traced" <<EOF
+          #!/bin/bash
+          exec "$GRAALVM_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+            -agentlib:native-image-agent=config-merge-dir=$trace \
+            -cp "$lib/*" org.drivine.cli.MainKt "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/drivine-traced"
+          cat "$RUNNER_TEMP/drivine-traced"
+          "$RUNNER_TEMP/drivine-traced" --version
+
+      - name: Run the CLI's tests under the agent
+        continue-on-error: true
+        env:
+          CLI_STORE_TESTS: 'true'
+          ORACLE_TESTS: ${{ matrix.oracle || 'false' }}
+        run: |
+          export DRIVINE_CLI_BINARY="$RUNNER_TEMP/drivine-traced"
+          ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 \
+            :drivine4j-cli:test --tests '${{ matrix.tests }}'
+
+      # In the log, to be read there: GraalVM 25's agent writes reachability-metadata.json, an older one a file for
+      # each kind (reflect-config.json and so on), and each is printed.
+      - name: Print the metadata
+        if: always()
+        run: |
+          echo "::group::reachability metadata (${{ matrix.store }})"
+          for file in "$RUNNER_TEMP"/trace/*.json; do
+            [ -e "$file" ] || { echo "the agent wrote no metadata"; continue; }
+            echo "=== BEGIN $(basename "$file") ==="
+            cat "$file"
+            echo
+            echo "=== END ==="
+          done
+          echo "::endgroup::"

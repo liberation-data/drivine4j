@@ -1,0 +1,133 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    // installDist gives build/install/drivine/bin/drivine: see README.md. Not published yet.
+    id 'application'
+    // nativeCompile gives build/native/nativeCompile/drivine, one binary, with GraalVM: see README.md.
+    id 'org.graalvm.buildtools.native' version '1.1.17'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'org.drivine.cli.MainKt'
+    applicationName = 'drivine'
+    // SQLite's driver loads its native library: on a JDK that warns of that on stderr, the CLI says it may.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+dependencies {
+    // Drivine itself, which brings the Neo4j driver (Neo4j and Memgraph), FalkorDB's client and HikariCP
+    implementation project(':')
+
+    // The JDBC drivers, which the core leaves to the application: the versions the root build's tests run
+    runtimeOnly 'org.postgresql:postgresql:42.7.8'
+    runtimeOnly 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
+    runtimeOnly 'org.xerial:sqlite-jdbc:3.53.2.1'
+
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // cli.yaml, the contract's cases, is YAML: read as the root module's tests read the Cypher spec
+    testImplementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
+    testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
+}
+
+// The root module's `api 'org.testcontainers:neo4j'`, there for its users' tests, brings Testcontainers, docker-java
+// and JUnit 4 into what the CLI runs, which reaches none of them. Left out of the CLI's runtime classpath, so out of
+// installDist's lib/ and the native image; the tests' classpath, which doesn't extend this one, keeps them.
+configurations.runtimeClasspath {
+    exclude group: 'org.testcontainers'
+    exclude group: 'com.github.docker-java'
+    exclude group: 'junit', module: 'junit'
+}
+
+// The native binary: `./gradlew :drivine4j-cli:nativeCompile`, on a GraalVM (GRAALVM_HOME, else JAVA_HOME), gives
+// build/native/nativeCompile/drivine. cli-native.yml builds it and runs the tests against it.
+graalvmNative {
+    // native-image is GRAALVM_HOME's, else JAVA_HOME's, and not a Gradle toolchain's: the module compiles on JDK 21.
+    toolchainDetection = false
+    // The reachability metadata of libraries that carry none of their own, such as Jackson and the Postgres driver,
+    // from GraalVM's metadata repository, which the plugin fetches. ojdbc11, sqlite-jdbc, the Neo4j driver and Netty
+    // carry theirs in META-INF/native-image, which native-image reads from their jars with no flag.
+    metadataRepository {
+        enabled = true
+    }
+    binaries {
+        named('main') {
+            imageName = 'drivine'
+            mainClass = application.mainClass
+            buildArgs.addAll(
+                // A binary that runs on its own or not at all: no fallback image that needs a JVM to run.
+                '--no-fallback',
+                // A build that fails says where, with the stack trace of what failed in the image builder.
+                '-H:+ReportExceptionStackTraces',
+                // Ctrl-C and kill run the shutdown hooks, as on a JVM: sqlite::memory:'s file is deleted then (Store.kt).
+                '--install-exit-handlers',
+                // sqlite-jdbc loads its native library with System.load, a restricted method: as on the JVM
+                // (applicationDefaultJvmArgs above), the binary lets the classpath call it, so it prints no warning
+                // on stderr. native-image takes the java launcher's spelling, the module after an `=`.
+                '--enable-native-access=ALL-UNNAMED',
+            )
+            // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
+            // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is
+            // the repository's. The CLI's own, the resource --version reads, is in META-INF/native-image.
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict'
+    }
+}
+
+// `drivine --version` prints the version this build has.
+tasks.named('processResources') {
+    inputs.property('version', project.version)
+    filesMatching('org/drivine/cli/drivine-cli.properties') {
+        expand(version: project.version)
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // A failing case's message and what the CLI printed, in the build's own output: CI's log is where the native
+    // binary's failures are read, as its test reports aren't downloaded.
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = false
+    }
+    // The tests against a store in a container are opt-in, as the root module's Oracle tests are:
+    // CLI_STORE_TESTS=true runs them on Neo4j, Memgraph, FalkorDB and Postgres, and ORACLE_TESTS=true with it on Oracle.
+    // The switches are inputs, so turning one on runs the tests it enables.
+    def storeTests = providers.environmentVariable('CLI_STORE_TESTS').orElse('')
+    inputs.property('cliStoreTests', storeTests)
+    inputs.property('oracleTests', providers.environmentVariable('ORACLE_TESTS').orElse(''))
+    doFirst {
+        if (storeTests.get() != 'true') {
+            logger.lifecycle('CLI store tests skipped: set CLI_STORE_TESTS=true to run them (and ORACLE_TESTS=true for Oracle)')
+        }
+    }
+    // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    // DRIVINE_CLI_BINARY, the path of a built drivine, runs the tests against it, as a process, and not in process:
+    // see CliCases.kt. It, and the binary it names, are inputs, so a new binary runs them again.
+    def binary = providers.environmentVariable('DRIVINE_CLI_BINARY').orElse('')
+    inputs.property('cliBinary', binary)
+    if (binary.get()) inputs.file(binary.get()).withPropertyName('cliBinaryFile')
+    rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+    if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+}

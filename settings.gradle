@@ -14,5 +14,8 @@ include 'drivine4j-coroutines'
 // Spring Boot starter module
 include 'drivine4j-spring-boot-starter'
 
+// The drivine command line: runs Cypher against any store from a terminal (not published yet)
+include 'drivine4j-cli'
+
 // Sample application demonstrating usage
 include 'drivine4j-sample'

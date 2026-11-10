@@ -1,0 +1,650 @@
+# The drivine CLI's cases: see README.md in this directory. A runner empties the graph before each case.
+cases:
+  - name: "plain prints each kind of value as cypher-shell does"
+    cypherShell: true
+    args: ["--format", "plain", "RETURN 1 AS n, 'a' AS s, null AS z, [1, 'b'] AS l, {k: 2} AS m, 1.5 AS f, true AS b, 2.0 AS w"]
+    stdout: "n, s, z, l, m, f, b, w\n1, \"a\", NULL, [1, \"b\"], {k: 2}, 1.5, TRUE, 2.0\n"
+    exit: 0
+
+  - name: "auto is plain when stdout is not a terminal"
+    cypherShell: true
+    args: ["RETURN 1 AS n, 'a' AS s"]
+    stdout: "n, s\n1, \"a\"\n"
+    exit: 0
+
+  - name: "plain prints nothing for a result with no rows"
+    cypherShell: true
+    args: ["--format", "plain", "MATCH (n:Nope) RETURN n"]
+    stdout: ""
+    exit: 0
+
+  - name: "verbose prints a table and its count of rows"
+    cypherShell: true
+    mode: cypher-shell
+    args: ["--format", "verbose", "RETURN 1 AS n, 'a' AS s, null AS z, [1, 'b'] AS l, {k: 2} AS m, 1.5 AS f, true AS b"]
+    stdout: "+-------------------------------------------------+\n| n | s   | z    | l        | m      | f   | b    |\n+-------------------------------------------------+\n| 1 | \"a\" | NULL | [1, \"b\"] | {k: 2} | 1.5 | TRUE |\n+-------------------------------------------------+\n\n1 row\n"
+    exit: 0
+
+  - name: "table prints a table and its count of rows"
+    args: ["--format", "table", "RETURN 1 AS n, 'a' AS s, null AS z, [1, 'b'] AS l, {k: 2} AS m, 1.5 AS f, true AS b"]
+    stdout: "+-------------------------------------------------+\n| n | s   | z    | l        | m      | f   | b    |\n+-------------------------------------------------+\n| 1 | \"a\" | NULL | [1, \"b\"] | {k: 2} | 1.5 | TRUE |\n+-------------------------------------------------+\n\n1 row\n"
+    exit: 0
+
+  - name: "verbose prints the columns of a result with no rows"
+    cypherShell: true
+    mode: cypher-shell
+    args: ["--format", "verbose", "MATCH (n:Nope) RETURN n"]
+    stdout: "+---+\n| n |\n+---+\n+---+\n\n0 rows\n"
+    exit: 0
+
+  - name: "table prints the columns of a result with no rows"
+    args: ["--format", "table", "MATCH (n:Nope) RETURN n"]
+    stdout: "+---+\n| n |\n+---+\n+---+\n\n0 rows\n"
+    exit: 0
+
+  - name: "verbose prints the store's counts of what a statement wrote"
+    cypherShell: true
+    mode: cypher-shell
+    only: [neo4j]
+    args: ["--format", "verbose", "CREATE (n:T) DELETE n"]
+    stdout: "0 rows\nCreated 1 node, deleted 1 node, added 1 label\n"
+    exit: 0
+
+  - name: "table prints the store's counts of what a statement wrote"
+    only: [neo4j]
+    args: ["--format", "table", "CREATE (n:T) DELETE n"]
+    stdout: "0 rows\nCreated 1 node, deleted 1 node, added 1 label\n"
+    exit: 0
+
+  - name: "plain prints a path along and against its relationships' directions"
+    cypherShell: true
+    args: ["--format", "plain", "CREATE (a:A)-[:R]->(:B)<-[:S]-(:C) WITH a MATCH p = (a)-[:R]->(:B)<-[:S]-(:C) RETURN p"]
+    stdout: "p\n(:A)-[:R]->(:B)<-[:S]-(:C)\n"
+    exit: 0
+
+  - name: "plain prints a node and a relationship as cypher-shell does"
+    cypherShell: true
+    args: ["--format", "plain", "CREATE (n:P {name: 'x'})-[r:K {w: 1}]->(m:Q) RETURN n, r, m"]
+    stdout: "n, r, m\n(:P {name: \"x\"}), [:K {w: 1}], (:Q)\n"
+    exit: 0
+
+  - name: "plain escapes a \" in a text, and not a \\"
+    cypherShell: true
+    args: ["--format", "plain", "RETURN 'a\"b\\\\c' AS s, 'it\\'s' AS q"]
+    stdout: "s, q\n\"a\\\"b\\c\", \"it's\"\n"
+    exit: 0
+
+  - name: "plain prints a float as Java's Double.toString does, and a whole number past 2^53 exactly"
+    cypherShell: true
+    args: ["--format", "plain", "RETURN 1.0E10 AS a, 0.0001 AS b, 12345.678 AS c, 0.1 AS d, 9007199254740993 AS i"]
+    stdout: "a, b, c, d, i\n1.0E10, 1.0E-4, 12345.678, 0.1, 9007199254740993\n"
+    exit: 0
+
+  - name: "plain prints a date as its ISO text, unquoted"
+    cypherShell: true
+    only: [neo4j]
+    args: ["--format", "plain", "RETURN date('2024-01-01') AS d"]
+    stdout: "d\n2024-01-01\n"
+    exit: 0
+
+  - name: "plain prints -0.0 with its sign"
+    cypherShell: true
+    only: [neo4j]
+    args: ["--format", "plain", "RETURN -0.0 AS z"]
+    stdout: "z\n-0.0\n"
+    exit: 0
+
+  - name: "plain prints a text's characters as they are"
+    cypherShell: true
+    args: ["--format", "plain", "CREATE (n:P {t: 'é😀'}) RETURN n, 'é😀' AS t"]
+    stdout: "n, t\n(:P {t: \"é😀\"}), \"é😀\"\n"
+    exit: 0
+    note: "Keys come in the store's order, which differs by store, so no case compares a map or a node of two keys or more but :params' a and b, which every store orders alike."
+
+  - name: "-c runs as the positional argument does"
+    args: ["--format", "plain", "-c", "RETURN 2 AS two"]
+    stdout: "two\n2\n"
+    exit: 0
+
+  - name: "A statement that fails exits with 1, and prints nothing to stdout"
+    cypherShell: true
+    args: ["--format", "plain", "RETURN 1/0"]
+    stdout: ""
+    exit: 1
+
+  - name: "A statement that doesn't parse exits with 1"
+    cypherShell: true
+    args: ["--format", "plain", "RETURN ("]
+    stdout: ""
+    exit: 1
+
+  - name: "A file is split on ; outside strings and comments"
+    cypherShell: true
+    files: {"f.cypher": "RETURN 1 AS a;\nRETURN \"x;y\" AS b;\n// c;\nRETURN 2 AS c;\n"}
+    args: ["--format", "plain", "-f", "f.cypher"]
+    stdout: "a\n1\nb\n\"x;y\"\nc\n2\n"
+    exit: 0
+
+  - name: "A ; in a block comment, a backticked name or after an escaped quote doesn't split"
+    files: {"f.cypher": "/* a; b */ RETURN 1 AS `x;y`;\nRETURN 'it\\';s' AS q, \"\\\";\" AS r;\n"}
+    args: ["--format", "plain", "-f", "f.cypher"]
+    stdout: "x;y\n1\nq, r\n\"it';s\", \"\\\";\"\n"
+    exit: 0
+
+  - name: "The text after the last ; runs, and a statement of only comments doesn't"
+    stdin: "RETURN 1 AS a;\n// nothing here;\n  ;\nRETURN 2 AS b"
+    args: ["--format", "plain"]
+    stdout: "a\n1\nb\n2\n"
+    exit: 0
+
+  - name: "A file stops at its first failing statement"
+    cypherShell: true
+    files: {"g.cypher": "RETURN 1 AS a;\nRETURN 1/0;\nRETURN 2 AS c;\n"}
+    args: ["--format", "plain", "-f", "g.cypher"]
+    stdout: "a\n1\n"
+    exit: 1
+
+  - name: "--fail-at-end runs every statement, and still exits with 1"
+    cypherShell: true
+    mode: cypher-shell
+    files: {"g.cypher": "RETURN 1 AS a;\nRETURN 1/0;\nRETURN 2 AS c;\n"}
+    args: ["--format", "plain", "--fail-at-end", "-f", "g.cypher"]
+    stdout: "a\n1\nc\n2\n"
+    exit: 1
+
+  - name: "--continue runs every statement, and still exits with 1"
+    files: {"g.cypher": "RETURN 1 AS a;\nRETURN 1/0;\nRETURN 2 AS c;\n"}
+    args: ["--format", "plain", "--continue", "-f", "g.cypher"]
+    stdout: "a\n1\nc\n2\n"
+    exit: 1
+
+  - name: ":param, :begin and :rollback in a file"
+    cypherShell: true
+    except: [falkordb]
+    files: {"h.cypher": ":param x => 5\nRETURN $x AS x;\n:begin\nCREATE (n:B) RETURN 1 AS made;\n:rollback\nMATCH (n:B) RETURN count(n) AS c;\n"}
+    args: ["--format", "plain", "-f", "h.cypher"]
+    stdout: "x\n5\nmade\n1\nc\n0\n"
+    exit: 0
+
+  - name: ":commit keeps what the transaction wrote"
+    files: {"h.cypher": ":begin\nCREATE (n:B);\nCREATE (n:B);\n:commit\nMATCH (n:B) RETURN count(n) AS c;\n"}
+    args: ["--format", "plain", "-f", "h.cypher"]
+    stdout: "c\n2\n"
+    exit: 0
+    note: "On FalkorDB, :begin warns, each CREATE commits on its own and :commit does nothing, so the count is the same."
+
+  - name: "On FalkorDB, :begin warns that each statement commits on its own, and the run goes on, past a second :begin too"
+    only: [falkordb]
+    files: {"h.cypher": ":begin\nCREATE (n:B);\n:commit\n:begin\nMATCH (n:B) RETURN count(n) AS c;\n:commit\n"}
+    args: ["--format", "plain", "-f", "h.cypher"]
+    stdout: "c\n1\n"
+    stderr: "FalkorDB has no multi-statement transactions; each statement runs and commits on its own"
+    exit: 0
+
+  - name: "On FalkorDB, :rollback fails as a command does, since nothing can be rolled back"
+    only: [falkordb]
+    files: {"h.cypher": ":begin\nCREATE (n:B);\n:rollback\nMATCH (n:B) RETURN count(n) AS c;\n"}
+    args: ["--format", "plain", "-f", "h.cypher"]
+    stdout: ""
+    exit: 1
+    note: "The MATCH after :rollback doesn't run, as the run stops at the first failure by default."
+
+  - name: ":source runs a file's statements in place, read from the working directory"
+    files: {"a.cypher": "RETURN 1 AS a;\n:source b.cypher\nRETURN 3 AS c;\n", "b.cypher": "RETURN 2 AS b;\n"}
+    args: ["--format", "plain", "-f", "a.cypher"]
+    stdout: "a\n1\nb\n2\nc\n3\n"
+    exit: 0
+
+  - name: "A :source file that can't be read fails as a statement does"
+    files: {"a.cypher": "RETURN 1 AS a;\n:source missing.cypher\nRETURN 3 AS c;\n"}
+    args: ["--format", "plain", "-f", "a.cypher"]
+    stdout: "a\n1\n"
+    exit: 1
+
+  - name: ":param takes a map, and :params clear clears the parameters"
+    files: {"p.cypher": ":param {a: 1, b: 'x'}\nRETURN $a AS a, $b AS b;\n:params clear\nRETURN $a AS a;\n"}
+    args: ["--format", "plain", "-f", "p.cypher"]
+    stdout: "a, b\n1, \"x\"\n"
+    exit: 1
+
+  - name: "An unknown command fails as a statement does"
+    cypherShell: true
+    files: {"u.cypher": ":nope\nRETURN 1 AS a;\n"}
+    args: ["--format", "plain", "-f", "u.cypher"]
+    stdout: ""
+    stderr: "Could not find command :nope, use :help to see available commands"
+    exit: 1
+
+  - name: ":params lists the parameters as a map, a line each"
+    cypherShell: true
+    files: {"p.cypher": ":param {a: 1, b: \"x\"}\n:params\n"}
+    args: ["--format", "plain", "-f", "p.cypher"]
+    stdout: "{\n  a: 1,\n  b: 'x'\n}\n"
+    exit: 0
+
+  - name: ":exit stops reading"
+    cypherShell: true
+    files: {"r.cypher": "RETURN 1 AS a;\n:exit\nRETURN 2 AS b;\n"}
+    args: ["--format", "plain", "-f", "r.cypher"]
+    stdout: "a\n1\n"
+    exit: 0
+
+  - name: "A file whose lines end in \\r\\n reads as one whose lines end in \\n"
+    cypherShell: true
+    files: {"w.cypher": "RETURN 1 AS a;\r\n:exit\r\nRETURN 2 AS b;\r\n"}
+    args: ["--format", "plain", "-f", "w.cypher"]
+    stdout: "a\n1\n"
+    exit: 0
+
+  - name: "A : line inside a statement no ; has ended is part of the statement"
+    cypherShell: true
+    files: {"s.cypher": "RETURN 1 AS a\n:exit\n;\nRETURN 2 AS b;\n"}
+    args: ["--format", "plain", "-f", "s.cypher"]
+    stdout: ""
+    exit: 1
+    note: "The statement is RETURN 1 AS a :exit, which doesn't parse."
+
+  - name: "A : line inside a string isn't a command, and plain prints a text's line breaks as they are"
+    cypherShell: true
+    files: {"t.cypher": "RETURN \"a\n:exit\nb\" AS s;\nRETURN 2 AS b;\n"}
+    args: ["--format", "plain", "-f", "t.cypher"]
+    stdout: "s\n\"a\n:exit\nb\"\nb\n2\n"
+    exit: 0
+
+  - name: "A file that ends inside a transaction rolls it back"
+    except: [falkordb]
+    files: {"h.cypher": ":begin\nCREATE (n:B);\n"}
+    args: ["--format", "plain", "-f", "h.cypher"]
+    exit: 0
+
+  - name: "Statements piped to stdin run"
+    cypherShell: true
+    stdin: "RETURN 3 AS three;\n"
+    args: ["--format", "plain"]
+    stdout: "three\n3\n"
+    exit: 0
+
+  - name: "Given a statement, stdin isn't read"
+    stdin: "RETURN 9 AS nine;\n"
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "Piped stdin, with no --format, is plain"
+    cypherShell: true
+    stdin: "RETURN 3 AS three;\n"
+    args: []
+    stdout: "three\n3\n"
+    exit: 0
+
+  - name: "-P takes NAME => EXPRESSION"
+    cypherShell: true
+    args: ["--format", "plain", "-P", "y => 7", "RETURN $y AS y"]
+    stdout: "y\n7\n"
+    exit: 0
+
+  - name: "-P takes a map"
+    cypherShell: true
+    args: ["--format", "plain", "-P", "{y: 8}", "RETURN $y AS y"]
+    stdout: "y\n8\n"
+    exit: 0
+
+  - name: "A -P whose expression fails exits with 1, and runs nothing"
+    args: ["--format", "plain", "-P", "x => 1/0", "RETURN 1 AS one"]
+    stdout: ""
+    exit: 1
+
+  - name: "A -P of neither form exits with 2"
+    store: false
+    args: ["-P", "y", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "-P takes NAME=EXPRESSION, and a later parameter replaces an earlier one"
+    args: ["--format", "plain", "-P", "y=1", "--param", "y => 'z'", "RETURN $y AS y"]
+    stdout: "y\n\"z\"\n"
+    exit: 0
+
+  - name: "NEO4J_USERNAME and NEO4J_PASSWORD give the user and the password"
+    cypherShell: true
+    mode: cypher-shell
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_USER: null, DRIVINE_PASSWORD: null, NEO4J_USERNAME: "$user", NEO4J_PASSWORD: "$password"}
+    args: ["--format", "plain", "RETURN 4 AS four"]
+    stdout: "four\n4\n"
+    exit: 0
+    note: "$user and $password are the store's, as the runner has them."
+
+  - name: "-p is taken, with a warning"
+    mode: cypher-shell
+    description: "-u comes before DRIVINE_USER and NEO4J_USERNAME, and -p before DRIVINE_PASSWORD."
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_USER: "nobody", NEO4J_USERNAME: "nobody", DRIVINE_PASSWORD: "not-the-password"}
+    args: ["--format", "plain", "-u", "$user", "-p", "$password", "RETURN 5 AS five"]
+    stdout: "five\n5\n"
+    stderr: "a password given with -p shows in ps and in your shell history"
+    exit: 0
+
+  - name: "--user comes before DRIVINE_USER"
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_USER: "nobody"}
+    args: ["--format", "plain", "--user", "$user", "RETURN 5 AS five"]
+    stdout: "five\n5\n"
+    exit: 0
+
+  - name: "-p is refused, pointing to DRIVINE_PASSWORD"
+    store: false
+    args: ["-u", "x", "-p", "y", "RETURN 1"]
+    stdout: ""
+    stderr: "use DRIVINE_PASSWORD, a profile or the prompt"
+    exit: 2
+
+  - name: "DRIVINE_PASSWORD comes before NEO4J_PASSWORD"
+    mode: cypher-shell
+    only: [neo4j, postgres, oracle]
+    env: {NEO4J_PASSWORD: "not-the-password"}
+    args: ["--format", "plain", "RETURN 6 AS six"]
+    stdout: "six\n6\n"
+    exit: 0
+
+  - name: "NEO4J_PASSWORD isn't read"
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_PASSWORD: null, NEO4J_PASSWORD: "$password"}
+    args: ["--format", "plain", "RETURN 1"]
+    stdout: ""
+    exit: 3
+    note: "With no password, the store refuses the user."
+
+  - name: "With no user and no password, and stdin not a terminal, nothing prompts and the store refuses"
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_USER: null, DRIVINE_PASSWORD: null}
+    args: ["--format", "plain", "RETURN 1"]
+    stdout: ""
+    exit: 3
+    note: "cypher-shell 2026.10.1 does the same, but exits with 1."
+
+  - name: "A wrong password exits with 3"
+    only: [neo4j, postgres, oracle]
+    env: {DRIVINE_PASSWORD: "not-the-password"}
+    args: ["--format", "plain", "RETURN 1"]
+    stdout: ""
+    exit: 3
+
+  - name: "A store that can't be reached exits with 3"
+    store: false
+    args: ["-a", "bolt://localhost:1", "--format", "plain", "RETURN 1"]
+    stdout: ""
+    exit: 3
+
+  - name: "An unknown flag exits with 2, naming it"
+    store: false
+    args: ["--nope", "RETURN 1"]
+    stdout: ""
+    stderr: "--nope"
+    exit: 2
+
+  - name: "A cypher-shell flag that isn't Drivine's, such as --change-password, is an unknown flag"
+    store: false
+    args: ["--change-password"]
+    stderr: "--change-password"
+    exit: 2
+
+  - name: "Two inputs exit with 2"
+    store: false
+    files: {"f.cypher": "RETURN 1;\n"}
+    args: ["-f", "f.cypher", "RETURN 2"]
+    exit: 2
+
+  - name: "A -f file that can't be read exits with 2"
+    store: false
+    args: ["-f", "missing.cypher"]
+    stdout: ""
+    exit: 2
+
+  - name: "--fail-fast with --fail-at-end exits with 1"
+    mode: cypher-shell
+    store: false
+    args: ["--fail-fast", "--fail-at-end", "RETURN 1"]
+    stdout: ""
+    exit: 1
+
+  - name: "A format that isn't one exits with 2"
+    store: false
+    args: ["--format", "xml", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "verbose isn't a format"
+    store: false
+    args: ["--format", "verbose", "RETURN 1"]
+    stdout: ""
+    exit: 2
+    note: "table is what cypher-shell calls verbose. The compatibility mode takes verbose."
+
+  - name: "--help exits with 0"
+    store: false
+    args: ["--help"]
+    exit: 0
+
+  - name: "NEO4J_ADDRESS gives the address, before NEO4J_URI"
+    mode: cypher-shell
+    store: false
+    env: {NEO4J_ADDRESS: "sqlite::memory:", NEO4J_URI: "bolt://localhost:1"}
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "NEO4J_URI gives the address"
+    mode: cypher-shell
+    store: false
+    env: {NEO4J_URI: "sqlite::memory:"}
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "-a comes before NEO4J_ADDRESS"
+    mode: cypher-shell
+    store: false
+    env: {NEO4J_ADDRESS: "bolt://localhost:1"}
+    args: ["-a", "sqlite::memory:", "--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "DRIVINE_ADDRESS gives the address"
+    store: false
+    env: {DRIVINE_ADDRESS: "sqlite::memory:"}
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "-a comes before DRIVINE_ADDRESS"
+    store: false
+    env: {DRIVINE_ADDRESS: "bolt://localhost:1"}
+    args: ["-a", "sqlite::memory:", "--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "With no address, the invocation is refused"
+    store: false
+    args: ["--format", "plain", "RETURN 1"]
+    stdout: ""
+    stderr: "DRIVINE_ADDRESS"
+    exit: 2
+    note: "There is no default address. cypher-shell, and the compatibility mode, use neo4j://localhost:7687."
+
+  - name: "NEO4J_ADDRESS isn't read"
+    store: false
+    env: {NEO4J_ADDRESS: "sqlite::memory:"}
+    args: ["--format", "plain", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "The default: key picks the profile"
+    store: false
+    files: {".drivine.yml": "default: \"mem\"\nprofiles:\n  mem:\n    address: \"sqlite::memory:\"\n"}
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "--profile picks a profile over the default"
+    store: false
+    files: {".drivine.yml": "default: \"far\"\nprofiles:\n  far:\n    address: \"bolt://localhost:1\"\n  mem:\n    address: \"sqlite::memory:\"\n"}
+    args: ["--profile", "mem", "--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "An environment variable overrides the profile"
+    store: false
+    files: {".drivine.yml": "default: \"far\"\nprofiles:\n  far:\n    address: \"bolt://localhost:1\"\n"}
+    env: {DRIVINE_ADDRESS: "sqlite::memory:"}
+    args: ["--format", "plain", "RETURN 1 AS one"]
+    stdout: "one\n1\n"
+    exit: 0
+
+  - name: "A profile with an unknown key exits with 2"
+    store: false
+    files: {".drivine.yml": "profiles:\n  mem:\n    address: \"sqlite::memory:\"\n    host: \"x\"\n"}
+    args: ["--profile", "mem", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "A --profile that names no profile exits with 2"
+    store: false
+    files: {".drivine.yml": "profiles:\n  mem:\n    address: \"sqlite::memory:\"\n"}
+    args: ["--profile", "nope", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "A profile file that holds a password and others can read is refused"
+    store: false
+    os: [linux, macos]
+    files: {".drivine.yml": "profiles:\n  mem:\n    address: \"sqlite::memory:\"\n    password: \"x\"\n"}
+    args: ["--profile", "mem", "RETURN 1"]
+    stdout: ""
+    stderr: "chmod 600"
+    exit: 2
+    note: "The runner writes the file with mode 0644. On Windows, where the CLI doesn't check a file's mode, this case doesn't hold."
+
+  - name: "A profile file of mode 600 gives the password"
+    only: [neo4j, postgres, oracle]
+    files: {".drivine.yml": {text: "default: \"p\"\nprofiles:\n  p:\n    password: \"$password\"\n", mode: "600"}}
+    env: {DRIVINE_PASSWORD: null}
+    args: ["--format", "plain", "RETURN 7 AS seven"]
+    stdout: "seven\n7\n"
+    exit: 0
+    note: "The user is the runner's DRIVINE_USER, and the address its -a."
+
+  - name: "DRIVINE_PASSWORD comes before the profile's password"
+    only: [neo4j, postgres, oracle]
+    files: {".drivine.yml": {text: "default: \"p\"\nprofiles:\n  p:\n    password: \"not-the-password\"\n", mode: "600"}}
+    args: ["--format", "plain", "RETURN 8 AS eight"]
+    stdout: "eight\n8\n"
+    exit: 0
+    note: "The password is the runner's DRIVINE_PASSWORD."
+
+  - name: "-d is refused on SQLite"
+    only: [sqlite]
+    args: ["-d", "other", "RETURN 1"]
+    stdout: ""
+    exit: 2
+    note: "On SQLite, -a sqlite:path names the file."
+
+  - name: "--database is refused on FalkorDB"
+    only: [falkordb]
+    args: ["--database", "other", "RETURN 1"]
+    stdout: ""
+    exit: 2
+    note: "On FalkorDB, --graph names the graph."
+
+  - name: "--graph is refused on Neo4j and Memgraph"
+    only: [neo4j, memgraph]
+    args: ["-g", "other", "RETURN 1"]
+    stdout: ""
+    exit: 2
+    note: "On Neo4j and Memgraph, --database names the database."
+
+  - name: "DRIVINE_DATABASE is refused on SQLite, as -d is"
+    only: [sqlite]
+    env: {DRIVINE_DATABASE: "other"}
+    args: ["RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "--version prints drivine's version"
+    store: false
+    args: ["--version"]
+    stdoutLines: ["^drivine \\S+$"]
+    exit: 0
+
+  - name: "--explain prints the SQL a statement compiles to, and runs nothing"
+    only: [sql]
+    args: ["--explain", "-P", "x => 1", "CREATE (n:Explained {x: $x}) RETURN n"]
+    stdoutLines: ["\\S", "^-- parameters: \\{.*\"x\":1.*\\}$"]
+    exit: 0
+
+  - name: "--explain is refused on a graph engine"
+    only: [graph]
+    args: ["--explain", "RETURN 1"]
+    stdout: ""
+    exit: 2
+
+  - name: "--encryption is refused on a SQL store"
+    mode: cypher-shell
+    only: [sql]
+    args: ["--encryption", "true", "RETURN 1"]
+    stdout: ""
+    exit: 1
+
+  - name: "json prints a line per statement"
+    stdin: "RETURN 1 AS n, 'a' AS s, null AS z, [1.5, true] AS l, {k: 2} AS m, 2.0 AS w;\nUNWIND [1, 2] AS x RETURN x;\n"
+    args: ["--format", "json"]
+    stdout: "{\"columns\":[\"n\",\"s\",\"z\",\"l\",\"m\",\"w\"],\"rows\":[[1,\"a\",null,[1.5,true],{\"k\":2},2.0]]}\n{\"columns\":[\"x\"],\"rows\":[[1],[2]]}\n"
+    exit: 0
+
+  - name: "json writes NaN and the infinities as the spec does"
+    args: ["--format", "json", "RETURN 0.0 / 0.0 AS nan, 1.0 / 0.0 AS inf"]
+    stdout: "{\"columns\":[\"nan\",\"inf\"],\"rows\":[[{\"$float\":\"NaN\"},{\"$float\":\"Infinity\"}]]}\n"
+    exit: 0
+
+  - name: "json writes a float as plain prints it, and a whole number past 2^53 exactly"
+    args: ["--format", "json", "RETURN 1.0E10 AS a, 0.0001 AS b, 12345.678 AS c, 9007199254740993 AS i"]
+    stdout: "{\"columns\":[\"a\",\"b\",\"c\",\"i\"],\"rows\":[[1.0E10,1.0E-4,12345.678,9007199254740993]]}\n"
+    exit: 0
+
+  - name: "json writes a text's characters as they are"
+    args: ["--format", "json", "RETURN {k: 'é😀'} AS m, 'é😀\\n' AS t"]
+    stdout: "{\"columns\":[\"m\",\"t\"],\"rows\":[[{\"k\":\"é😀\"},\"é😀\\n\"]]}\n"
+    exit: 0
+
+  - name: "json writes a temporal value as its ISO 8601 text, a string"
+    only: [neo4j, sql]
+    stdin: "RETURN date('2024-01-01') AS d;\n"
+    args: ["--format", "json"]
+    stdout: "{\"columns\":[\"d\"],\"rows\":[[\"2024-01-01\"]]}\n"
+    exit: 0
+
+  - name: "csv quotes a field only where it holds a , a \" or a line break, and null is an empty field"
+    args: ["--format", "csv", "RETURN 1 AS n, 'a' AS t, 'a,b' AS s, 'say \"hi\"' AS q, null AS z, [1, 2] AS l"]
+    stdout: "n,t,s,q,z,l\n1,a,\"a,b\",\"say \"\"hi\"\"\",,\"[1,2]\"\n"
+    exit: 0
+
+  - name: "csv separates results with one empty line"
+    stdin: "RETURN 1 AS a;\nRETURN 2 AS b;\n"
+    args: ["--format", "csv"]
+    stdout: "a\n1\n\nb\n2\n"
+    exit: 0
+
+  - name: "An -a address that holds a password is refused, as -p is"
+    store: false
+    args: ["-a", "postgresql://u:secret@localhost:1/db", "RETURN 1"]
+    stdout: ""
+    stderr: "a password on the command line shows in ps"
+    exit: 2
+
+  - name: ":commit with no transaction open fails as a command does"
+    except: [falkordb]
+    note: "On FalkorDB :commit does nothing, as the README's FalkorDB rule says."
+    files: {"c.cypher": "RETURN 1 AS a;\n:commit\nRETURN 2 AS b;\n"}
+    args: ["--format", "plain", "-f", "c.cypher"]
+    stdout: "a\n1\n"
+    exit: 1
