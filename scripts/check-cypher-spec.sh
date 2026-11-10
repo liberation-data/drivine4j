@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks src/test/resources/cypher against the Cypher spec (github.com/liberation-data/drivine-cypher-spec):
-# - fails when a file differs from the tag VERSION names, as a case edited here and not in the spec does;
+# - fails when a file differs from the tag VERSION names, as a case edited here and not in the spec does, and warns
+#   only of store.yaml where that tag has none yet;
 # - warns when the spec has a later tag than VERSION, so drivine4j can move to it.
 #
 #   scripts/check-cypher-spec.sh
@@ -20,9 +21,9 @@ say() {
 curl -fsSL "$repo/archive/refs/tags/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
 changed=0
 for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml store.yaml README.md; do
-    # A file the spec gained after the tag VERSION names (store.yaml, before the tag that carries it) is copied from the
-    # spec's main ahead of the tag: warned of, not failed, until VERSION moves to a tag that holds it.
-    if [ ! -e "$tmp/$file" ] && [ -e "$dir/$file" ]; then
+    # store.yaml, which the spec gained after the tag VERSION names, is copied from the spec's main ahead of the tag:
+    # warned of, not failed, until VERSION moves to a tag that holds it. Any other file missing at the tag fails.
+    if [ "$file" = store.yaml ] && [ ! -e "$tmp/$file" ] && [ -e "$dir/$file" ]; then
         say warning "src/test/resources/cypher/$file is not in the spec at $tag yet. Move to the tag that carries it with scripts/sync-cypher-spec.sh <tag>."
         continue
     fi

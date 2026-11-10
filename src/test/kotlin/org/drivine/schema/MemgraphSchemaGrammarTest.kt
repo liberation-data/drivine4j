@@ -32,6 +32,15 @@ class MemgraphSchemaGrammarTest {
     }
 
     @Test
+    fun `a vector index is made with the capacity the grammar is given`() {
+        val statement = MemgraphSchemaGrammar(vectorIndexCapacity = 500).createIndex(
+            VectorIndexSpec("Proposition", "embedding", 1536)
+        ).single() as SchemaStatement.Cypher
+
+        assertTrue(statement.statement.contains(""""capacity": 500}"""), statement.statement)
+    }
+
+    @Test
     fun `euclidean similarity maps to l2sq metric`() {
         val statement = grammar.createIndex(
             VectorIndexSpec("Doc", "vec", 768, SimilarityFunction.EUCLIDEAN)

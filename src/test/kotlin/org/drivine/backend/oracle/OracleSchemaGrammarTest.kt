@@ -354,6 +354,10 @@ class OracleSchemaGrammarTest {
     fun `the properties of an index are recorded as a JSON array, with quotes and backslashes escaped`() {
         assertEquals("[]", OracleSchemaGrammar.json(emptyList()))
         assertEquals("[\"a\\\"b\",\"c\\\\d\"]", OracleSchemaGrammar.json(listOf("a\"b", "c\\d")))
+        // Byte for byte as the module's DDL records them, which a read of the catalog binds this to find (OracleBackend.made).
+        val properties = listOf("a\"b", "c\\d")
+        val record = checked(grammar.createIndex(RangeIndexSpec("Person", properties), null)).last()
+        assertTrue("c.properties = k.properties" in record && OracleSql.literal(OracleSchemaGrammar.json(properties)) + " AS properties" in record, record)
     }
 
     @Test
