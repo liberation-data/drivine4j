@@ -20,6 +20,7 @@ import org.drivine.query.grammar.MemgraphGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.FullTextQuerySpec
 import org.drivine.query.grammar.VectorQuerySpec
+import org.slf4j.LoggerFactory
 
 /**
  * A planned scored search: the engine-specific Cypher plus its parameter bindings, ready to run.
@@ -452,6 +453,7 @@ internal object FullTextSearchPlanner {
             )
             return when (val planned = FullTextSearch.plan(store, GRAPH_ENGINE, request)) {
                 is SearchPlan -> {
+                    planned.warnings.forEach { logger.warn(it) }
                     bindings = planned.parameters
                     requireNotNull(planned.cypher) { "The full-text search on ${store.id} gave no Cypher." }
                 }
@@ -462,6 +464,9 @@ internal object FullTextSearchPlanner {
 
     /** The graph a graph engine's search is over: its head names no table, so the module reads nothing of it. */
     private val GRAPH_ENGINE = GraphOptions("")
+
+    /** Logs what the shared module warns of, as the SQL stores' search does (`SqlViewSelect.ranked`). */
+    private val logger = LoggerFactory.getLogger(FullTextSearchPlanner::class.java)
 
     /** The store the shared module writes [CypherGrammar]'s search head for; null for a grammar it doesn't know. */
     private val CypherGrammar.searchStore: SearchStore?

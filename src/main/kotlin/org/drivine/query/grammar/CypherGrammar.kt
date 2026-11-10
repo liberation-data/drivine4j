@@ -224,8 +224,9 @@ interface CypherGrammar {
      * Emits the *head* of a full-text search: a `CALL` that yields the matching nodes bound to
      * [rootAlias] and a **normalized similarity** in `[0, 1]` bound to [scoreAlias] (higher = more
      * relevant, the same convention on every engine). Raw Lucene/BM25/Tantivy scores are unbounded
-     * and not comparable across engines, so every grammar routes its `CALL` through
-     * [normalizedFullTextHead], which divides each hit by the batch max. The head ends with a `WITH`
+     * and not comparable across engines, so each hit is divided by the batch max: the shared module's
+     * head does so for Neo4j, Memgraph and FalkorDB, and a grammar of another engine routes its `CALL`
+     * through [normalizedFullTextHead], which scales them alike. The head ends with a `WITH`
      * that establishes exactly those two variables — the identical output contract to
      * [vectorSearchHead] — so the rest of the search query (threshold, projection, RETURN, the
      * trailing `LIMIT topK`) composes on top of it unchanged.
@@ -410,7 +411,7 @@ class Neo4j5Grammar(
     /**
      * `db.index.fulltext.queryNodes(name, query, {limit: n})` — the full-text index is referenced by
      * **name**, and asked for its best `n` hits so Lucene collects no more than that. Neo4j returns an
-     * unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
+     * unbounded Lucene relevance score, which the shared module's head scales to `[0, 1]`.
      */
     @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
@@ -536,8 +537,8 @@ class FalkorDbCypherGrammar(
     /**
      * `db.idx.fulltext.queryNodes(label, query)` — addressed by **label** (FalkorDB has no index
      * names), searching every full-text-indexed property of that label. FalkorDB is the engine that
-     * can return `maxScore == 0` (and thus `0/0 = NaN`); [CypherGrammar.normalizedFullTextHead]'s
-     * `CASE WHEN max > 0 … ELSE 1.0` guard handles it.
+     * can return `maxScore == 0` (and thus `0/0 = NaN`); the shared module's head guards it with
+     * `CASE WHEN max > 0 … ELSE 1.0`.
      */
     @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =

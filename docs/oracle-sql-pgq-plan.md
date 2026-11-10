@@ -198,9 +198,9 @@ second, and none is made beside it. The schema marker and the store's identity a
 - `loadMatching`: Oracle Text, score normalised to the existing contract.
 
 *As built: the table beside the nodes, its trigger and its backfill are `OracleSideTable`, which a
-vector index and a full-text index share. A full-text query is read by `TextQuery`, into the text an
-Oracle Text index is asked and, for a search with no index, the regular expressions each node's text
-is counted against.*
+vector index and a full-text index share. A full-text query is read by the shared compiler module's
+`TextQuery` (`org.drivine.cypher.search`), into the text an Oracle Text index is asked and, for a
+search with no index, the regular expressions each node's text is counted against.*
 
 ### Phase 8 — Typed labels for outside readers (optional)
 
