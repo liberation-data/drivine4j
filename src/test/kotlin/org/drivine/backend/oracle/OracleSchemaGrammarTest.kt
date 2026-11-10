@@ -42,13 +42,41 @@ class OracleSchemaGrammarTest {
         }
     }
 
+    /**
+     * Asserts this is [ddl], an index over the node table, run in a block of its own, as the module's `OracleDdl` writes
+     * it (drivine-cypher-spec#150): it runs it again a tenth of a second after another session's lock turns it away
+     * (`ORA-00054`), up to [OracleGraph.BUSY_ATTEMPTS] tries, and takes `ORA-00955`, a name another session took
+     * meanwhile, as made (#517). The module's own test pins the loop; this pins that drivine4j's grammar runs it.
+     */
+    private fun String.waitsOutBusy(ddl: String) {
+        assertTrue(startsWith("DECLARE\n"), this)
+        assertTrue(endsWith("\nEND;"), this)
+        inOrder("DECLARE", "e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);", "e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);", "BEGIN")
+        busyLoop(ddl)
+    }
+
+    /** Asserts this runs [ddl] in the loop that waits out another session's lock: see [waitsOutBusy]. */
+    private fun String.busyLoop(ddl: String) = inOrder(
+        "FOR attempt IN 1 .. ${OracleGraph.BUSY_ATTEMPTS} LOOP",
+        "BEGIN",
+        "EXECUTE IMMEDIATE ${OracleSql.literal(ddl)};",
+        "EXIT;",
+        "EXCEPTION",
+        "WHEN e_exists THEN EXIT;",
+        "WHEN e_busy THEN",
+        "IF attempt = ${OracleGraph.BUSY_ATTEMPTS} THEN RAISE; END IF;",
+        "DBMS_SESSION.SLEEP(0.1);",
+        "END;",
+        "END LOOP;",
+    )
+
     @Test
     fun `a range index is over the properties read as text, whatever the label, and beside it over those of the label's nodes, and is recorded`() {
         val spec = RangeIndexSpec("Person", listOf("name", "metadata.source"))
         val (index, labelledIndex, record) = checked(grammar.createIndex(spec, null))
 
         val name = graph.objectName("ix", spec.properties)
-        assertEquals("CREATE INDEX IF NOT EXISTS $name ON g_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.\"metadata.source\"'))", index)
+        index.waitsOutBusy("CREATE INDEX IF NOT EXISTS $name ON g_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.\"metadata.source\"'))")
         assertFalse(index.contains("Person"), "a range index does not depend on the label")
 
         val labelled = graph.objectName("lx", listOf("Person") + spec.properties)
@@ -57,11 +85,13 @@ class OracleSchemaGrammarTest {
             "CASE WHEN $person THEN JSON_VALUE(n.props, '$.\"metadata.source\"') END)"
         // Made unless a uniqueness constraint's index over the one property stands for it.
         labelledIndex.inOrder(
+            "PRAGMA EXCEPTION_INIT(e_busy, -54);",
             "SELECT COUNT(*) INTO v_unique FROM g_schema u WHERE u.label = 'Person' AND u.properties = '[\"name\",\"metadata.source\"]' AND u.kind = 'UNIQUENESS_CONSTRAINT'",
             "IF v_unique = 0 THEN",
-            "EXECUTE IMMEDIATE ${OracleSql.literal(ddl)};",
-            "END IF;",
+            "FOR attempt IN 1 ..",
         )
+        labelledIndex.busyLoop(ddl)
+        labelledIndex.inOrder("END LOOP;", "END IF;")
         assertTrue(ddl.contains(OracleSql.labelled("n", "Person", "name")), "a filter reads the property as the index does")
 
         assertTrue(record.startsWith("BEGIN\n"))
@@ -169,9 +199,8 @@ class OracleSchemaGrammarTest {
 
         val name = graph.objectName("uq", listOf("Person", "email", "tenant"))
         val constrained = "JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.email') AND JSON_EXISTS(n.props, '$.tenant')"
-        assertEquals(
+        index.waitsOutBusy(
             "CREATE UNIQUE INDEX IF NOT EXISTS $name ON g_node n (CASE WHEN $constrained THEN JSON_VALUE(n.props, '$.email') END, CASE WHEN $constrained THEN JSON_VALUE(n.props, '$.tenant') END)",
-            index,
         )
         assertEquals(2, Regex("CASE WHEN").findAll(index).count())
         record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label, '[\"email\",\"tenant\"]' AS properties", "'Person_email_tenant_unique', '$name', '{}'")
@@ -367,11 +396,11 @@ class OracleSchemaGrammarTest {
 
         val ix = graph.objectName("ix", listOf("email"))
         val uq = graph.objectName("uq", listOf("Person", "email"))
-        assertEquals("CREATE INDEX IF NOT EXISTS $ix ON g_node (JSON_VALUE(props, '$.email'))", shared)
+        shared.waitsOutBusy("CREATE INDEX IF NOT EXISTS $ix ON g_node (JSON_VALUE(props, '$.email'))")
         assertFalse("lx" in range || "CASE WHEN" in range, "no labelled index is made:\n$range")
         range.inOrder("'RANGE_INDEX' AS kind, 'Person' AS label, '[\"email\"]' AS properties", "'$ix', '{\"unique\": \"$uq\"}'")
         assertFalse("WHEN MATCHED THEN UPDATE" in range, "a range index there already is changed only once the unique index is made")
-        assertEquals("CREATE UNIQUE INDEX IF NOT EXISTS $uq ON g_node n (${OracleSql.unique("n", "Person", listOf("email"), "email")})", unique)
+        unique.waitsOutBusy("CREATE UNIQUE INDEX IF NOT EXISTS $uq ON g_node n (${OracleSql.unique("n", "Person", listOf("email"), "email")})")
         served.inOrder(
             "SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"email\"]';",
             // Dropped before the record stops naming it: a drop that fails leaves it named, to be dropped next time.

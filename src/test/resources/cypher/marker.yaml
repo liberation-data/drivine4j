@@ -114,7 +114,23 @@ marker:
       scopes: null
       itemsMark: "items:"
       constraint:
-        - "CREATE INDEX IF NOT EXISTS drivine_ix_scope_6833e54 ON drivine_node (JSON_VALUE(props, '$.scope'))"
+        - |-
+          DECLARE
+              e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+              e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+          BEGIN
+              FOR attempt IN 1 .. 300 LOOP
+                  BEGIN
+                      EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_scope_6833e54 ON drivine_node (JSON_VALUE(props, ''$.scope''))';
+                      EXIT;
+                  EXCEPTION
+                      WHEN e_exists THEN EXIT;
+                      WHEN e_busy THEN
+                          IF attempt = 300 THEN RAISE; END IF;
+                          DBMS_SESSION.SLEEP(0.1);
+                  END;
+              END LOOP;
+          END;
         - |-
           BEGIN
               MERGE INTO drivine_schema c
@@ -126,7 +142,23 @@ marker:
               -- Another process recorded it between the MERGE's read and its insert: it is recorded.
               NULL;
           END;
-        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineSchemascope_4cab9cbb ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"_DrivineSchema\")') AND JSON_EXISTS(n.props, '$.scope') THEN JSON_VALUE(n.props, '$.scope') END)"
+        - |-
+          DECLARE
+              e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+              e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+          BEGIN
+              FOR attempt IN 1 .. 300 LOOP
+                  BEGIN
+                      EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineSchemascope_4cab9cbb ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "_DrivineSchema")'') AND JSON_EXISTS(n.props, ''$.scope'') THEN JSON_VALUE(n.props, ''$.scope'') END)';
+                      EXIT;
+                  EXCEPTION
+                      WHEN e_exists THEN EXIT;
+                      WHEN e_busy THEN
+                          IF attempt = 300 THEN RAISE; END IF;
+                          DBMS_SESSION.SLEEP(0.1);
+                  END;
+              END LOOP;
+          END;
         - |-
           DECLARE
               v_labelled VARCHAR2(128);
@@ -353,7 +385,23 @@ storeStamp:
         FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "DrivineStore")')
         ORDER BY JSON_VALUE(n.props, '$.assignedAt'), JSON_VALUE(n.props, '$.storeId')
       constraint:
-        - "CREATE INDEX IF NOT EXISTS drivine_ix_key_19e5f ON drivine_node (JSON_VALUE(props, '$.key'))"
+        - |-
+          DECLARE
+              e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+              e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+          BEGIN
+              FOR attempt IN 1 .. 300 LOOP
+                  BEGIN
+                      EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_key_19e5f ON drivine_node (JSON_VALUE(props, ''$.key''))';
+                      EXIT;
+                  EXCEPTION
+                      WHEN e_exists THEN EXIT;
+                      WHEN e_busy THEN
+                          IF attempt = 300 THEN RAISE; END IF;
+                          DBMS_SESSION.SLEEP(0.1);
+                  END;
+              END LOOP;
+          END;
         - |-
           BEGIN
               MERGE INTO drivine_schema c
@@ -365,7 +413,23 @@ storeStamp:
               -- Another process recorded it between the MERGE's read and its insert: it is recorded.
               NULL;
           END;
-        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineStorekey_e211949b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"DrivineStore\")') AND JSON_EXISTS(n.props, '$.key') THEN JSON_VALUE(n.props, '$.key') END)"
+        - |-
+          DECLARE
+              e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+              e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+          BEGIN
+              FOR attempt IN 1 .. 300 LOOP
+                  BEGIN
+                      EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineStorekey_e211949b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "DrivineStore")'') AND JSON_EXISTS(n.props, ''$.key'') THEN JSON_VALUE(n.props, ''$.key'') END)';
+                      EXIT;
+                  EXCEPTION
+                      WHEN e_exists THEN EXIT;
+                      WHEN e_busy THEN
+                          IF attempt = 300 THEN RAISE; END IF;
+                          DBMS_SESSION.SLEEP(0.1);
+                  END;
+              END LOOP;
+          END;
         - |-
           DECLARE
               v_labelled VARCHAR2(128);
