@@ -1,5 +1,8 @@
 package org.drivine.connection
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
@@ -16,6 +19,7 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
+import org.slf4j.LoggerFactory
 import org.springframework.jdbc.datasource.ConnectionHolder
 import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -983,6 +987,112 @@ class JdbcConnectionProviderTest {
         JdbcConnectionProvider("default", DatabaseType.ORACLE, source).connect().query(QuerySpecification.withStatement(cypherStatement("RETURN 1")))
 
         verify(handedOut).prepareStatement(Mockito.anyString())
+    }
+
+    /**
+     * An index build on Postgres whose session cannot be closed out of its pool after it runs with no parallel workers
+     * (#626): that it does is logged once for the provider, with why, at debug, not for each build, which an application
+     * that ensures its schema on each start would see again and again.
+     */
+    @Test
+    fun `a Postgres index build on a pool that cannot close a session logs once that it runs with no parallel workers`() {
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
+        val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
+        val set = Mockito.mock(PreparedStatement::class.java).also { `when`(it.executeQuery()).thenReturn(setting) }
+        val session = Mockito.mock(java.sql.Connection::class.java).also {
+            `when`(it.autoCommit).thenReturn(true)
+            `when`(it.createStatement()).thenReturn(read)
+            `when`(it.prepareStatement(Mockito.anyString())).thenReturn(set)
+        }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(session) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source)
+        val logger = LoggerFactory.getLogger(JdbcConnectionProvider::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        try {
+            repeat(3) { (provider.connect() as JdbcConnection).buildingIndex { } }
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+
+        val logged = appender.list.filter { "no parallel workers" in it.formattedMessage }
+        assertEquals(listOf(Level.DEBUG), logged.map { it.level })
+        assertContains(logged.single().formattedMessage, "its data source is not a HikariCP pool")
+        // Each build ran so all the same: its setting turned to 0, and back.
+        verify(set, times(3)).setString(1, "0")
+        verify(set, times(3)).setString(1, "2")
+    }
+
+    /**
+     * A HikariCP pool behind a wrapper that hands its sessions out wrapped, as Spring's `TransactionAwareDataSourceProxy`
+     * does outside a transaction, cannot have one closed out of it, so an index build on one runs with no parallel
+     * workers, for that reason (#626).
+     */
+    @Test
+    fun `a Postgres index build on a session a HikariCP pool's wrapper hands out wrapped runs with no parallel workers`() {
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
+        val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
+        val set = Mockito.mock(PreparedStatement::class.java).also { `when`(it.executeQuery()).thenReturn(setting) }
+        val session = Mockito.mock(java.sql.Connection::class.java).also {
+            `when`(it.autoCommit).thenReturn(true)
+            `when`(it.createStatement()).thenReturn(read)
+            `when`(it.prepareStatement(Mockito.anyString())).thenReturn(set)
+        }
+        val pool = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+        val source = Mockito.mock(DataSource::class.java).also {
+            `when`(it.connection).thenReturn(session)
+            `when`(it.isWrapperFor(com.zaxxer.hikari.HikariDataSource::class.java)).thenReturn(true)
+            `when`(it.unwrap(com.zaxxer.hikari.HikariDataSource::class.java)).thenReturn(pool)
+        }
+        val refused = mutableListOf<String>()
+        val connection = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source).connect() as JdbcConnection
+        connection.evictionRefused = { refused += it }
+
+        connection.buildingIndex { }
+        connection.release()
+
+        assertEquals(listOf("its data source hands out HikariCP's sessions wrapped, and only one of HikariCP's own can be closed for good"), refused)
+        verify(set).setString(1, "0")
+        verify(pool, never()).evictConnection(Mockito.any())
+    }
+
+    /**
+     * The schema statements that build an index on Postgres, a uniqueness constraint's `CREATE UNIQUE INDEX` among them,
+     * run as an index build (#626); others run as they are.
+     */
+    @Test
+    fun `a Postgres schema statement that builds an index, unique or not, runs as an index build, and no other does`() {
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
+        val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
+        val session = Mockito.mock(java.sql.Connection::class.java).also {
+            `when`(it.autoCommit).thenReturn(true)
+            `when`(it.createStatement()).thenReturn(read)
+            `when`(it.prepareStatement(Mockito.anyString())).thenAnswer {
+                Mockito.mock(PreparedStatement::class.java).also { st -> `when`(st.executeQuery()).thenReturn(setting) }
+            }
+        }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(session) }
+        val schema = org.drivine.schema.SchemaExecutor(JdbcConnectionProvider("default", DatabaseType.POSTGRES, source))
+        fun builds() = statementsOn(session).count { "set_config" in it }
+
+        schema.execute(org.drivine.schema.SchemaStatement.Cypher("DROP INDEX IF EXISTS drivine_unique_x"))
+        assertEquals(0, builds())
+        schema.execute(org.drivine.schema.SchemaStatement.Cypher("CREATE UNIQUE INDEX IF NOT EXISTS drivine_unique_x ON drivine_node ((props->>'x'))"))
+        assertEquals(2, builds(), "the workers set to 0, and back")
+        schema.execute(org.drivine.schema.SchemaStatement.Cypher("  create index IF NOT EXISTS drivine_range_x ON drivine_node ((props->>'x'))"))
+        assertEquals(4, builds())
     }
 
     // ----- The builder -----

@@ -254,6 +254,7 @@ The store's identity (`DrivineStore`) and the schema marker are nodes of the gra
 | TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | The same index made `UNIQUE`, which also finds a node, so no range index is made beside it. A node that lacks one of the properties is not constrained |
 | Item names | Recorded; the index's name is derived from the graph, label and properties, and Postgres keeps it in lower case. A drop drops the index the record names |
+| Index builds | A session that builds an index in parallel keeps a shared memory segment in `/dev/shm` for as long as it lives, which in a container's 64 MB can leave too little for a later HNSW build. So the session an index or a uniqueness constraint is built on is closed after it, out of its HikariCP pool, whether the build passed or failed. Where it cannot be, as on a `DataSource` of another pool or on the connection of a caller's transaction, the build runs with no parallel workers (`max_parallel_maintenance_workers` 0), and the session's own setting is put back after |
 
 Neptune and generic openCypher have no schema management support — operations fail loudly rather than silently no-op.
 

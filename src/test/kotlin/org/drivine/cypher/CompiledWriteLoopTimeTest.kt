@@ -47,12 +47,17 @@ abstract class CompiledWriteLoopTimeContract {
         Triple("CALL", "MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)", { n -> listOf(n.toLong()) }),
     )
 
-    /** What each write left, read back: the nodes, those with x, the relationships, and those with y. */
+    /**
+     * What each write left, read back: the nodes, those with x, the relationships, and those with y. Each self-loop is read
+     * from its one node, `(n)-[r]->(n)`, which joins the node table once: `(:CyLoop)-[r]->(:CyLoop)` joins it twice, and on
+     * Postgres, with the node table's statistics left stale on purpose (see [CompiledWriteLoopTimePostgresTest]), that was
+     * planned as a scan of every node for each node: 470 s over 20,000 rows, untimed (#673, liberation-data/drivine#680).
+     */
     private val checks = listOf(
         "MATCH (n:CyLoop) RETURN count(n)",
         "MATCH (n:CyLoop) WHERE n.x IS NOT NULL RETURN count(n)",
         "MATCH (n:CyLoop) WHERE n.x IS NOT NULL RETURN count(n)",
-        "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) RETURN count(r)",
+        "MATCH (n:CyLoop)-[r:CY_SELF]->(n) RETURN count(r)",
         "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)",
     )
 
@@ -145,10 +150,10 @@ class CompiledWriteKeyedReadTimePostgresTest {
 
     /** Each write, and what it leaves, counted after it: n each time, over n rows. One that starts with `MATCH` reads [nodes]. */
     private val writes = listOf(
-        Triple("MERGE ON CREATE SET", "MATCH (n:CyLoop) MERGE (n)-[r:CY_SELF]->(n) ON CREATE SET r.w = n.i", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w IS NOT NULL RETURN count(r)"),
-        Triple("CALL MERGE", "MATCH (n:CyLoop) CALL (n) { MERGE (n)-[:CY_SELF]->(n) } RETURN count(n)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) RETURN count(r)"),
-        Triple("CALL CREATE SET", "MATCH (n:CyLoop) CALL (n) { CREATE (n)-[r:CY_SELF]->(n) SET r.w = n.i } RETURN count(n)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w IS NOT NULL RETURN count(r)"),
-        Triple("FOREACH CREATE SET", "MATCH (n:CyLoop) FOREACH (x IN [1] | CREATE (n)-[r:CY_SELF]->(n) SET r.w = x)", "MATCH (:CyLoop)-[r:CY_SELF]->(:CyLoop) WHERE r.w = 1 RETURN count(r)"),
+        Triple("MERGE ON CREATE SET", "MATCH (n:CyLoop) MERGE (n)-[r:CY_SELF]->(n) ON CREATE SET r.w = n.i", "MATCH (n:CyLoop)-[r:CY_SELF]->(n) WHERE r.w IS NOT NULL RETURN count(r)"),
+        Triple("CALL MERGE", "MATCH (n:CyLoop) CALL (n) { MERGE (n)-[:CY_SELF]->(n) } RETURN count(n)", "MATCH (n:CyLoop)-[r:CY_SELF]->(n) RETURN count(r)"),
+        Triple("CALL CREATE SET", "MATCH (n:CyLoop) CALL (n) { CREATE (n)-[r:CY_SELF]->(n) SET r.w = n.i } RETURN count(n)", "MATCH (n:CyLoop)-[r:CY_SELF]->(n) WHERE r.w IS NOT NULL RETURN count(r)"),
+        Triple("FOREACH CREATE SET", "MATCH (n:CyLoop) FOREACH (x IN [1] | CREATE (n)-[r:CY_SELF]->(n) SET r.w = x)", "MATCH (n:CyLoop)-[r:CY_SELF]->(n) WHERE r.w = 1 RETURN count(r)"),
         Triple("CALL RETURN", "MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)", "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)"),
         Triple("CALL DETACH DELETE", "MATCH (n:CyLoop) CALL (n) { CREATE (m:CyMade) DETACH DELETE m } RETURN count(n)", "MATCH (n:CyLoop) RETURN count(n)"),
         Triple("CALL CREATE node SET", "UNWIND range(1, \$n) AS i CALL (i) { CREATE (a:CyLoop {i: i}) SET a.y = i } RETURN count(i)", "MATCH (n:CyLoop) WHERE n.y = n.i RETURN count(n)"),
