@@ -90,13 +90,15 @@ class QueryResultTest {
     }
 
     @Test
-    fun `a spec that maps its results is refused, and plain SQL gives the driver's columns, a result with no rows too`() {
+    fun `a spec that maps its results is refused, and plain SQL gives the driver's columns, a result with no rows too, and none for no result set`() {
         val pm = SqliteTestDatabase.graphManager("result")
         val mapped = QuerySpecification.withStatement(CypherStatement("RETURN 1 AS n")).transform(String::class.java)
         val failure = assertThrows<DrivineException> { pm.queryResult(mapped) }
         assertContains(failure.message!!, "use query for mapped results")
         assertEquals(QueryResult(listOf("a", "b"), listOf(listOf(1L, "x"))), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a, 'x' AS b")))
         assertEquals(QueryResult(listOf("a"), emptyList()), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a WHERE 1 = 0")))
+        // One that gives no result set names no columns.
+        assertEquals(QueryResult(emptyList(), emptyList()), pm.queryResult(QuerySpecification.withStatement("DROP TABLE IF EXISTS result_none")))
     }
 
     @Test
