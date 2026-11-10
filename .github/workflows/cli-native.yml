@@ -78,6 +78,17 @@ jobs:
             echo "- \`drivine --version\` took $(cat time.txt)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run one statement with the binary
+        # What the binary itself prints, in the log: a run-time gap native-image left (a class, a resource or a
+        # reflection it didn't keep) shows here, where the store tests only see a different exit code or output.
+        run: |
+          binary=drivine4j-cli/build/native/nativeCompile/drivine
+          set +e
+          "$binary" -a sqlite::memory: --format json 'RETURN 1 AS n, 1.5 AS f, [1, "b"] AS l'
+          echo "exit $?"
+          "$binary" -a sqlite::memory: --format plain 'RETURN 1/0'
+          echo "exit $?"
+
       - uses: actions/upload-artifact@v4
         with:
           name: drivine-linux-x64

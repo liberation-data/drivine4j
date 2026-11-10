@@ -100,6 +100,13 @@ tasks.named('processResources') {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // A failing case's message and what the CLI printed, in the build's own output: CI's log is where the native
+    // binary's failures are read, as its test reports aren't downloaded.
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = false
+    }
     // The tests against a store in a container are opt-in, as the root module's Oracle tests are:
     // CLI_STORE_TESTS=true runs them on Neo4j, Memgraph, FalkorDB and Postgres, and ORACLE_TESTS=true with it on Oracle.
     // The switches are inputs, so turning one on runs the tests it enables.
