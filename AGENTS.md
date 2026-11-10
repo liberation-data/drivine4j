@@ -26,10 +26,12 @@ These are read by all three libraries. Change them here only together with the o
 The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`, the store layout's
 DDL, `org.drivine.cypher.store.ddl`, which the schema grammars and SQL graphs run, the `_DrivineSchema` marker, the
 store stamp and the node stamp's form, `org.drivine.cypher.store.marker` and `store.Stamps`, which `SchemaVersionStore`,
-`StoreIdentityResolver` and `model.Stamps` run, each store's schema knowledge, `org.drivine.cypher.store.schema`, and the
+`StoreIdentityResolver` and `model.Stamps` run, each store's schema knowledge, `org.drivine.cypher.store.schema`, the
 schema planner, `org.drivine.cypher.store.plan`, which decides what `SchemaManager`, `IndexManager` and
-`ConstraintManager` read, make, drop, wait for and record, and which `org.drivine.schema.SchemaPlanDriver` runs) is not
-in this repository:
+`ConstraintManager` read, make, drop, wait for and record, and which `org.drivine.schema.SchemaPlanDriver` runs, and
+full-text search, `org.drivine.cypher.api.FullTextSearch`: the user's query read, BM25 and each store's search SQL or
+head, which the SQL backends' `matching` and `FullTextSearchPlanner` run, joining back their own projection) is not in
+this repository:
 it is [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)'s `compiler/` module, which the other
 two libraries are to share, and drivine4j builds against its JVM artifact, `org.drivine:drivine-cypher-compiler-jvm`.
 `gradle/cypher-compiler.properties` pins a release, which the build reads from Maven Central: a spec tag `vX.Y.Z` is the

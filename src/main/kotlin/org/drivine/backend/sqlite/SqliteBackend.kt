@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.sql.SqlBackend
-import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.under
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.FullTextIndexResolver
@@ -65,7 +64,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val candidates = select.matching(index.properties, TextQuery.parse(text))
+        val candidates = select.matching(index.properties, text)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
         return ScoredSearchPlan(statement.statement, statement.bindings)
     }

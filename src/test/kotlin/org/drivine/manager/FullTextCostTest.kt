@@ -88,7 +88,8 @@ class FullTextCostTest {
         rows(100_000).chunked(2000).forEach { cypher(pm)("UNWIND \$rows AS r CREATE (:Article {id: r.id, title: r.title, body: r.body})", mapOf("rows" to it)) }
         PostgresTestDatabase.run("ANALYZE ftcost_node")
         val text = org.drivine.backend.postgres.PostgresSql.searchedText("c", listOf("body"))
-        val pattern = org.drivine.backend.sql.TextQuery.parse("w3000").scored.single().replace("'", "''")
+        // The word's expression, as the shared module's TextQuery writes a term.
+        val pattern = "(^|[^[:alnum:]_])w3000(\$|[^[:alnum:]_])"
         val probes = mapOf(
             "count each" to "SELECT count(*) FROM ftcost_node c WHERE (SELECT count(*) FROM regexp_matches($text, '$pattern', 'g')) > 0",
             "holds" to "SELECT count(*) FROM ftcost_node c WHERE $text ~ '$pattern'",

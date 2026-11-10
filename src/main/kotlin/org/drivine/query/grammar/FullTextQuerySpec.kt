@@ -2,7 +2,7 @@ package org.drivine.query.grammar
 
 /**
  * The resolved inputs a [CypherGrammar] needs to emit a full-text search head. Pure data —
- * engine-specific syntax lives in each grammar's [CypherGrammar.fullTextSearchHead].
+ * engine-specific syntax is the shared module's `org.drivine.cypher.api.FullTextSearch`.
  *
  * Carries *both* the index name (Neo4j / Memgraph query by name) and the label (FalkorDB queries
  * by label — it has no index names), so every grammar can pick what it needs — the same
@@ -18,7 +18,7 @@ package org.drivine.query.grammar
  * @param indexLimitParam the bound parameter name carrying how many hits the index call may yield.
  *   Every hit the call yields is collected to normalize the scores and carried by each row after it,
  *   so this — not [topKParam] — is what bounds a search's memory; see
- *   [CypherGrammar.normalizedFullTextHead]
+ *   [org.drivine.query.FullTextHead]
  * @param labels the root's labels, which a hit must all have: the index is on the first alone, so it
  *   yields nodes that are not the root's. They are checked before the scores are scaled, so the best
  *   hit is one the search can return

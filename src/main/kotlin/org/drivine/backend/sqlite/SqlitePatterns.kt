@@ -9,7 +9,7 @@ import java.util.regex.Pattern
  * An expression is Java's, with what Postgres's adds that Java's does not read: a class written as POSIX
  * names it, `[:alnum:]`, is the same class, of letters and digits in any script, as it is on a Postgres
  * database whose text is Unicode. So an expression a full-text search writes for Postgres reads the
- * same here (see `TextQuery`).
+ * same here (see the shared module's `org.drivine.cypher.search.TextQuery`).
  */
 internal class SqlitePatterns {
 

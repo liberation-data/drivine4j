@@ -1,12 +1,19 @@
 package org.drivine.backend.sqlite
 
 import org.drivine.connection.DatabaseType
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.SearchPlan
+import org.drivine.cypher.api.SearchRequest
+import org.drivine.cypher.api.SearchStore
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import org.sqlite.SQLiteErrorCode
 import org.sqlite.SQLiteException
+import sample.fulltext.EntityNode
 import java.sql.SQLException
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -32,5 +39,18 @@ class SqliteBackendTest {
         assertFalse(backend.contended(IllegalStateException("database is locked")))
         // The failure itself is asked, not what caused it: the executor walks the causes.
         assertFalse(backend.contended(RuntimeException(SQLiteException("[SQLITE_BUSY]", SQLiteErrorCode.SQLITE_BUSY))))
+    }
+
+    @Test
+    fun `a text search ranks the roots as the shared module does, and joins them back to the node table`() {
+        val plan = backend().matching(EntityNode::class.java, null, null, "graph +data", topK = 3, threshold = 0.25)
+
+        val module = FullTextSearch.plan(SearchStore.SQLITE, GraphOptions("g"), SearchRequest(listOf("Entity"), listOf("name", "description"), "graph +data")) as SearchPlan
+        val squashed = { s: String -> s.replace(Regex("\\s+"), " ") }
+        val sql = squashed(plan.cypher)
+        assertTrue(sql.contains(squashed(module.sql!!)), sql)
+        assertTrue(sql.contains(") m JOIN g_node c ON c.nid = m.nid"), sql)
+        assertEquals(module.parameters, plan.bindings.filterKeys { it.startsWith("_cy_ft") })
+        assertEquals(setOf<Any?>(0.25, 3), plan.bindings.filterKeys { it.startsWith("_p") }.values.toSet())
     }
 }

@@ -7,7 +7,7 @@ import org.drivine.query.grammar.FullTextQuerySpec
 /**
  * Generates a Cypher **full-text** search over a single `@GraphView`.
  *
- * The full-text counterpart to [GraphViewVectorSearchBuilder]: the grammar's full-text `CALL` head
+ * The full-text counterpart to [GraphViewVectorSearchBuilder]: the full-text `CALL` head
  * (already score-normalized to `[0, 1]`) replaces the `MATCH` (the index *produces* the root nodes),
  * the relevance is threaded through as `_score`, and the same projection + required-relationship
  * `EXISTS` checks the normal load uses (via the shared [GraphViewProjectionAssembler]) are layered
@@ -21,7 +21,7 @@ import org.drivine.query.grammar.FullTextQuerySpec
  */
 internal class GraphViewFullTextSearchBuilder(
     viewModel: GraphViewModel,
-    private val grammar: CypherGrammar,
+    grammar: CypherGrammar,
     private val context: BuildContext,
 ) {
 
@@ -34,18 +34,19 @@ internal class GraphViewFullTextSearchBuilder(
 
     /**
      * @param spec the resolved index + bound parameter names to search
+     * @param head writes the search's head for the root's labels (see [FullTextHead])
      * @param thresholdParam optional bound parameter name; when set, adds `_score >= $param`
      * @param callerWhere optional caller-supplied predicate (already rendered Cypher, without the
      *   `WHERE` keyword) `AND`-ed into the post-projection filter, exactly as the vector path does.
      */
-    fun build(spec: FullTextQuerySpec, thresholdParam: String?, callerWhere: String? = null): String {
+    fun build(spec: FullTextQuerySpec, head: FullTextHead, thresholdParam: String?, callerWhere: String? = null): String {
         val rootFieldName = assembler.rootFieldName
         val scoreVar = SCORE_VAR
 
-        // The grammar's CALL ... normalize ... WITH establishes `rootFieldName` and `scoreVar`. A node the
+        // The head's CALL ... normalize ... WITH establishes `rootFieldName` and `scoreVar`. A node the
         // index yields may lack the root's other labels; the head checks them before it scales the
         // scores, so the best of the scale is a hit this search can return.
-        val head = grammar.fullTextSearchHead(spec.copy(labels = assembler.rootLabels()), rootFieldName, scoreVar)
+        val written = head.write(assembler.rootLabels(), rootFieldName, scoreVar)
 
         // Build the WITH projection first — it accumulates the prologs/bridge variables the prolog
         // section then reads. Carry the score through so the RETURN can reference it.
@@ -76,7 +77,7 @@ ${assembler.valueFieldEntries("        ").joinToString(",\n")}
 ORDER BY $scoreVar DESC
 LIMIT ${'$'}${spec.topKParam}"""
 
-        return head + prologSection + withClause + whereSection + returnClause
+        return written + prologSection + withClause + whereSection + returnClause
     }
 
     /**
