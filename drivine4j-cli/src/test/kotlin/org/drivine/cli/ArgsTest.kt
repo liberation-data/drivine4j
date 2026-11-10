@@ -46,6 +46,8 @@ class ArgsTest {
         assertEquals(Args.PASSWORD_REFUSED, refused("-u", "x", "-p", "y", "RETURN 1"))
         assertEquals(Args.PASSWORD_REFUSED, refused("--password", "y"))
         assertEquals(Args.PASSWORD_REFUSED, refused("--password=y"))
+        // Attached, as getopt and cypher-shell read -psecret, it is refused as -p, and the password isn't printed back.
+        assertEquals(Args.PASSWORD_REFUSED, refused("-psecret", "RETURN 1"))
         assertEquals(
             "drivine: a password on the command line shows in ps and in your shell history; use DRIVINE_PASSWORD, a profile or the prompt.",
             Args.PASSWORD_REFUSED,

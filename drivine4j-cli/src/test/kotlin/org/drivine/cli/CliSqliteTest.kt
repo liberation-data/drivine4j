@@ -52,6 +52,26 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `a reader that closes stdout, as head does, ends the run with 0 and no stack trace`() {
+        // A stdout that takes the first line and then is closed, as `drivine … | head -1` leaves it.
+        val out = object : java.io.Writer() {
+            val taken = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                if ('\n' in taken) throw java.io.IOException("Broken pipe")
+                taken.append(cbuf, off, len)
+            }
+            override fun flush() {
+                if ('\n' in taken) throw java.io.IOException("Broken pipe")
+            }
+            override fun close() {}
+        }
+        val err = java.io.StringWriter()
+        assertEquals(0, Cli(emptyMap(), out, err).run(memory + listOf("--format", "plain", "UNWIND range(1, 3) AS x RETURN x")))
+        assertTrue(out.taken.startsWith("x\n"), out.taken.toString())
+        assertEquals("", err.toString())
+    }
+
+    @Test
     fun `the address may come from DRIVINE_ADDRESS`() {
         assertEquals("one\n1\n", runCli(listOf("RETURN 1 AS one"), mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")).stdout)
     }

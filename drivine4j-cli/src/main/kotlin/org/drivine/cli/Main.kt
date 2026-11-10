@@ -2,6 +2,7 @@ package org.drivine.cli
 
 import java.io.FileDescriptor
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.OutputStreamWriter
 import java.io.Writer
 import java.util.Properties
@@ -19,10 +20,8 @@ fun main(args: Array<String>) {
     System.setProperty("slf4j.internal.verbosity", "ERROR")
     val out = OutputStreamWriter(FileOutputStream(FileDescriptor.out), Charsets.UTF_8)
     val err = OutputStreamWriter(FileOutputStream(FileDescriptor.err), Charsets.UTF_8)
-    val code = Cli(System.getenv(), out, err).run(args.toList())
-    out.flush()
-    err.flush()
-    exitProcess(code)
+    // Cli.run flushes both streams.
+    exitProcess(Cli(System.getenv(), out, err).run(args.toList()))
 }
 
 /**
@@ -42,8 +41,8 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
         } catch (e: BadInvocation) {
             return fail(ExitCode.BAD_INVOCATION, e.message.orEmpty())
         } finally {
-            out.flush()
-            err.flush()
+            flush(out)
+            flush(err)
         }
     }
 
@@ -56,8 +55,23 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
             // The store's message, or the compiler's refusal: a statement that failed prints nothing to stdout.
             return fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
         }
-        Renderer.of(plan.format).render(result, out)
+        try {
+            Renderer.of(plan.format).render(result, out)
+            out.flush()
+        } catch (e: IOException) {
+            // stdout closed by its reader, as `drivine … | head` closes it: the statement ran, and the rows nobody reads
+            // aren't printed, with no stack trace.
+        }
         return ExitCode.OK
+    }
+
+    /** Flushes [stream], where its reader hasn't closed it: see [run]. */
+    private fun flush(stream: Writer) {
+        try {
+            stream.flush()
+        } catch (e: IOException) {
+            // Closed by its reader.
+        }
     }
 
     private fun ok(text: String): Int {
