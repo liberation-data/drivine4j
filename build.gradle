@@ -114,6 +114,9 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-starter-aop'
 	// An application's own transactions over a transaction-aware DataSource, which a provider leaves alone (#395).
 	testImplementation 'org.springframework:spring-jdbc'
+	// An application's JPA transaction, which a Drivine rollback inside it rolls back too (#724): Boot's versions.
+	testImplementation 'org.springframework:spring-orm'
+	testImplementation 'org.hibernate.orm:hibernate-core'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	// The Cypher spec's files (src/test/resources/cypher) are YAML.
 	testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'

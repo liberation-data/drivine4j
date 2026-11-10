@@ -49,7 +49,21 @@ connections start with `autoCommit = false`. So is a statement run outside a tra
 to commit each statement as it has it, and back as it gives it back. It leaves alone a connection that is a
 transaction's of the application's own, which Spring's `TransactionAwareDataSourceProxy` hands out inside a Spring
 transaction (also in a wrapper that unwraps to it), and a distributed (JTA) transaction's: a statement run on it is
-committed, or rolled back, with that transaction. Nor are the graph's tables made on a Spring transaction's connection,
+committed, or rolled back, with that transaction. A Drivine transaction on such a connection joins the application's,
+as a `@Transactional` method joins one it is called in ([#724](https://github.com/liberation-data/drivine4j/issues/724)):
+it commits nothing itself, and what it ran is committed or rolled back with the rest of the application's transaction.
+One that rolls back marks the application's transaction to roll back at its end, so Spring's
+`DataSourceTransactionManager` then rolls it back and throws `UnexpectedRollbackException` where it was to commit; a JTA
+transaction, `JtaTransactionManager`'s too, is marked through the `TransactionSynchronizationRegistry` at
+`java:comp/TransactionSynchronizationRegistry`. `JpaTransactionManager`, Hibernate's and other managers that read
+only their own mark don't read the `ConnectionHolder`'s, so in a Spring transaction a Drivine rollback also registers a
+transaction synchronization whose `beforeCommit` fails the commit: such a manager then rolls the transaction back and
+throws that `UnexpectedRollbackException`, which says a Drivine transaction that joined it rolled back. (A JPA
+transaction's connection reaches Drivine only where its `JpaDialect` gives the JDBC connection, as
+`HibernateJpaDialect` does.) Under `DataSourceTransactionManager` the mark is read first, and Spring's own
+`UnexpectedRollbackException` is thrown. In earlier versions a Drivine
+transaction there committed the application's work so far as it ended, and left the connection committing each statement
+after it. Nor are the graph's tables made on a Spring transaction's connection,
 which would commit it partway: they are made on the first connection had outside one, so on a new store a Cypher
 statement in the application's transaction fails until then, with a `DrivineException` that says so. A graph name that
 can't name tables, such as `my-graph`, makes no tables: plain SQL still works, a Cypher statement fails with a

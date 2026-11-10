@@ -20,8 +20,11 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.slf4j.LoggerFactory
+import org.springframework.core.Ordered
 import org.springframework.jdbc.datasource.ConnectionHolder
 import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.UnexpectedRollbackException
+import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.io.PrintWriter
 import java.sql.DatabaseMetaData
@@ -932,6 +935,123 @@ class JdbcConnectionProviderTest {
         verify(held, never()).commit()
         verify(held, never()).close()
         assertEquals(listOf("INSERT INTO t VALUES (1)"), statementsOn(held))
+    }
+
+    /**
+     * A Drivine transaction on a Spring transaction's connection joins it (#724): it commits nothing and rolls back nothing
+     * of itself. One that rolls back, or is released open, marks the Spring transaction to roll back through the
+     * `ConnectionHolder` bound for it, which `DataSourceTransactionManager` reads as it ends it. A connection of the pool's
+     * own, once the Spring transaction is over, is not joined.
+     */
+    @Test
+    fun `a Spring transaction's connection is joined, and a Drivine rollback on it marks the Spring transaction to roll back`() {
+        val held = moded(committing = false)
+        val fresh = moded(committing = false)
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(fresh) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source), graphName = "my-graph")
+        val holder = ConnectionHolder(held)
+        val logger = LoggerFactory.getLogger(JdbcConnection::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        logger.addAppender(appender)
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, holder)
+        try {
+            (provider.connect() as JdbcConnection).apply {
+                assertTrue(joined)
+                startTransaction()
+                query(insert)
+                commitTransaction()
+                assertFalse(holder.isRollbackOnly, "a commit marks nothing")
+                startTransaction()
+                rollbackTransaction()
+                assertTrue(holder.isRollbackOnly)
+                holder.resetRollbackOnly()
+                startTransaction()
+                release()
+                assertTrue(holder.isRollbackOnly, "released with a transaction open, as after a failure")
+            }
+        } finally {
+            logger.detachAppender(appender)
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+
+        assertEquals(emptyList(), appender.list.filter { it.level.isGreaterOrEqual(Level.WARN) }.map { it.formattedMessage })
+        verify(held, never()).autoCommit = Mockito.anyBoolean()
+        verify(held, never()).commit()
+        verify(held, never()).rollback()
+
+        (provider.connect() as JdbcConnection).apply {
+            assertFalse(joined)
+            release()
+        }
+    }
+
+    /**
+     * Managers such as `JpaTransactionManager` don't read the `ConnectionHolder`'s mark, so a Drivine rollback on a
+     * Spring transaction's connection also registers a synchronization whose `beforeCommit` fails the commit (#724):
+     * once for each transaction, though Drivine rolls back twice in it, and again for a transaction that suspends it,
+     * whose synchronizations are its own. A commit registers nothing, and the veto fails a commit only while the holder
+     * is still marked.
+     */
+    @Test
+    fun `a Drivine rollback in a Spring transaction registers, once for each transaction, a synchronization that fails its commit`() {
+        val held = moded(committing = false)
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source), graphName = "my-graph")
+        val holder = ConnectionHolder(held)
+
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, holder)
+        try {
+            val connection = provider.connect() as JdbcConnection
+            connection.startTransaction()
+            connection.commitTransaction()
+            assertEquals(emptyList(), TransactionSynchronizationManager.getSynchronizations(), "a commit registers nothing")
+
+            connection.startTransaction()
+            connection.rollbackTransaction()
+            connection.startTransaction()
+            connection.rollbackTransaction()
+            val registered = TransactionSynchronizationManager.getSynchronizations()
+            assertEquals(1, registered.size, "registered once, though Drivine rolled back twice")
+            val veto = registered.single()
+
+            val failed = assertFailsWith<UnexpectedRollbackException> { veto.beforeCommit(false) }
+            assertContains(failed.message!!, "a Drivine transaction that joined this one rolled back")
+            // A rollback to a savepoint, as of a NESTED transaction that failed, clears the holder's mark: Spring then
+            // commits the transaction, and the veto lets it.
+            holder.resetRollbackOnly()
+            veto.beforeCommit(false)
+            holder.setRollbackOnly()
+            assertEquals(Ordered.HIGHEST_PRECEDENCE, veto.order)
+            assertTrue(veto == veto)
+            assertFalse(veto.equals(Any()))
+            assertEquals(System.identityHashCode(veto), veto.hashCode())
+            assertContains(veto.toString(), "Drivine")
+            // The interface's other methods do nothing.
+            veto.beforeCompletion()
+            veto.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK)
+            veto.suspend()
+            veto.resume()
+
+            // A transaction that suspends this one has synchronizations of its own, so it gets a veto of its own.
+            TransactionSynchronizationManager.clearSynchronization()
+            TransactionSynchronizationManager.initSynchronization()
+            connection.startTransaction()
+            connection.rollbackTransaction()
+            assertEquals(1, TransactionSynchronizationManager.getSynchronizations().size)
+            connection.release(null)
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+        assertTrue(holder.isRollbackOnly)
     }
 
     // ----- The Oracle version, read on the first connection -----

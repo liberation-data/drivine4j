@@ -1,5 +1,8 @@
 package org.drivine.connection
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.query.QuerySpecification
@@ -16,6 +19,7 @@ import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
+import org.slf4j.LoggerFactory
 import java.io.Reader
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -23,6 +27,7 @@ import java.sql.ResultSetMetaData
 import java.sql.SQLException
 import java.sql.Types
 import java.time.ZonedDateTime
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
@@ -395,6 +400,79 @@ class JdbcConnectionTest {
 
         assertSame(failed, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw failed } })
         verify(statement).setString(1, "0")
+    }
+
+    // ----- A transaction Drivine joins: a Spring or JTA transaction's connection (#724) -----
+
+    /** Runs [block] with what [JdbcConnection] logs at WARN or above, and gives back those messages. */
+    private fun warnings(block: () -> Unit): List<String> {
+        val logger = LoggerFactory.getLogger(JdbcConnection::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        logger.addAppender(appender)
+        try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
+        }
+        return appender.list.filter { it.level.isGreaterOrEqual(Level.WARN) }.map { it.formattedMessage }
+    }
+
+    @Test
+    fun `a transaction on a joined connection begins nothing, commits nothing, rolls back nothing, and leaves auto-commit alone`() {
+        connection.joined = true
+
+        warnings {
+            connection.startTransaction()
+            query("INSERT INTO t VALUES (1)", emptyMap())
+            connection.commitTransaction()
+            connection.startTransaction()
+            connection.rollbackTransaction()
+            connection.startTransaction()
+            connection.release(null)
+        }
+
+        verify(jdbc).prepareStatement("INSERT INTO t VALUES (1)")
+        verify(jdbc, never()).commit()
+        verify(jdbc, never()).rollback()
+        verify(jdbc, never()).autoCommit = Mockito.anyBoolean()
+        verify(jdbc).close()
+    }
+
+    @Test
+    fun `on SQLite a transaction on a joined connection sends no COMMIT or ROLLBACK of its own`() {
+        val sqlite = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.SQLITE).also { it.joined = true }
+
+        warnings {
+            sqlite.startTransaction()
+            sqlite.commitTransaction()
+            sqlite.startTransaction()
+            sqlite.rollbackTransaction()
+        }
+
+        verify(jdbc, never()).createStatement()
+        verify(jdbc, never()).autoCommit = Mockito.anyBoolean()
+    }
+
+    @Test
+    fun `a joined transaction that rolls back with no Spring transaction and no JTA registry to mark says so, once for each rollback`() {
+        connection.joined = true
+
+        val logged = warnings {
+            connection.startTransaction()
+            connection.rollbackTransaction()
+            connection.startTransaction()
+            connection.release(null)
+            // A commit marks nothing, and says nothing.
+            connection.startTransaction()
+            connection.commitTransaction()
+        }
+
+        assertEquals(2, logged.size, logged.toString())
+        logged.forEach {
+            assertContains(it, "could not be marked to roll back")
+            assertContains(it, JtaTransactions.REGISTRY)
+        }
+        verify(jdbc, never()).rollback()
     }
 
     /**
