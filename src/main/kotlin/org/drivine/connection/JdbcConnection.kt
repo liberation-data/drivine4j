@@ -69,6 +69,19 @@ class JdbcConnection(
     private var inTransaction = false
 
     /**
+     * Whether this connection is the connection of a transaction Drivine did not begin, which commits or rolls back what
+     * runs on it: a Spring transaction's, handed out by Spring's `TransactionAwareDataSourceProxy`, or a distributed (JTA)
+     * one's. Set by [JdbcConnectionProvider], where the connection still commits nothing of itself after it asked it to.
+     *
+     * A Drivine transaction on it joins that transaction, as a Spring `@Transactional` method joins one it is called in
+     * (#724): it begins nothing, commits nothing, and leaves the connection committing nothing of itself, so the work the
+     * application ran before it and after it stays the application's transaction's, to commit or roll back. Where it
+     * rolls back, it marks that transaction to roll back at its end instead (see [markRollbackOnly]): the application's
+     * transaction then rolls back, and Spring throws `UnexpectedRollbackException` where it was to commit.
+     */
+    internal var joined = false
+
+    /**
      * Whether [release] turns the connection back to committing nothing of itself before it closes it: its pool gave it
      * so (`autoCommit = false`), and [JdbcConnectionProvider] turned it to commit each statement as it ran, as Drivine
      * runs a statement outside a transaction (#395).
@@ -230,14 +243,17 @@ class JdbcConnection(
 
     override fun startTransaction() {
         if (inTransaction) throw DrivineException("A transaction is already open on this connection.")
-        connection.autoCommit = false
+        if (!joined) connection.autoCommit = false
         inTransaction = true
         startedAt = System.nanoTime()
     }
 
     override fun commitTransaction() {
         if (!inTransaction) throw DrivineException("There is no transaction to commit.")
-        if (type == DatabaseType.SQLITE) endSqlite("COMMIT") else connection.commit()
+        // A joined transaction is committed by the transaction it joined, with the application's own work.
+        if (!joined) {
+            if (type == DatabaseType.SQLITE) endSqlite("COMMIT") else connection.commit()
+        }
         endTransaction()
     }
 
@@ -247,9 +263,26 @@ class JdbcConnection(
         endTransaction()
     }
 
-    /** Rolls the open transaction back. */
+    /** Rolls the open transaction back; one this joined is marked to roll back at its end instead (see [joined]). */
     private fun rollback() {
+        if (joined) return markRollbackOnly()
         if (type == DatabaseType.SQLITE) endSqlite("ROLLBACK") else connection.rollback()
+    }
+
+    /**
+     * Marks the transaction this connection joined to roll back at its end: a Spring transaction through its
+     * `ConnectionHolder`, and a JTA one through the registry Jakarta EE binds. Both are tried, as Spring's
+     * `JtaTransactionManager` binds a `ConnectionHolder` too but reads only the JTA transaction's mark. Where neither can
+     * be marked, that is logged: the application's transaction may still commit what Drivine's rolled back.
+     */
+    private fun markRollbackOnly() {
+        val spring = SpringTransactions.markRollbackOnly(connection)
+        if (JtaTransactions.markRollbackOnly() || spring) return
+        logger.warn(
+            "A Drivine transaction rolled back on the connection of a transaction it joined, which could not be marked to roll back: " +
+                "neither a Spring transaction nor a JTA TransactionSynchronizationRegistry (${JtaTransactions.REGISTRY}) was found. " +
+                "What it ran is left to that transaction to commit or roll back.",
+        )
     }
 
     /**
@@ -284,7 +317,8 @@ class JdbcConnection(
         if (type == DatabaseType.SQLITE && held > lockWarning) {
             logger.warn("A SQLite transaction held the file's write lock for ${held.toMillis()} ms: no other writer can write while one is held.")
         }
-        connection.autoCommit = true
+        // A joined connection is left committing nothing of itself, as the transaction it joined has it.
+        if (!joined) connection.autoCommit = true
     }
 
     /**

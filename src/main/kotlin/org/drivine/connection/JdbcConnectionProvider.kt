@@ -178,6 +178,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         return JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
             .also {
                 it.restoresAutoCommit = turned
+                // Still committing nothing of itself: a Spring or JTA transaction's, which a Drivine transaction joins (#724).
+                it.joined = !session.autoCommit
                 if (type == DatabaseType.SQLITE) it.sqliteVersion = sqliteVersion
                 if (type == DatabaseType.POSTGRES) evictable(it, session)
                 if (tablesHeldBack && !graphEnsured) it.tablesPending = tablesPending()
