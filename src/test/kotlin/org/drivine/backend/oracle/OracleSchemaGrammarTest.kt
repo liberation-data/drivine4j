@@ -43,13 +43,15 @@ class OracleSchemaGrammarTest {
     }
 
     /**
-     * Asserts this is [ddl], an index over the node table, run in a block of its own that runs it again a tenth of a
-     * second after another session's lock turns it away (`ORA-00054`), up to [OracleGraph.BUSY_ATTEMPTS] tries (#517).
+     * Asserts this is [ddl], an index over the node table, run in a block of its own, as the module's `OracleDdl` writes
+     * it (drivine-cypher-spec#150): it runs it again a tenth of a second after another session's lock turns it away
+     * (`ORA-00054`), up to [OracleGraph.BUSY_ATTEMPTS] tries, and takes `ORA-00955`, a name another session took
+     * meanwhile, as made (#517). The module's own test pins the loop; this pins that drivine4j's grammar runs it.
      */
     private fun String.waitsOutBusy(ddl: String) {
         assertTrue(startsWith("DECLARE\n"), this)
         assertTrue(endsWith("\nEND;"), this)
-        inOrder("DECLARE", "e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);", "BEGIN")
+        inOrder("DECLARE", "e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);", "e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);", "BEGIN")
         busyLoop(ddl)
     }
 
@@ -60,6 +62,7 @@ class OracleSchemaGrammarTest {
         "EXECUTE IMMEDIATE ${OracleSql.literal(ddl)};",
         "EXIT;",
         "EXCEPTION",
+        "WHEN e_exists THEN EXIT;",
         "WHEN e_busy THEN",
         "IF attempt = ${OracleGraph.BUSY_ATTEMPTS} THEN RAISE; END IF;",
         "DBMS_SESSION.SLEEP(0.1);",
@@ -201,32 +204,6 @@ class OracleSchemaGrammarTest {
         )
         assertEquals(2, Regex("CASE WHEN").findAll(index).count())
         record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label, '[\"email\",\"tenant\"]' AS properties", "'Person_email_tenant_unique', '$name', '{}'")
-    }
-
-    @Test
-    fun `an index over the node table is run again while another session's lock turns it away, up to a bound`() {
-        // #517: Oracle's DDL doesn't wait for a lock, so a manager making the store's key constraint while another builds
-        // it, or writes its stamp, was turned away at once (ORA-00054), and could go on without the constraint.
-        val key = checked(grammar.createConstraint(UniquenessConstraintSpec("DrivineStore", "key")))
-        val range = checked(grammar.createIndex(RangeIndexSpec("Person", "name"), null))
-        val blocks = listOf(
-            "the unique index" to key.single { "CREATE UNIQUE INDEX" in it },
-            "the shared index" to key.single { "CREATE INDEX" in it },
-            "a range index's shared index" to range.single { "CREATE INDEX IF NOT EXISTS ${graph.objectName("ix", listOf("name"))} " in it },
-            "the labelled index" to range.single { "CREATE INDEX IF NOT EXISTS ${graph.objectName("lx", listOf("Person", "name"))} " in it },
-        )
-        for ((what, block) in blocks) {
-            assertTrue("PRAGMA EXCEPTION_INIT(e_busy, -54);" in block, "$what catches ORA-00054:\n$block")
-            assertTrue("FOR attempt IN 1 .. ${OracleGraph.BUSY_ATTEMPTS} LOOP" in block, "$what is tried a bounded number of times:\n$block")
-            assertTrue(
-                Regex("""WHEN e_busy THEN\s+IF attempt = ${OracleGraph.BUSY_ATTEMPTS} THEN RAISE; END IF;\s+DBMS_SESSION\.SLEEP\(0\.1\);""").containsMatchIn(block),
-                "$what is run again a tenth of a second later, and raised on its last try:\n$block",
-            )
-            assertTrue(Regex("""EXECUTE IMMEDIATE 'CREATE[^;]*;\s+EXIT;""").containsMatchIn(block), "$what stops trying once it runs:\n$block")
-            assertEquals(1, Regex("EXECUTE IMMEDIATE").findAll(block).count(), "$what runs only the index:\n$block")
-        }
-        // Nothing else waits: a record of what was made is not DDL over the node table.
-        (key + range).filter { "MERGE INTO g_schema" in it && "CREATE" !in it }.forEach { assertFalse("e_busy" in it, it) }
     }
 
     @Test
