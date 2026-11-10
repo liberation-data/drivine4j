@@ -284,7 +284,8 @@ cases:
     steps:
       - search: {label: "Doc", properties: ["body"], query: "-kiwi", topK: 50}
         error: "A full-text query needs a word to look for: '-kiwi' has none."
-        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"}]
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+        note: "The graph engines are given the query as it is, so they don't refuse it until the module plans their searches too."
       - search: {label: "Doc", properties: ["body"], query: "NOT kiwi", topK: 50}
         error: "A full-text query needs a word to look for: 'NOT kiwi' has none."
         today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
@@ -339,7 +340,8 @@ ranking:
   # Each store's bar is what it gave when this file was recorded (2026-11-10, drivine4j at dd4a66f0), rounded down, so
   # the move into the module can't regress any of them; but no higher than the store gives however it breaks a tie
   # between hits that score alike, at the top or at the fifth: where a tie could give less, the bar is that, and its
-  # note says so. `measured` is what each store gave then, and is not read, nor is a bar's `note`. `target` is the bar
+  # note says so. Neo4j's own bar is full agreement with its lists, so an image that has drifted from the recording
+  # fails. `measured` is what each store gave then, and is not read, nor is a bar's `note`. `target` is the bar
   # a store is to reach: the BM25 stores' once liberation-data/drivine4j#665 and the norms land. Memgraph, Oracle Text
   # (its own measure, liberation-data/drivine-cypher-spec#102) and FalkorDB (liberation-data/drivine4j#666) have none
   # yet.
@@ -349,9 +351,15 @@ ranking:
       overlap: 4.3
       target: {sameTop: 21, overlap: 4.5}
       measured: {postgres: {sameTop: 17, overlap: 4.33}, oracle: {sameTop: 17, overlap: 4.33}, sqlite: {sameTop: 17, overlap: 4.33}}
+    - stores: ["neo4j"]
+      sameTop: 21
+      overlap: 4.95
+      note: "Neo4j's own ranking against its recording: full agreement (pgvector has 4 hits, so 104/21 = 4.952). It fails where Neo4j's image no longer gives what was recorded: then record the lists again, as the README says."
+      measured: {neo4j: {sameTop: 21, overlap: 4.952}}
     - stores: ["memgraph"]
       sameTop: 16
       overlap: 4.09
+      note: "Memgraph's order varies between runs among hits that score alike: its overlap was 4.095 to 4.143 over recorded runs, so its bar is the worst of them, 4.095, rounded down."
       measured: {memgraph: {sameTop: 16, overlap: 4.095}}
     - stores: ["oracle-text"]
       sameTop: 5
