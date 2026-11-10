@@ -46,7 +46,7 @@ internal fun <T : ReservedNodeStatements> PersistenceManager.reservedNode(purpos
  * Drivine's own grammars give the statements the Cypher compiler's module writes
  * ([org.drivine.cypher.store.marker.MarkerStatements]), which the three Drivine libraries share, so a
  * marker one library wrote is the marker another reads. This interface is what a grammar of yours
- * gives in their place, and what [SchemaVersionStore] runs.
+ * gives in their place, and what [SchemaVersionStore] and [SchemaPlanDriver] run.
  */
 interface VersionMarkerStatements : ReservedNodeStatements {
 

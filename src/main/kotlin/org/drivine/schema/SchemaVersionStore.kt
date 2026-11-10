@@ -45,8 +45,9 @@ import org.drivine.query.transform
  * **What the marker holds is the shared module's.** Its label and key, the inventory's text and how
  * it is read back, the version token and the statements on each store are written by the Cypher
  * compiler's module ([SchemaMarker], [MarkerInventory], [MarkerStatements]), which the three Drivine
- * libraries share, so a marker one library wrote is the marker another reads. Running the
- * statements, and when, is this store's and [SchemaManager]'s.
+ * libraries share, so a marker one library wrote is the marker another reads. When [SchemaManager] reads, writes and
+ * cleans up a marker is the module's schema planner's to decide (`org.drivine.cypher.store.plan`), and
+ * [SchemaPlanDriver] runs its statements; this store runs the same statements for a caller of its own.
  */
 class SchemaVersionStore(
     private val manager: PersistenceManager,
@@ -100,7 +101,7 @@ class SchemaVersionStore(
 
     /**
      * The scopes of the other owners' markers in this database, whichever manager or process recorded them: what
-     * [SchemaManager.remove] reads, so that an item another owner records is left in place. Read as Cypher, which
+     * [SchemaManager.remove]'s plan reads, so that an item another owner records is left in place. Read as Cypher, which
      * every store with a marker runs (the SQL stores compile it), since the marker is a node of the graph on each;
      * on SQLite, as its SQL ([VersionMarkerStatements.scopes]), since an older SQLite refuses compiled Cypher (#565).
      */
@@ -138,7 +139,7 @@ class SchemaVersionStore(
      * Guards the singleton invariant: collapses duplicate markers for this scope (keeping the most
      * recently applied) and backs the MERGE key with a uniqueness constraint on `scope` so
      * concurrent [record] calls from separate processes cannot create a second marker. Idempotent;
-     * called by [SchemaManager] before the marker is read or written. The constraint spans all
+     * [SchemaManager]'s plan runs the same statements before a versioned owner's marker is read or written. The constraint spans all
      * scopes (it is on the `scope` property), so it is installed once and shared by every owner.
      */
     fun ensureSingleton() {

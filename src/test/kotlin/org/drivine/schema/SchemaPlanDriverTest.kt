@@ -122,6 +122,33 @@ class SchemaPlanDriverTest {
     }
 
     @Test
+    fun `a constraint listing and a sample that fail, which the planner reads as none, are logged at DEBUG under ConstraintManager`() {
+        val logger = LoggerFactory.getLogger(ConstraintManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val refusal = org.neo4j.driver.exceptions.Neo4jException("Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint")
+        try {
+            val store = RecordingStore(DatabaseType.NEO4J, ddl = Neo4jSchemaGrammar()) { ran ->
+                when {
+                    ran.statement.startsWith("SHOW CONSTRAINTS") -> RuntimeException("no listing yet")
+                    ran.statement.startsWith("CREATE CONSTRAINT") -> refusal
+                    "_count > 1" in ran.statement -> RuntimeException("sample lost")
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertSame(refusal, assertFails { store.constraints.ensure(UniquenessConstraintSpec("Unlisted", "k")) })
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Constraint introspection failed (treating as no constraints exist): no listing yet")
+        assertContains(debug, "Could not read the keys that repeat: sample lost")
+    }
+
+    @Test
     fun `a poll interrupted while it waits is thrown as it is, the thread left interrupted, and nothing more is run`() {
         val listed = StorePlanListingRows.rows("falkordb", listOf(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Polled", listOf("k"), status = "OPERATIONAL")), constraints = false)
         val store = RecordingStore(DatabaseType.FALKORDB, ddl = FalkorDbSchemaGrammar(), native = true) { listed }
