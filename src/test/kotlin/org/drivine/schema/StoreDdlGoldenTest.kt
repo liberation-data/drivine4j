@@ -32,10 +32,9 @@ import kotlin.test.fail
  * The reads `store.yaml` pairs with its indexes are checked by the module's own test, and on the stores by
  * `PostgresStoreIndexPlanTest` and `OracleStoreIndexPlanTest`. Nothing here touches a database.
  *
- * `src/test/resources/cypher/store.yaml` is drivine-cypher-spec's `store.yaml` at 433a9df, the commit
- * `gradle/cypher-compiler.properties` pins, copied unchanged. It is in no spec tag yet, so the copy's `VERSION` still names
- * the tag the other files are from, and `scripts/check-cypher-spec.sh` warns of it rather than failing; the next tag
- * carries it, and `scripts/sync-cypher-spec.sh` copies it with the rest from then on.
+ * `src/test/resources/cypher/store.yaml` is drivine-cypher-spec's `store.yaml` at the tag the copy's `VERSION` names,
+ * copied unchanged with the spec's other files by `scripts/sync-cypher-spec.sh` and checked against it by
+ * `scripts/check-cypher-spec.sh`; the compiler `gradle/cypher-compiler.properties` pins is that tag's release.
  */
 class StoreDdlGoldenTest {
 
