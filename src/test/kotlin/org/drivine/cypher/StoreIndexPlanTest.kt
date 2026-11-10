@@ -19,8 +19,10 @@ import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.StoreYaml
+import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.made
 import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.TestFactory
@@ -39,7 +41,8 @@ import kotlin.test.fail
  * copies the read compares; the store's statistics are gathered; and the read, compiled as the store compiles it (on
  * Oracle, knowing the case's `indexedProperties`), is planned. The plan must use the index the case's `holds` are the
  * expressions of, by its name: the one of the statements drivine4j's grammar makes for the case that is made over
- * every one of them. The index is dropped again after, with the range index a uniqueness constraint brings on Oracle.
+ * every one of them. What an earlier case made is dropped first (see [dropMade]), so a case that failed, or whose drop
+ * did, leaves the next no index to be planned through or blocked by, and no drop hides the failure of its own case.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 abstract class StoreIndexPlanContract {
@@ -72,32 +75,30 @@ abstract class StoreIndexPlanContract {
     private fun planned(read: StoreYaml.Read) {
         val spec = read.spec
         org.drivine.test.SqlCypherFixtures.clear(pm)
-        try {
-            // Written before the index is made: a spec that ignores case has its lowercased copies filled in as it is made.
-            for (label in listOf(spec.label, DECOY)) {
-                val properties = spec.properties.joinToString(", ") { "${SchemaGrammar.quoted(it)}: 'v' + toString(k)" }
-                query("UNWIND range(1, $NODES) AS k CREATE (:${SchemaGrammar.quoted(label)} {$properties})")
-            }
-            when (spec) {
-                is IndexSpec -> pm.indexes.ensure(spec)
-                is ConstraintSpec -> pm.constraints.ensure(spec)
-            }
-            analyze()
-            val index = index(read)
-            val plan = plan(compiled(read))
-            println("${read.case} on $store, through $index\n${read.cypher}\n$plan\n")
-            assertTrue(uses(plan, index), "${read.case}: ${read.cypher} on $store is not planned through $index:\n$plan")
-        } finally {
-            when (spec) {
-                is IndexSpec -> pm.indexes.drop(spec)
-                is ConstraintSpec -> {
-                    pm.constraints.drop(spec)
-                    // On Oracle a constraint brings the range index a node is found by, which stays when it is dropped.
-                    val made = spec.made()
-                    pm.indexes.drop(RangeIndexSpec(made.label, made.properties))
-                }
-            }
+        dropMade()
+        // Written before the index is made: a spec that ignores case has its lowercased copies filled in as it is made.
+        for (label in listOf(spec.label, DECOY)) {
+            val properties = spec.properties.joinToString(", ") { "${SchemaGrammar.quoted(it)}: 'v' + toString(k)" }
+            query("UNWIND range(1, $NODES) AS k CREATE (:${SchemaGrammar.quoted(label)} {$properties})")
         }
+        when (spec) {
+            is IndexSpec -> pm.indexes.ensure(spec)
+            is ConstraintSpec -> pm.constraints.ensure(spec)
+        }
+        analyze()
+        val index = index(read)
+        val plan = plan(compiled(read))
+        println("${read.case} on $store, through $index\n${read.cypher}\n$plan\n")
+        assertTrue(uses(plan, index), "${read.case}: ${read.cypher} on $store is not planned through $index:\n$plan")
+    }
+
+    /**
+     * Drops each constraint and range index the graph's catalog lists, which only this test makes: on Oracle the range
+     * index a constraint brings among them, which stays when the constraint is dropped.
+     */
+    private fun dropMade() {
+        pm.constraints.list().forEach { pm.constraints.drop(UniquenessConstraintSpec(it.label, it.properties)) }
+        pm.indexes.list().filter { it.kind == SchemaItemKind.RANGE_INDEX }.forEach { pm.indexes.drop(RangeIndexSpec(it.label, it.properties)) }
     }
 
     /**
