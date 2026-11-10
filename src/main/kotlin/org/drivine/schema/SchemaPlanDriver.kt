@@ -134,11 +134,31 @@ internal class SchemaPlanDriver(
     private fun waitMessage(error: Throwable): String = StoreErrors.of(error).causes.firstOrNull()?.message ?: "null"
 
     private fun log(line: LogLine) {
-        val logger = loggers.getOrPut(line.logger) { LoggerFactory.getLogger(LOGGERS[line.logger] ?: SchemaPlanDriver::class.java) }
+        val logger = logger(line.logger)
         when (line.level) {
             LogLevel.INFO -> logger.info(line.message)
             LogLevel.WARN -> logger.warn(line.message)
             LogLevel.ERROR -> logger.error(line.message)
+        }
+    }
+
+    /** The logger of the class [name] names, as the planner's log lines name it. */
+    private fun logger(name: String): Logger = loggers.getOrPut(name) { LoggerFactory.getLogger(LOGGERS[name] ?: SchemaPlanDriver::class.java) }
+
+    /**
+     * Logs at DEBUG a read that failed and that the planner takes as nothing there (a listing, an index's state, a
+     * sample of the data), as drivine4j's managers logged it: the report's lines are INFO and above, and say nothing of it.
+     */
+    private fun logUnread(action: PlanAction.Query, e: Exception) {
+        when (action.purpose) {
+            Purpose.LISTING -> if (action.statement == store.ddl.listConstraintsQuery()) {
+                logger("ConstraintManager").debug("Constraint introspection failed (treating as no constraints exist): {}", e.message)
+            } else {
+                logger("IndexManager").debug("Index introspection failed (treating as no indexes exist): {}", e.message)
+            }
+            Purpose.STATE -> logger("IndexManager").debug("Reading the state of index '{}' failed: {}", action.parameters["name"], e.message)
+            Purpose.SAMPLE -> logger("ConstraintManager").debug("Could not read the keys that repeat: {}", e.message)
+            else -> Unit
         }
     }
 
@@ -184,6 +204,7 @@ internal class SchemaPlanDriver(
         private fun failed(action: PlanAction, e: Exception): PlanOutcome.Failed {
             val error = StoreErrors.of(e)
             thrown[error] = e
+            if (action is PlanAction.Query) logUnread(action, e)
             if (action is PlanAction.Query && action.purpose == Purpose.SAMPLE) unread += e
             if (action is PlanAction.AwaitIndex) waitFailed = e
             return PlanOutcome.Failed(error)

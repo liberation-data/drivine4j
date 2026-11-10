@@ -12,6 +12,13 @@ import org.drivine.cypher.store.plan.PlanRequest
 import org.drivine.query.QueryLanguage
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
+import org.drivine.cypher.store.plan.ItemCall
+import kotlin.test.assertTrue
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -92,6 +99,41 @@ class SchemaPlanDriverTest {
             assertContains(thrown.message!!, "is not supported for Neptune")
         }
         assertEquals(emptyList(), store.schema)
+    }
+
+    @Test
+    fun `a listing that fails, which the planner reads as none, is logged at DEBUG under the manager that read it`() {
+        val logger = LoggerFactory.getLogger(IndexManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        try {
+            val store = RecordingStore(DatabaseType.NEO4J, ddl = Neo4jSchemaGrammar()) { ran ->
+                if (ran.statement.startsWith("SHOW")) RuntimeException("no listing yet") else emptyList<Any?>()
+            }
+            store.indexes.ensure(RangeIndexSpec("Unlisted", "k"))
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Index introspection failed (treating as no indexes exist): no listing yet")
+    }
+
+    @Test
+    fun `a poll interrupted while it waits is thrown as it is, the thread left interrupted, and nothing more is run`() {
+        val listed = StorePlanListingRows.rows("falkordb", listOf(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Polled", listOf("k"), status = "OPERATIONAL")), constraints = false)
+        val store = RecordingStore(DatabaseType.FALKORDB, ddl = FalkorDbSchemaGrammar(), native = true) { listed }
+        val interrupted = InterruptedException("stopped")
+        val driver = SchemaPlanDriver(store.executor, FalkorDbSchemaGrammar(), { null }, sleep = { throw interrupted })
+        try {
+            val thrown = assertFails { driver.item(ItemCall.DROP, RangeIndexSpec("Polled", "k")) }
+            assertSame(interrupted, thrown)
+            assertTrue(Thread.currentThread().isInterrupted, "the interrupt is kept")
+        } finally {
+            Thread.interrupted()
+        }
     }
 
     private fun assertNotNullScopes(grammar: SchemaGrammar): String =
