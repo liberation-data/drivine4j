@@ -157,8 +157,13 @@ object Args {
                 invocation = invocation.copy(inputs = invocation.inputs + arg)
                 continue
             }
-            // A long flag may give its value after a `=`, as in --format=json.
-            val (flag, inline) = if (arg.startsWith("--") && '=' in arg) arg.substringBefore('=') to arg.substringAfter('=') else arg to null
+            // A long flag may give its value after a `=`, as in --format=json. A short flag is its two characters, and what
+            // is attached to it, as in -vx or -fFILE, its value: so -vx is -v that takes no value, and -fFILE is -f.
+            val (flag, inline) = when {
+                arg.startsWith("--") -> if ('=' in arg) arg.substringBefore('=') to arg.substringAfter('=') else arg to null
+                arg.length > 2 -> arg.take(2) to arg.drop(2)
+                else -> arg to null
+            }
             fun value(): String = inline ?: args.getOrNull(i++) ?: throw BadInvocation("drivine: ${named(flag)} needs a value; see --help")
             fun noValue() {
                 if (inline != null) throw BadInvocation("drivine: ${named(flag)} takes no value; see --help")
@@ -166,8 +171,8 @@ object Args {
             // -pSECRET and --passwordSECRET are a password with its flag, the value attached: refused as -p, not named back.
             if (flag.startsWith("-p") || flag.startsWith("--password")) throw BadInvocation(PASSWORD_REFUSED)
             // -aVALUE and -a=VALUE aren't read, and aren't named back either: the value may be an address with a password.
-            if (!flag.startsWith("--") && flag.length > 2 && flag.take(2) in setOf("-a", "-c", "-u")) {
-                throw BadInvocation("drivine: give ${flag.take(2)}'s value as the next argument, as in ${flag.take(2)} VALUE; see --help")
+            if (inline != null && flag in setOf("-a", "-c", "-u")) {
+                throw BadInvocation("drivine: give $flag's value as the next argument, as in $flag VALUE; see --help")
             }
             when (flag) {
                 "-h", "--help" -> { noValue(); return Parsed.Help }

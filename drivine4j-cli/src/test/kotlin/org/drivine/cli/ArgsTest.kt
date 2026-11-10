@@ -82,6 +82,10 @@ class ArgsTest {
         assertTrue("comes later" in refused("--format", "csv"))
         assertTrue("isn't a store" in refused("--type", "neptune"))
         assertTrue("takes no value" in refused("--help=yes"))
+        // A short flag with something attached is named as itself, not as an unknown flag.
+        assertEquals("drivine: -v takes no value; see --help", refused("-vx"))
+        assertEquals("drivine: -h takes no value; see --help", refused("-h=x"))
+        assertEquals("drivine: -f comes later, and this build doesn't take it; see --help", refused("-fx.cypher"))
     }
 
     @Test
