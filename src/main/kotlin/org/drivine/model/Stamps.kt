@@ -17,6 +17,10 @@ import org.drivine.cypher.store.Stamps as Shared
  * The clauses here are Cypher, for the graph engines. Oracle keeps the stamp in a column of the
  * node's row, `stamp`, and not as a property; its statements are written by the Oracle backend, and
  * SQL of yours that changes a node gives that column new tokens itself.
+ *
+ * The stamp's form, and how it is taken apart and checked, are the Cypher compiler's module's
+ * ([Shared]), which the three Drivine libraries share, so a stamp one library wrote is read alike by
+ * the others. What a save hands back ([handedBack]) and the Cypher that sets a stamp are drivine4j's.
  */
 object Stamps {
     /** The node property the stamp is stored under. */
@@ -51,7 +55,7 @@ object Stamps {
     internal const val EXPECTED_PARAM = "_expectedStamp"
 
     /** The length of one token; a stamp is two, and the colon between them. */
-    internal const val TOKEN = 16
+    internal const val TOKEN = Shared.TOKEN
 
     /** The variable a statement that stamps a node holds the stamp it found the node with: empty when it had none. */
     internal const val FOUND = "_found"
@@ -60,7 +64,7 @@ object Stamps {
     internal const val MADE = "`__drivine.made`"
 
     /** What a statement reports as the stamp it found on a node that was there and had none. A node it made reports none at all. */
-    internal const val NEVER_STAMPED = "-"
+    internal const val NEVER_STAMPED = Shared.NEVER_STAMPED
 
     /** Follows a `MERGE` of [alias]: marks the node when the statement made it. [unmark] removes the mark. */
     internal fun onCreate(alias: String): String = "ON CREATE SET $alias.$MADE = true"
@@ -94,25 +98,26 @@ object Stamps {
         if (carried == found) return now
         val node = if (nodeToken(carried) == nodeToken(found)) nodeToken(now) else nodeToken(carried)
         val links = if (linksToken(carried) == linksToken(found)) linksToken(now) else linksToken(carried)
-        return "$node:${links.orEmpty()}"
+        return Shared.of(node, links)
     }
 
     /** [stamp] with its node token alone: it speaks for the node's own data and for none of its relationships. */
-    internal fun withoutLinks(stamp: String): String = "${nodeToken(stamp)}:"
+    internal fun withoutLinks(stamp: String): String = Shared.withoutLinks(stamp)
 
     /**
      * A new stamp: both tokens new. A statement takes from it the token it replaces. Drivine's own
      * statements use it; Cypher of yours marks a node with [setClause] or [linksClause].
      */
-    fun fresh(): String = "${token()}:${token()}"
+    fun fresh(): String = Shared.of(token(), token())
 
-    private fun token(): String = String.format("%016x", ThreadLocalRandom.current().nextLong())
+    /** A new token, from this thread's random source, which the module leaves to the caller. */
+    private fun token(): String = Shared.token(ThreadLocalRandom.current().nextLong())
 
     /** The token of [stamp] that speaks for the node's properties and labels. */
-    internal fun nodeToken(stamp: String): String = stamp.substringBefore(':')
+    internal fun nodeToken(stamp: String): String = Shared.nodeToken(stamp)
 
-    /** The token of [stamp] that speaks for the node's relationships; null when [stamp] is not two tokens. */
-    internal fun linksToken(stamp: String): String? = stamp.substringAfter(':', "").ifEmpty { null }
+    /** The token of [stamp] that speaks for the node's relationships: what follows its first colon, null where nothing does. */
+    internal fun linksToken(stamp: String): String? = Shared.linksToken(stamp)
 
     /** The expression for the relationship token of the stamp [alias] carries. */
     internal fun linksTokenOf(alias: String): String = "right($alias.$QUOTED, $TOKEN)"
@@ -121,13 +126,13 @@ object Stamps {
     internal fun nodeTokenOf(alias: String): String = "left($alias.$QUOTED, $TOKEN)"
 
     /** Whether [stamp] is two tokens joined by a colon, as every stamp a save leaves is. */
-    internal fun isTwoTokens(stamp: String): Boolean = stamp.length == 2 * TOKEN + 1 && stamp[TOKEN] == ':'
+    internal fun isTwoTokens(stamp: String): Boolean = Shared.isTwoTokens(stamp)
 
     /**
      * Whether [stamp] has a node token to compare on its own: a token and a colon, whatever follows.
      * A stamp of another shape, as only something other than a save can have stored, is compared whole.
      */
-    internal fun hasNodeToken(stamp: String): Boolean = stamp.length > TOKEN && stamp[TOKEN] == ':'
+    internal fun hasNodeToken(stamp: String): Boolean = Shared.hasNodeToken(stamp)
 
     /**
      * The expression for the stamp [alias] carries when it is two tokens joined by a colon, and null

@@ -15,6 +15,8 @@ import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.VersionMarkerStatements
 import org.drivine.schema.catalogItem
+import org.drivine.schema.sharedStoreStamp
+import org.drivine.schema.sharedVersionMarker
 import org.drivine.schema.statementsOf
 import java.sql.SQLException
 
@@ -51,9 +53,13 @@ internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGramm
     /** The unique index finds a node as a range index does. */
     override val constraintsRequireBackingIndex = false
 
-    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = SqliteVersionMarker(graph, label, scopeProperty)
+    /** The marker as the module writes it for this graph ([org.drivine.cypher.store.marker.MarkerStatements]). */
+    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements =
+        sharedVersionMarker(label, scopeProperty, graph.store)
 
-    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = SqliteStoreStamp(graph, label, keyProperty)
+    /** The store's stamp as the module writes it for this graph ([org.drivine.cypher.store.marker.StoreStampStatements]). */
+    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements =
+        sharedStoreStamp(label, keyProperty, graph.store)
 
     override fun lowerCopies(): LowerCopyStatements = SqliteLowerCopies(graph)
 

@@ -8,6 +8,7 @@ These files say what a statement in Drivine's flavour of Cypher gives on each st
 - `refusals.yaml`: statements each SQL store's compiler refuses, and its message. They are compiled with no store.
 - `schema.yaml`: Neo4j's schema commands (`CREATE INDEX`, `CREATE CONSTRAINT`, `DROP …`, `CALL db.awaitIndexes`), and the schema spec a SQL store applies each as, or its refusal. They are read with no store. See [Schema commands](#schema-commands).
 - `store.yaml`: the store layout's DDL: the tables, the probe that finds them made, and each index and constraint as each store makes, drops and lists it, for the graph `drivine` and a set of schema specs, with a read for each index that the compiler must answer from it. Read with no store. See [The store layout](#the-store-layout).
+- `marker.yaml`: the schema marker (`_DrivineSchema`) and the stamps: the statements each store reads and writes the marker and the store's stamp (`DrivineStore`) with, the marker's inventory as it is written and read back, the version token, and the form of the stamp each node carries. Read with no store. See [The schema marker and the stamps](#the-schema-marker-and-the-stamps).
 - `host.yaml`: what each library's own code does with the values compiled SQL hands it: the functions it registers on SQLite, and how it reads a column of a statement's rows. Read with no store. See [Host functions and readers](#host-functions-and-readers).
 - `cli/`: the `drivine` CLI's contract, which runs Cypher on every store and prints its results as cypher-shell does, and `cli.yaml`, the cases each build of it runs. See `cli/README.md`.
 - `model/`: the model file each library writes of an application's fragments, views and how they are stored, which Drivine Studio reads. See `model/README.md`.
@@ -122,6 +123,59 @@ cases:
 Each case's `stores` hold, for `postgres`, `oracle`, `sqlite`, `neo4j`, `memgraph` and `falkordb`, what makes the item (`create`), what drops it by its name (`drop`), and, where it differs, what drops it with no name known (`dropUnnamed`). Each is a list of statements, or `{error}`, the message the store refuses it with. A statement is its text, or on FalkorDB `{native: [...]}`, a command of its driver (`GRAPH.CONSTRAINT`), where `{graphName}` stands for the graph. A constraint's `falkordb` has `constrainable`, `{error}`, where FalkorDB refuses it before its `create`: `GRAPH.CONSTRAINT` takes only a plain name for a property. On a SQL store, a `create` follows the statements that make the store, which the case leaves out: Postgres's and Oracle's `ensuring`, and SQLite's `ddl`.
 
 **Reads.** A range index and a uniqueness constraint are only worth their DDL if a statement is read through them, so each such case has a `read`: a statement, its `parameters`, and the `indexedProperties` a library gives the compiler on Oracle. Compiled on each SQL store, its SQL holds each of `holds`, the expressions the index is made over as its `create` writes them, with each column a statement reads of the node, `props`, `labels` or `stamp`, as its alias's (Oracle's index names them as `n`'s). A runner checks each expression is in the case's `create`, as it is or within a PL/SQL literal, quotes doubled, and that the compiled SQL tests it where a planner reads an index by it: as a conjunct of its `WHERE`, a label's test, or as the left side of a conjunct's `=`, and not only within a `CASE` or beside an `OR`. A vector and a full-text index have none: their searches are each library's, not compiled Cypher.
+
+## The schema marker and the stamps
+
+Each library keeps three things of its own in a store, and reads what another library kept: the schema marker, a node `(:_DrivineSchema {scope, version, items, appliedAt})` for each owner of a schema catalog, holding the version token it last applied and the inventory of the items it applied; the store's stamp, one node `(:DrivineStore {key: "singleton", storeId, assignedAt, engine})`; and the stamp on each node a save writes. `marker.yaml` pins them: drivine4j's, the reference, as it gave them when they were captured, for the graph `drivine`. The compiler's module (`org.drivine.cypher.store.marker`, and `org.drivine.cypher.store.Stamps`) writes them, and its tests check it gives these, byte for byte, on every target. Running the statements and reading their rows stay each library's.
+
+They are a file of their own, not a part of `store.yaml`, because they are a contract of their own: `store.yaml` is the DDL a store is made with, and this is what the libraries keep in it once it is made, which changes apart from the DDL and is read on every enforce. The constraint each node is kept single by is made as `store.yaml` makes any, so its statements are pinned here too, as the module's DDL gives them.
+
+```yaml
+graph: "drivine"
+marker:
+  label: "_DrivineSchema"
+  scopeProperty: "scope"
+  defaultScope: "schema"
+  separator: "\n"
+  runtimePrefix: "runtime:"
+  staleRuntimePrefix: "runtime-stale:"
+  constraint: {kind: "UNIQUENESS_CONSTRAINT", label: "_DrivineSchema", properties: ["scope"]}
+  scopesCypher: "MATCH (m:`_DrivineSchema`) RETURN DISTINCT m.scope"
+  stores:
+    postgres: {prepare: "ensuring", read: {version: "...", items: "..."}, readParameters: ["scope"], merge: "...", mergeParameters: ["scope", "version", "items", "now"], deleteAllButNewest: "...", delete: "...", scopes: null, itemsMark: "", constraint: [...]}
+keys:
+  - {spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}, key: "RANGE_INDEX:Person:name:Person_name_range"}
+inventory:
+  - name: "Stale items"
+    record: {keys: [...], runtime: [...], stale: [...]}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nruntime-stale:UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"
+    read: {keys: [...], runtime: [...], stale: [...]}
+scopeFor:
+  - {owner: null, scope: "schema"}
+reads:
+  - {stored: "items:", read: {keys: ["items:"], runtime: [], stale: []}, oracle: {keys: [], runtime: [], stale: []}}
+versions:
+  - {versions: ["v2", null, "v1"], token: "v1|v2"}
+storeStamp: {label: "DrivineStore", keyProperty: "key", key: "singleton", constraint: {...}, parameters: [...], stores: {...}}
+nodeStamps: {property: "__drivine.stamp", token: 16, separator: ":", neverStamped: "-", tokens: [...], stamps: [...]}
+```
+
+| Key | What it is |
+|---|---|
+| `marker` | The marker's label, the property that keys it to its owner, the scope of the owner with no name, and the constraint that keeps one marker for each scope. Each store's statements: `read` gives the `version` or `items` of the scope's newest marker; `merge` writes it, and makes it where there is none; `deleteAllButNewest` removes every other marker of the scope, and `constraint` makes the constraint that keeps one (when a library runs them is its schema manager's, today as drivine4j's `SchemaManager` decides, and #135's once the manager is in the module); `delete` removes it; and `scopes` reads the scope of every marker in SQL, on SQLite, where `scopesCypher` is read on the others. `prepare` names the statement of `store.yaml`'s `tables` a library runs first: Postgres's and Oracle's `ensuring`, SQLite's first `ddl`, and none on a graph engine. Every statement binds the scope as `$scope`; `mergeParameters` are what `merge` binds. `itemsMark` is what the inventory is kept behind on the store. `constraint` is what makes the marker's constraint, without the statements that make the store first, as `store.yaml` writes a case's `create`. |
+| `keys` | Each spec's inventory key: `<kind>:<label>:<properties joined by ",">:<name>`, the name the spec's own, or the one derived from its label and properties where it has none or an empty one. A spec that ignores case is keyed as it is made, over the lowercased copies. |
+| `scopeFor` | An owner's name, null for the owner with none, and the scope its marker is kept under. |
+| `inventory` | A `record` of keys, the runtime ones and the stale ones; its `items`, as every store but Oracle keeps them; and what is `read` back from them. |
+| `reads` | A stored text as a store gives it back, or null where no marker or no `items` came back, and what is `read` from it: null for no inventory known, which is not an empty one. `oracle` is what Oracle reads, where it differs, its mark taken off first. |
+| `versions` | The version tokens of an owner's catalogs, null for one that sets none, and the token the owner records: null where none sets one. |
+| `storeStamp` | The stamp's label, the property it is merged on and that property's value, its constraint, and what `assignIfAbsent` binds: `storeId`, a new UUID's text, `assignedAt`, the moment as ISO-8601 text in UTC, as Java's `Instant.toString` writes it (`2026-11-10T05:00:00.123456Z`: the fraction of a second in three, six or nine digits, the fewest that hold it, and none for a whole second), and not a number, as `readStamps` orders by it, and `engine`, the store's name as the stamp records it. Each store's `engine`, as the stamp records it, its `prepare`, run first as the marker's is, and statements: `assignIfAbsent` makes the stamp where there is none, and `readStamps` reads every stamp as a map `{id, assignedAt}`, the oldest first, tie-broken by id, and a library takes the first, so every reader takes the same one. |
+| `nodeStamps` | The node stamp's property and form, two tokens of `token` hexadecimal digits joined by `separator`. `tokens` are the text of a token of 64 `bits`, as Java's `String.format("%016x")` writes it. Each of `stamps` is a stored stamp, its `nodeToken` (what comes before its first colon, or all of it), its `linksToken` (what comes after, or null for nothing), whether it is `twoTokens` (33 long, with its colon at 16), whether it `hasNodeToken` (longer than 16, with its colon at 16), and the stamp it is `withoutLinks`. `neverStamped` is what a save reports as the stamp of a node it found with none. |
+
+**The inventory.** The `items` are the inventory keys, in the order they were recorded, joined by a newline. A key to be recreated when next ensured is written behind `runtime-stale:`, whether or not it is marked runtime too; any other key ensured at runtime behind `runtime:`; and any other as it is. A stale key is read back as a runtime one too, and a key marked runtime or stale that isn't among the keys is not written. An empty inventory is an empty text, so an inventory of one empty key is read back as an empty one. A key holding a newline, which a label can hold, is read back as two keys: the separator is not escaped, as drivine4j writes it. Oracle keeps an empty text as null, so it keeps the items behind `items:`, and takes that off as it reads them; a text with no mark is read as it is.
+
+**The version token** is each catalog's token once, sorted by its UTF-16 code units, as Java sorts strings, and joined by `|`.
+
+**The moment.** On Postgres, Oracle and SQLite, `merge` binds `appliedAt` as `$now`, milliseconds since the epoch by the caller's clock. The graph engines write their own clock's, with `timestamp()`, as drivine4j always has, and bind none. That split is kept on purpose: one clock for every store would be a change of its own, made in every library at once. On a SQL store the newest marker of a scope is the one with the largest `appliedAt`, a marker with none or with one that isn't a number coming last (Oracle reads a text of a number as the number), and of two with the same, the one made last (`nid`). A graph engine orders by `appliedAt` as it orders any value, which every marker it writes has.
 
 ## Host functions and readers
 

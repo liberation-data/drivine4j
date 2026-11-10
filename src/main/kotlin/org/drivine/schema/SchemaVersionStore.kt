@@ -1,5 +1,8 @@
 package org.drivine.schema
 
+import org.drivine.cypher.store.marker.MarkerInventory
+import org.drivine.cypher.store.marker.MarkerStatements
+import org.drivine.cypher.store.marker.SchemaMarker
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
@@ -38,6 +41,12 @@ import org.drivine.query.transform
  *
  * All operations run through the supplied [PersistenceManager], which must be the auto-commit
  * (non-transactional) one — schema/marker writes cannot run inside an open data transaction.
+ *
+ * **What the marker holds is the shared module's.** Its label and key, the inventory's text and how
+ * it is read back, the version token and the statements on each store are written by the Cypher
+ * compiler's module ([SchemaMarker], [MarkerInventory], [MarkerStatements]), which the three Drivine
+ * libraries share, so a marker one library wrote is the marker another reads. Running the
+ * statements, and when, is this store's and [SchemaManager]'s.
  */
 class SchemaVersionStore(
     private val manager: PersistenceManager,
@@ -61,7 +70,7 @@ class SchemaVersionStore(
      */
     fun storedVersion(): String? = manager.maybeGetOne(
         QuerySpecification
-            .withStatement(statements.read("version"))
+            .withStatement(statements.read(SchemaMarker.VERSION))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
     )
@@ -78,28 +87,15 @@ class SchemaVersionStore(
      * The inventory last applied under this scope, with which of its items were ensured at runtime
      * ([SchemaManager.ensure]) and which of those wait to be recreated; null as for [storedInventory].
      */
-    internal fun storedRecord(): RecordedInventory? {
+    internal fun storedRecord(): MarkerInventory? {
         val raw = manager.maybeGetOne(
             QuerySpecification
-                .withStatement(statements.read("items"))
+                .withStatement(statements.read(SchemaMarker.ITEMS))
                 .bind(mapOf("scope" to scope))
                 .transform(String::class.java)
         ) ?: return null
-        val items = statements.items(raw)
-        if (items.isEmpty()) {
-            return RecordedInventory(emptyList(), emptySet(), emptySet())
-        }
-        val keys = mutableListOf<String>()
-        val runtime = mutableSetOf<String>()
-        val stale = mutableSetOf<String>()
-        items.split(INVENTORY_SEPARATOR).forEach { entry ->
-            when {
-                entry.startsWith(STALE_RUNTIME_PREFIX) -> entry.removePrefix(STALE_RUNTIME_PREFIX).also { keys += it; runtime += it; stale += it }
-                entry.startsWith(RUNTIME_PREFIX) -> entry.removePrefix(RUNTIME_PREFIX).also { keys += it; runtime += it }
-                else -> keys += entry
-            }
-        }
-        return RecordedInventory(keys, runtime, stale)
+        // The store's mark is taken off by the statements a grammar gave, which may be a grammar of the caller's.
+        return MarkerInventory.parse(statements.items(raw))
     }
 
     /**
@@ -112,17 +108,10 @@ class SchemaVersionStore(
         statements // The graph is made first, where it is not yet.
         return manager.query(
             QuerySpecification
-                .withStatement(statements.scopes?.let(::SqlStatement) ?: CypherStatement("MATCH (m:`$LABEL`) RETURN DISTINCT m.$SCOPE_PROPERTY"))
+                .withStatement(statements.scopes?.let(::SqlStatement) ?: CypherStatement(MarkerStatements.SCOPES_CYPHER))
                 .transform(String::class.java)
         ).filter { it != scope }
     }
-
-    /**
-     * What a marker recorded: the key of every item applied, which of them were ensured at runtime
-     * rather than declared by a catalog, and which of those are to be recreated when next ensured,
-     * because the owner was recreated while their specs were not known.
-     */
-    internal data class RecordedInventory(val keys: List<String>, val runtime: Set<String>, val stale: Set<String>)
 
     /** Records [version] with an empty inventory. Convenience for callers that only track a version. */
     fun record(version: String?) = record(version, emptyList())
@@ -133,22 +122,16 @@ class SchemaVersionStore(
     /**
      * Records [version] and [inventory], marking the keys in [runtime] as ensured at runtime and those
      * in [stale] as to be recreated when next ensured. A marked key is written with a prefix, in the
-     * same newline-joined property, so the marker keeps its shape on every engine.
+     * same newline-joined property, so the marker keeps its shape on every engine: see [MarkerInventory.items].
      */
     internal fun record(version: String?, inventory: List<String>, runtime: Set<String>, stale: Set<String>) {
-        val entries = inventory.map { key ->
-            when (key) {
-                in stale -> STALE_RUNTIME_PREFIX + key
-                in runtime -> RUNTIME_PREFIX + key
-                else -> key
-            }
-        }
+        val items = MarkerInventory(inventory, runtime, stale).items
         try {
-            merge(version, entries)
+            merge(version, items)
         } catch (e: Exception) {
             // Lost a concurrent-create race on the marker: the winner's node is committed now,
             // so a second MERGE matches it instead of creating.
-            merge(version, entries)
+            merge(version, items)
         }
     }
 
@@ -168,11 +151,10 @@ class SchemaVersionStore(
         // Neo4j refuses to create a constraint while an equivalent plain index exists — e.g. a
         // hand-created emergency fix on the marker key. The label is reserved to Drivine, so
         // reclaim it: replace the index with the constraint.
-        manager.constraints.ensure(UniquenessConstraintSpec(LABEL, SCOPE_PROPERTY), replaceBlockingIndex = true)
+        manager.constraints.ensure(SchemaMarker.CONSTRAINT, replaceBlockingIndex = true)
     }
 
-    private fun merge(version: String?, inventory: List<String>) {
-        val items = inventory.joinToString(INVENTORY_SEPARATOR)
+    private fun merge(version: String?, items: String) {
         manager.execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
     }
 
@@ -185,15 +167,16 @@ class SchemaVersionStore(
         )
     }
 
+    /** The marker's names, which are the module's ([SchemaMarker]): drivine4j's names for them are kept for callers. */
     companion object {
         /** Reserved label for the schema-version marker node. */
-        const val LABEL = "_DrivineSchema"
+        const val LABEL = SchemaMarker.LABEL
 
         /** Marker-node key property, uniqueness-constrained so MERGE is race-safe. */
-        const val SCOPE_PROPERTY = "scope"
+        const val SCOPE_PROPERTY = SchemaMarker.SCOPE_PROPERTY
 
         /** Marker-node key for the anonymous (unnamed) owner — the historical, backward-compatible scope. */
-        const val DEFAULT_SCOPE = "schema"
+        const val DEFAULT_SCOPE = SchemaMarker.DEFAULT_SCOPE
 
         /**
          * Historical alias kept for source compatibility; the anonymous owner's scope value.
@@ -202,16 +185,7 @@ class SchemaVersionStore(
         @Deprecated("Use DEFAULT_SCOPE", ReplaceWith("DEFAULT_SCOPE"))
         const val SCOPE = DEFAULT_SCOPE
 
-        /** Separator for the newline-joined inventory string stored in `m.items`. */
-        private const val INVENTORY_SEPARATOR = "\n"
-
-        /** Prefix of an inventory entry for an item ensured at runtime. An inventory key starts with its kind, never with this. */
-        private const val RUNTIME_PREFIX = "runtime:"
-
-        /** Prefix of an inventory entry for an item ensured at runtime that is to be recreated when next ensured. */
-        private const val STALE_RUNTIME_PREFIX = "runtime-stale:"
-
         /** The marker scope for a catalog owner: its name, or [DEFAULT_SCOPE] when unnamed. */
-        fun scopeFor(ownerName: String?): String = ownerName ?: DEFAULT_SCOPE
+        fun scopeFor(ownerName: String?): String = SchemaMarker.scopeFor(ownerName)
     }
 }
