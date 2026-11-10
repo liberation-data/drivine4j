@@ -1,5 +1,6 @@
 package org.drivine.store
 
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
@@ -14,6 +15,7 @@ import org.drivine.query.transform
 import org.drivine.session.SessionManager
 import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
+import org.drivine.test.Nightly
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -128,16 +130,18 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> PersistenceManager) {
  * its stamp once the other's is in force, has the stamp refused; it must write it again rather than fail (#473). One
  * whose statement is refused for what another made meanwhile (on Postgres a 23505 on `pg_class_relname_nsp_index`)
  * must still end up under the other's constraint, so no manager may warn that identity is best-effort
- * (liberation-data/drivine#489).
+ * (liberation-data/drivine#489). Each round, [filled] then writes what else the store is to hold before the managers start.
  */
 private fun verifyConcurrentFirstBootsWithoutTheConstraintAgree(
     open: () -> PersistenceManager,
     wipe: () -> Unit,
     rounds: Int,
+    filled: () -> Unit = {},
 ) = assertNoBestEffortWarning {
     repeat(rounds) {
         open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
         wipe()
+        filled()
         verifyConcurrentFirstBootsAgree(open)
     }
 }
@@ -371,6 +375,26 @@ class StatelessStoreIdentityOracleTest {
 
     @Test fun `concurrent first boots without the constraint agree on one identity on Oracle`() =
         verifyConcurrentFirstBootsWithoutTheConstraintAgree(::open, ::wipe, rounds = 2)
+
+    /**
+     * The managers race to make the key's constraint over a node table of 300,000 other nodes, so that each index
+     * over it takes long enough to build that another manager's statement meets the build's lock, or its stamp's
+     * write, and is turned away (`ORA-00054`); and that one looking for the winner's constraint afterwards can look
+     * before the build is done. Each must end up under the constraint, on one identity (#517), whether it waited the lock
+     * out or found the other's constraint by looking again: this cannot tell the two apart, and OracleSchemaGrammarTest
+     * pins the wait.
+     */
+    @Nightly
+    @Test fun `concurrent first boots without the constraint agree on one identity over a full node table on Oracle`() =
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree(::open, ::wipe, rounds = 2) {
+            OracleTestDatabase.run(
+                """
+                INSERT INTO ${OracleGraph("identity").nodes} (labels, props)
+                SELECT JSON('["Filler"]'), JSON_OBJECT('key' VALUE 'f' || level, 'n' VALUE level RETURNING JSON)
+                FROM dual CONNECT BY level <= 300000
+                """,
+            )
+        }
 
     @Test fun `existing duplicate stamps still resolve on Oracle`() =
         verifyExistingDuplicatesStillResolve(::open)
