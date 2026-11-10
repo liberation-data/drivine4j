@@ -19,7 +19,7 @@ say() {
 
 curl -fsSL "$repo/archive/refs/tags/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
 changed=0
-for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml README.md; do
+for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml store.yaml README.md; do
     if ! diff -q "$tmp/$file" "$dir/$file" > /dev/null; then
         say error "src/test/resources/cypher/$file differs from the spec at $tag. Change the spec, tag it, and run scripts/sync-cypher-spec.sh <tag>."
         changed=1

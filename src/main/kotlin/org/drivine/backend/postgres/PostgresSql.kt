@@ -7,9 +7,12 @@ import org.drivine.model.Stamps
 import org.drivine.query.JdbcParameterCoercer
 import org.drivine.schema.SimilarityFunction
 import java.math.BigDecimal
+import org.drivine.cypher.store.PostgresSql as Shared
 
 /**
- * The pieces of SQL every statement over a [PostgresGraph] is made of.
+ * The pieces of SQL every statement over a [PostgresGraph] is made of. Those an index is made over, and a statement
+ * reads the index by, are the module's ([Shared]), which the store's DDL and the compiler write too, so a statement
+ * written here is read through the index the module made.
  *
  * A property is read from `props` with `->>`, which gives a stored `""` as `""`: Postgres, unlike
  * Oracle, keeps an empty string apart from null, so a test against `''` is the test it is.
@@ -21,30 +24,17 @@ internal object PostgresSql {
 
     const val EMPTY_ARRAY = "'[]'::jsonb"
 
-    /** [text] as a SQL string literal, its quotes doubled. Postgres reads a backslash in one as itself. */
-    fun literal(text: String): String = "'${text.replace("'", "''")}'"
+    /** As [Shared.literal], which the DDL and the compiler call too. */
+    fun literal(text: String): String = Shared.literal(text)
 
-    /** [text] as JSON writes a string. */
-    private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
-
-    /** The key [key] of a JSON object, as a literal; refused when it is empty, which names no property. */
-    private fun keyOf(key: String): String {
-        require(key.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
-        return literal(key)
-    }
-
-    /** [alias]'s column [column]; the column of the table itself, as an index names it, for an empty alias. */
-    private fun column(alias: String, column: String): String = if (alias.isEmpty()) column else "$alias.$column"
+    /** As [Shared.hasLabel]: the predicate of a partial index over the label's nodes, as the module makes it. */
+    fun hasLabel(alias: String, label: String): String = Shared.hasLabel(alias, label)
 
     /**
-     * Whether the node [alias] carries [label]: the form the index over labels answers, and the predicate
-     * of a partial index over the label's nodes (see [PostgresSchemaGrammar]). A label is data, so it is
-     * written into the literal.
+     * As [Shared.labelArray]: the labels as they are stored, written as Jackson writes them, so a label with a control
+     * character in it is the JSON its node holds.
      */
-    fun hasLabel(alias: String, label: String): String = "${column(alias, "labels")} @> ${labelArray(label)}"
-
-    /** The labels of a node that carries [label] alone, as a literal of the JSON array they are stored as. */
-    fun labelArray(label: String): String = literal("[${quoted(label)}]")
+    fun labelArray(label: String): String = Shared.labelArray(label)
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry. Each
@@ -54,8 +44,8 @@ internal object PostgresSql {
     fun hasLabels(alias: String, labels: Collection<String>): String? =
         labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { hasLabel(alias, it) }
 
-    /** The JSON value of the property [key] of the node or relationship [alias]. */
-    fun value(alias: String, key: String): String = "(${column(alias, "props")} -> ${keyOf(key)})"
+    /** As [Shared.value], which the DDL and the compiler call too. */
+    fun value(alias: String, key: String): String = Shared.value(alias, key)
 
     /**
      * The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. For
@@ -66,8 +56,9 @@ internal object PostgresSql {
      * read from the text it is stored as.
      */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String {
-        if (key == Stamps.PROPERTY) return column(alias, "stamp")
-        val text = "(${column(alias, "props")} ->> ${keyOf(key)})"
+        // As the module reads it: the expression a range index or a uniqueness constraint is made over.
+        val text = Shared.property(alias, key)
+        if (key == Stamps.PROPERTY) return text
         return when (kind) {
             SqlKind.TEXT -> text
             SqlKind.NUMBER -> number(alias, key)
@@ -79,7 +70,7 @@ internal object PostgresSql {
 
     /** The property [key] of [alias] as a number where one is stored, and null for anything else. */
     fun number(alias: String, key: String): String =
-        "CASE WHEN jsonb_typeof(${value(alias, key)}) = 'number' THEN (${column(alias, "props")} ->> ${keyOf(key)})::numeric END"
+        "CASE WHEN jsonb_typeof(${value(alias, key)}) = 'number' THEN ${Shared.propertyText(Shared.column(alias, "props"), literal(key))}::numeric END"
 
     /** Whether the node or relationship [alias] has the property [key] at all, null or not. */
     fun hasProperty(alias: String, key: String): String =
@@ -93,32 +84,16 @@ internal object PostgresSql {
     fun document(alias: String): String =
         "($alias.props || jsonb_build_object('labels', $alias.labels) || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, $alias.stamp)))"
 
-    /**
-     * The embedding stored under [key] of [alias] as a pgvector `vector`: the JSON array's text, which
-     * is the text pgvector reads a vector from. Of [dimensions] when given, as an index over it is made,
-     * so a statement that reads it so is answered by the index.
-     */
-    fun embedding(alias: String, key: String, dimensions: Int? = null): String =
-        "CAST(CAST(${value(alias, key)} AS text) AS vector${dimensions?.let { "($it)" }.orEmpty()})"
+    /** As [Shared.embedding]: of [dimensions] when given, as the module's vector index is made over it. */
+    fun embedding(alias: String, key: String, dimensions: Int? = null): String = Shared.embedding(alias, key, dimensions)
 
-    /**
-     * Whether [alias] holds an embedding of [dimensions] under [key]: a search measures only those, as
-     * pgvector refuses to measure vectors of two sizes, and a vector index holds only those, so a node
-     * written with another is left out of it and not refused.
-     */
-    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String =
-        "jsonb_typeof(${value(alias, key)}) = 'array' AND jsonb_array_length(${value(alias, key)}) = $dimensions"
+    /** As [Shared.holdsEmbedding]: the embeddings a vector index holds, and so the ones a search measures. */
+    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String = Shared.holdsEmbedding(alias, key, dimensions)
 
-    /** pgvector's operator for the distance [similarity] measures, and the operators an index over it is made with. */
+    /** pgvector's operator for the distance [similarity] measures, which the module's index answers ([Shared.operators]). */
     fun distance(similarity: SimilarityFunction): String = when (similarity) {
         SimilarityFunction.COSINE -> "<=>"
         SimilarityFunction.EUCLIDEAN -> "<->"
-    }
-
-    /** The operator class a vector index is made with to answer [distance]. */
-    fun operators(similarity: SimilarityFunction): String = when (similarity) {
-        SimilarityFunction.COSINE -> "vector_cosine_ops"
-        SimilarityFunction.EUCLIDEAN -> "vector_l2_ops"
     }
 
     /**
@@ -131,16 +106,11 @@ internal object PostgresSql {
         SimilarityFunction.EUCLIDEAN -> "1 / (1 + ($distance) * ($distance))"
     }
 
-    /**
-     * The text a full-text search reads of [alias]: its properties [keys], each as text, a space between
-     * them, in lower case. A property it does not have is no text. The expression of a full-text index
-     * too (with an empty alias), so a statement that reads it so is answered by the index.
-     */
-    fun searchedText(alias: String, keys: List<String>): String = "lower(${joinedText(alias, keys)})"
+    /** As [Shared.searchedText]: the expression of the module's full-text index, so a search that reads it is answered by the index. */
+    fun searchedText(alias: String, keys: List<String>): String = Shared.searchedText(alias, keys)
 
-    /** [searchedText] before it is lowered: what a full-text search measures a text's length by (drivine4j#604). */
-    fun joinedText(alias: String, keys: List<String>): String =
-        keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }
+    /** As [Shared.joinedText]: what a full-text search measures a text's length by (drivine4j#604). */
+    fun joinedText(alias: String, keys: List<String>): String = Shared.joinedText(alias, keys)
 
     /** The columns a row of a node has, which every row source of a node gives. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp")

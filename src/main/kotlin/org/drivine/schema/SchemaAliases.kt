@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.cypher.store.ddl.SqlStoreDdl
+
 /**
  * A grammar whose store keeps the other names an item goes by beside the item: the SQL stores, which record what
  * Drivine made in the graph's catalog table, keep them as `aliases`, a list of names, among the record's `details`.
@@ -27,18 +29,5 @@ internal fun aliasesIn(row: Any?): List<String> =
 internal fun recordedItems(rows: List<Any?>, parse: (List<Any?>) -> List<SchemaItemInfo>): List<RecordedItem> =
     rows.flatMap { row -> parse(listOf(row)).map { RecordedItem(it, aliasesIn(row)) } }
 
-/** The key of a catalog record's `details` that holds its aliases. */
-internal const val ALIASES = "aliases"
-
-/** [aliases] as the JSON array a record's details keep them in, written byte for byte the same each time. */
-internal fun aliasesJson(aliases: List<String>): String =
-    aliases.joinToString(",", "[", "]") { alias ->
-        alias.map { c ->
-            when {
-                c == '\\' -> "\\\\"
-                c == '"' -> "\\\""
-                c < ' ' -> "\\u%04x".format(c.code)
-                else -> c.toString()
-            }
-        }.joinToString("", "\"", "\"")
-    }
+/** The key of a catalog record's `details` that holds its aliases, as the module's DDL writes them there. */
+internal const val ALIASES = SqlStoreDdl.ALIASES
