@@ -91,6 +91,29 @@ class SchemaPlanDriverTest {
     }
 
     @Test
+    fun `a grammar of another kind tells an index in the way by its own rule, from the error the store threw`() {
+        // An error no store's rule takes for an index in the way: only the grammar's own, given the error itself, does.
+        val refusal = RuntimeException("the application's store has an index over the key")
+        val grammar = object : SchemaGrammar by Neo4jSchemaGrammar() {
+            override fun isBlockedByIndex(e: Throwable) = e === refusal
+        }
+        val index = mapOf("name" to "blocking_k", "type" to "RANGE", "entityType" to "NODE", "labelsOrTypes" to listOf("Blocked"), "properties" to listOf("k"))
+        val store = RecordingStore(DatabaseType.NEO4J, ddl = grammar) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> refusal
+                ran.statement.startsWith("SHOW INDEXES") -> listOf(index)
+                else -> emptyList<Any?>()
+            }
+        }
+        val spec = UniquenessConstraintSpec("Blocked", "k")
+
+        assertEquals(
+            EnsureResult.BlockedByIndex(spec, SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Blocked", listOf("k"), "blocking_k")),
+            store.constraints.ensure(spec),
+        )
+    }
+
+    @Test
     fun `a graph refused for every owner is thrown out of the round as it is, and nothing more is run`() {
         val refused = ReusedIdsException("g", null)
         val store = RecordingStore(DatabaseType.SQLITE, ddl = SqliteSchemaGrammar(SqliteGraph("g")), graphName = "g") { refused }
