@@ -3,6 +3,7 @@ package org.drivine.test
 import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QueryLanguage
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
@@ -33,6 +34,7 @@ class SqlCypherFixturesTest {
                 "optionalGetOne" -> record(arguments[0]).let { Optional.of("row") }
                 "executeBatch" -> (arguments[0] as List<*>).forEach(::record).let { null }
                 "queryBatch" -> (arguments[0] as List<*>).onEach(::record).map { listOf("row") }
+                "queryResult" -> record(arguments[0]).let { QueryResult(listOf("x"), listOf(listOf("row"))) }
                 else -> throw UnsupportedOperationException(method.name)
             }
         } as PersistenceManager
@@ -50,13 +52,14 @@ class SqlCypherFixturesTest {
         fixtures.optionalGetOne(statement("UNWIND [1, 2] AS x RETURN x"))
         fixtures.executeBatch(listOf(statement("RETURN 1")))
         fixtures.queryBatch(listOf(statement("MATCH (h) RETURN h")))
+        fixtures.queryResult(statement("MATCH (h:Human) RETURN h"))
         // SQL has no `//` comment, so one that opens with it is Cypher, whatever follows.
         fixtures.query(statement("// the names\nWITH ['ada'] AS names UNWIND names AS n RETURN n"))
         // A pattern named as a path opens with its name: no SQL statement opens so.
         fixtures.query(statement("MATCH p = (h:Human)-->() RETURN p"))
         fixtures.execute(statement("CREATE p=(:Human)-[:KNOWS]->(:Human)"))
 
-        assertEquals(List(10) { QueryLanguage.CYPHER }, sent.map { it.first })
+        assertEquals(List(11) { QueryLanguage.CYPHER }, sent.map { it.first })
     }
 
     @Test

@@ -22,7 +22,9 @@ import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import kotlin.test.assertEquals
 
@@ -49,6 +51,21 @@ abstract class CypherResultsContract {
             // A row of one column is its value, as the spec writes it.
             result.rows.map { row -> asWritten(if (row.size == 1) row.single() else row) }
         }
+    }
+
+    /** Not in the spec yet (liberation-data/drivine-cypher-spec#163), so pinned here, on the stores that give a path. */
+    @Test
+    fun `a path says which way it walks each relationship`() {
+        assumeTrue(pm.type.speaksCypher, "A SQL store refuses a path: liberation-data/drivine-cypher-spec#163.")
+        clear()
+        seed(requireNotNull(CypherSpec.load("results.yaml").graph))
+        fun path(cypher: String) = pm.queryResult(QuerySpecification.withStatement(CypherStatement(cypher))).rows.single().single() as GraphPath
+        val against = path("MATCH p = (:Person {name: 'Carrie'})<-[:KNOWS]-(:Person) RETURN p")
+        assertEquals(listOf(false), against.forward)
+        assertEquals(listOf("Carrie", "Keanu"), against.nodes.map { it.properties["name"] })
+        val both = path("MATCH p = (:Person {name: 'Carrie'})-[:ACTED_IN]->(:Movie)<-[:ACTED_IN]-(:Person {name: 'Keanu'}) RETURN p")
+        assertEquals(listOf(true, false), both.forward)
+        assertEquals(listOf("Trinity", "Neo"), both.relationships.map { it.properties["role"] })
     }
 
     companion object {

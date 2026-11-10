@@ -2,10 +2,20 @@ package org.drivine.query
 
 import org.drivine.DrivineException
 import org.drivine.connection.Connection
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.cypher.sql.ColumnKind
 import org.drivine.cypher.sql.ResultColumn
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
 import org.drivine.mapper.JdbcTypedValues
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.sqlite.SqliteTestDatabase
+import org.drivine.test.SqlCypherFixtures
+import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertContains
@@ -86,6 +96,40 @@ class QueryResultTest {
         assertContains(failure.message!!, "use query for mapped results")
         assertEquals(QueryResult(listOf("a", "b"), listOf(listOf(1L, "x"))), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a, 'x' AS b")))
         assertEquals(QueryResult(listOf("a"), emptyList()), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a WHERE 1 = 0")))
+    }
+
+    @Test
+    fun `in a transaction it runs on the transaction's connection, a write with RETURN gives its nodes, and a schema command is refused`() {
+        val graph = "result_tx"
+        SqliteTestDatabase.graphManager(graph)
+        val registry = DatabaseRegistry(DataSourceMap()).also {
+            it.register(JdbcConnectionProvider(graph, DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph))
+        }
+        val holder = TransactionContextHolder(registry)
+        val factory = PersistenceManagerFactory(registry, holder)
+        val transactions = Transactions(holder)
+        val tpm = factory.get(graph, PersistenceManagerType.TRANSACTIONAL)
+        val delegating = factory.get(graph)
+        fun cypher(text: String) = QuerySpecification.withStatement(CypherStatement(text))
+        val count = cypher("MATCH (n:Thing) RETURN count(n) AS n")
+        SqlCypherFixtures.clear(SqliteTestDatabase.graphManager(graph))
+
+        val created = transactions.transaction(rollback = true) {
+            tpm.queryResult(cypher("CREATE (n:Thing:Kept {name: 'a'}) RETURN n")).also {
+                // The write is seen on the transaction's connection, before it commits.
+                assertEquals(QueryResult(listOf("n"), listOf(listOf(1L))), delegating.queryResult(count))
+            }
+        }
+        assertEquals(QueryResult(listOf("n"), listOf(listOf(GraphNode(listOf("Thing", "Kept"), mapOf("name" to "a"))))), created)
+        assertEquals(QueryResult(listOf("n"), listOf(listOf(0L))), delegating.queryResult(count))
+        assertEquals(QueryResult(emptyList(), emptyList()), transactions.transaction(rollback = true) { tpm.queryResult(cypher("CREATE (:Thing)")) })
+
+        val refused = assertThrows<DrivineException> { transactions.transaction(rollback = true) { tpm.queryResult(cypher("CREATE INDEX FOR (t:Thing) ON (t.name)")) } }
+        assertContains(refused.message!!, "not run inside a transaction")
+        assertEquals(QueryResult(emptyList(), emptyList()), transactions.transaction(rollback = true) { tpm.queryResult(cypher("CALL db.awaitIndexes(300)")) })
+        // Outside a transaction a schema command is applied, and names no columns.
+        assertEquals(QueryResult(emptyList(), emptyList()), delegating.queryResult(cypher("CREATE INDEX IF NOT EXISTS FOR (t:Thing) ON (t.name)")))
+        assertEquals(QueryResult(emptyList(), emptyList()), delegating.queryResult(cypher("DROP INDEX Thing_name_range IF EXISTS")))
     }
 
     @Test

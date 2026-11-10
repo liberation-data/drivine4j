@@ -10,6 +10,7 @@ import org.drivine.query.QueryLanguage
 import org.drivine.query.QueryResult
 import org.drivine.query.SpecCompiler
 import org.drivine.query.QuerySpecification
+import org.neo4j.driver.Result
 import org.neo4j.driver.Session
 import org.neo4j.driver.Transaction
 import org.neo4j.driver.exceptions.TransientException
@@ -35,38 +36,29 @@ class Neo4jConnection(
 
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
-        val compiledSpec = SpecCompiler(finalizedSpec).compile()
-        val coercedParams = applyParameterCoercers(finalizedSpec, compiledSpec.parameters)
-        val startTime = Instant.now()
-        val statementLogger = StatementLogger(sessionId())
-
-        try {
-            val result = transaction?.run(compiledSpec.statement, coercedParams)
-                ?: session.run(compiledSpec.statement, coercedParams)
-
-            val mapped = resultMapper.mapQueryResults(result.list(), finalizedSpec)
-            statementLogger.log(spec, startTime)
-            return mapped
-        } catch (e: Exception) {
-            statementLogger.log(spec, startTime, e)
-            throw e
-        }
+        return run(spec, finalizedSpec) { result -> resultMapper.mapQueryResults(result.list(), finalizedSpec) }
     }
 
-    override fun queryResult(spec: QuerySpecification<*>): QueryResult {
-        val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
+    override fun queryResult(spec: QuerySpecification<*>): QueryResult =
+        run(spec, spec.finalizedCopy(QueryLanguage.CYPHER)) { result ->
+            // The driver names the columns before the first record, so a result with no rows has them too.
+            QueryResult(result.keys(), result.list().map { record -> record.values().map(Neo4jTypedValues::typed) })
+        }
+
+    /** Runs [finalizedSpec], made of [spec], in the transaction where there is one, and gives what [read] reads of its result. */
+    private fun <R> run(spec: QuerySpecification<*>, finalizedSpec: QuerySpecification<*>, read: (Result) -> R): R {
         val compiledSpec = SpecCompiler(finalizedSpec).compile()
         val coercedParams = applyParameterCoercers(finalizedSpec, compiledSpec.parameters)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
+
         try {
             val result = transaction?.run(compiledSpec.statement, coercedParams)
                 ?: session.run(compiledSpec.statement, coercedParams)
-            // The driver names the columns before the first record, so a result with no rows has them too.
-            val columns = result.keys()
-            val rows = result.list().map { record -> record.values().map(Neo4jTypedValues::typed) }
+
+            val value = read(result)
             statementLogger.log(spec, startTime)
-            return QueryResult(columns, rows)
+            return value
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
             throw e

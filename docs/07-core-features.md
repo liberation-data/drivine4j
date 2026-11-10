@@ -270,3 +270,25 @@ manager.execute(spec)
 
 A node or relationship in a row comes back as a map of its properties, whether it is a whole column or inside a list or a map, so `collect(n)`, `nodes(p)`, `relationships(p)`, `[n, m]` and `{actor: n}` give maps too. On FalkorDB a node's map also holds its `labels`, and a relationship's its `_type`, `_source` and `_destination`. A path inside a list or a map comes back as `{nodes, edges}`. A path that is a whole column comes back as the driver's `org.neo4j.driver.types.Path` on Neo4j and Memgraph, and as `{nodes, edges}` on FalkorDB.
 
+#### Results as they are (`QueryResult`)
+
+`queryResult` gives a statement's result as it is, for a caller that shows it rather than maps it, such as a console or
+the drivine CLI. It needs no framework, and gives the same on every store:
+
+```kotlin
+val result: QueryResult = manager.queryResult(
+    QuerySpecification.withStatement(CypherStatement("MATCH (p:Person)-[k:KNOWS]->(f) RETURN p, k, f.name AS friend"))
+)
+result.columns                       // ["p", "k", "friend"], and still there when no row is found
+val (p, k, friend) = result.rows[0]  // one value per column
+(p as GraphNode).labels              // ["Person"], sorted; p.properties is a map of its properties
+(k as GraphRelationship).type        // "KNOWS"
+```
+
+A node, a relationship and a path, at any depth in a list or a map, are a `GraphNode`, a `GraphRelationship` and a
+`GraphPath` (its nodes, its relationships, and for each relationship whether it is walked along its direction); every
+other value is what `query` gives. None holds the store's id. A statement that returns nothing, a schema command among
+them, has no columns. On Postgres, Oracle and SQLite a Cypher statement's columns are named as Cypher names them, and a
+SQL statement's as the driver does; a path, and a node held in a map or a list there, aren't given yet. A spec that maps
+its results (`transform`, `filter`, `map`) is refused: use `query` for that.
+
