@@ -1,6 +1,13 @@
 package org.drivine.query
 
 import org.drivine.annotation.GraphView
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.Refusal
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchPlan
+import org.drivine.cypher.api.SearchRequest
+import org.drivine.cypher.api.SearchStore
 import org.drivine.backend.GraphStatement
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
@@ -8,6 +15,9 @@ import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.grammar.FalkorDbCypherGrammar
+import org.drivine.query.grammar.MemgraphGrammar
+import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.FullTextQuerySpec
 import org.drivine.query.grammar.VectorQuerySpec
 
@@ -245,11 +255,20 @@ internal object VectorSearchPlanner {
  * the full-text mirror of [VectorSearchPlanner]. Differences from vector: the threshold is always
  * bound (`[0, 1]`, never null), and the filtered form also supports a bare `@NodeFragment` (predicates
  * render against the node alias `n`, which the search head bound the matched node to).
+ *
+ * The search's head — the index's `CALL`, the hits cut to the index limit and their scores scaled —
+ * is the shared module's ([FullTextSearch]) on the engines it writes for, Neo4j, Memgraph and
+ * FalkorDB, with the values it binds, named `_cy_ft<n>`; this keeps the projection, the threshold,
+ * the caller's filter and the trailing `LIMIT`.
  */
 internal object FullTextSearchPlanner {
     const val TOP_K_PARAM = "_fullTextTopK"
-    const val QUERY_PARAM = "_fullTextQuery"
     const val THRESHOLD_PARAM = "_fullTextThreshold"
+
+    /** What a grammar's own head ([CypherGrammar.fullTextSearchHead]) binds the query as, on an engine the module doesn't write for. */
+    const val QUERY_PARAM = "_fullTextQuery"
+
+    /** What a grammar's own head binds the index limit as, on an engine the module doesn't write for. */
     const val INDEX_LIMIT_PARAM = "_fullTextIndexLimit"
 
     /** Unfiltered full-text search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
@@ -262,23 +281,27 @@ internal object FullTextSearchPlanner {
         grammar: CypherGrammar,
     ): ScoredSearchPlan {
         requireSupport(grammar)
-        val cypher = when {
+        val cypher: String
+        val head: SearchHead
+        when {
             graphClass.isAnnotationPresent(GraphView::class.java) -> {
-                val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
-                val spec = resolveSpec(rootFragmentType, property)
-                GraphViewQueryBuilder.forView(graphClass, grammar).buildFullTextQuery(spec, THRESHOLD_PARAM)
+                val viewModel = GraphViewModel.from(graphClass)
+                val spec = resolveSpec(viewModel.rootFragment.fragmentType, property)
+                head = SearchHead(grammar, spec, query, topK, prunedAfterIndex(graphClass))
+                cypher = GraphViewFullTextSearchBuilder(viewModel, grammar, BuildContext()).build(spec, head, THRESHOLD_PARAM)
             }
 
             graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
                 val spec = resolveSpec(graphClass, property)
-                FragmentFullTextSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, THRESHOLD_PARAM)
+                head = SearchHead(grammar, spec, query, topK, prunedAfterIndex(graphClass))
+                cypher = FragmentFullTextSearchBuilder(FragmentModel.from(graphClass)).build(spec, head, THRESHOLD_PARAM)
             }
 
             else -> throw IllegalArgumentException(
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, prunedAfterIndex(graphClass)))
+        return plan(cypher, head, topK, threshold, emptyMap())
     }
 
     /** Full-text search over a view or fragment with a caller `where { }` predicate AND-ed in. */
@@ -294,7 +317,8 @@ internal object FullTextSearchPlanner {
 
         val cypher: String
         val callerBindings: Map<String, Any?>
-        lateinit var resolved: VectorQuerySpec
+        val filtered = querySpec.conditions.isNotEmpty() || prunedAfterIndex(graphClass)
+        val head: SearchHead
         when {
             graphClass.isAnnotationPresent(GraphView::class.java) -> {
                 val viewModel = GraphViewModel.from(graphClass)
@@ -304,8 +328,9 @@ internal object FullTextSearchPlanner {
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
                 val spec = resolveSpec(viewModel.rootFragment.fragmentType, null)
-                cypher = GraphViewQueryBuilder.forView(graphClass, grammar)
-                    .buildFullTextQuery(spec, THRESHOLD_PARAM, whereResult?.whereClause)
+                head = SearchHead(grammar, spec, query, topK, filtered)
+                cypher = GraphViewFullTextSearchBuilder(viewModel, grammar, BuildContext())
+                    .build(spec, head, THRESHOLD_PARAM, whereResult?.whereClause)
             }
 
             graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
@@ -316,16 +341,16 @@ internal object FullTextSearchPlanner {
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, null)
                 val spec = resolveSpec(graphClass, null)
-                cypher = FragmentFullTextSearchBuilder(FragmentModel.from(graphClass), grammar)
-                    .build(spec, THRESHOLD_PARAM, whereResult?.whereClause)
+                head = SearchHead(grammar, spec, query, topK, filtered)
+                cypher = FragmentFullTextSearchBuilder(FragmentModel.from(graphClass))
+                    .build(spec, head, THRESHOLD_PARAM, whereResult?.whereClause)
             }
 
             else -> throw IllegalArgumentException(
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        val filtered = querySpec.conditions.isNotEmpty() || prunedAfterIndex(graphClass)
-        return plan(cypher, query, topK, threshold, callerBindings, FullTextSearchLimits.indexLimit(topK, filtered))
+        return plan(cypher, head, topK, threshold, callerBindings)
     }
 
     private fun requireSupport(grammar: CypherGrammar) {
@@ -364,25 +389,103 @@ internal object FullTextSearchPlanner {
 
     private fun plan(
         cypher: String,
-        query: String,
+        head: SearchHead,
         topK: Int,
         threshold: Double,
         caller: Map<String, Any?>,
-        indexLimit: Int,
     ): ScoredSearchPlan {
         val bindings = buildMap<String, Any?> {
             put(TOP_K_PARAM, topK)
-            put(INDEX_LIMIT_PARAM, indexLimit)
-            put(QUERY_PARAM, query)
             put(THRESHOLD_PARAM, threshold)
-            putAll(caller)
+            putAll(head.bindings)
+            caller.forEach { (name, value) ->
+                require(name !in head.bindings) { "The full-text search's head binds $name already." }
+                put(name, value)
+            }
         }
-        return ScoredSearchPlan(cypher, bindings, topK, indexLimit)
+        return ScoredSearchPlan(cypher, bindings, topK, head.indexLimit)
     }
+
+    /**
+     * The head of the search for [spec] on [grammar]'s engine, written once a builder says which labels a hit must have and
+     * what the head names its node and score: the shared module's, with the values it binds, on Neo4j, Memgraph and FalkorDB;
+     * on any other engine with a full-text index of its own, its grammar's [CypherGrammar.fullTextSearchHead], bound as
+     * [QUERY_PARAM] and [INDEX_LIMIT_PARAM].
+     *
+     * @param filtered whether the hits are pruned after the index, by a caller's filter or by the view: the index is then
+     *   asked for [FullTextSearchLimits.FILTERED_OVER_FETCH] times [topK]
+     */
+    private class SearchHead(
+        private val grammar: CypherGrammar,
+        private val spec: FullTextQuerySpec,
+        private val query: String,
+        private val topK: Int,
+        private val filtered: Boolean,
+    ) : FullTextHead {
+        /** What the head binds, once it is written. */
+        var bindings: Map<String, Any?> = emptyMap()
+            private set
+
+        /** How many hits the index is asked for, once the head is written. */
+        var indexLimit: Int = FullTextSearch.indexLimit(topK, filtered)
+            private set
+
+        override fun write(labels: List<String>, rootAlias: String, scoreAlias: String): String {
+            // The index is on the spec's label, which a builder's labels begin with; a hit has every one of them.
+            val searched = (listOf(spec.label) + labels).distinct()
+            indexLimit = FullTextSearch.indexLimit(topK, filtered || searched.size > 1)
+            val store = grammar.searchStore
+            if (store == null) {
+                bindings = mapOf(QUERY_PARAM to query, INDEX_LIMIT_PARAM to indexLimit)
+                @Suppress("DEPRECATION")
+                return grammar.fullTextSearchHead(spec.copy(labels = labels), rootAlias, scoreAlias)
+            }
+            val request = SearchRequest(
+                labels = searched,
+                properties = spec.properties,
+                query = query,
+                index = SearchIndex(name = spec.indexName),
+                topK = topK,
+                filtered = filtered,
+                alias = rootAlias,
+                scoreAlias = scoreAlias,
+            )
+            return when (val planned = FullTextSearch.plan(store, GRAPH_ENGINE, request)) {
+                is SearchPlan -> {
+                    bindings = planned.parameters
+                    requireNotNull(planned.cypher) { "The full-text search on ${store.id} gave no Cypher." }
+                }
+                is Refusal -> throw IllegalArgumentException(planned.message)
+            }
+        }
+    }
+
+    /** The graph a graph engine's search is over: its head names no table, so the module reads nothing of it. */
+    private val GRAPH_ENGINE = GraphOptions("")
+
+    /** The store the shared module writes [CypherGrammar]'s search head for; null for a grammar it doesn't know. */
+    private val CypherGrammar.searchStore: SearchStore?
+        get() = when (this) {
+            is Neo4j5Grammar -> SearchStore.NEO4J
+            is MemgraphGrammar -> SearchStore.MEMGRAPH
+            is FalkorDbCypherGrammar -> SearchStore.FALKORDB
+            else -> null
+        }
 }
 
 /**
- * How many hits a full-text index `CALL` may yield for a search that wants `topK` rows.
+ * Writes the head of a full-text search: the index's `CALL`, the hits that have every one of `labels`, cut to the index
+ * limit and best first, each node bound as `rootAlias` and its score against the best, in `[0, 1]`, as `scoreAlias`. The
+ * rest of a search's query (threshold, projection, `RETURN`, the trailing `LIMIT topK`) composes on it, and may rely on
+ * the order it yields its rows in.
+ */
+internal fun interface FullTextHead {
+    fun write(labels: List<String>, rootAlias: String, scoreAlias: String): String
+}
+
+/**
+ * How many hits a full-text index `CALL` may yield for a search that wants `topK` rows: the shared module's
+ * ([FullTextSearch.indexLimit]), which writes the `CALL`.
  *
  * Where nothing removes a hit after the index — a fragment, or a view without a required
  * relationship, whose root has one label, searched with at most a score threshold, which keeps a
@@ -394,15 +497,12 @@ internal object FullTextSearchPlanner {
  * while the index yielded its whole limit is the one that may be missing rows.
  *
  * The bound is not optional, because the cost of a search is set by it: the head collects every hit
- * the index yields to normalize the scores (see
- * [org.drivine.query.grammar.CypherGrammar.normalizedFullTextHead]), and an ordinary English query
- * matches most of a corpus.
+ * the index yields to normalize the scores, and an ordinary English query matches most of a corpus.
  */
 object FullTextSearchLimits {
     /** The over-fetch for a full-text search whose hits are filtered after the index. */
-    const val FILTERED_OVER_FETCH: Int = 10
+    const val FILTERED_OVER_FETCH: Int = FullTextSearch.FILTERED_OVER_FETCH
 
     /** The index limit for a search wanting [topK] rows, given whether its hits are [filtered] afterwards. */
-    fun indexLimit(topK: Int, filtered: Boolean): Int =
-        if (filtered) (topK.toLong() * FILTERED_OVER_FETCH).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else topK
+    fun indexLimit(topK: Int, filtered: Boolean): Int = FullTextSearch.indexLimit(topK, filtered)
 }

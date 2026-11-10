@@ -34,14 +34,24 @@ class FullTextIndexBoundTest {
         "graph", topK, 0.0, neo4j,
     )
 
+    /** What [plan] binds the index limit as: the parameter the head's cut, before the hits are collected, names. */
+    private fun indexLimit(plan: ScoredSearchPlan): Any? {
+        val name = checkNotNull(Regex("""ORDER BY score DESC\nLIMIT \$(\w+)""").find(plan.cypher)) { plan.cypher }.groupValues[1]
+        assertTrue(name in plan.bindings, "$name is not bound: ${plan.bindings}")
+        return plan.bindings[name]
+    }
+
     @Test
     fun `the Neo4j index call is asked for a limit`() {
-        val cypher = filtered(topK = 8).cypher
+        val plan = filtered(topK = 8)
 
+        // The shared module's head, with the parameters it binds: the query, and the limit.
         assertTrue(
-            cypher.contains("CALL db.index.fulltext.queryNodes('Article_body_fulltext', \$_fullTextQuery, {limit: \$_fullTextIndexLimit})"),
-            cypher,
+            plan.cypher.contains("CALL db.index.fulltext.queryNodes('Article_body_fulltext', \$_cy_ft1, {limit: \$_cy_ft2})"),
+            plan.cypher,
         )
+        assertEquals("graph", plan.bindings["_cy_ft1"])
+        assertEquals(80, plan.bindings["_cy_ft2"])
     }
 
     @Test
@@ -49,7 +59,7 @@ class FullTextIndexBoundTest {
         val engines = listOf(neo4j, FalkorDbCypherGrammar(CallSubqueryEmitter()), MemgraphGrammar(CallSubqueryEmitter()))
         engines.forEach { grammar ->
             val cypher = FullTextSearchPlanner.plan(ArticleNode::class.java, null, "graph", 8, 0.0, grammar).cypher
-            val cut = cypher.indexOf("ORDER BY score DESC\nLIMIT \$_fullTextIndexLimit")
+            val cut = cypher.indexOf("ORDER BY score DESC\nLIMIT \$_cy_ft")
             val collect = cypher.indexOf("collect(")
 
             assertTrue(cut in 0 until collect, "${grammar::class.simpleName} collects before it cuts:\n$cypher")
@@ -61,7 +71,7 @@ class FullTextIndexBoundTest {
         // Nothing removes a hit after the index, so its best topK hits are the answer.
         val plan = FullTextSearchPlanner.plan(ArticleNode::class.java, null, "graph", 8, 0.5, neo4j)
 
-        assertEquals(8, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8, indexLimit(plan))
         assertEquals(8, plan.indexK)
     }
 
@@ -69,7 +79,7 @@ class FullTextIndexBoundTest {
     fun `a filtered search over-fetches by the stated factor`() {
         val plan = filtered(topK = 8)
 
-        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, indexLimit(plan))
         assertEquals(8, plan.bindings[FullTextSearchPlanner.TOP_K_PARAM])
         assertEquals(8, plan.requestedRows)
         assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, plan.indexK)
@@ -82,7 +92,7 @@ class FullTextIndexBoundTest {
             ArticleNode::class.java, GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE), "graph", 8, 0.0, neo4j,
         )
 
-        assertEquals(8, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8, indexLimit(plan))
     }
 
     @Test
@@ -94,15 +104,15 @@ class FullTextIndexBoundTest {
             ArticleView::class.java, GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE), "graph", 8, 0.0, neo4j,
         )
 
-        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, authored.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
-        assertEquals(8, unauthored.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, indexLimit(authored))
+        assertEquals(8, indexLimit(unauthored))
     }
 
     @Test
     fun `a view search over-fetches, because its required relationships filter the hits`() {
         val plan = FullTextSearchPlanner.plan(AuthoredArticleView::class.java, null, "graph", 8, 0.0, neo4j)
 
-        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, indexLimit(plan))
     }
 
     @Test
@@ -110,7 +120,7 @@ class FullTextIndexBoundTest {
         // Nothing prunes its hits after the index, so it is bounded as a fragment is.
         val plan = FullTextSearchPlanner.plan(ArticleView::class.java, null, "graph", 8, 0.0, neo4j)
 
-        assertEquals(8, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8, indexLimit(plan))
         assertEquals(8, plan.indexK)
     }
 

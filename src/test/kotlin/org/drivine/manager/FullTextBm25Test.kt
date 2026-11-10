@@ -3,7 +3,6 @@ package org.drivine.manager
 import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
-import org.drivine.backend.sql.Bm25
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
@@ -137,8 +136,8 @@ abstract class FullTextBm25Contract {
         val lengths = FRUITS.mapValues { length(it.value) }
         val average = lengths.values.average()
         val idf = ln(1 + (FRUITS.size - 1 + 0.5) / (1 + 0.5))
-        val melon = idf * (Bm25.K1 + 1) / (1 + Bm25.K1 * (1 - Bm25.B + Bm25.B * lengths.getValue("rare") / average))
-        val expected = Bm25.PREFIX / (Bm25.PREFIX + melon)
+        val melon = idf * (K1 + 1) / (1 + K1 * (1 - B + B * lengths.getValue("rare") / average))
+        val expected = PREFIX / (PREFIX + melon)
         for (query in listOf("kiw* melon", "+kiw* melon")) {
             val hits = fruit(query)
             assertEquals(setOf("one", "three", "long", "rare"), hits.keys, query)
@@ -218,6 +217,13 @@ abstract class FullTextBm25Contract {
             CREATE (:Paper {id: 'both', title: 'kiwi', body: 'kiwi kiwi'})
             CREATE (:Paper {id: 'other', title: 'nothing', body: 'to see'})
         """.trimIndent()
+
+        /** How soon a term's count stops adding to its score, and how much a text's length weighs: Lucene's, as the shared module's BM25 has them. */
+        const val K1 = 1.2
+        const val B = 0.75
+
+        /** What a prefix term adds to the score of each node that holds it, on BM25's scale: Lucene's constant, as the module's (drivine4j#612). */
+        const val PREFIX = K1 + 1
 
         /** drivine4j#612's texts, measured on Neo4j: a prefix that "rare" alone holds beside "melon". */
         val FRUITS = linkedMapOf(

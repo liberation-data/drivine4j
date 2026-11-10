@@ -2,7 +2,9 @@ package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.SqlBackend
 import org.drivine.query.dsl.CollectionSortSpec
-import org.drivine.backend.sql.TextQuery
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.SearchStore
 import org.drivine.backend.sql.under
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
@@ -77,11 +79,18 @@ internal class OracleBackend(
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val words = TextQuery.parse(text)
-        val texts = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties)
-        val candidates = if (texts != null) select.matchingThrough(texts, index.properties, words) else select.matching(index.properties, words)
+        val candidates = select.matching(index.properties, text, texts = fullTextTable(index.label, index.properties))
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
         return ScoredSearchPlan(statement.statement, statement.bindings)
+    }
+
+    /**
+     * The table the Oracle Text index on [label]'s [properties] is over, as the shared module's lookup of the catalog finds it;
+     * null when the index has not been made.
+     */
+    private fun fullTextTable(label: String, properties: List<String>): String? {
+        val lookup = requireNotNull(FullTextSearch.lookup(SearchStore.ORACLE, GraphOptions(graph.name), label, properties))
+        return persistenceManager.query(QuerySpecification.withStatement(lookup.sql).bind(lookup.parameters).transform(String::class.java)).firstOrNull()
     }
 
     /**

@@ -317,9 +317,12 @@ class OracleBackendTest {
         val store = store(made("g_t_made"))
         val plan = backend(store).matching(EntityNode::class.java, null, null, "graph", topK = 3, threshold = 0.0)
 
+        // The shared module's lookup of the catalog, its parameters under the compiler's reserved prefix.
+        val asked = store.queried.single()
+        assertEquals("SELECT object_name FROM g_schema WHERE kind = \$_cy_ft1 AND label = \$_cy_ft2 AND properties = \$_cy_ft3 AND object_name IS NOT NULL", asked.statement)
         assertEquals(
-            mapOf<String, Any?>("kind" to "FULLTEXT_INDEX", "label" to "Entity", "properties" to "[\"name\",\"description\"]"),
-            store.queried.single().parameters,
+            mapOf<String, Any?>("_cy_ft1" to "FULLTEXT_INDEX", "_cy_ft2" to "Entity", "_cy_ft3" to "[\"name\",\"description\"]"),
+            asked.parameters,
         )
         assertContains(plan.cypher, "FROM g_t_made s")
         assertContains(plan.cypher, "JSON_TEXTCONTAINS(s.doc, '$.name'")

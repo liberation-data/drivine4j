@@ -1,11 +1,10 @@
 package org.drivine.backend.oracle
 
-import org.drivine.backend.sql.Bm25
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
-import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
+import org.drivine.backend.sql.OnceReached
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
@@ -14,6 +13,8 @@ import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
 import org.drivine.backend.sql.under
 import org.drivine.annotation.Direction
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchStore
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.oracle.OracleSql.EMPTY_ARRAY
 import org.drivine.backend.oracle.OracleSql.document
@@ -556,60 +557,18 @@ internal class OracleSelect(
     }
 
     /**
-     * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
-     * scores one, as Postgres scores them. Every node of the label is read, and a term's rarity, and the average length a
-     * text's is weighed against, are over them all.
+     * The nodes whose text under [keys] meets the user's [query], each with its columns, its document made as the graph's
+     * vertex makes it, and its `score`: the candidates the shared module's full-text search ranks
+     * (`org.drivine.cypher.api.FullTextSearch`), joined back to the node table.
      *
-     * Each term is counted on its own. Counting them as the rows of one bound array, in a subquery
-     * the statement names twice, gave wrong counts on Oracle 23.26: every position of the text.
+     * Without [texts], every node of the label is read and scored by BM25, as Postgres scores them. With it, the search is
+     * through an Oracle Text index: [texts] is the table the index is over, and Oracle Text scores, each property's score
+     * added. The index holds what has been committed, so a search does not see what its own transaction has written.
      */
-    fun matching(keys: List<String>, query: TextQuery): String {
-        val values = keys.map { "JSON_VALUE(c.props, ${path(it)} RETURNING CLOB)" }
-        val text = values.joinToString(" || ' ' || ") { "LOWER($it)" }
-        val len = "NVL(LENGTH(${values.joinToString(" || ' ' || ")}), 0)"
-        return Bm25.ranked(
-            Query("c.nid, $text AS text, $len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
-            Query("$len AS len", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!)).text(),
-            graph.nodes, query,
-            Bm25.Dialect(
-                // The row of the node table is joined back, whose document is made as the graph's vertex makes it.
-                columns = { "$it.nid, $it.labels, $it.props, $it.stamp, ${OracleSql.transform(it)} AS doc" },
-                // Oracle's expressions don't look ahead: the term ending where its last word does, less those a word goes on
-                // from, or a prefix term or one with a character not measured as [[:alnum:]] by its one expression (TextQuery.counted); a
-                // phrase that repeats a word or whose last word starts its first, in the text with each character between words
-                // written twice (TextQuery.SEPARATOR).
-                count = { text, term ->
-                    TextQuery.counted(term)?.let { (ended, continued) ->
-                        "REGEXP_COUNT($text, ${scope.bound(ended)})" + (continued?.let { " - REGEXP_COUNT($text, ${scope.bound(it)})" } ?: "")
-                    } ?: "REGEXP_COUNT(REGEXP_REPLACE($text, '${TextQuery.SEPARATOR}', '\\1\\1'), ${scope.bound(term)})"
-                },
-                holds = { text, term -> "REGEXP_LIKE($text, ${scope.bound(term)})" },
-                ln = { "LN($it)" },
-                real = { it },
-            ),
-        )
-    }
-
-    /**
-     * The nodes whose text under [keys] meets [query], through an Oracle Text index: [texts] is the
-     * table the index is over, which holds that text for each node of the index's label. Scored by
-     * Oracle Text, each property's score added, and then against the best of them. The index holds
-     * what has been committed, so a search does not see what its own transaction has written.
-     */
-    fun matchingThrough(texts: String, keys: List<String>, query: TextQuery): String {
-        val text = scope.bound(query.oracleText)
-        val contains = keys.mapIndexed { i, key -> "JSON_TEXTCONTAINS(s.doc, ${path(key)}, $text, ${i + 1})" }
-        return """
-            SELECT ${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score
-            FROM (
-                SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, k.score
-                FROM (SELECT s.nid, ${keys.indices.joinToString(" + ") { "SCORE(${it + 1})" }} AS score FROM $texts s WHERE ${contains.joinToString(" OR ")}) k
-                JOIN ${graph.nodes} c ON c.nid = k.nid
-                WHERE ${hasLabels("c", rootLabels())}
-            ) h
-            WHERE h.score > 0
-        """.trimIndent()
-    }
+    fun matching(keys: List<String>, query: String, texts: String? = null): String = Query(
+        "c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, m.score",
+        OnceReached(ranked(SearchStore.ORACLE, graph.name, keys, query, SearchIndex(oracleText = texts)), "m", graph.nodes, "c"),
+    ).text()
 
     // ----- What a delete or a traversal on its own selects -----
 

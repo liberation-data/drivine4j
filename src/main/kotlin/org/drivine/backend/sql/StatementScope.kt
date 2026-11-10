@@ -35,6 +35,17 @@ internal open class StatementScope(private val maxName: Int) {
         return "\$$name"
     }
 
+    /**
+     * Binds [parameters] under the names another writer of the statement gave them: a full-text search's, which the shared
+     * module names `_cy_ft<n>`, under the compiler's reserved `_cy_`, and so apart from every name [bound] gives.
+     */
+    fun boundAs(parameters: Map<String, Any?>) {
+        parameters.forEach { (name, value) ->
+            require(name !in bindings) { "The parameter $name is bound already." }
+            bindings[name] = value
+        }
+    }
+
     /** The values the statement's parameters take, as written so far. */
     fun bindings(): Map<String, Any?> = bindings
 

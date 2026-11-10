@@ -1,9 +1,10 @@
 package org.drivine.backend.sqlite
 
-import org.drivine.backend.sql.Bm25
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.annotation.Direction
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchStore
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.sqlite.SqliteSql.document
 import org.drivine.backend.sqlite.SqliteSql.property
@@ -18,7 +19,6 @@ import org.drivine.backend.sql.SqlViewSelect
 import org.drivine.backend.sql.StatementScope
 import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
-import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.under
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
@@ -486,29 +486,13 @@ internal class SqliteSelect(
     }
 
     /**
-     * The nodes whose text under [keys] meets [query], scored by BM25 ([Bm25]) and then against the best of them, so the best
-     * scores one. Each term is a regular expression that matches it as a whole word, counted by the function
-     * [SqliteRegexpCountFunction] registers as Postgres counts it, so the two score alike. There is no full-text index yet:
-     * every node of the root's labels is read, and a term's rarity, and the average length a text's is weighed against, are
-     * over them all.
+     * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the
+     * shared module's full-text search ranks (`org.drivine.cypher.api.FullTextSearch`), by BM25, as Postgres ranks them, joined
+     * back to the node table. Each term is counted by the function [SqliteRegexpCountFunction] registers. There is no
+     * full-text index yet: every node of the root's labels is read.
      */
-    fun matching(keys: List<String>, query: TextQuery): String {
-        val text = SqliteSql.searchedText("c", keys)
-        val len = "length(${SqliteSql.joinedText("c", keys)})"
-        val labelled = listOfNotNull(SqliteSql.hasLabels("c", rootLabels()))
-        return Bm25.ranked(
-            Query("c.nid, $text AS text, $len AS len", Table(graph.nodes, "c"), labelled).text(),
-            Query("$len AS len", Table(graph.nodes, "c"), labelled).text(),
-            graph.nodes, query,
-            Bm25.Dialect(
-                columns = SqliteSql::columns,
-                count = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(TextQuery.lookingAhead(term)))})" },
-                holds = { text, term -> "${SqliteFunctions.REGEXP_COUNT}($text, ${SqliteSql.text(scope.bound(term))}) > 0" },
-                ln = { "${SqliteFunctions.MATH}('log', $it)" },
-                real = { "CAST($it AS REAL)" },
-            ),
-        )
-    }
+    fun matching(keys: List<String>, query: String): String =
+        Query("${SqliteSql.columns("c")}, m.score", OnceReached(ranked(SearchStore.SQLITE, graph.name, keys, query, SearchIndex()), "m", graph.nodes, "c")).text()
 
     // ----- What a delete selects -----
 

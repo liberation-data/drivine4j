@@ -9,11 +9,13 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 /**
- * Unit coverage for each grammar's [CypherGrammar.fullTextSearchHead] — the engine-specific
- * divergence point for full-text search. Every head must address the index the right way (name vs
+ * Unit coverage for each grammar's [CypherGrammar.fullTextSearchHead], deprecated, which gives the
+ * shared module's head under the spec's parameter names: the head `loadMatching` runs, which the module
+ * writes, is unchanged. Every head must address the index the right way (name vs
  * label), bind the matched node to the root alias, and expose a `[0, 1]`-normalized score (with the
  * `maxScore == 0` guard). Engines without a native full-text index must throw.
  */
+@Suppress("DEPRECATION")
 class FullTextSearchGrammarTest {
 
     private fun spec() = FullTextQuerySpec(

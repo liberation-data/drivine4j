@@ -90,12 +90,19 @@ class GraphViewQueryBuilder(
      * @param fullTextSpec the resolved index + bound parameter names to search
      * @param thresholdParam optional bound parameter name for a `_score >= $param` floor
      */
+    @Suppress("DEPRECATION")
+    @Deprecated("loadMatching writes the search's head through the shared module's FullTextSearch, with the parameters it binds; to be removed.")
     fun buildFullTextQuery(
         fullTextSpec: FullTextQuerySpec,
         thresholdParam: String? = null,
         callerWhere: String? = null,
     ): String =
-        GraphViewFullTextSearchBuilder(viewModel, grammar, BuildContext()).build(fullTextSpec, thresholdParam, callerWhere)
+        GraphViewFullTextSearchBuilder(viewModel, grammar, BuildContext()).build(
+            fullTextSpec,
+            { labels, rootAlias, scoreAlias -> grammar.fullTextSearchHead(fullTextSpec.copy(labels = labels), rootAlias, scoreAlias) },
+            thresholdParam,
+            callerWhere,
+        )
 
     override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
         GraphViewLoadBuilder(
