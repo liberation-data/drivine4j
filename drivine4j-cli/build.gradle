@@ -1,0 +1,76 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    // installDist gives build/install/drivine/bin/drivine: see README.md. Not published yet.
+    id 'application'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'org.drivine.cli.MainKt'
+    applicationName = 'drivine'
+    // SQLite's driver loads its native library: on a JDK that warns of that on stderr, the CLI says it may.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+dependencies {
+    // Drivine itself, which brings the Neo4j driver (Neo4j and Memgraph), FalkorDB's client and HikariCP
+    implementation project(':')
+
+    // The JDBC drivers, which the core leaves to the application: the versions the root build's tests run
+    runtimeOnly 'org.postgresql:postgresql:42.7.8'
+    runtimeOnly 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
+    runtimeOnly 'org.xerial:sqlite-jdbc:3.53.2.1'
+
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // cli.yaml, the contract's cases, is YAML: read as the root module's tests read the Cypher spec
+    testImplementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
+    testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict'
+    }
+}
+
+// `drivine --version` prints the version this build has.
+tasks.named('processResources') {
+    inputs.property('version', project.version)
+    filesMatching('org/drivine/cli/drivine-cli.properties') {
+        expand(version: project.version)
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // The tests against a store in a container are opt-in, as the root module's Oracle tests are:
+    // CLI_STORE_TESTS=true runs them on Neo4j, Memgraph, FalkorDB and Postgres, and ORACLE_TESTS=true with it on Oracle.
+    // The switches are inputs, so turning one on runs the tests it enables.
+    def storeTests = providers.environmentVariable('CLI_STORE_TESTS').orElse('')
+    inputs.property('cliStoreTests', storeTests)
+    inputs.property('oracleTests', providers.environmentVariable('ORACLE_TESTS').orElse(''))
+    doFirst {
+        if (storeTests.get() != 'true') {
+            logger.lifecycle('CLI store tests skipped: set CLI_STORE_TESTS=true to run them (and ORACLE_TESTS=true for Oracle)')
+        }
+    }
+    // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+    if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+}
