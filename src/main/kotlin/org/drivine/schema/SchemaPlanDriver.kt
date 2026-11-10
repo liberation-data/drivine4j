@@ -101,7 +101,7 @@ internal class SchemaPlanDriver(
             }
             execution.endPoll()
             val report = (step as PlanStep.Done).report
-            act(report, execution)
+            act(report, execution, item = request.operation is Operation.Item)
             return report
         } finally {
             execution.endPoll()
@@ -109,8 +109,13 @@ internal class SchemaPlanDriver(
         }
     }
 
-    /** Logs [report]'s lines, each at its level under its logger, then throws what it says to throw. */
-    private fun act(report: DatabaseReport, execution: Execution) {
+    /**
+     * Logs [report]'s lines, each at its level under its logger, then throws what it says to throw. The failure of an
+     * [item] call that is a wait's (Neo4j's `db.awaitIndex` for an index not built: the module gives the wait's error
+     * after the index it names) is thrown with the driver's error of that wait as its cause, as drivine4j's
+     * `IndexManager` threw it.
+     */
+    private fun act(report: DatabaseReport, execution: Execution, item: Boolean) {
         report.log.forEach(::log)
         report.rethrown?.let { rethrown ->
             val error = execution.errors.getOrNull(rethrown.round) ?: DrivineException(rethrown.error.messages)
@@ -118,9 +123,13 @@ internal class SchemaPlanDriver(
             throw error
         }
         report.failure?.let { failure ->
-            throw DrivineException(failure).also { e -> execution.unread.forEach(e::addSuppressed) }
+            val cause = if (item) execution.waitFailed?.takeIf { failure.endsWith(": " + waitMessage(it)) } else null
+            throw DrivineException(failure, cause).also { e -> execution.unread.forEach(e::addSuppressed) }
         }
     }
+
+    /** What the module says of a wait that failed with [error]: the first message of its chain, as [StoreErrors] gives it. */
+    private fun waitMessage(error: Throwable): String = StoreErrors.of(error).causes.firstOrNull()?.message ?: "null"
 
     private fun log(line: LogLine) {
         val logger = loggers.getOrPut(line.logger) { LoggerFactory.getLogger(LOGGERS[line.logger] ?: SchemaPlanDriver::class.java) }
@@ -142,6 +151,9 @@ internal class SchemaPlanDriver(
 
         /** Why a sample of the data couldn't be read, which the planner takes as no data: kept with what is thrown, as drivine4j kept it. */
         val unread = mutableListOf<Throwable>()
+
+        /** The error of the last wait for an index ([PlanAction.AwaitIndex]) that failed, the cause of an item call's failure that is its. */
+        var waitFailed: Throwable? = null
 
         /** Runs [actions] in order, stopping at the first that fails, and gives what came of each. */
         fun round(actions: List<PlanAction>): List<PlanOutcome> {
@@ -171,6 +183,7 @@ internal class SchemaPlanDriver(
             val error = StoreErrors.of(e)
             thrown[error] = e
             if (action is PlanAction.Query && action.purpose == Purpose.SAMPLE) unread += e
+            if (action is PlanAction.AwaitIndex) waitFailed = e
             return PlanOutcome.Failed(error)
         }
 

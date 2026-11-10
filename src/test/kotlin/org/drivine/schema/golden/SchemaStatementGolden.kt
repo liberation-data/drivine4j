@@ -3,6 +3,10 @@ package org.drivine.schema.golden
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
 import org.drivine.connection.ConnectionProvider
+import org.drivine.cypher.store.ddl.OracleDdl
+import org.drivine.cypher.store.ddl.PostgresDdl
+import org.drivine.cypher.store.ddl.SqliteDdl
+import org.drivine.cypher.store.marker.MarkerStatements
 import org.drivine.manager.PersistenceManager
 import org.drivine.schema.SchemaStatementTrace
 import org.junit.jupiter.api.extension.AfterAllCallback
@@ -20,6 +24,11 @@ import java.util.concurrent.ConcurrentHashMap
  * [SchemaStatementTrace] tells them, recorded with `-Pdrivine.schema.golden.record=<dir>` and checked against
  * `src/test/resources/schema-golden` with `-Pdrivine.schema.golden.check=true`. The format and the normalisations are
  * in that directory's README.md. With neither property set, no observer is set and nothing is kept.
+ *
+ * Everything is recorded, and the writes are checked ([writes]): every statement that changes the store, in order. The
+ * reads, the `prepare` block and the polls are left out, since the planner reads less than the managers the golden was
+ * recorded from did, and the golden pins every write (liberation-data/drivine-cypher-spec#135). The tests in
+ * [UNCHECKED], and those of classes the golden wasn't recorded in (`classes.txt`), are not checked.
  */
 internal object SchemaStatementGolden {
 
@@ -226,7 +235,38 @@ internal object SchemaStatementGolden {
         return result
     }
 
-    // ----- Checking -----
+    // ----- Checking: the writes -----
+
+    /**
+     * The tests in the golden's classes that are not checked, by key, and why: each was rewritten when schema management
+     * became a driver over the planner, or added after the golden was recorded, so what it runs now was never recorded.
+     * See the README's "Not checked".
+     */
+    val UNCHECKED: Map<String, String> = mapOf(
+        "[class:org.drivine.schema.Neo4jEnsureAwaitsIndexesTest]/[method:a wait that fails for a reason other than the build is thrown as it is, not taken for a failed build()]" to
+            "rewritten: it ensured with the internal IndexBuild of 5 seconds, which is gone; it now ensures with the manager's own wait, so db.awaitIndex is given 60, not 5",
+        "[class:org.drivine.schema.Neo4jEnsureAwaitsIndexesTest]/[method:a wait that fails for a reason other than its timeout, with the index still POPULATING, is an index still being built()]" to
+            "rewritten: it ensured through an IndexManager with IndexBuild(ZERO) and a handler, which are gone; it now applies an owner under WARN, which writes the owner's marker and clears it",
+        "[class:org.drivine.schema.FalkorDbEnsureAwaitsIndexesTest]/[method:an index FalkorDB lists as FAILED is an error naming it, not an index taken as built()]" to
+            "rewritten: its second ensure went through an IndexManager with IndexBuild and a handler, which are gone; it now applies an owner under WARN, which writes the owner's marker and clears it",
+        "[class:org.drivine.store.StatelessStoreIdentityOracleTest]/[method:concurrent first boots without the constraint agree on one identity over a full node table on Oracle()]" to
+            "added after the recording: it came with the merge of main (#755, drivine4j#517), after the golden was taken, so the golden has nothing of it",
+    )
+
+    /**
+     * The classes the golden was recorded in, `classes.txt` beside it: a test of another class has nothing recorded, and
+     * is not checked. A golden without the file is taken to be of the classes it has lines of.
+     */
+    private val recordedClasses: Set<String> by lazy {
+        golden?.let { File(it, CLASSES) }?.takeIf { it.exists() }?.readLines()?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+            ?: goldenLines.keys.map { it.substringAfter("[class:", "").substringBefore("]") }.toSet()
+    }
+
+    const val CLASSES = "classes.txt"
+
+    /** Whether the test [key] is checked: a test of a class the golden was recorded in ([classes]), and not in [UNCHECKED]. */
+    fun checks(key: String, classes: Set<String>): Boolean =
+        key !in UNCHECKED && key.substringAfter("[class:", "").substringBefore("]") in classes
 
     private val goldenLines: Map<String, Map<String, List<String>>> by lazy {
         val dir = golden ?: return@lazy emptyMap()
@@ -241,24 +281,114 @@ internal object SchemaStatementGolden {
         byTest
     }
 
-    private val checked = ConcurrentHashMap.newKeySet<String>()
-
-    /** Checks what each test under [prefix] that is not checked yet sent against the golden: the first difference, where there is one. */
-    fun check(prefix: String): String? {
-        // Only what ran is checked: a test the golden has that did not run here (disabled, or for a store this run leaves out) is not.
-        val keys = recorder.ran().filter { it == prefix || it.startsWith("$prefix/") }.filter { checked.add(it) }
-        return keys.firstNotNullOfOrNull { key ->
-            val live = recorder.entries(key)
-            val expected = goldenLines[key].orEmpty()
-            (live.keys + expected.keys).sorted().firstNotNullOfOrNull { store -> difference(key, store, expected[store].orEmpty(), live[store].orEmpty()) }
+    /** The golden's long statements, by store and hash. */
+    private val goldenTexts: Map<String, Map<String, String>> by lazy {
+        val dir = golden ?: return@lazy emptyMap()
+        dir.listFiles { file -> file.name.endsWith(STATEMENTS) }.orEmpty().associate { file ->
+            file.name.removeSuffix(STATEMENTS).uppercase() to file.readLines().filter { it.isNotBlank() }.associate { line ->
+                val node = mapper.readTree(line)
+                node["hash"].asText() to node["statement"].asText()
+            }
         }
     }
 
-    /** The first line where [live] differs from [expected], described, or null where they are the same. */
+    private val checked = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Checks the writes of each test under [prefix] that is not checked yet against the golden's ([writes]): the first
+     * difference, where there is one. Only a test of the classes the golden was recorded in, and not in [UNCHECKED], is
+     * checked ([checks]).
+     */
+    fun check(prefix: String): String? {
+        // Only what ran is checked: a test the golden has that did not run here (disabled, or for a store this run leaves out) is not.
+        val keys = recorder.ran().filter { it == prefix || it.startsWith("$prefix/") }.filter { checked.add(it) }.filter { checks(it, recordedClasses) }
+        return keys.firstNotNullOfOrNull { key ->
+            val live = recorder.entries(key)
+            val expected = goldenLines[key].orEmpty()
+            (live.keys + expected.keys).sorted().firstNotNullOfOrNull { store ->
+                difference(
+                    key, store,
+                    writes(store, expected[store].orEmpty(), goldenTexts[store].orEmpty()),
+                    writes(store, live[store].orEmpty(), texts[store].orEmpty()),
+                )
+            }
+        }
+    }
+
+    /**
+     * The writes among [lines], one test's on [store], each without its place (`n`), which the reads left out would move;
+     * [texts] gives a long statement's text by its hash. What a write is, and what is left out, is the README's
+     * "What is checked": the design pins every write (liberation-data/drivine-cypher-spec#135), and leaves the planner
+     * free to read less.
+     *
+     * - Left out: a poll; a read (a statement that begins `SHOW`, `SELECT`, or a `CALL` other than Neo4j's
+     *   `db.awaitIndex`, and a `MATCH`, `OPTIONAL MATCH`, `UNWIND` or `WITH` with no clause that writes); and the
+     *   `prepare` block, what the marker's statements need made first ([MarkerStatements.prepare]).
+     * - Kept: everything else. That is the DDL, FalkorDB's native commands, the marker's merge and deletes, Neo4j's wait,
+     *   the lowercased copies' fill and record (SQLite's fill is a `SELECT` of its `drivine_lower_copies` function, and
+     *   is kept), and the SQL stores' blocks and record writes.
+     */
+    fun writes(store: String, lines: List<String>, texts: Map<String, String>): List<String> = lines.mapNotNull { line ->
+        val entry = mapper.readTree(line) as com.fasterxml.jackson.databind.node.ObjectNode
+        val statement = entry["statement"]?.asText().orEmpty()
+        val text = texts[statement] ?: statement
+        val write = when (entry["kind"]?.asText()) {
+            "poll" -> false
+            "native" -> true
+            else -> isWrite(text) && !isPrepare(store, text)
+        }
+        if (write) mapper.writeValueAsString(entry.apply { remove("n") }) else null
+    }
+
+    private val LEADING_COMMENT = Regex("""^\s*(/\*.*?\*/\s*)+""", RegexOption.DOT_MATCHES_ALL)
+    private val WRITE_CLAUSE = Regex("""\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|INSERT|UPDATE|DROP)\b""")
+
+    /** Whether [text] changes the store: see [writes]. */
+    fun isWrite(text: String): Boolean {
+        val words = text.replace(LEADING_COMMENT, "").trim().uppercase()
+        return when {
+            words.startsWith("SHOW") -> false
+            words.startsWith("CALL") -> words.startsWith("CALL DB.AWAITINDEX")
+            words.startsWith("SELECT") -> "DRIVINE_LOWER_COPIES(" in words
+            listOf("MATCH", "OPTIONAL", "UNWIND", "WITH").any(words::startsWith) -> WRITE_CLAUSE.containsMatchIn(words)
+            else -> true
+        }
+    }
+
+    private val POSTGRES_PREPARE = Regex("""^DO \${'$'}ensure\${'$'}.*?to_regclass\('(\S+?)_node'\)""", RegexOption.DOT_MATCHES_ALL)
+    private val ORACLE_PREPARE = Regex("""^DECLARE\s+v_made\b.*?CREATE TABLE IF NOT EXISTS (\S+?)_node \(""", RegexOption.DOT_MATCHES_ALL)
+    private val SQLITE_PREPARE = Regex("""^CREATE TABLE IF NOT EXISTS (\S+?)_node \(""")
+
+    /** A graph's name to make the module's statements with, for one the golden numbers (`<graph-1>`). */
+    private const val NUMBERED_GRAPH = "ddlzzgraph"
+
+    /**
+     * Whether [text] is the `prepare` block on [store]: the statement the module's marker needs made first for the graph
+     * it names ([MarkerStatements.prepare]: the graph's `ensuring` on Postgres and Oracle, its table of nodes on SQLite),
+     * word for word. The graph engines have none.
+     */
+    fun isPrepare(store: String, text: String): Boolean {
+        val trimmed = text.trim()
+        val (pattern, made) = when (store) {
+            "POSTGRES" -> POSTGRES_PREPARE to { name: String -> PostgresDdl(name).ensuring }
+            "ORACLE" -> ORACLE_PREPARE to { name: String -> OracleDdl(name).ensuring }
+            "SQLITE" -> SQLITE_PREPARE to { name: String -> SqliteDdl(name).ddl.first() }
+            else -> return false
+        }
+        val graph = pattern.find(trimmed)?.groupValues?.get(1) ?: return false
+        val numbered = graph.startsWith("<graph-")
+        val expected = runCatching { made(if (numbered) NUMBERED_GRAPH else graph) }.getOrNull() ?: return false
+        val named = if (numbered) expected.replace(NUMBERED_GRAPH, graph, ignoreCase = true) else expected
+        return words(named) == words(trimmed)
+    }
+
+    private fun words(text: String): String = text.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+
+    /** The first write where [live] differs from [expected], described, or null where they are the same. */
     fun difference(key: String, store: String, expected: List<String>, live: List<String>): String? {
         if (expected == live) return null
         val at = expected.indices.firstOrNull { it >= live.size || expected[it] != live[it] } ?: expected.size
-        return "Schema statements of $key on $store differ from the golden at entry ${at + 1} " +
+        return "Schema writes of $key on $store differ from the golden at write ${at + 1} " +
             "(golden ${expected.size}, live ${live.size}):\n" +
             "  golden: ${expected.getOrNull(at) ?: "(none)"}\n" +
             "  live:   ${live.getOrNull(at) ?: "(none)"}\n" +
@@ -302,8 +432,8 @@ class SchemaStatementGoldenListener : TestExecutionListener {
 }
 
 /**
- * Checks, after each test and after each class, that the schema statements it sent are the golden's, and fails it
- * with the first difference where they are not. Found by the platform's extension autodetection, which the build
+ * Checks, after each test and after each class, that the schema writes it sent are the golden's
+ * ([SchemaStatementGolden.writes]), and fails it with the first difference where they are not. Found by the platform's extension autodetection, which the build
  * turns on only with `-Pdrivine.schema.golden.check`.
  */
 class SchemaStatementGoldenExtension : AfterEachCallback, AfterAllCallback {

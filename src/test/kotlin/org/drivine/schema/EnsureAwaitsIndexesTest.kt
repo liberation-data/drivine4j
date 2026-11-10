@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -225,6 +226,8 @@ class Neo4jEnsureAwaitsIndexesTest {
             val failed = assertFailsWith<DrivineException> { manager.indexes.ensure(spec) }
             assertContains(failed.message!!, spec.effectiveName)
             assertContains(failed.message!!, "too large", ignoreCase = true)
+            // The driver's error of the wait is kept as the cause, as it was before the planner.
+            assertContains(assertNotNull(failed.cause, "the wait's error is the cause").message.orEmpty(), "too large", ignoreCase = true)
             assertEquals("FAILED", state(spec.effectiveName))
 
             // Found again, it is not taken for an index that serves: it is still the error.
@@ -658,6 +661,33 @@ class IndexBuildTimeoutTest {
         assertEquals(1L, awaited(Duration.ofSeconds(1)))
         assertEquals(2L, awaited(Duration.ofMillis(1001)))
         assertEquals(60L, awaited(Duration.ofSeconds(60)))
+    }
+
+    /** A store whose `db.awaitIndex` fails with [awaitError], and whose state of the index is [state]. */
+    private fun failingWait(awaitError: Exception, state: String) = org.drivine.test.RecordingStore(DatabaseType.NEO4J) { ran ->
+        when {
+            ran.statement.startsWith("CALL db.awaitIndex") -> awaitError
+            ran.statement.startsWith("SHOW INDEXES YIELD name, state") -> listOf(mapOf("state" to state))
+            else -> emptyList<Any?>()
+        }
+    }
+
+    @Test
+    fun `an item call whose index failed to build is thrown with the driver's error of the wait as its cause`() {
+        val awaitError = RuntimeException("Index population failed: the value is too large")
+        val store = failingWait(awaitError, "FAILED")
+        val thrown = assertFailsWith<DrivineException> { store.indexes.ensure(RangeIndexSpec("AwaitedFailed", "k")) }
+        assertContains(thrown.message!!, "failed to build: Index population failed")
+        assertSame(awaitError, thrown.cause)
+    }
+
+    @Test
+    fun `an item call whose index is still being built when the wait fails is thrown with the driver's error of the wait as its cause`() {
+        val awaitError = RuntimeException("The wait ended")
+        val store = failingWait(awaitError, "POPULATING")
+        val thrown = assertFailsWith<DrivineException> { store.indexes.ensure(RangeIndexSpec("AwaitedPopulating", "k")) }
+        assertContains(thrown.message!!, "still being built")
+        assertSame(awaitError, thrown.cause)
     }
 
     @Test
