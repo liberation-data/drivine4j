@@ -207,7 +207,8 @@ tasks.named('test') {
 	// the schema statements each test sends, and -Pdrivine.schema.golden.check=true (or a golden dir) checks them. Off by default.
 	['drivine.schema.golden.record', 'drivine.schema.golden.check'].each { key ->
 		def value = project.findProperty(key) ?: System.getProperty(key)
-		if (value) {
+		// A check of "false" is off, as SchemaStatementGolden reads it (to Groovy, any text but the empty one is true).
+		if (value && !(key == 'drivine.schema.golden.check' && value.toString() == 'false')) {
 			systemProperty key, value.toString()
 			// What a test sends depends on what earlier classes left on a shared store, so the classes run in one order.
 			systemProperty 'junit.jupiter.testclass.order.default', 'org.junit.jupiter.api.ClassOrderer$ClassName'
