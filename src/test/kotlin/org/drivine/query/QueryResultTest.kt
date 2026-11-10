@@ -86,6 +86,7 @@ class QueryResultTest {
         assertEquals(QueryResult(listOf("x"), listOf(listOf(listOf(1L, 2L)))), JdbcTypedValues.result(listOf(ResultColumn("x", ColumnKind.VALUE)), listOf(listOf(1L, 2L))))
         assertEquals(QueryResult(emptyList(), emptyList()), JdbcTypedValues.result(emptyList(), listOf(1L)))
         assertThrows<IllegalStateException> { JdbcTypedValues.result(listOf(ResultColumn("n", ColumnKind.NODE)), listOf(mapOf("\$t" to "map"))) }
+        assertThrows<IllegalStateException> { JdbcTypedValues.result(listOf(ResultColumn("n", ColumnKind.NODE)), listOf("a node")) }
     }
 
     @Test
@@ -113,6 +114,8 @@ class QueryResultTest {
         fun cypher(text: String) = QuerySpecification.withStatement(CypherStatement(text))
         val count = cypher("MATCH (n:Thing) RETURN count(n) AS n")
         SqlCypherFixtures.clear(SqliteTestDatabase.graphManager(graph))
+        val mapped = cypher("RETURN 1 AS n").transform(String::class.java)
+        assertContains(assertThrows<DrivineException> { tpm.queryResult(mapped) }.message!!, "use query for mapped results")
 
         val created = transactions.transaction(rollback = true) {
             tpm.queryResult(cypher("CREATE (n:Thing:Kept {name: 'a'}) RETURN n")).also {

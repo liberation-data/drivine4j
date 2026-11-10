@@ -12,7 +12,7 @@ interface Connection {
 
     /**
      * Runs [spec] and gives its columns and rows, its nodes, relationships and paths with their labels and type: see
-     * [QueryResult]. A connection that can't is refused, as one written before this call was added is.
+     * [QueryResult]. A connection that can't, as one written before this call was added, refuses the call.
      */
     fun queryResult(spec: QuerySpecification<*>): QueryResult =
         throw UnsupportedOperationException("${this::class.simpleName} gives no QueryResult: use query.")
