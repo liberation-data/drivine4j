@@ -289,6 +289,7 @@ A node, a relationship and a path, at any depth in a list or a map, are a `Graph
 `GraphPath` (its nodes, its relationships, and for each relationship whether it is walked along its direction); every
 other value is what `query` gives. None holds the store's id. A statement that returns nothing, a schema command among
 them, has no columns. On Postgres, Oracle and SQLite a Cypher statement's columns are named as Cypher names them, and a
-SQL statement's as the driver does; a path, and a node held in a map or a list there, aren't given yet. A spec that maps
+SQL statement's as the driver does. A list of nodes or relationships there (`collect(n)`) gives each as one, but a path,
+and a node held in a map the statement builds, aren't given yet: a path is refused, and such a node is its properties. A spec that maps
 its results (`transform`, `filter`, `map`) is refused: use `query` for that.
 

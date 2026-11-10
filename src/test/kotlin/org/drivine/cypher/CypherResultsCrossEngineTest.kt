@@ -68,6 +68,16 @@ abstract class CypherResultsContract {
         assertEquals(listOf("Trinity", "Neo"), both.relationships.map { it.properties["role"] })
     }
 
+    /** A SQL statement's columns are named as the store's driver names them: in upper case on Oracle, as it folds an unquoted alias. */
+    @Test
+    fun `plain SQL gives the driver's column names`() {
+        assumeTrue(!pm.type.speaksCypher, "A graph engine is given Cypher.")
+        val oracle = pm.type == DatabaseType.ORACLE
+        val result = pm.queryResult(QuerySpecification.withStatement(if (oracle) "SELECT 1 AS a FROM dual" else "SELECT 1 AS a"))
+        assertEquals(listOf(if (oracle) "A" else "a"), result.columns)
+        assertEquals(1, (result.rows.single().single() as Number).toInt())
+    }
+
     companion object {
         /**
          * [value] as `results.yaml` writes it: a node, a relationship and a path as a map tagged `$t`, and a map with a `$t` key of
