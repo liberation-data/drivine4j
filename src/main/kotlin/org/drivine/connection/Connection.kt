@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.query.ParameterCoercer
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 
 interface Connection {
@@ -8,6 +9,13 @@ interface Connection {
     fun sessionId(): String
 
     fun <T: Any> query(spec: QuerySpecification<T>): List<T>
+
+    /**
+     * Runs [spec] and gives its columns and rows, its nodes, relationships and paths with their labels and type: see
+     * [QueryResult]. A connection that can't is refused, as one written before this call was added is.
+     */
+    fun queryResult(spec: QuerySpecification<*>): QueryResult =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no QueryResult: use query.")
 
 //    fun <T> openCursor(cursorSpec: CursorSpecification<T>): Cursor<T>
 

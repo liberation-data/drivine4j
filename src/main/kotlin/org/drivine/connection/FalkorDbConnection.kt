@@ -2,14 +2,17 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
+import org.drivine.mapper.FalkorDbTypedValues
 import org.drivine.mapper.ResultMapper
 import org.drivine.query.CollectionCoercer
 import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SpecCompiler
 import org.drivine.query.TemporalCoercer
 import com.falkordb.Graph
+import com.falkordb.Record
 import org.slf4j.LoggerFactory
 import java.time.Instant
 
@@ -51,6 +54,19 @@ class FalkorDbConnection(
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
+        val (schemaNames, records) = run(spec, finalizedSpec)
+        @Suppress("UNCHECKED_CAST")
+        if (schemaNames.isEmpty()) return emptyList<Any>() as List<T>
+        return resultMapper.mapQueryResults(records, finalizedSpec)
+    }
+
+    override fun queryResult(spec: QuerySpecification<*>): QueryResult {
+        val (schemaNames, records) = run(spec, spec.finalizedCopy(QueryLanguage.CYPHER))
+        return QueryResult(schemaNames, records.map { record -> record.values().map(FalkorDbTypedValues::typed) })
+    }
+
+    /** Runs [finalizedSpec], made of [spec]: the result's column names, none for a write-only query, and its records. */
+    private fun run(spec: QuerySpecification<*>, finalizedSpec: QuerySpecification<*>): Pair<List<String>, List<Record>> {
         val compiled = SpecCompiler(finalizedSpec).compile()
         val statement = compiled.statement
         val params = applyParameterCoercers(finalizedSpec, compiled.parameters)
@@ -77,16 +93,9 @@ class FalkorDbConnection(
                 emptyList()
             }
 
-            if (schemaNames.isEmpty()) {
-                statementLogger.log(spec, startTime)
-                @Suppress("UNCHECKED_CAST")
-                return emptyList<Any>() as List<T>
-            }
-
-            val records = resultSet.map { it }
-            val mapped = resultMapper.mapQueryResults(records, finalizedSpec)
+            val records = if (schemaNames.isEmpty()) emptyList() else resultSet.map { it }
             statementLogger.log(spec, startTime)
-            return mapped
+            return schemaNames to records
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
             throw e

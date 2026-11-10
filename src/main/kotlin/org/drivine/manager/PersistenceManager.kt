@@ -113,6 +113,19 @@ interface PersistenceManager {
     fun <T: Any> query(spec: QuerySpecification<T>): List<T>
 
     /**
+     * Runs [spec] and gives its result as it is: its columns, named as the store names them, and each row a list of one value
+     * per column, with each node, relationship and path a [org.drivine.query.GraphNode], [org.drivine.query.GraphRelationship]
+     * or [org.drivine.query.GraphPath] that keeps its labels and type. See [org.drivine.query.QueryResult].
+     *
+     * It is [query] for a caller that shows a result rather than maps it, such as the drivine CLI: needing no framework, it
+     * gives the same columns and values on every store, a result with no rows its columns too. A spec that maps its
+     * results (`transform`, `filter`, `map`) is refused: [query] gives mapped results. A manager that can't give it, as one
+     * written before this call was added, refuses it.
+     */
+    fun queryResult(spec: QuerySpecification<*>): org.drivine.query.QueryResult =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no QueryResult: use query.")
+
+    /**
      * Execute a statement and disregard any results that are returned.
      * @param spec
      */

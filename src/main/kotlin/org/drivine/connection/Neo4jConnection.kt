@@ -2,10 +2,12 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
+import org.drivine.mapper.Neo4jTypedValues
 import org.drivine.mapper.ResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
+import org.drivine.query.QueryResult
 import org.drivine.query.SpecCompiler
 import org.drivine.query.QuerySpecification
 import org.neo4j.driver.Session
@@ -45,6 +47,26 @@ class Neo4jConnection(
             val mapped = resultMapper.mapQueryResults(result.list(), finalizedSpec)
             statementLogger.log(spec, startTime)
             return mapped
+        } catch (e: Exception) {
+            statementLogger.log(spec, startTime, e)
+            throw e
+        }
+    }
+
+    override fun queryResult(spec: QuerySpecification<*>): QueryResult {
+        val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
+        val compiledSpec = SpecCompiler(finalizedSpec).compile()
+        val coercedParams = applyParameterCoercers(finalizedSpec, compiledSpec.parameters)
+        val startTime = Instant.now()
+        val statementLogger = StatementLogger(sessionId())
+        try {
+            val result = transaction?.run(compiledSpec.statement, coercedParams)
+                ?: session.run(compiledSpec.statement, coercedParams)
+            // The driver names the columns before the first record, so a result with no rows has them too.
+            val columns = result.keys()
+            val rows = result.list().map { record -> record.values().map(Neo4jTypedValues::typed) }
+            statementLogger.log(spec, startTime)
+            return QueryResult(columns, rows)
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
             throw e

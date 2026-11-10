@@ -3,6 +3,7 @@ package org.drivine.manager
 import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
@@ -81,6 +82,18 @@ class TransactionalPersistenceManager(
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         return try {
             connection.query(spec)
+        } catch (e: Exception) {
+            throw DrivineException.withRootCause(e, spec)
+        }
+    }
+
+    override fun queryResult(spec: QuerySpecification<*>): QueryResult {
+        QueryResults.requireUnmapped(spec)
+        if (SchemaCommands.refusedInTransaction(type, spec)) return QueryResults.NONE
+        val txObject = currentTransactionOrThrow()
+        val connection = txObject.getOrCreateConnection(database, contextHolder)
+        return try {
+            connection.queryResult(spec)
         } catch (e: Exception) {
             throw DrivineException.withRootCause(e, spec)
         }
