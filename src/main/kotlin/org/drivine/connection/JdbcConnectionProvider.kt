@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import com.zaxxer.hikari.pool.ProxyConnection
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.backend.postgres.PostgresGraph
@@ -178,8 +179,46 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             .also {
                 it.restoresAutoCommit = turned
                 if (type == DatabaseType.SQLITE) it.sqliteVersion = sqliteVersion
+                if (type == DatabaseType.POSTGRES) evictable(it, session)
                 if (tablesHeldBack && !graphEnsured) it.tablesPending = tablesPending()
             }
+    }
+
+    /** The HikariCP pool [dataSource] is, or wraps; null where it is another, which has no way to close a session for good. */
+    private val hikari: HikariDataSource? by lazy {
+        runCatching { if (dataSource.isWrapperFor(HikariDataSource::class.java)) dataSource.unwrap(HikariDataSource::class.java) else null }.getOrNull()
+    }
+
+    /**
+     * Sets whether an index build on [connection] closes its [session] for good after it, out of its pool, or runs with
+     * no parallel workers (see [JdbcConnection.buildingIndex]): it is closed only where the session is HikariCP's and no
+     * caller's transaction holds it. One that commits nothing of itself after [committingEach] is a Spring or distributed
+     * transaction's.
+     */
+    private fun evictable(connection: JdbcConnection, session: java.sql.Connection) {
+        val pool = hikari
+        connection.noEviction = when {
+            !session.autoCommit -> "its connection is a transaction's that Drivine did not begin"
+            pool == null -> "its data source is not a HikariCP pool, which can close a session for good"
+            session !is ProxyConnection -> "its data source hands out HikariCP's sessions wrapped, and only one of HikariCP's own can be closed for good"
+            else -> null
+        }
+        connection.evictor = pool?.let { p -> { s -> p.evictConnection(s) } }
+        connection.evictionRefused = ::refusedEviction
+    }
+
+    /** Whether a build that ran with no parallel workers has been logged: see [refusedEviction]. */
+    @Volatile
+    private var loggedRefusedEviction = false
+
+    /** Logs, once, that an index build ran with no parallel workers, and why ([reason]). */
+    private fun refusedEviction(reason: String) {
+        if (loggedRefusedEviction) return
+        loggedRefusedEviction = true
+        logger.debug(
+            "An index build on Postgres database '{}' runs with no parallel workers, as {}: a session that built in parallel keeps shared memory as long as its pool keeps it (liberation-data/drivine4j#626).",
+            name, reason,
+        )
     }
 
     /** Whether the graph's tables were last left unmade, as the connection they were to be made on was a Spring transaction's. */
