@@ -4,7 +4,6 @@ import org.drivine.DrivineException
 import org.drivine.backend.sql.DdlContention
 import org.drivine.connection.ReusedIdsException
 import org.drivine.cypher.store.ddl.DdlStatement
-import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.cypher.store.plan.DatabaseReport
 import org.drivine.cypher.store.plan.ItemCall
 import org.drivine.cypher.store.plan.ItemReport
@@ -63,7 +62,10 @@ internal class SchemaPlanDriver(
     /** What the planner knows of the store: the module's, for drivine4j's own grammars. */
     val store: StoreSchema by lazy { grammar.storeSchema { error -> thrown.get()?.get(error) } }
 
-    private val planner: SchemaPlanner by lazy { SchemaPlanner(store, markerStatements(store)) }
+    /** The marker's statements the planner is given: the module's, or a [GrammarStoreSchema]'s grammar's own. */
+    private val markers by lazy { markerStatements(store) }
+
+    private val planner: SchemaPlanner by lazy { SchemaPlanner(store, markers) }
 
     /** Why [request] is refused before anything is applied, or null: see [SchemaPlanner.validate]. */
     fun validate(request: PlanRequest): String? = planner.validate(request)
@@ -221,8 +223,8 @@ internal class SchemaPlanDriver(
             Purpose.MARKER, Purpose.SCOPES -> {
                 val statement: Statement = when {
                     action.compiled -> CypherStatement(action.statement)
-                    // The scopes are read in the store's SQL where it has one for them (SQLite), and as Cypher elsewhere.
-                    action.purpose == Purpose.SCOPES -> if (store.ddl is SqlStoreDdl) SqlStatement(action.statement) else CypherStatement(action.statement)
+                    // The scopes are read in the store's SQL where the marker gives it (SQLite, or a grammar's own), and as Cypher elsewhere.
+                    action.purpose == Purpose.SCOPES -> if (markers.scopes != null) SqlStatement(action.statement) else CypherStatement(action.statement)
                     else -> Statement(action.statement)
                 }
                 val manager = requireManager()
@@ -252,11 +254,6 @@ internal class SchemaPlanDriver(
             val manager = requireManager()
             val spec = QuerySpecification.withStatement(statement).bind(parameters)
             SchemaStatementTrace.traced(manager, spec) { manager.execute(spec) }
-        }
-
-        private fun statementText(statement: DdlStatement): String = when (statement) {
-            is DdlStatement.Text -> statement.statement
-            is DdlStatement.Native -> statement.args.joinToString(" ")
         }
 
         private fun copies(): LowerCopyRecord =
@@ -324,10 +321,8 @@ internal class SchemaPlanDriver(
 
         fun after(action: PlanAction.Execute) {
             if (!async || action.purpose != Purpose.DDL) return
-            val (text, native) = when (val statement = action.statement) {
-                is DdlStatement.Text -> statement.statement to false
-                is DdlStatement.Native -> statement.args.joinToString(" ") to true
-            }
+            val text = statementText(action.statement)
+            val native = action.statement is DdlStatement.Native
             val words = text.trim().uppercase()
             val constraint = native || "CONSTRAINT" in words
             label = text
@@ -364,6 +359,12 @@ internal class SchemaPlanDriver(
                 else -> "built"
             }
         }
+    }
+
+    /** [statement]'s text: a native command's arguments joined by spaces, as [SchemaExecutor] tells of one. */
+    private fun statementText(statement: DdlStatement): String = when (statement) {
+        is DdlStatement.Text -> statement.statement
+        is DdlStatement.Native -> statement.args.joinToString(" ")
     }
 
     private val loggers = java.util.concurrent.ConcurrentHashMap<String, Logger>()

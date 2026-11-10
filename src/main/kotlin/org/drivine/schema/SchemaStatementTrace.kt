@@ -30,6 +30,7 @@ internal object SchemaStatementTrace {
     /** What was sent. */
     enum class Kind { STATEMENT, NATIVE }
 
+    /** What is told each statement and poll: a test's recorder (`SchemaStatementGolden`). */
     interface Observer {
         /** [statement] ran on [source], a connection provider or a manager, and failed with [failure], or did not where it is null. */
         fun ran(source: Any, path: Path, kind: Kind, statement: String, parameters: Map<String, Any?>, failure: Throwable?)
@@ -45,6 +46,7 @@ internal object SchemaStatementTrace {
     @JvmStatic
     var observer: Observer? = null
 
+    /** Runs [run], which sends [statement] on [source] by [path], telling the observer of it, with its failure if it throws. */
     inline fun <T> traced(source: Any, path: Path, kind: Kind, statement: String, parameters: Map<String, Any?>, run: () -> T): T {
         val observer = observer ?: return run()
         val result = try {

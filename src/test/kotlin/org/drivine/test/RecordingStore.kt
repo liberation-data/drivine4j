@@ -7,6 +7,7 @@ import org.drivine.connection.NativeSchemaCommandExecutor
 import org.drivine.DrivineException
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.manager.PersistenceManager
+import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.CypherGrammar
@@ -43,7 +44,8 @@ class RecordingStore(
     private val answer: (Ran) -> Any? = { emptyList<Any?>() },
 ) : PersistenceManager {
 
-    class Ran(val statement: String, val parameters: Map<String, Any?>) {
+    /** A statement as it ran, and for one given to the manager, the language its statement was given in. */
+    class Ran(val statement: String, val parameters: Map<String, Any?>, val language: QueryLanguage? = null) {
         override fun toString(): String = statement
     }
 
@@ -118,7 +120,7 @@ class RecordingStore(
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-        val ran = Ran(spec.statement!!.text, spec.parameters)
+        val ran = Ran(spec.statement!!.text, spec.parameters, spec.statement!!.language)
         queried += ran
         return answered(ran) as List<T>
     }
