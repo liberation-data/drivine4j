@@ -1,0 +1,410 @@
+# Full-text search: the nodes a search finds on each store, and how closely each store ranks the nodes of a corpus as
+# Neo4j's full-text index does. See README.md.
+#
+# A search is a label, the properties of its full-text index, a query as a user writes it, and topK, the most hits it
+# gives, as a library's loadMatching takes them, with no threshold. It names its hits by their `id` property.
+#
+# The stores are neo4j, memgraph, falkordb, postgres, oracle, oracle-text and sqlite. `oracle` is Oracle with no full-text
+# index made, which Drivine scores by BM25; `oracle-text` is Oracle with the index made, which is Oracle Text and scores
+# by Oracle Text's own measure. The group `graph` is neo4j, memgraph and falkordb (Neptune has no full-text search), and
+# `sql` is postgres, oracle, oracle-text and sqlite. Postgres runs each case with its index made and without it: the
+# index only narrows the nodes read, and both give the case's hits.
+#
+# Each case says what Neo4j's index gives (Neo4j 2026.10.1, the analyzer `standard-no-stop-words`), which is what every
+# store is to give, except where a refusal says otherwise. Where a store gives something else today, `today` says what,
+# and the issue; a library holds such a step in its own HELD list until the issue's fix lands. `today` is not read.
+# Where a library differs from Neo4j on purpose, the case still states Neo4j's answer: for search, Neo4j's answer is the
+# rule (liberation-data/drivine-cypher-spec#100, decided 2026-11-10), and the difference is filed as a bug.
+
+graph: |
+  CREATE (:Doc {id: 'graphs', body: 'graph databases store graph data'}),
+         (:Doc {id: 'soup', body: 'recipes for soup and bread'}),
+         (:Doc {id: 'note', body: 'a short note about a graph'}),
+         (:Doc {id: 'about', body: 'data about a graph'}),
+         (:Doc {id: 'walk', body: 'a short walk'}),
+         (:Doc {id: 'kiwi', body: 'kiwi bird'}),
+         (:Doc {id: 'kiwis', body: 'kiwifruit and kiwis'}),
+         (:Doc {id: 'zebra', body: 'Zebra Crossing'}),
+         (:Doc {id: 'hindi', body: 'एक किताब'}),
+         (:Doc {id: 'digits', body: 'page ٣٤'}),
+         (:Doc {id: 'ecole', body: 'École normale'}),
+         (:Doc {id: 'snake', body: 'snake_case names'}),
+         (:Doc {id: 'part', body: 'part PN-4471-B in stock'}),
+         (:Paper {id: 'p1', title: 'kiwi', body: 'a fruit'}),
+         (:Paper {id: 'p2', title: 'fruit', body: 'kiwi pie'}),
+         (:Paper {id: 'p3', body: 'nothing here'}),
+         (:Paper {id: 'p4', title: 'kiwi'})
+
+indexes:
+  - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["body"]}
+  - {kind: "FULLTEXT_INDEX", label: "Paper", properties: ["title", "body"]}
+
+cases:
+  - name: "Words are ORed"
+    description: "A node that holds any of a query's words is a hit."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "soup kiwi", topK: 50}
+        ids: ["kiwi", "soup"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: "graph data", topK: 50}
+        ids: ["about", "graphs", "note"]
+        today: [{stores: ["falkordb"], ids: ["about", "graphs"], issue: "liberation-data/drivine4j#666"}]
+
+  - name: "OR"
+    description: "OR and || between words are the default, any of them."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "soup OR kiwi", topK: 50}
+        ids: ["kiwi", "soup"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: "soup || kiwi", topK: 50}
+        ids: ["kiwi", "soup"]
+        today: [{stores: ["falkordb"], error: "Syntax error at offset 6 near soup", issue: "liberation-data/drivine4j#666"}]
+
+  - name: "A quoted phrase"
+    description: "A quoted phrase is its words in turn, with anything but a word between them."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: '"graph data"', topK: 50}
+        ids: ["graphs"]
+      - search: {label: "Doc", properties: ["body"], query: '"about a graph"', topK: 50}
+        ids: ["about", "note"]
+      - search: {label: "Doc", properties: ["body"], query: '"short note"', topK: 50}
+        ids: ["note"]
+
+  - name: "A star inside quotes"
+    description: "Inside quotes a * is text, not the start of a word: \"short no*\" is the phrase \"short no\"."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: '"short no*"', topK: 50}
+        ids: []
+        today: [{stores: ["falkordb"], error: "Syntax error at offset 7 near no", issue: "liberation-data/drivine4j#666"}]
+
+  - name: "A required word"
+    description: "+word: a hit holds it; the other words only score."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "+short graph", topK: 50}
+        ids: ["note", "walk"]
+        today:
+          - {stores: ["memgraph"], ids: ["about", "graphs", "note", "walk"], issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], ids: ["note"], issue: "liberation-data/drivine4j#666"}
+
+  - name: "An excluded word"
+    description: "-word: no hit holds it, though the node holds a word that scores."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "graph -data", topK: 50}
+        ids: ["note"]
+      - search: {label: "Doc", properties: ["body"], query: "soup -bread", topK: 50}
+        ids: []
+
+  - name: "NOT"
+    description: "NOT before a word excludes it, as - does, and AND NOT too."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "graph NOT data", topK: 50}
+        ids: ["note"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: "graph AND NOT data", topK: 50}
+        ids: ["note"]
+        today:
+          - {stores: ["memgraph"], ids: [], issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}
+
+  - name: "AND"
+    description: "AND and && require the words on both sides of them, as Lucene's parser reads them."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "graph AND short", topK: 50}
+        ids: ["note"]
+        today:
+          - {stores: ["sql"], ids: ["note", "walk"], issue: "liberation-data/drivine4j#760"}
+          - {stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}
+      - search: {label: "Doc", properties: ["body"], query: "short AND graph", topK: 50}
+        ids: ["note"]
+        today:
+          - {stores: ["sql"], ids: ["about", "graphs", "note"], issue: "liberation-data/drivine4j#760"}
+          - {stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}
+      - search: {label: "Doc", properties: ["body"], query: "graph && short", topK: 50}
+        ids: ["note"]
+        today:
+          - {stores: ["sql"], ids: ["note", "walk"], issue: "liberation-data/drivine4j#760"}
+          - {stores: ["memgraph"], ids: ["about", "graphs", "note", "walk"], issue: "liberation-data/drivine4j#762"}
+
+  - name: "A prefix"
+    description: "word*, outside quotes: a hit holds a word that starts with it, the word itself too."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "kiw*", topK: 50}
+        ids: ["kiwi", "kiwis"]
+        today: [{stores: ["memgraph"], ids: [], issue: "liberation-data/drivine4j#762"}]
+      - search: {label: "Doc", properties: ["body"], query: "kiwi*", topK: 50}
+        ids: ["kiwi", "kiwis"]
+        today: [{stores: ["memgraph"], ids: ["kiwi"], issue: "liberation-data/drivine4j#762"}]
+
+  - name: "A word inside a longer word"
+    description: "A word is matched whole: kiwi is not in kiwis or kiwifruit, and snake is not in snake_case, where an underscore is part of a word."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "kiwi", topK: 50}
+        ids: ["kiwi"]
+        today: [{stores: ["falkordb"], ids: ["kiwi", "kiwis"], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: "snake", topK: 50}
+        ids: []
+        today:
+          - {stores: ["memgraph"], ids: ["snake"], issue: "liberation-data/drivine4j#762"}
+          - {stores: ["oracle-text"], ids: ["snake"], issue: "liberation-data/drivine4j#763"}
+      - search: {label: "Doc", properties: ["body"], query: "snake_case", topK: 50}
+        ids: ["snake"]
+
+  - name: "Case"
+    description: "A word is matched in any case, a letter beyond ASCII too."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "ZEBRA", topK: 50}
+        ids: ["zebra"]
+      - search: {label: "Doc", properties: ["body"], query: "zebra", topK: 50}
+        ids: ["zebra"]
+      - search: {label: "Doc", properties: ["body"], query: "Crossing", topK: 50}
+        ids: ["zebra"]
+      - search: {label: "Doc", properties: ["body"], query: "ÉCOLE", topK: 50}
+        ids: ["ecole"]
+      - search: {label: "Doc", properties: ["body"], query: "école", topK: 50}
+        ids: ["ecole"]
+
+  - name: "Unicode letters and digits"
+    description: "A word is Unicode's letters and decimal digits: a Hindi word with its vowel signs, and Arabic-Indic digits."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "किताब", topK: 50}
+        ids: ["hindi"]
+      - search: {label: "Doc", properties: ["body"], query: "٣٤", topK: 50}
+        ids: ["digits"]
+        today: [{stores: ["oracle-text"], ids: [], issue: "liberation-data/drivine4j#763"}]
+
+  - name: "Punctuation between words"
+    description: "A word written with hyphens is its parts in turn; each part is a word of its own."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "PN-4471-B", topK: 50}
+        ids: ["part"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: '"PN-4471-B"', topK: 50}
+        ids: ["part"]
+        today: [{stores: ["falkordb"], error: "Syntax error at offset 8 near -4471", issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: "pn", topK: 50}
+        ids: ["part"]
+      - search: {label: "Doc", properties: ["body"], query: "4471", topK: 50}
+        ids: ["part"]
+
+  - name: "Stop words are words"
+    description: "Neo4j's analyzer keeps stop words: a and the are looked for as any word is."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "a", topK: 50}
+        ids: ["about", "note", "walk"]
+      - search: {label: "Doc", properties: ["body"], query: "the", topK: 50}
+        ids: []
+
+  - name: "A field"
+    description: "property:word looks for the word in that property alone, and in none the index doesn't hold."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "body:kiwi", topK: 50}
+        ids: ["kiwi"]
+        today:
+          - {stores: ["memgraph"], error: "Tantivy error: Unable to create search query", issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], error: "Syntax error at offset 4 near body", issue: "liberation-data/drivine4j#666"}
+      - search: {label: "Doc", properties: ["body"], query: "title:kiwi", topK: 50}
+        ids: []
+        today:
+          - {stores: ["sql"], ids: ["kiwi"], issue: "liberation-data/drivine4j#761"}
+          - {stores: ["memgraph"], error: "Tantivy error: Unable to create search query", issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], error: "Syntax error at offset 5 near title", issue: "liberation-data/drivine4j#666"}
+      - search: {label: "Paper", properties: ["title", "body"], query: "title:kiwi", topK: 50}
+        ids: ["p1", "p4"]
+        today:
+          - {stores: ["sql"], ids: ["p1", "p2", "p4"], issue: "liberation-data/drivine4j#761"}
+          - {stores: ["memgraph"], error: "Tantivy error: Unable to create search query", issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], error: "Syntax error at offset 5 near title", issue: "liberation-data/drivine4j#666"}
+      - search: {label: "Paper", properties: ["title", "body"], query: "body:kiwi", topK: 50}
+        ids: ["p2"]
+        today:
+          - {stores: ["sql"], ids: ["p1", "p2", "p4"], issue: "liberation-data/drivine4j#761"}
+          - {stores: ["memgraph"], error: "Tantivy error: Unable to create search query", issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], error: "Syntax error at offset 4 near body", issue: "liberation-data/drivine4j#666"}
+
+  - name: "Several properties"
+    description: "An index over several properties finds a word in any of them; a node that lacks one is searched by the rest."
+    steps:
+      - search: {label: "Paper", properties: ["title", "body"], query: "kiwi", topK: 50}
+        ids: ["p1", "p2", "p4"]
+        today: [{stores: ["memgraph"], ids: ["p1", "p4"], issue: "liberation-data/drivine4j#762"}]
+      - search: {label: "Paper", properties: ["title", "body"], query: "fruit", topK: 50}
+        ids: ["p1", "p2"]
+        today: [{stores: ["memgraph"], ids: ["p2"], issue: "liberation-data/drivine4j#762"}]
+      - search: {label: "Paper", properties: ["title", "body"], query: "pie kiwi", topK: 50}
+        ids: ["p1", "p2", "p4"]
+        today:
+          - {stores: ["memgraph"], ids: ["p1", "p4"], issue: "liberation-data/drivine4j#762"}
+          - {stores: ["falkordb"], ids: ["p2"], issue: "liberation-data/drivine4j#666"}
+
+  - name: "Escapes"
+    description: "A backslash before a character of the syntax makes it text: a sign, a star, a quote; and before a space, it joins two words into one term, which Lucene's analyzer splits again into words that are ORed."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: 'soup \-bread', topK: 50}
+        ids: ["soup"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: '\+short graph', topK: 50}
+        ids: ["about", "graphs", "note", "walk"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: '\"graph data\"', topK: 50}
+        ids: ["about", "graphs", "note"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: 'kiw\*', topK: 50}
+        ids: []
+      - search: {label: "Doc", properties: ["body"], query: '+PN\-4471\-B', topK: 50}
+        ids: ["part"]
+        today: [{stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}]
+      - search: {label: "Doc", properties: ["body"], query: 'graph\ data', topK: 50}
+        ids: ["about", "graphs", "note"]
+        today:
+          - {stores: ["sql", "memgraph"], ids: ["graphs"], issue: "liberation-data/drivine4j#765"}
+          - {stores: ["falkordb"], ids: [], issue: "liberation-data/drivine4j#666"}
+
+  - name: "Ranked"
+    description: "Hits come best first, and topK keeps the best of them."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "graph", topK: 1}
+        ranked: ["graphs"]
+        except: ["falkordb"]
+        note: "FalkorDB scores graphs and about alike (liberation-data/drivine4j#666), so which it gives is the tie's: it gave graphs in one run and about in another. It runs this step once #666 lands."
+      - search: {label: "Doc", properties: ["body"], query: "graph", topK: 3}
+        ranked: ["graphs", "about", "note"]
+        except: ["oracle-text", "falkordb"]
+      - search: {label: "Doc", properties: ["body"], query: "graph", topK: 3}
+        ids: ["about", "graphs", "note"]
+        only: ["oracle-text", "falkordb"]
+        note: "Oracle Text scores by its own measure, not BM25 (liberation-data/drivine-cypher-spec#102), and scores note and about alike; FalkorDB scores graphs and about alike (liberation-data/drivine4j#666). So on them the step pins the hits and not their order; on Oracle Text topK 1 pins its best."
+      - search: {label: "Doc", properties: ["body"], query: "kiwi", topK: 1}
+        ranked: ["kiwi"]
+        except: ["falkordb"]
+        note: "FalkorDB stems kiwis to kiwi and scores the two alike (liberation-data/drivine4j#666), so which it gives is the tie's. It runs this step once #666 lands."
+
+  - name: "No word to look for"
+    description: "A query of operators, punctuation or excluded words alone is refused, on every store, before it reaches one."
+    note: "Neo4j itself gives no hits for -kiwi, NOT kiwi and \"\", every node for *, and a parse error for AND and +: the refusal is Drivine's, so that every store answers alike."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "-kiwi", topK: 50}
+        error: "A full-text query needs a word to look for: '-kiwi' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"}]
+      - search: {label: "Doc", properties: ["body"], query: "NOT kiwi", topK: 50}
+        error: "A full-text query needs a word to look for: 'NOT kiwi' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+      - search: {label: "Doc", properties: ["body"], query: '""', topK: 50}
+        error: "A full-text query needs a word to look for: '\"\"' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+      - search: {label: "Doc", properties: ["body"], query: "*", topK: 50}
+        error: "A full-text query needs a word to look for: '*' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+      - search: {label: "Doc", properties: ["body"], query: "AND", topK: 50}
+        error: "A full-text query needs a word to look for: 'AND' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+      - search: {label: "Doc", properties: ["body"], query: "+", topK: 50}
+        error: "A full-text query needs a word to look for: '+' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+
+  - name: "An empty query"
+    description: "An empty query, or one of spaces alone, is refused."
+    note: "Neo4j fails it with Lucene's parse error, Memgraph with Tantivy's, and FalkorDB gives no hits."
+    steps:
+      - search: {label: "Doc", properties: ["body"], query: "", topK: 50}
+        error: "A full-text query needs a word to look for: '' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+      - search: {label: "Doc", properties: ["body"], query: "   ", topK: 50}
+        error: "A full-text query needs a word to look for: '   ' has none."
+        today: [{stores: ["graph"], issue: "liberation-data/drivine-cypher-spec#100"}]
+
+# Neo4j's own ranking of a corpus, and how closely each other store's must agree with it.
+ranking:
+  # drivine4j's src/test/resources/fulltext/docs-corpus.json at dd4a66f0, byte for byte (SHA-256 865f814c…c9c0e5): the
+  # sections of Drivine's docs, a node each, and the 22 queries of its FullTextRankingAgreementTest.
+  corpus: "search/docs-corpus.json"
+  write: "UNWIND $rows AS r CREATE (:Article {id: r.id, title: r.title, body: r.body})"
+  index: {kind: "FULLTEXT_INDEX", label: "Article", properties: ["body"]}
+  search: {label: "Article", properties: ["body"]}
+  top: 5
+  # How the `neo4j` lists below were recorded: a Neo4j of this image, the corpus written with `write` (bound as $rows),
+  # the index made and filled, and each query asked of it. Run these on the image, through the test lock, to record them
+  # again; scores aren't kept, only ids and order. At the recording, no two of a query's first six hits scored alike, so
+  # the order and the top five are Neo4j's own and not a tie's.
+  recorded:
+    image: "neo4j:2026.10.1"
+    digest: "neo4j@sha256:44ad2a2504fd7d27df1d1e976f2d481e4266a0814d3657f2d5df62124ce657f1"
+    version: "Neo4j Kernel 2026.10.1 community"
+    date: "2026-11-10"
+    statements:
+      - "CREATE FULLTEXT INDEX `Article_body_fulltext` IF NOT EXISTS FOR (n:`Article`) ON EACH [n.`body`] OPTIONS {indexConfig: {}}"
+      - "CALL db.awaitIndexes()"
+      - "CALL db.index.fulltext.queryNodes('Article_body_fulltext', $query, {limit: 5}) YIELD node RETURN node.id"
+  # Each bar holds over the queries Neo4j gives any hit for (21 of the 22): the same top hit as Neo4j's for at least
+  # `sameTop` of them, and a mean, over them, of at least `overlap` of the top five in common with Neo4j's, as sets.
+  # Each store's bar is what it gave when this file was recorded (2026-11-10, drivine4j at dd4a66f0), rounded down, so
+  # the move into the module can't regress any of them; but no higher than the store gives however it breaks a tie
+  # between hits that score alike, at the top or at the fifth: where a tie could give less, the bar is that, and its
+  # note says so. `measured` is what each store gave then, and is not read, nor is a bar's `note`. `target` is the bar
+  # a store is to reach: the BM25 stores' once liberation-data/drivine4j#665 and the norms land. Memgraph, Oracle Text
+  # (its own measure, liberation-data/drivine-cypher-spec#102) and FalkorDB (liberation-data/drivine4j#666) have none
+  # yet.
+  bars:
+    - stores: ["postgres", "oracle", "sqlite"]
+      sameTop: 17
+      overlap: 4.3
+      target: {sameTop: 21, overlap: 4.5}
+      measured: {postgres: {sameTop: 17, overlap: 4.33}, oracle: {sameTop: 17, overlap: 4.33}, sqlite: {sameTop: 17, overlap: 4.33}}
+    - stores: ["memgraph"]
+      sameTop: 16
+      overlap: 4.09
+      measured: {memgraph: {sameTop: 16, overlap: 4.095}}
+    - stores: ["oracle-text"]
+      sameTop: 5
+      overlap: 2.57
+      note: "Oracle Text scores by its own measure, not BM25 (liberation-data/drivine-cypher-spec#102). Its scores are whole numbers, so many hits tie: for 4 queries at the top and 10 at the fifth. Its bar is the worst those ties can give, 5 and 2.571, not what it gave."
+      measured: {oracle-text: {sameTop: 6, overlap: 2.81}}
+    - stores: ["falkordb"]
+      sameTop: 9
+      overlap: 2.04
+      note: "RediSearch ANDs the words and stems them (liberation-data/drivine4j#666). Its hits tie at the fifth for 3 queries, and it broke one of them differently at topK 5 and 10, so its bar is the worst those ties can give, 2.048, not what it gave."
+      measured: {falkordb: {sameTop: 9, overlap: 2.095}}
+  queries:
+    - query: "GraphObjectManager"
+      neo4j: ["legacy-graph-object-manager#1", "0.1.0-stateless-object-manager#8", "vector-search#1", "13-java-query-dsl#1", "oracle-sql-pgq-plan#4"]
+    - query: "agent process persistence"
+      neo4j: ["0.0.50-property-bag#10", "rag-graph-partitioning-handoff#1", "oracle-long-json-string-crash#5", "0.0.66-inherited-nodeid#5", "0.0.70-model-aware-key-resolution#6"]
+    - query: "Jinja"
+      neo4j: []
+    - query: "full-text search"
+      neo4j: ["0.0.68-fulltext-search#1", "0.0.68-fulltext-search#7", "0.0.68-fulltext-search#10", "0.0.68-fulltext-search#8", "0.0.68-fulltext-search#2"]
+    - query: "vector index"
+      neo4j: ["0.0.79-vector-partitioning#1", "vector-search#8", "0.0.61-vector-save-vecf32#1", "0.0.79-vector-search-k#2", "rag-graph-partitioning-handoff#5"]
+    - query: "transaction rollback"
+      neo4j: ["0.1.7-atomic-save-all#1", "07-core-features#1", "0.1.7-atomic-save-all#2", "0.1.7-create-if-absent#4", "08-api-reference#1"]
+    - query: "optimistic locking stamp"
+      neo4j: ["0.1.0-stateless-object-manager#5", "0.1.7-create-if-absent#2", "0.1.0-stateless-object-manager#9", "0.1.0-stateless-object-manager#8", "oracle-sql-pgq-plan#8"]
+    - query: "schema marker"
+      neo4j: ["postgres-sql-backend-plan#5", "0.0.79-vector-index-tuning#9", "0.0.79-vector-index-tuning#10", "0.0.60-fulltext-index#1", "0.0.79-vector-partitioning#5"]
+    - query: "cascade delete"
+      neo4j: ["oracle-sql-pgq-plan#5", "0.0.61-vector-save-vecf32#7", "postgres-sql-backend-plan#6", "0.0.68-fulltext-search#9", "oracle-sql-pgq-plan#3"]
+    - query: "Cypher on a relational database"
+      neo4j: ["00-introduction#1", "README#1", "01-philosophy#1", "05-cypher-on-a-relational-database#1", "oracle-sql-pgq-plan#1"]
+    - query: "polymorphic subtype"
+      neo4j: ["0.0.62-graph-property-name-mapping#8", "0.0.66-inherited-nodeid#2", "0.0.66-inherited-nodeid#4", "0.0.67-fragment-query-dsl#9", "14-java-interoperability#1"]
+    - query: "connection provider"
+      neo4j: ["0.1.7-atomic-save-all#3", "0.1.7-atomic-save-all#2", "postgres-sql-backend-plan#5", "0.1.0-stateless-object-manager#9", "05-cypher-on-a-relational-database#1"]
+    - query: "Spring Boot configuration"
+      neo4j: ["03-installation#1", "04-quick-start#1", "09-supported-engines#1", "12-testing#1", "0.0.79-vector-index-tuning#8"]
+    - query: "query DSL"
+      neo4j: ["13-java-query-dsl#1", "0.0.52-limit-skip#6", "0.0.50-property-bag#7", "0.0.75-index-aware-keyset-pagination#9", "0.0.67-fragment-query-dsl#1"]
+    - query: "Memgraph"
+      neo4j: ["0.0.68-fulltext-search#7", "0.0.75-index-aware-keyset-pagination#6", "0.0.60-fulltext-index#5", "0.0.73-null-write-policy#6", "0.0.61-vector-save-vecf32#7"]
+    - query: "pgvector"
+      neo4j: ["postgres-sql-backend-plan#2", "postgres-sql-backend-plan#5", "00-introduction#1", "postgres-sql-backend-plan#4"]
+    - query: "keyset pagination"
+      neo4j: ["0.0.75-index-aware-keyset-pagination#1", "0.0.52-limit-skip#1", "0.0.75-index-aware-keyset-pagination#2", "0.0.75-index-aware-keyset-pagination#6", "0.0.52-limit-skip#5"]
+    - query: "property bag"
+      neo4j: ["0.0.91-node-labels-and-edges#5", "0.0.91-node-labels-and-edges#3", "0.0.50-property-bag#11", "0.0.91-node-labels-and-edges#6", "0.0.70-model-aware-key-resolution#5"]
+    - query: "relationship direction"
+      neo4j: ["0.0.91-node-labels-and-edges#4", "0.1.0-stateless-object-manager#8", "0.0.61-vector-save-vecf32#8", "0.0.75-index-aware-keyset-pagination#10", "0.1.0-stateless-object-manager#2"]
+    - query: "Oracle Text"
+      neo4j: ["postgres-sql-backend-plan#4", "oracle-sql-pgq-plan#6", "oracle-sql-pgq-plan#8", "0.1.7-order-by-expression#5", "oracle-sql-pgq-plan#7"]
+    - query: "test containers"
+      neo4j: ["oracle-long-json-string-crash#8", "12-testing#1", "0.0.60-fulltext-index#5", "0.0.61-vector-save-vecf32#7", "12-testing#2"]
+    - query: "save all atomically"
+      neo4j: ["0.0.50-property-bag#8", "0.0.66-inherited-nodeid#1", "0.0.50-property-bag#6", "0.0.50-property-bag#3", "legacy-graph-object-manager#4"]
