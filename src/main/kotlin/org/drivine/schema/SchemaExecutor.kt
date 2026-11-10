@@ -70,6 +70,15 @@ class SchemaExecutor internal constructor(
     internal fun <T> poll(what: String, outcome: (T) -> String, poll: () -> T): T =
         SchemaStatementTrace.poll(connectionProvider, what, outcome, poll)
 
+    /** Tells a [SchemaStatementTrace] observer a poll until [what] ends has begun, a run of the planner's rounds: see [pollEnded]. */
+    internal fun pollStarted(what: String) = SchemaStatementTrace.pollStarted(connectionProvider, what)
+
+    /** Tells a [SchemaStatementTrace] observer the poll [pollStarted] told of has ended, as [outcome] says. */
+    internal fun pollEnded(what: String, outcome: String) = SchemaStatementTrace.pollEnded(connectionProvider, what, outcome)
+
+    /** The name of the database this runs on, as the planner's requests name it. */
+    internal val database: String get() = connectionProvider.name
+
     private inline fun <T> traced(statement: String, parameters: Map<String, Any?>, run: () -> T): T =
         SchemaStatementTrace.traced(
             connectionProvider, SchemaStatementTrace.Path.SCHEMA_CONNECTION, SchemaStatementTrace.Kind.STATEMENT, statement, parameters, run,

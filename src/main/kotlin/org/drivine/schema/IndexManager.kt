@@ -1,7 +1,8 @@
 package org.drivine.schema
 
-import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
+import org.drivine.cypher.store.plan.ItemCall
+import org.drivine.cypher.store.plan.PlanRequest
 import org.drivine.manager.PersistenceManager
 import org.slf4j.LoggerFactory
 import java.time.Duration
@@ -13,8 +14,9 @@ import java.time.Duration
  * auto-commit mode regardless of any surrounding `@Transactional` context — schema DDL cannot run
  * inside an open data transaction.
  *
- * The orchestration here (ensure / drift / recreate) is engine-agnostic; all engine divergence
- * lives in the [SchemaGrammar].
+ * What each call does on the store is decided by the Cypher compiler's module, whose schema planner
+ * (`org.drivine.cypher.store.plan`) the three Drivine libraries share: this manager runs what it decides
+ * ([SchemaPlanDriver]). Engine divergence lives in the module's schema of the store ([SchemaGrammar] says which).
  *
  * Example:
  * ```kotlin
@@ -31,12 +33,8 @@ import java.time.Duration
 class IndexManager internal constructor(
     private val executor: SchemaExecutor,
     val grammar: SchemaGrammar,
-    private val asyncDropTimeout: Duration = Duration.ofSeconds(30),
-    private val asyncPollInterval: Duration = Duration.ofMillis(200),
     /** The auto-commit manager this one is of, which an item that ignores case fills its copies in through; null for none. */
     private val owner: PersistenceManager? = null,
-    /** How long [ensure] and [recreate] wait for an index made in the background (Neo4j, FalkorDB) to be built: see [awaitBuilt]. */
-    private val buildTimeout: Duration = DEFAULT_BUILD_TIMEOUT,
 ) {
 
     internal constructor(connectionProvider: ConnectionProvider, owner: PersistenceManager? = null) :
@@ -48,29 +46,10 @@ class IndexManager internal constructor(
      */
     internal val lowerCopies: LowerCopyCatalog? by lazy { owner?.let { LowerCopyCatalog(it, ::run) } }
 
-    /**
-     * Fills in the lowercased copies [spec] is made over, when it ignores case: see [LowerCopyCatalog].
-     * Where [again] says so, asked only of an item that ignores case and after a manager with no
-     * [owner] has refused it, they are filled in whether or not they are recorded as there.
-     */
-    internal fun fillIn(spec: SchemaItemSpec, again: () -> Boolean = { false }) {
-        val properties = spec.lowercased.ifEmpty { return }
-        val copies = lowerCopies ?: throw DrivineException(
-            "${spec.kind} ${spec.effectiveName} on ${spec.label}${spec.properties} ignores case, and this manager has no store to fill the lowercased copies in through."
-        )
-        copies.fillIn(spec.label, properties, again())
-    }
+    /** Runs what the module's schema planner decides on this database: every call here, and the [SchemaManager]'s. */
+    internal val driver: SchemaPlanDriver by lazy { SchemaPlanDriver(executor, grammar, { lowerCopies }) }
 
     private val logger = LoggerFactory.getLogger(IndexManager::class.java)
-
-    /** Runs [statements], which make or drop an index, and tells the grammar they have. */
-    private fun run(statements: List<SchemaStatement>) {
-        try {
-            executor.execute(statements)
-        } finally {
-            grammar.changed()
-        }
-    }
 
     /**
      * Runs a schema statement that is not an index: on a connection of its own, committed as it runs, which is the one
@@ -83,59 +62,16 @@ class IndexManager internal constructor(
      *
      * Never destructive: if an index exists with a different shape, returns [EnsureResult.Drift]
      * and changes nothing; call [recreate] to replace it. On an engine that builds an index in the
-     * background (Neo4j, FalkorDB), returns once the index, made here or there already, is built: see
-     * [awaitBuilt]. A build that failed, or did not end within the timeout (60 seconds), is thrown, as a
-     * [DrivineException] that names the index. ([SchemaManager] waits as long as it is told to, and under
-     * [SchemaMode.WARN] logs such an index and goes on.)
+     * background (Neo4j, FalkorDB), returns once the index, made here or there already, is built. A
+     * build that failed, or did not end within 60 seconds, is thrown, as a [org.drivine.DrivineException]
+     * that names the index. ([SchemaManager] waits as long as it is told to, and under [SchemaMode.WARN] logs such an
+     * index and goes on.)
      * An index that ignores case (see [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
      * have none, and records that they all have it, whatever the result. Where the index is not there
      * yet, the copies are filled in again even if recorded, as by [recreate], since those a field kept
      * before it lost `@CaseInsensitive` went out of step meanwhile.
      */
-    fun ensure(spec: IndexSpec): EnsureResult = ensure(spec, IndexBuild(buildTimeout))
-
-    /** [ensure], waiting for the index to be built as [build] says, and handing it one that is not. */
-    internal fun ensure(spec: IndexSpec, build: IndexBuild): EnsureResult {
-        requireSupported(spec)
-        // An index that ignores case is made over copies that every node of its label has. One made
-        // anew fills them in again, recorded or not: they may have gone out of step while it was gone.
-        fillIn(spec) { find(spec) == null }
-        return ensureMade(spec.made(), build)
-    }
-
-    /** [ensure], of [spec] as it is made. */
-    private fun ensureMade(spec: IndexSpec, build: IndexBuild): EnsureResult {
-        val items = introspectIndexes(spec.kind)
-        val existing = items.firstOrNull { grammar.matchesIdentity(it, spec) }
-        if (existing == null) {
-            // A related item (same kind and label, not satisfying the spec) lets engines with
-            // per-label indexes (FalkorDB) create only the missing properties
-            val related = items.firstOrNull { it.kind == spec.kind && it.label == spec.label }
-            warnUnsupportedTuning(spec)
-            run(grammar.createIndex(spec, related))
-            val created = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
-            logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-            logEffectiveVectorConfig(spec, created)
-            return EnsureResult.Created(created)
-        }
-        if (grammar.isIncomplete(existing)) {
-            run(grammar.createIndex(spec, existing))
-            val completed = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
-            logger.info("Completed {} {} on {}{}: it lacked part of what is made for it", grammar.engine, spec.kind, spec.label, spec.properties)
-            return EnsureResult.Created(completed)
-        }
-        return if (grammar.matchesShape(existing, spec)) {
-            // Made by another process, or an earlier run, it may still be being built, or its build may have failed.
-            EnsureResult.AlreadyMatching(awaitBuilt(spec, existing, build) ?: existing)
-        } else {
-            logger.warn(
-                "Index drift on {}{}: existing {} does not match requested {}. " +
-                    "Call recreate() to replace it (destructive).",
-                spec.label, spec.properties, existing, spec
-            )
-            EnsureResult.Drift(existing, spec)
-        }
-    }
+    fun ensure(spec: IndexSpec): EnsureResult = checkNotNull(driver.item(ItemCall.ENSURE, spec).result)
 
     /** Convenience for [ensure] with a [VectorIndexSpec]. */
     @JvmOverloads
@@ -161,38 +97,27 @@ class IndexManager internal constructor(
 
     /** Finds the existing index that [spec] refers to, or null if none exists. */
     fun find(spec: IndexSpec): SchemaItemInfo? {
-        requireSupported(spec)
+        if (spec is TextIndexSpec && !driver.store.supportsTextIndex) throw unsupportedTextIndex(spec, grammar.engine)
         val made = spec.made()
-        return introspectIndexes(made.kind).firstOrNull { grammar.matchesIdentity(it, made) }
+        val rows = introspect(driver.store.ddl.listIndexesQuery(made.kind)) ?: return null
+        return driver.store.parseIndexRows(rows).firstOrNull { driver.store.matchesIdentity(it, made) }
     }
 
     /** Lists all managed indexes (vector, range, fulltext, and on Neo4j text) on the database. */
-    fun list(): List<SchemaItemInfo> {
-        val queries = listOfNotNull(
-            SchemaItemKind.VECTOR_INDEX,
-            SchemaItemKind.RANGE_INDEX,
-            SchemaItemKind.FULLTEXT_INDEX,
-            SchemaItemKind.TEXT_INDEX.takeIf { grammar.supportsTextIndex },
-        )
-            .map { grammar.listIndexesQuery(it) }
-            .distinct()
-        return queries
-            .flatMap { query -> introspect(query)?.let { grammar.parseIndexRows(it) } ?: emptyList() }
-            .distinct()
-    }
+    fun list(): List<SchemaItemInfo> =
+        listings().flatMap { query -> introspect(query)?.let { driver.store.parseIndexRows(it) } ?: emptyList() }.distinct()
 
     /** Every managed index, as [list] gives them, with the aliases its record keeps (see [SchemaAliases]). */
-    internal fun recorded(): List<RecordedItem> {
-        val queries = listOfNotNull(
-            SchemaItemKind.VECTOR_INDEX,
-            SchemaItemKind.RANGE_INDEX,
-            SchemaItemKind.FULLTEXT_INDEX,
-            SchemaItemKind.TEXT_INDEX.takeIf { grammar.supportsTextIndex },
-        )
-            .map { grammar.listIndexesQuery(it) }
-            .distinct()
-        return queries.flatMap { query -> introspect(query)?.let { recordedItems(it, grammar::parseIndexRows) } ?: emptyList() }.distinct()
-    }
+    internal fun recorded(): List<RecordedItem> =
+        listings().flatMap { query -> introspect(query)?.let { recordedItems(it, driver.store::parseIndexRows) } ?: emptyList() }.distinct()
+
+    /** The listings of every kind of index the store has, each statement once. */
+    private fun listings(): List<String> = listOfNotNull(
+        SchemaItemKind.VECTOR_INDEX,
+        SchemaItemKind.RANGE_INDEX,
+        SchemaItemKind.FULLTEXT_INDEX,
+        SchemaItemKind.TEXT_INDEX.takeIf { driver.store.supportsTextIndex },
+    ).map { driver.store.ddl.listIndexesQuery(it) }.distinct()
 
     /** Records [aliases] as all the aliases of [item], an index or a constraint whose record is there; nothing, on a store that keeps none. */
     internal fun alias(item: SchemaItemInfo, aliases: List<String>) {
@@ -200,23 +125,12 @@ class IndexManager internal constructor(
         executor.execute(store.aliased(item, aliases))
     }
 
-    /** The aliases the record of the index [spec], as it is made, keeps; none, on a store that keeps none. */
-    private fun aliasesOf(spec: IndexSpec): List<String> {
-        if (grammar !is SchemaAliases) return emptyList()
-        val rows = introspect(grammar.listIndexesQuery(spec.kind)) ?: return emptyList()
-        return recordedItems(rows, grammar::parseIndexRows).firstOrNull { grammar.matchesIdentity(it.info, spec) }?.aliases.orEmpty()
-    }
-
     /**
      * Drops the index that [spec] refers to.
      *
      * @return true if an index was found and dropped, false if none existed
      */
-    fun drop(spec: IndexSpec): Boolean {
-        val existing = find(spec) ?: return false
-        dropExisting(existing, spec.made())
-        return true
-    }
+    fun drop(spec: IndexSpec): Boolean = checkNotNull(driver.item(ItemCall.DROP, spec).dropped)
 
     /**
      * Drops (if present) and recreates the index described by [spec]. Destructive — previously
@@ -225,263 +139,18 @@ class IndexManager internal constructor(
      * recorded or not. The index made again keeps the aliases its record kept (see [SchemaAliases]),
      * and is returned once it is built, as by [ensure].
      */
-    fun recreate(spec: IndexSpec): EnsureResult.Recreated = recreate(spec, IndexBuild(buildTimeout))
+    fun recreate(spec: IndexSpec): EnsureResult.Recreated = driver.item(ItemCall.RECREATE, spec).result as EnsureResult.Recreated
 
-    /** [recreate], waiting for the index to be built as [build] says, and handing it one that is not. */
-    internal fun recreate(spec: IndexSpec, build: IndexBuild): EnsureResult.Recreated {
-        requireSupported(spec)
-        // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
-        fillIn(spec) { true }
-        return recreateMade(spec.made(), build)
-    }
-
-    /** [recreate], of [spec] as it is made. The index made again keeps the aliases it had. */
-    private fun recreateMade(spec: IndexSpec, build: IndexBuild): EnsureResult.Recreated {
-        val existing = find(spec)
-        val aliases = if (existing != null) aliasesOf(spec) else emptyList()
-        if (existing != null) {
-            dropExisting(existing, spec)
-        }
-        // Re-introspect after the drop: on per-label-index engines the label may still have an
-        // index covering other properties, which creation must take into account
-        val related = introspectIndexes(spec.kind)
-            .firstOrNull { it.kind == spec.kind && it.label == spec.label }
-        warnUnsupportedTuning(spec)
-        run(grammar.createIndex(spec, related))
-        val created = awaitBuilt(spec, find(spec), build) ?: SchemaItemInfo.fromSpec(spec)
-        if (aliases.isNotEmpty()) alias(created, aliases)
-        logEffectiveVectorConfig(spec, created)
-        logger.warn(
-            "Recreated {} {} on {}{} — previously indexed data may be stale " +
-                "(vector indexes: stored embeddings need re-embedding)",
-            grammar.engine, spec.kind, spec.label, spec.properties
-        )
-        return EnsureResult.Recreated(existing, created)
-    }
-
-    /**
-     * Refuses a spec this engine has no index for, before anything is read or made: an index of
-     * another kind in its place would look like the declaration took effect.
-     */
-    private fun requireSupported(spec: IndexSpec) {
-        if (spec is TextIndexSpec && !grammar.supportsTextIndex) throw unsupportedTextIndex(spec, grammar.engine)
-    }
-
-    /**
-     * Warns when a spec pins physical vector parameters this engine cannot express.
-     *
-     * Silently dropping them would reproduce the exact failure mode pinning exists to prevent: a
-     * declaration that reads as authoritative while the server picks its own values.
-     */
-    private fun warnUnsupportedTuning(spec: IndexSpec) {
-        if (spec !is VectorIndexSpec || !spec.pinsPhysicalConfig) return
-        val unsupported = grammar.unsupportedVectorTuning(spec).ifEmpty { return }
-        if (unsupported.isNotEmpty()) {
-            logger.warn(
-                "Vector index {} on {}{} pins {}, which {} cannot express — the engine will choose these " +
-                    "instead. Remove the pin or accept engine-chosen values on this backend.",
-                spec.effectiveName, spec.label, spec.properties, unsupported, grammar.engine
-            )
-        }
-    }
-
-    /**
-     * Logs the physical configuration a vector index actually ended up with.
-     *
-     * Engine defaults for quantization and HNSW change between versions, so an unpinned parameter is
-     * whatever that server chose today. Recording it at creation is what makes the value attributable
-     * later, instead of a suspect to be chased during an incident.
-     */
-    private fun logEffectiveVectorConfig(spec: IndexSpec, created: SchemaItemInfo) {
-        if (spec !is VectorIndexSpec) return
-        val effective = created.vectorConfigDescription()
-        if (effective.isEmpty()) return
-        val pinned = if (spec.pinsPhysicalConfig) "partly pinned" else "engine defaults"
-        logger.info(
-            "Vector index {} on {}{} effective config ({}): {}",
-            created.name ?: spec.effectiveName, spec.label, spec.properties, pinned, effective
-        )
-    }
-
-    /**
-     * Drops [existing], narrowed to what [spec] asked for, and — on engines that tear indexes down
-     * in the background (FalkorDB) — waits until the index is actually gone. Without the wait the
-     * DDL returns while introspection still reports the index, so a caller that drops and then
-     * looks (or recreates) sees the index it just removed.
-     */
-    private fun dropExisting(existing: SchemaItemInfo, spec: IndexSpec) {
-        run(grammar.dropIndex(narrowTo(existing, spec)))
-        awaitDropped(spec)
-        logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-    }
-
-    /**
-     * Waits until [item], the index [spec] refers to as introspection last found it (null if it did not), is built,
-     * on an engine that builds an index in the background, and returns it as last found. Neo4j returns from
-     * `CREATE INDEX` while the index is still POPULATING, and a write of a value too large for the index that commits
-     * just as it comes online can stop the database until it is restarted; FalkorDB answers a query from an index
-     * it is still building. So nothing that makes an index hands it back before it is built.
-     *
-     * - Neo4j waits on the server, with [SchemaGrammar.awaitIndexStatement], for the index by its name. The
-     *   procedure takes whole seconds, so the timeout is rounded up to them there ([IndexBuild.timeoutSeconds]).
-     * - FalkorDB is polled ([SchemaGrammar.indexOperationsAreAsync]) until it lists the index as built.
-     *
-     * Either way the wait is at most [IndexBuild.timeout]. An index whose build failed, or did not end in time, is
-     * an [UnbuiltIndex] that names the index and gives the engine's reason: thrown, or given to
-     * [IndexBuild.unbuilt] and the index returned as last found. The index is left as it is.
-     * Elsewhere the DDL returns the index built, and [item] is returned at once.
-     */
-    private fun awaitBuilt(spec: IndexSpec, item: SchemaItemInfo?, build: IndexBuild): SchemaItemInfo? {
-        val awaitIndex = grammar.awaitIndexStatement
-        if (awaitIndex != null) {
-            val name = item?.name ?: spec.effectiveName
-            try {
-                executor.query(awaitIndex, mapOf("name" to name, "timeout" to build.timeoutSeconds))
-            } catch (e: Exception) {
-                // A timeout is told by its code. Any other error is a failed build only where the index is listed FAILED:
-                // one not there, or a connection lost, is thrown as it is, not reported as a build to drop or wait for.
-                val stillBuilding = grammar.isBuildTimeout(e) || when (indexState(name)?.uppercase()) {
-                    "FAILED" -> false
-                    "POPULATING" -> true
-                    else -> throw e
-                }
-                val what = "${grammar.engine} ${spec.kind} '$name' on ${spec.label}${spec.properties}"
-                val message = if (stillBuilding) {
-                    "$what is still being built, having waited ${build.timeout}: ${e.message}"
-                } else {
-                    "$what failed to build: ${e.message}"
-                }
-                return unbuilt(UnbuiltIndex(spec, stillBuilding, DrivineException(message, e)), item, build)
-            }
-            return item
-        }
-        if (!grammar.indexOperationsAreAsync) return item
-        val what = "${grammar.engine} ${spec.kind} on ${spec.label}${spec.properties}"
-        val deadline = System.nanoTime() + build.timeout.toNanos()
-        val (info, timedOut) = executor.poll("index build", ::pollOutcome) {
-            var info = item
-            var timedOut = false
-            while (info == null || info.buildInProgress) {
-                val left = Duration.ofNanos(deadline - System.nanoTime())
-                if (left.isNegative || left.isZero) {
-                    timedOut = true
-                    break
-                }
-                Thread.sleep(minOf(asyncPollInterval, left).toMillis().coerceAtLeast(1))
-                info = find(spec)
-            }
-            info to timedOut
-        }
-        if (timedOut || info == null) {
-            val message = "$what is still being built, having waited ${build.timeout}" + (info?.status?.let { ": it is $it" } ?: "")
-            return unbuilt(UnbuiltIndex(spec, stillBuilding = true, DrivineException(message)), info, build)
-        }
-        if (info.buildFailed) {
-            return unbuilt(UnbuiltIndex(spec, stillBuilding = false, DrivineException("$what failed to build: it is ${info.status}")), info, build)
-        }
-        return info
-    }
-
-    /** The state [SchemaGrammar.indexStateStatement] gives the index [name], or null where it gives none or fails. */
-    private fun indexState(name: String): String? {
-        val statement = grammar.indexStateStatement ?: return null
-        return try {
-            (executor.query(statement, mapOf("name" to name)).singleOrNull() as? Map<*, *>)?.get("state") as? String
-        } catch (e: Exception) {
-            logger.debug("Reading the state of index '{}' failed: {}", name, e.message)
-            null
-        }
-    }
-
-    /** Throws [index]'s error, or gives it to [build]'s handler and returns [item], where there is one. */
-    private fun unbuilt(index: UnbuiltIndex, item: SchemaItemInfo?, build: IndexBuild): SchemaItemInfo? {
-        val handler = build.unbuilt ?: throw index.error
-        handler(index)
-        return item
-    }
-
-    /** Polls until [spec] no longer resolves to an index, on engines whose drops are asynchronous. */
-    private fun awaitDropped(spec: IndexSpec) {
-        if (!grammar.indexOperationsAreAsync) return
-        val deadline = System.currentTimeMillis() + asyncDropTimeout.toMillis()
-        executor.poll("index drop", { "dropped" }) {
-            while (find(spec) != null) {
-                if (System.currentTimeMillis() >= deadline) {
-                    throw DrivineException(
-                        "Timed out after $asyncDropTimeout waiting for ${spec.kind} on " +
-                            "${spec.label}${spec.properties} to be dropped"
-                    )
-                }
-                Thread.sleep(asyncPollInterval.toMillis())
-            }
-        }
-    }
-
-    /** How a poll of an index's build ended, as a [SchemaStatementTrace] observer is told. */
-    private fun pollOutcome(polled: Pair<SchemaItemInfo?, Boolean>): String = when {
-        polled.second || polled.first == null -> "still building"
-        polled.first!!.buildFailed -> "failed"
-        else -> "built"
-    }
-
-    /**
-     * Narrows an introspected item to the properties [spec] declares, so that engines whose
-     * indexes cover whole labels (FalkorDB) never drop more than was asked for. On engines with
-     * exact property matching this is a no-op.
-     */
-    private fun narrowTo(existing: SchemaItemInfo, spec: IndexSpec): SchemaItemInfo {
-        val narrowed = existing.properties.filter { spec.properties.contains(it) }
-        return if (narrowed.isEmpty() || narrowed.size == existing.properties.size) {
-            existing
-        } else {
-            existing.copy(properties = narrowed)
-        }
-    }
-
-    /** All current indexes able to satisfy specs of [kind], parsed and normalized. */
-    private fun introspectIndexes(kind: SchemaItemKind): List<SchemaItemInfo> {
-        val rows = introspect(grammar.listIndexesQuery(kind)) ?: return emptyList()
-        return grammar.parseIndexRows(rows)
-    }
-
+    /** A listing's rows, or null where it fails: some engines refuse to list a kind before there is one. */
     private fun introspect(query: String): List<Any?>? = try {
         executor.query(query)
     } catch (e: Exception) {
-        // Some engines throw when nothing of the requested type exists yet (e.g. Memgraph's
-        // vector_search procedure before any vector index is created) — treat as "none exist".
         logger.debug("Index introspection failed (treating as no indexes exist): {}", e.message)
         null
     }
 
     internal companion object {
-        /** The longest an index is waited on to be built, as long as Drivine's own tests wait, with `db.awaitIndexes(60)`. */
-        val DEFAULT_BUILD_TIMEOUT: Duration = Duration.ofSeconds(60)
+        /** The longest an index is waited on to be built, the planner's: as long as Drivine's own tests wait, with `db.awaitIndexes(60)`. */
+        val DEFAULT_BUILD_TIMEOUT: Duration = Duration.ofMillis(PlanRequest.DEFAULT_BUILD_TIMEOUT_MILLIS)
     }
 }
-
-/**
- * How [IndexManager.ensure] and [IndexManager.recreate] wait for an index made in the background to be built: for at
- * most [timeout], and then, for an index whose build failed or did not end in time, throwing its
- * [UnbuiltIndex.error], or, where [unbuilt] is given, handing it the index and going on.
- */
-internal class IndexBuild(
-    val timeout: Duration,
-    val unbuilt: ((UnbuiltIndex) -> Unit)? = null,
-) {
-    /**
-     * [timeout] in the whole seconds Neo4j's `db.awaitIndex` takes, rounded up, so that the wait is at least what was
-     * asked: 500 ms is one second. Only a zero timeout is zero, which `db.awaitIndex` takes as checking once.
-     */
-    val timeoutSeconds: Long
-        get() = timeout.seconds + if (timeout.nano > 0) 1 else 0
-}
-
-/**
- * An index [IndexManager] made or found but that is not built: its build failed, or it is [stillBuilding] when the
- * wait ran out. [error] names the index and gives the engine's reason.
- */
-internal class UnbuiltIndex(
-    val spec: IndexSpec,
-    val stillBuilding: Boolean,
-    val error: DrivineException,
-)

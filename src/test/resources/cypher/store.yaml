@@ -1466,14 +1466,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, '$.name'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, ''$.name''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["name"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_44ce5436 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_44ce5436 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -1565,14 +1593,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.born'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, ''$.name''), JSON_VALUE(props, ''$.born''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["name","born"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -1670,14 +1726,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.born'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, ''$.name''), JSON_VALUE(props, ''$.born''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["name","born"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -1760,14 +1844,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.born'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_nameborn_44489f9e ON drivine_node (JSON_VALUE(props, ''$.name''), JSON_VALUE(props, ''$.born''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["name","born"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personnameborn_3f5a18d3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.born'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -1857,14 +1969,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, '$.name'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, ''$.name''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["name"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_44ce5436 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_44ce5436 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -1944,14 +2084,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_drivineloweremail_7ae8b9e6 ON drivine_node (JSON_VALUE(props, '$.\"__drivine.lower.email\"'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_drivineloweremail_7ae8b9e6 ON drivine_node (JSON_VALUE(props, ''$."__drivine.lower.email"''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["__drivine.lower.email"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Persondrivineloweremail_b3ad0b9b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."__drivine.lower.email"'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Persondrivineloweremail_b3ad0b9b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."__drivine.lower.email"'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -2048,7 +2216,23 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_email_5c24b9c ON drivine_node (JSON_VALUE(props, '$.email'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_email_5c24b9c ON drivine_node (JSON_VALUE(props, ''$.email''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             BEGIN
                 MERGE INTO drivine_schema c
@@ -2060,7 +2244,23 @@ cases:
                 -- Another process recorded it between the MERGE's read and its insert: it is recorded.
                 NULL;
             END;
-          - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personemail_5482a751 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.email') THEN JSON_VALUE(n.props, '$.email') END)"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personemail_5482a751 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') AND JSON_EXISTS(n.props, ''$.email'') THEN JSON_VALUE(n.props, ''$.email'') END)';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_labelled VARCHAR2(128);
@@ -2173,14 +2373,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_firstlast_f12bede6 ON drivine_node (JSON_VALUE(props, '$.first'), JSON_VALUE(props, '$.last'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_firstlast_f12bede6 ON drivine_node (JSON_VALUE(props, ''$.first''), JSON_VALUE(props, ''$.last''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["first","last"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personfirstlast_58499b51 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.first'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.last'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personfirstlast_58499b51 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.first'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$.last'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -2195,7 +2423,23 @@ cases:
                 -- Another process recorded it between the MERGE's read and its insert: it is recorded.
                 NULL;
             END;
-          - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personfirstlast_58499b51 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.first') AND JSON_EXISTS(n.props, '$.last') THEN JSON_VALUE(n.props, '$.first') END, CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.first') AND JSON_EXISTS(n.props, '$.last') THEN JSON_VALUE(n.props, '$.last') END)"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personfirstlast_58499b51 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') AND JSON_EXISTS(n.props, ''$.first'') AND JSON_EXISTS(n.props, ''$.last'') THEN JSON_VALUE(n.props, ''$.first'') END, CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') AND JSON_EXISTS(n.props, ''$.first'') AND JSON_EXISTS(n.props, ''$.last'') THEN JSON_VALUE(n.props, ''$.last'') END)';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             BEGIN
                 MERGE INTO drivine_schema c
@@ -2311,7 +2555,23 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_drivineloweremail_7ae8b9e6 ON drivine_node (JSON_VALUE(props, '$.\"__drivine.lower.email\"'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_drivineloweremail_7ae8b9e6 ON drivine_node (JSON_VALUE(props, ''$."__drivine.lower.email"''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             BEGIN
                 MERGE INTO drivine_schema c
@@ -2323,7 +2583,23 @@ cases:
                 -- Another process recorded it between the MERGE's read and its insert: it is recorded.
                 NULL;
             END;
-          - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Persondrivineloweremail_b3ad0b9b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.\"__drivine.lower.email\"') THEN JSON_VALUE(n.props, '$.\"__drivine.lower.email\"') END)"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Persondrivineloweremail_b3ad0b9b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') AND JSON_EXISTS(n.props, ''$."__drivine.lower.email"'') THEN JSON_VALUE(n.props, ''$."__drivine.lower.email"'') END)';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_labelled VARCHAR2(128);
@@ -3216,14 +3492,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, '$.name'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, ''$.name''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Per"son' AND u.properties = '["name"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_f56cb9fe ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Per\"son")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personname_f56cb9fe ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Per\"son")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -3317,14 +3621,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, '$.name'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, ''$.name''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'a b' AND u.properties = '["name"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_abname_a087d008 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "a b")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_abname_a087d008 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "a b")'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -3414,7 +3746,23 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, '$.name'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_name_337a8b ON drivine_node (JSON_VALUE(props, ''$.name''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             BEGIN
                 MERGE INTO drivine_schema c
@@ -3426,7 +3774,23 @@ cases:
                 -- Another process recorded it between the MERGE's read and its insert: it is recorded.
                 NULL;
             END;
-          - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personname_f56cb9fe ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Per\\\"son\")') AND JSON_EXISTS(n.props, '$.name') THEN JSON_VALUE(n.props, '$.name') END)"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personname_f56cb9fe ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Per\"son")'') AND JSON_EXISTS(n.props, ''$.name'') THEN JSON_VALUE(n.props, ''$.name'') END)';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_labelled VARCHAR2(128);
@@ -3548,14 +3912,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_addresscity_d068f25 ON drivine_node (JSON_VALUE(props, '$.\"address.city\"'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_addresscity_d068f25 ON drivine_node (JSON_VALUE(props, ''$."address.city"''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["address.city"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personaddresscity_236e8dd0 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."address.city"'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Personaddresscity_236e8dd0 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."address.city"'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -3649,14 +4041,42 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_oname_bfc2fc23 ON drivine_node (JSON_VALUE(props, '$.\"o''name\"'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_oname_bfc2fc23 ON drivine_node (JSON_VALUE(props, ''$."o''''name"''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_unique NUMBER;
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
             BEGIN
                 SELECT COUNT(*) INTO v_unique FROM drivine_schema u WHERE u.label = 'Person' AND u.properties = '["o''name"]' AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name));
                 IF v_unique = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Persononame_490e170e ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."o''''name"'') END)';
+                    FOR attempt IN 1 .. 300 LOOP
+                        BEGIN
+                            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_lx_Persononame_490e170e ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') THEN JSON_VALUE(n.props, ''$."o''''name"'') END)';
+                            EXIT;
+                        EXCEPTION
+                            WHEN e_exists THEN EXIT;
+                            WHEN e_busy THEN
+                                IF attempt = 300 THEN RAISE; END IF;
+                                DBMS_SESSION.SLEEP(0.1);
+                        END;
+                    END LOOP;
                 END IF;
             END;
           - |-
@@ -3750,7 +4170,23 @@ cases:
             $forget$
       oracle:
         create:
-          - "CREATE INDEX IF NOT EXISTS drivine_ix_sayhi_c9cbc4d8 ON drivine_node (JSON_VALUE(props, '$.\"say\\\"hi\"'))"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS drivine_ix_sayhi_c9cbc4d8 ON drivine_node (JSON_VALUE(props, ''$."say\"hi"''))';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             BEGIN
                 MERGE INTO drivine_schema c
@@ -3762,7 +4198,23 @@ cases:
                 -- Another process recorded it between the MERGE's read and its insert: it is recorded.
                 NULL;
             END;
-          - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personsayhi_5316dfc3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.\"say\\\"hi\"') THEN JSON_VALUE(n.props, '$.\"say\\\"hi\"') END)"
+          - |-
+            DECLARE
+                e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -955);
+                e_busy EXCEPTION; PRAGMA EXCEPTION_INIT(e_busy, -54);
+            BEGIN
+                FOR attempt IN 1 .. 300 LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_Personsayhi_5316dfc3 ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, ''$[*]?(@ == "Person")'') AND JSON_EXISTS(n.props, ''$."say\"hi"'') THEN JSON_VALUE(n.props, ''$."say\"hi"'') END)';
+                        EXIT;
+                    EXCEPTION
+                        WHEN e_exists THEN EXIT;
+                        WHEN e_busy THEN
+                            IF attempt = 300 THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
           - |-
             DECLARE
                 v_labelled VARCHAR2(128);
@@ -3857,3 +4309,1796 @@ cases:
         sqlite:
           - "(CASE json_type(props, '$.\"say\\\"hi\"') WHEN 'text' THEN props ->> '$.\"say\\\"hi\"' WHEN 'null' THEN NULL ELSE props -> '$.\"say\\\"hi\"' END)"
           - "instr(labels, '\"Person\"') > 0"
+
+# The store's schema: how each store's listings are read back as items, whether an item is the one a spec declares and in
+# its shape, what each store can do, and what its errors say. Captured with no store from drivine4j's schema grammars
+# (10f825b8), the reference, before the module wrote them. See README.md, "The store's schema".
+schema:
+  stores:
+    neo4j:
+      engine: "Neo4j"
+      supportsIfNotExists: true
+      supportsNamedItems: true
+      supportsTextIndex: true
+      constraintsRequireBackingIndex: false
+      constraintCreationIsAsync: false
+      indexOperationsAreAsync: false
+      awaitIndex: "CALL db.awaitIndex($name, $timeout)"
+      indexState: "SHOW INDEXES YIELD name, state WHERE name = $name RETURN {state: state}"
+    memgraph:
+      engine: "Memgraph"
+      supportsIfNotExists: false
+      supportsNamedItems: true
+      supportsTextIndex: false
+      constraintsRequireBackingIndex: false
+      constraintCreationIsAsync: false
+      indexOperationsAreAsync: false
+      awaitIndex: null
+      indexState: null
+    falkordb:
+      engine: "FalkorDB"
+      supportsIfNotExists: false
+      supportsNamedItems: false
+      supportsTextIndex: false
+      constraintsRequireBackingIndex: true
+      constraintCreationIsAsync: true
+      indexOperationsAreAsync: true
+      awaitIndex: null
+      indexState: null
+    postgres:
+      engine: "Postgres"
+      supportsIfNotExists: true
+      supportsNamedItems: true
+      supportsTextIndex: false
+      constraintsRequireBackingIndex: false
+      constraintCreationIsAsync: false
+      indexOperationsAreAsync: false
+      awaitIndex: null
+      indexState: null
+    oracle:
+      engine: "Oracle"
+      supportsIfNotExists: true
+      supportsNamedItems: true
+      supportsTextIndex: false
+      constraintsRequireBackingIndex: false
+      constraintCreationIsAsync: false
+      indexOperationsAreAsync: false
+      awaitIndex: null
+      indexState: null
+    sqlite:
+      engine: "SQLite"
+      supportsIfNotExists: true
+      supportsNamedItems: true
+      supportsTextIndex: false
+      constraintsRequireBackingIndex: false
+      constraintCreationIsAsync: false
+      indexOperationsAreAsync: false
+      awaitIndex: null
+      indexState: null
+  tuning:
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      stores: {neo4j: [], memgraph: [], falkordb: [], postgres: [], oracle: [], sqlite: []}
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16}
+      stores: {neo4j: [], memgraph: ["hnswM"], falkordb: [], postgres: ["hnswM"], oracle: ["hnswM"], sqlite: ["hnswM"]}
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16, hnswEfConstruction: 200}
+      stores:
+        neo4j: []
+        memgraph: ["hnswM", "hnswEfConstruction"]
+        falkordb: []
+        postgres: ["hnswM", "hnswEfConstruction"]
+        oracle: ["hnswM", "hnswEfConstruction"]
+        sqlite: ["hnswM", "hnswEfConstruction"]
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      stores: {neo4j: [], memgraph: [], falkordb: [], postgres: [], oracle: [], sqlite: []}
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", efRuntime: 10}
+      stores: {neo4j: [], memgraph: [], falkordb: [], postgres: [], oracle: [], sqlite: []}
+    - spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options:
+          dimensions: 8
+          similarity: "COSINE"
+          hnswEfConstruction: 200
+          quantizationEnabled: true
+          efRuntime: 10
+      stores:
+        neo4j: []
+        memgraph: ["hnswEfConstruction"]
+        falkordb: []
+        postgres: ["hnswEfConstruction"]
+        oracle: ["hnswEfConstruction"]
+        sqlite: ["hnswEfConstruction"]
+  samples:
+    - spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      limit: 10
+      stores:
+        neo4j: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: elementId(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        neo4j4: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        memgraph: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        falkordb: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        postgres: |-
+          SELECT jsonb_build_object('properties', jsonb_build_object('email', (n.props ->> 'email')), 'count', COUNT(*),
+                                    'nodes', to_jsonb((array_agg(jsonb_build_object('elementId', n.nid) ORDER BY n.nid))[1:10]))
+          FROM drivine_node n
+          WHERE n.labels @> '["Person"]' AND (n.props ->> 'email') IS NOT NULL
+          GROUP BY (n.props ->> 'email')
+          HAVING COUNT(*) > 1
+          LIMIT 10
+        oracle: |-
+          SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE k0), 'count' VALUE MAX(c),
+                             'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid RETURNING JSON) RETURNING JSON)
+          FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.email')) AS c, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.email') ORDER BY n.nid) AS r
+                FROM drivine_node n
+                WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "Person")') AND JSON_VALUE(n.props, '$.email') IS NOT NULL)
+          WHERE c > 1 AND r <= 10
+          GROUP BY k0
+          FETCH FIRST 10 ROWS ONLY
+        sqlite: |-
+          /* drivine:json */
+          SELECT json_object('properties', json_object('email', k.k0), 'count', MAX(k.total),
+                             'nodes', json_group_array(json_object('elementId', k.nid) ORDER BY k.nid) FILTER (WHERE k.position <= 10))
+          FROM (
+              SELECT n.nid, (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) AS k0,
+                     row_number() OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) ORDER BY n.nid) AS position,
+                     COUNT(*) OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END)) AS total
+              FROM drivine_node n
+              WHERE instr(n.labels, '"Person"') > 0 AND (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) IS NOT NULL
+          ) k
+          WHERE k.total > 1
+          GROUP BY k0
+          LIMIT 10
+    - spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId"]}
+      limit: 10
+      stores:
+        neo4j: |-
+          MATCH (n:Membership)
+          WHERE n.tenantId IS NOT NULL AND n.userId IS NOT NULL
+          WITH n.tenantId AS _k0, n.userId AS _k1, count(*) AS _count, collect({elementId: elementId(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {tenantId: _k0, userId: _k1}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        neo4j4: |-
+          MATCH (n:Membership)
+          WHERE n.tenantId IS NOT NULL AND n.userId IS NOT NULL
+          WITH n.tenantId AS _k0, n.userId AS _k1, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {tenantId: _k0, userId: _k1}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        memgraph: |-
+          MATCH (n:Membership)
+          WHERE n.tenantId IS NOT NULL AND n.userId IS NOT NULL
+          WITH n.tenantId AS _k0, n.userId AS _k1, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {tenantId: _k0, userId: _k1}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        falkordb: |-
+          MATCH (n:Membership)
+          WHERE n.tenantId IS NOT NULL AND n.userId IS NOT NULL
+          WITH n.tenantId AS _k0, n.userId AS _k1, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {tenantId: _k0, userId: _k1}, count: _count, nodes: _nodes[0..10]}
+          LIMIT 10
+        postgres: |-
+          SELECT jsonb_build_object('properties', jsonb_build_object('tenantId', (n.props ->> 'tenantId'), 'userId', (n.props ->> 'userId')), 'count', COUNT(*),
+                                    'nodes', to_jsonb((array_agg(jsonb_build_object('elementId', n.nid) ORDER BY n.nid))[1:10]))
+          FROM drivine_node n
+          WHERE n.labels @> '["Membership"]' AND (n.props ->> 'tenantId') IS NOT NULL AND (n.props ->> 'userId') IS NOT NULL
+          GROUP BY (n.props ->> 'tenantId'), (n.props ->> 'userId')
+          HAVING COUNT(*) > 1
+          LIMIT 10
+        oracle: |-
+          SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('tenantId' VALUE k0, 'userId' VALUE k1), 'count' VALUE MAX(c),
+                             'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid RETURNING JSON) RETURNING JSON)
+          FROM (SELECT n.nid, JSON_VALUE(n.props, '$.tenantId') AS k0, JSON_VALUE(n.props, '$.userId') AS k1, COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.tenantId'), JSON_VALUE(n.props, '$.userId')) AS c, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.tenantId'), JSON_VALUE(n.props, '$.userId') ORDER BY n.nid) AS r
+                FROM drivine_node n
+                WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "Membership")') AND JSON_VALUE(n.props, '$.tenantId') IS NOT NULL AND JSON_VALUE(n.props, '$.userId') IS NOT NULL)
+          WHERE c > 1 AND r <= 10
+          GROUP BY k0, k1
+          FETCH FIRST 10 ROWS ONLY
+        sqlite: |-
+          /* drivine:json */
+          SELECT json_object('properties', json_object('tenantId', k.k0, 'userId', k.k1), 'count', MAX(k.total),
+                             'nodes', json_group_array(json_object('elementId', k.nid) ORDER BY k.nid) FILTER (WHERE k.position <= 10))
+          FROM (
+              SELECT n.nid, (CASE json_type(n.props, '$."tenantId"') WHEN 'text' THEN n.props ->> '$."tenantId"' WHEN 'null' THEN NULL ELSE n.props -> '$."tenantId"' END) AS k0, (CASE json_type(n.props, '$."userId"') WHEN 'text' THEN n.props ->> '$."userId"' WHEN 'null' THEN NULL ELSE n.props -> '$."userId"' END) AS k1,
+                     row_number() OVER (PARTITION BY (CASE json_type(n.props, '$."tenantId"') WHEN 'text' THEN n.props ->> '$."tenantId"' WHEN 'null' THEN NULL ELSE n.props -> '$."tenantId"' END), (CASE json_type(n.props, '$."userId"') WHEN 'text' THEN n.props ->> '$."userId"' WHEN 'null' THEN NULL ELSE n.props -> '$."userId"' END) ORDER BY n.nid) AS position,
+                     COUNT(*) OVER (PARTITION BY (CASE json_type(n.props, '$."tenantId"') WHEN 'text' THEN n.props ->> '$."tenantId"' WHEN 'null' THEN NULL ELSE n.props -> '$."tenantId"' END), (CASE json_type(n.props, '$."userId"') WHEN 'text' THEN n.props ->> '$."userId"' WHEN 'null' THEN NULL ELSE n.props -> '$."userId"' END)) AS total
+              FROM drivine_node n
+              WHERE instr(n.labels, '"Membership"') > 0 AND (CASE json_type(n.props, '$."tenantId"') WHEN 'text' THEN n.props ->> '$."tenantId"' WHEN 'null' THEN NULL ELSE n.props -> '$."tenantId"' END) IS NOT NULL AND (CASE json_type(n.props, '$."userId"') WHEN 'text' THEN n.props ->> '$."userId"' WHEN 'null' THEN NULL ELSE n.props -> '$."userId"' END) IS NOT NULL
+          ) k
+          WHERE k.total > 1
+          GROUP BY k0, k1
+          LIMIT 10
+    - spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "uuid"}
+      limit: 1
+      stores:
+        neo4j: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: elementId(n), uuid: n.uuid}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..1]}
+          LIMIT 1
+        neo4j4: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n), uuid: n.uuid}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..1]}
+          LIMIT 1
+        memgraph: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n), uuid: n.uuid}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..1]}
+          LIMIT 1
+        falkordb: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n), uuid: n.uuid}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..1]}
+          LIMIT 1
+        postgres: |-
+          SELECT jsonb_build_object('properties', jsonb_build_object('email', (n.props ->> 'email')), 'count', COUNT(*),
+                                    'nodes', to_jsonb((array_agg(jsonb_build_object('elementId', n.nid, 'uuid', (n.props ->> 'uuid')) ORDER BY n.nid))[1:1]))
+          FROM drivine_node n
+          WHERE n.labels @> '["Person"]' AND (n.props ->> 'email') IS NOT NULL
+          GROUP BY (n.props ->> 'email')
+          HAVING COUNT(*) > 1
+          LIMIT 1
+        oracle: |-
+          SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE k0), 'count' VALUE MAX(c),
+                             'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid, 'uuid' VALUE i) ORDER BY nid RETURNING JSON) RETURNING JSON)
+          FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, JSON_VALUE(n.props, '$.uuid') AS i, COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.email')) AS c, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.email') ORDER BY n.nid) AS r
+                FROM drivine_node n
+                WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "Person")') AND JSON_VALUE(n.props, '$.email') IS NOT NULL)
+          WHERE c > 1 AND r <= 1
+          GROUP BY k0
+          FETCH FIRST 1 ROWS ONLY
+        sqlite: |-
+          /* drivine:json */
+          SELECT json_object('properties', json_object('email', k.k0), 'count', MAX(k.total),
+                             'nodes', json_group_array(json_object('elementId', k.nid, 'uuid', k.sampled) ORDER BY k.nid) FILTER (WHERE k.position <= 1))
+          FROM (
+              SELECT n.nid, (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) AS k0, (CASE json_type(n.props, '$."uuid"') WHEN 'text' THEN n.props ->> '$."uuid"' WHEN 'null' THEN NULL ELSE n.props -> '$."uuid"' END) AS sampled,
+                     row_number() OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) ORDER BY n.nid) AS position,
+                     COUNT(*) OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END)) AS total
+              FROM drivine_node n
+              WHERE instr(n.labels, '"Person"') > 0 AND (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) IS NOT NULL
+          ) k
+          WHERE k.total > 1
+          GROUP BY k0
+          LIMIT 1
+    - spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "email"}
+      limit: 3
+      stores:
+        neo4j: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: elementId(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..3]}
+          LIMIT 3
+        neo4j4: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..3]}
+          LIMIT 3
+        memgraph: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..3]}
+          LIMIT 3
+        falkordb: |-
+          MATCH (n:Person)
+          WHERE n.email IS NOT NULL
+          WITH n.email AS _k0, count(*) AS _count, collect({elementId: id(n)}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {email: _k0}, count: _count, nodes: _nodes[0..3]}
+          LIMIT 3
+        postgres: |-
+          SELECT jsonb_build_object('properties', jsonb_build_object('email', (n.props ->> 'email')), 'count', COUNT(*),
+                                    'nodes', to_jsonb((array_agg(jsonb_build_object('elementId', n.nid) ORDER BY n.nid))[1:3]))
+          FROM drivine_node n
+          WHERE n.labels @> '["Person"]' AND (n.props ->> 'email') IS NOT NULL
+          GROUP BY (n.props ->> 'email')
+          HAVING COUNT(*) > 1
+          LIMIT 3
+        oracle: |-
+          SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE k0), 'count' VALUE MAX(c),
+                             'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid RETURNING JSON) RETURNING JSON)
+          FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.email')) AS c, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.email') ORDER BY n.nid) AS r
+                FROM drivine_node n
+                WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "Person")') AND JSON_VALUE(n.props, '$.email') IS NOT NULL)
+          WHERE c > 1 AND r <= 3
+          GROUP BY k0
+          FETCH FIRST 3 ROWS ONLY
+        sqlite: |-
+          /* drivine:json */
+          SELECT json_object('properties', json_object('email', k.k0), 'count', MAX(k.total),
+                             'nodes', json_group_array(json_object('elementId', k.nid) ORDER BY k.nid) FILTER (WHERE k.position <= 3))
+          FROM (
+              SELECT n.nid, (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) AS k0,
+                     row_number() OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) ORDER BY n.nid) AS position,
+                     COUNT(*) OVER (PARTITION BY (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END)) AS total
+              FROM drivine_node n
+              WHERE instr(n.labels, '"Person"') > 0 AND (CASE json_type(n.props, '$."email"') WHEN 'text' THEN n.props ->> '$."email"' WHEN 'null' THEN NULL ELSE n.props -> '$."email"' END) IS NOT NULL
+          ) k
+          WHERE k.total > 1
+          GROUP BY k0
+          LIMIT 3
+    - spec:
+        kind: "UNIQUENESS_CONSTRAINT"
+        label: "Person"
+        properties: ["address.city", "o'name"]
+        nodeIdProperty: "my id"
+      limit: 5
+      stores:
+        neo4j: |-
+          MATCH (n:Person)
+          WHERE n.`address.city` IS NOT NULL AND n.`o'name` IS NOT NULL
+          WITH n.`address.city` AS _k0, n.`o'name` AS _k1, count(*) AS _count, collect({elementId: elementId(n), `my id`: n.`my id`}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {`address.city`: _k0, `o'name`: _k1}, count: _count, nodes: _nodes[0..5]}
+          LIMIT 5
+        neo4j4: |-
+          MATCH (n:Person)
+          WHERE n.`address.city` IS NOT NULL AND n.`o'name` IS NOT NULL
+          WITH n.`address.city` AS _k0, n.`o'name` AS _k1, count(*) AS _count, collect({elementId: id(n), `my id`: n.`my id`}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {`address.city`: _k0, `o'name`: _k1}, count: _count, nodes: _nodes[0..5]}
+          LIMIT 5
+        memgraph: |-
+          MATCH (n:Person)
+          WHERE n.`address.city` IS NOT NULL AND n.`o'name` IS NOT NULL
+          WITH n.`address.city` AS _k0, n.`o'name` AS _k1, count(*) AS _count, collect({elementId: id(n), `my id`: n.`my id`}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {`address.city`: _k0, `o'name`: _k1}, count: _count, nodes: _nodes[0..5]}
+          LIMIT 5
+        falkordb: |-
+          MATCH (n:Person)
+          WHERE n.`address.city` IS NOT NULL AND n.`o'name` IS NOT NULL
+          WITH n.`address.city` AS _k0, n.`o'name` AS _k1, count(*) AS _count, collect({elementId: id(n), `my id`: n.`my id`}) AS _nodes
+          WHERE _count > 1
+          RETURN {properties: {`address.city`: _k0, `o'name`: _k1}, count: _count, nodes: _nodes[0..5]}
+          LIMIT 5
+        postgres: |-
+          SELECT jsonb_build_object('properties', jsonb_build_object('address.city', (n.props ->> 'address.city'), 'o''name', (n.props ->> 'o''name')), 'count', COUNT(*),
+                                    'nodes', to_jsonb((array_agg(jsonb_build_object('elementId', n.nid, 'my id', (n.props ->> 'my id')) ORDER BY n.nid))[1:5]))
+          FROM drivine_node n
+          WHERE n.labels @> '["Person"]' AND (n.props ->> 'address.city') IS NOT NULL AND (n.props ->> 'o''name') IS NOT NULL
+          GROUP BY (n.props ->> 'address.city'), (n.props ->> 'o''name')
+          HAVING COUNT(*) > 1
+          LIMIT 5
+        oracle: |-
+          SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('address.city' VALUE k0, 'o''name' VALUE k1), 'count' VALUE MAX(c),
+                             'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid, 'my id' VALUE i) ORDER BY nid RETURNING JSON) RETURNING JSON)
+          FROM (SELECT n.nid, JSON_VALUE(n.props, '$."address.city"') AS k0, JSON_VALUE(n.props, '$."o''name"') AS k1, JSON_VALUE(n.props, '$."my id"') AS i, COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$."address.city"'), JSON_VALUE(n.props, '$."o''name"')) AS c, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$."address.city"'), JSON_VALUE(n.props, '$."o''name"') ORDER BY n.nid) AS r
+                FROM drivine_node n
+                WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "Person")') AND JSON_VALUE(n.props, '$."address.city"') IS NOT NULL AND JSON_VALUE(n.props, '$."o''name"') IS NOT NULL)
+          WHERE c > 1 AND r <= 5
+          GROUP BY k0, k1
+          FETCH FIRST 5 ROWS ONLY
+        sqlite: |-
+          /* drivine:json */
+          SELECT json_object('properties', json_object('address.city', k.k0, 'o''name', k.k1), 'count', MAX(k.total),
+                             'nodes', json_group_array(json_object('elementId', k.nid, 'my id', k.sampled) ORDER BY k.nid) FILTER (WHERE k.position <= 5))
+          FROM (
+              SELECT n.nid, (CASE json_type(n.props, '$."address.city"') WHEN 'text' THEN n.props ->> '$."address.city"' WHEN 'null' THEN NULL ELSE n.props -> '$."address.city"' END) AS k0, (CASE json_type(n.props, '$."o''name"') WHEN 'text' THEN n.props ->> '$."o''name"' WHEN 'null' THEN NULL ELSE n.props -> '$."o''name"' END) AS k1, (CASE json_type(n.props, '$."my id"') WHEN 'text' THEN n.props ->> '$."my id"' WHEN 'null' THEN NULL ELSE n.props -> '$."my id"' END) AS sampled,
+                     row_number() OVER (PARTITION BY (CASE json_type(n.props, '$."address.city"') WHEN 'text' THEN n.props ->> '$."address.city"' WHEN 'null' THEN NULL ELSE n.props -> '$."address.city"' END), (CASE json_type(n.props, '$."o''name"') WHEN 'text' THEN n.props ->> '$."o''name"' WHEN 'null' THEN NULL ELSE n.props -> '$."o''name"' END) ORDER BY n.nid) AS position,
+                     COUNT(*) OVER (PARTITION BY (CASE json_type(n.props, '$."address.city"') WHEN 'text' THEN n.props ->> '$."address.city"' WHEN 'null' THEN NULL ELSE n.props -> '$."address.city"' END), (CASE json_type(n.props, '$."o''name"') WHEN 'text' THEN n.props ->> '$."o''name"' WHEN 'null' THEN NULL ELSE n.props -> '$."o''name"' END)) AS total
+              FROM drivine_node n
+              WHERE instr(n.labels, '"Person"') > 0 AND (CASE json_type(n.props, '$."address.city"') WHEN 'text' THEN n.props ->> '$."address.city"' WHEN 'null' THEN NULL ELSE n.props -> '$."address.city"' END) IS NOT NULL AND (CASE json_type(n.props, '$."o''name"') WHEN 'text' THEN n.props ->> '$."o''name"' WHEN 'null' THEN NULL ELSE n.props -> '$."o''name"' END) IS NOT NULL
+          ) k
+          WHERE k.total > 1
+          GROUP BY k0, k1
+          LIMIT 5
+listings:
+  - name: "A vector index, as Neo4j 5 reports it"
+    listing: "indexes"
+    rows:
+      - name: "prop_embedding_vector"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Proposition"]
+        properties: ["embedding"]
+        options:
+          indexProvider: "vector-2.0"
+          indexConfig: {"vector.dimensions": 1536, "vector.similarity_function": "COSINE"}
+    stores:
+      neo4j:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Proposition"
+            properties: ["embedding"]
+            name: "prop_embedding_vector"
+            dimensions: 1536
+            similarity: "COSINE"
+        aliases: [[]]
+  - name: "A vector index with its quantization and HNSW parameters, as Neo4j up to 2026.05 reports them"
+    listing: "indexes"
+    rows:
+      - name: "chunk_vec"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["vec"]
+        options:
+          indexConfig:
+            "vector.dimensions": 8
+            "vector.similarity_function": "euclidean"
+            "vector.quantization.enabled": true
+            "vector.hnsw.m": 16
+            "vector.hnsw.ef_construction": 100
+    stores:
+      neo4j:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Chunk"
+            properties: ["vec"]
+            name: "chunk_vec"
+            dimensions: 8
+            similarity: "EUCLIDEAN"
+            quantizationEnabled: true
+            hnswM: 16
+            hnswEfConstruction: 100
+        aliases: [[]]
+  - name: "Quantization by its type, as Neo4j 2026.06 and later report it"
+    listing: "indexes"
+    rows:
+      - name: "a"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["a"]
+        options:
+          indexConfig:
+            "vector.dimensions": 4
+            "vector.similarity_function": "COSINE"
+            "vector.quantization.type": "NONE"
+            "vector.quantization.enabled": true
+      - name: "b"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["b"]
+        options:
+          indexConfig:
+            "vector.dimensions": 4
+            "vector.similarity_function": "COSINE"
+            "vector.quantization.type": "scalar"
+      - name: "d"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["d"]
+        options: {indexConfig: {"vector.dimensions": 4, "vector.similarity_function": "COSINE", "vector.quantization.type": "none"}}
+      - name: "c"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["c"]
+        options: {indexConfig: {"vector.dimensions": 4, "vector.similarity_function": "DOT_PRODUCT"}}
+    stores:
+      neo4j:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Chunk"
+            properties: ["a"]
+            name: "a"
+            dimensions: 4
+            similarity: "COSINE"
+            quantizationEnabled: false
+          - kind: "VECTOR_INDEX"
+            label: "Chunk"
+            properties: ["b"]
+            name: "b"
+            dimensions: 4
+            similarity: "COSINE"
+            quantizationEnabled: true
+          - kind: "VECTOR_INDEX"
+            label: "Chunk"
+            properties: ["d"]
+            name: "d"
+            dimensions: 4
+            similarity: "COSINE"
+            quantizationEnabled: false
+          - {kind: "VECTOR_INDEX", label: "Chunk", properties: ["c"], name: "c", dimensions: 4}
+        aliases: [[], [], [], []]
+  - name: "Numbers a driver gives with a fraction, read as whole numbers"
+    listing: "indexes"
+    rows:
+      - name: "f"
+        type: "VECTOR"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["vec"]
+        options:
+          indexConfig:
+            "vector.dimensions": 8.0
+            "vector.similarity_function": "COSINE"
+            "vector.hnsw.m": 16.0
+            "vector.hnsw.ef_construction": 100.0
+    stores:
+      neo4j:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Chunk"
+            properties: ["vec"]
+            name: "f"
+            dimensions: 8
+            similarity: "COSINE"
+            hnswM: 16
+            hnswEfConstruction: 100
+        aliases: [[]]
+  - name: "Every kind Drivine manages, and those it does not"
+    listing: "indexes"
+    rows:
+      - name: "prop_ctx"
+        type: "RANGE"
+        entityType: "NODE"
+        labelsOrTypes: ["Proposition"]
+        properties: ["contextId"]
+        options: null
+      - name: "old_ctx"
+        type: "BTREE"
+        entityType: "NODE"
+        labelsOrTypes: ["Proposition"]
+        properties: ["createdAt", "contextId"]
+        options: {indexConfig: {}}
+      - name: "doc_text_fulltext"
+        type: "FULLTEXT"
+        entityType: "NODE"
+        labelsOrTypes: ["Doc"]
+        properties: ["title", "body"]
+        options: {indexConfig: {"fulltext.analyzer": "english"}}
+      - name: "chunk_title_text"
+        type: "TEXT"
+        entityType: "NODE"
+        labelsOrTypes: ["Chunk"]
+        properties: ["title"]
+        options: {indexProvider: "text-2.0", indexConfig: {}}
+      - {name: "token_lookup", type: "LOOKUP", entityType: "NODE", labelsOrTypes: null, properties: null, options: null}
+      - name: "point_idx"
+        type: "POINT"
+        entityType: "NODE"
+        labelsOrTypes: ["Place"]
+        properties: ["location"]
+        options: null
+      - name: "rel_idx"
+        type: "RANGE"
+        entityType: "RELATIONSHIP"
+        labelsOrTypes: ["KNOWS"]
+        properties: ["since"]
+        options: null
+      - {name: "no_label", type: "RANGE", entityType: "NODE", labelsOrTypes: [], properties: ["x"], options: null}
+      - "not a row"
+      - null
+    stores:
+      neo4j:
+        items:
+          - {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId"], name: "prop_ctx"}
+          - {kind: "RANGE_INDEX", label: "Proposition", properties: ["createdAt", "contextId"], name: "old_ctx"}
+          - kind: "FULLTEXT_INDEX"
+            label: "Doc"
+            properties: ["title", "body"]
+            name: "doc_text_fulltext"
+            analyzer: "english"
+          - {kind: "TEXT_INDEX", label: "Chunk", properties: ["title"], name: "chunk_title_text"}
+        aliases: [[], [], [], []]
+  - name: "Uniqueness constraints, as each Neo4j names them, and the constraints Drivine does not manage"
+    listing: "constraints"
+    rows:
+      - name: "session_unique"
+        type: "UNIQUENESS"
+        entityType: "NODE"
+        labelsOrTypes: ["ChatSession"]
+        properties: ["sessionId"]
+      - name: "member_unique"
+        type: "NODE_PROPERTY_UNIQUENESS"
+        entityType: "NODE"
+        labelsOrTypes: ["Membership"]
+        properties: ["tenantId", "userId"]
+      - name: "existence"
+        type: "NODE_PROPERTY_EXISTENCE"
+        entityType: "NODE"
+        labelsOrTypes: ["ChatSession"]
+        properties: ["createdAt"]
+      - {name: "key", type: "NODE_KEY", entityType: "NODE", labelsOrTypes: ["User"], properties: ["email"]}
+      - name: "rel_unique"
+        type: "RELATIONSHIP_PROPERTY_UNIQUENESS"
+        entityType: "RELATIONSHIP"
+        labelsOrTypes: ["KNOWS"]
+        properties: ["id"]
+      - "not a row"
+    stores:
+      neo4j:
+        items:
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "ChatSession", properties: ["sessionId"], name: "session_unique"}
+          - kind: "UNIQUENESS_CONSTRAINT"
+            label: "Membership"
+            properties: ["tenantId", "userId"]
+            name: "member_unique"
+        aliases: [[], []]
+  - name: "Vector indexes, from vector_search.show_index_info(), bare and with Memgraph 3.11's colon"
+    listing: "indexes"
+    rows:
+      - index_name: "prop_embedding_vector"
+        label: "Proposition"
+        property: "embedding"
+        dimension: 1536
+        metric: "cos"
+      - {index_name: "doc_vec", label: ":Doc", property: "vec", dimension: 3, metric: "l2sq"}
+      - {index_name: "other", label: "Doc", property: "other", dimension: 3, metric: "ip"}
+      - {index_name: "no_property", label: "Doc", dimension: 3, metric: "cos"}
+    stores:
+      memgraph:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Proposition"
+            properties: ["embedding"]
+            name: "prop_embedding_vector"
+            dimensions: 1536
+            similarity: "COSINE"
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["vec"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "EUCLIDEAN"
+          - {kind: "VECTOR_INDEX", label: "Doc", properties: ["other"], name: "other", dimensions: 3}
+        aliases: [[], [], []]
+  - name: "SHOW INDEX INFO: range, composite, label-only, a vector's backing, and text indexes"
+    listing: "indexes"
+    rows:
+      - ["label+property", "Proposition", "contextId", 0]
+      - ["label", "Proposition", null, 10]
+      - ["label+property", ":Message", ["sessionId", "createdAt"], 0]
+      - ["label+property_vector", ":Proposition", "embedding", 0]
+      - ["label_text (name: chunk_ft)", "Chunk", ["title", "body"], 0]
+      - ["label_text (name: doc_ft)", ":Doc", "title", 0]
+      - ["label+property", "Short"]
+      - ["label+property", "Empty", [], 0]
+      - "not a row"
+    stores:
+      memgraph:
+        items:
+          - {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId"]}
+          - {kind: "RANGE_INDEX", label: "Message", properties: ["sessionId", "createdAt"]}
+          - {kind: "FULLTEXT_INDEX", label: "Chunk", properties: ["title", "body"], name: "chunk_ft"}
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], name: "doc_ft"}
+        aliases: [[], [], [], []]
+  - name: "SHOW CONSTRAINT INFO: unique over one and several properties, and constraints Drivine does not manage"
+    listing: "constraints"
+    rows:
+      - ["unique", "ChatSession", "sessionId"]
+      - ["unique", ":Membership", ["tenantId", "userId"]]
+      - ["exists", "ChatSession", "createdAt"]
+      - ["unique", "Short"]
+      - {type: "unique"}
+    stores:
+      memgraph:
+        items:
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "ChatSession", properties: ["sessionId"]}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId"]}
+        aliases: [[], []]
+  - name: "One label's row: range properties together, and a vector index for each vector property, FalkorDB 4's options per property"
+    listing: "indexes"
+    rows:
+      - label: "Proposition"
+        properties: ["contextId", "status", "embedding"]
+        types: {contextId: ["RANGE"], status: ["RANGE"], embedding: ["VECTOR"]}
+        options:
+          contextId: {}
+          status: {}
+          embedding: {dimension: 1536, similarityFunction: "cosine", M: 16, efConstruction: 200, efRuntime: 10}
+        entitytype: "NODE"
+        status: "OPERATIONAL"
+    stores:
+      falkordb:
+        items:
+          - {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId", "status"], status: "OPERATIONAL"}
+          - kind: "VECTOR_INDEX"
+            label: "Proposition"
+            properties: ["embedding"]
+            dimensions: 1536
+            similarity: "COSINE"
+            status: "OPERATIONAL"
+            hnswM: 16
+            hnswEfConstruction: 200
+        aliases: [[], []]
+  - name: "Full-text properties read back as one item, a property both range and full-text"
+    listing: "indexes"
+    rows:
+      - label: "Chunk"
+        properties: ["age", "title", "body"]
+        types: {age: ["RANGE", "FULLTEXT"], title: ["FULLTEXT"], body: "fulltext"}
+        options: {}
+        entitytype: "NODE"
+    stores:
+      falkordb:
+        items:
+          - {kind: "RANGE_INDEX", label: "Chunk", properties: ["age"]}
+          - {kind: "FULLTEXT_INDEX", label: "Chunk", properties: ["age", "title", "body"]}
+        aliases: [[], []]
+  - name: "A label's indexes being built, and the older flat options"
+    listing: "indexes"
+    rows:
+      - label: "Doc"
+        properties: ["k", "embedding"]
+        types: {k: ["RANGE"], embedding: ["VECTOR"]}
+        options: {dimension: 768, similarityFunction: "euclidean"}
+        entitytype: "NODE"
+        status: "[Indexing] 0/20000: UNDER CONSTRUCTION"
+    stores:
+      falkordb:
+        items:
+          - {kind: "RANGE_INDEX", label: "Doc", properties: ["k"], status: "[Indexing] 0/20000: UNDER CONSTRUCTION"}
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            dimensions: 768
+            similarity: "EUCLIDEAN"
+            status: "[Indexing] 0/20000: UNDER CONSTRUCTION"
+        aliases: [[], []]
+  - name: "A vector property's options without the dimension, beside flat options that hold it"
+    listing: "indexes"
+    rows:
+      - label: "Doc"
+        properties: ["embedding"]
+        types: {embedding: ["VECTOR"]}
+        options: {embedding: {similarityFunction: "cosine", M: 8}, dimension: 768, similarityFunction: "euclidean"}
+        entitytype: "NODE"
+    stores:
+      falkordb:
+        items:
+          - {kind: "VECTOR_INDEX", label: "Doc", properties: ["embedding"], dimensions: 768, similarity: "EUCLIDEAN"}
+        aliases: [[]]
+  - name: "Relationship rows and rows that aren't an index"
+    listing: "indexes"
+    rows:
+      - {label: "KNOWS", properties: ["since"], types: {since: ["RANGE"]}, options: null, entitytype: "RELATIONSHIP"}
+      - {label: "NoType", properties: ["x"]}
+      - {properties: ["x"], types: {x: ["RANGE"]}}
+      - "not a row"
+    stores: {falkordb: {items: [], aliases: []}}
+  - name: "Unique constraints with their status, and constraints Drivine does not manage"
+    listing: "constraints"
+    rows:
+      - {type: "unique", label: "Person", properties: ["email"], entitytype: "NODE", status: "UNDER CONSTRUCTION"}
+      - {type: "UNIQUE", label: "Membership", properties: ["tenantId", "userId"], entitytype: "NODE", status: "FAILED"}
+      - {type: "mandatory", label: "Person", properties: ["id"], entitytype: "NODE", status: "OPERATIONAL"}
+      - {type: "unique", label: "KNOWS", properties: ["id"], entitytype: "RELATIONSHIP", status: "OPERATIONAL"}
+      - {type: "unique", label: "Empty", properties: [], entitytype: "NODE"}
+    stores:
+      falkordb:
+        items:
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], status: "UNDER CONSTRUCTION"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId"], status: "FAILED"}
+        aliases: [[], []]
+  - name: "The catalog's records of each kind, read back as the items they record, and a row that is not a map passed over"
+    listing: "indexes"
+    rows:
+      - kind: "VECTOR_INDEX"
+        label: "Doc"
+        properties: ["embedding"]
+        name: "doc_vec"
+        details: {dimensions: 3, similarity: "COSINE"}
+      - kind: "FULLTEXT_INDEX"
+        label: "Doc"
+        properties: ["title", "body"]
+        name: null
+        details: {analyzer: "english"}
+      - kind: "RANGE_INDEX"
+        label: "Person"
+        properties: ["name", "born"]
+        name: "r"
+        details: {labelled: "drivine_lx_x", aliases: ["person_name", "legacy"]}
+      - kind: "UNIQUENESS_CONSTRAINT"
+        label: "Person"
+        properties: ["email"]
+        name: "Person_email_unique"
+        details: {}
+        status: null
+      - "not a row"
+      - null
+    stores:
+      postgres:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+      oracle:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+      sqlite:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+  - name: "Oracle's INCOMPLETE status on a range index"
+    listing: "indexes"
+    rows: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: null, details: {}, status: "INCOMPLETE"}]
+    stores:
+      postgres: {items: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"]}], aliases: [[]]}
+      oracle:
+        items: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"], status: "INCOMPLETE"}]
+        aliases: [[]]
+      sqlite: {items: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"]}], aliases: [[]]}
+  - name: "A record of a kind Drivine doesn't know"
+    listing: "indexes"
+    rows: [{kind: "POINT_INDEX", label: "Place", properties: ["location"], name: null, details: {}}]
+    stores: {postgres: {invalid: true}, oracle: {invalid: true}, sqlite: {invalid: true}}
+  - name: "A record of a similarity Drivine doesn't know"
+    listing: "indexes"
+    rows:
+      - kind: "VECTOR_INDEX"
+        label: "Doc"
+        properties: ["embedding"]
+        name: null
+        details: {dimensions: 3, similarity: "DOT"}
+    stores: {postgres: {invalid: true}, oracle: {invalid: true}, sqlite: {invalid: true}}
+  - name: "The catalog's records of each kind, read back as the items they record, and a row that is not a map passed over"
+    listing: "constraints"
+    rows:
+      - kind: "VECTOR_INDEX"
+        label: "Doc"
+        properties: ["embedding"]
+        name: "doc_vec"
+        details: {dimensions: 3, similarity: "COSINE"}
+      - kind: "FULLTEXT_INDEX"
+        label: "Doc"
+        properties: ["title", "body"]
+        name: null
+        details: {analyzer: "english"}
+      - kind: "RANGE_INDEX"
+        label: "Person"
+        properties: ["name", "born"]
+        name: "r"
+        details: {labelled: "drivine_lx_x", aliases: ["person_name", "legacy"]}
+      - kind: "UNIQUENESS_CONSTRAINT"
+        label: "Person"
+        properties: ["email"]
+        name: "Person_email_unique"
+        details: {}
+        status: null
+      - "not a row"
+      - null
+    stores:
+      postgres:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+      oracle:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+      sqlite:
+        items:
+          - kind: "VECTOR_INDEX"
+            label: "Doc"
+            properties: ["embedding"]
+            name: "doc_vec"
+            dimensions: 3
+            similarity: "COSINE"
+          - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], analyzer: "english"}
+          - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "r"}
+          - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], name: "Person_email_unique"}
+        aliases: [[], [], ["person_name", "legacy"], []]
+matching:
+  pairs:
+    - name: "Range: the same properties in another order are the same index"
+      existing: {kind: "RANGE_INDEX", label: "Person", properties: ["born", "name"]}
+      spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"]}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Range: the same properties in the same order"
+      existing: {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "x"}
+      spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"]}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Range: an index over more properties covers the spec on FalkorDB only"
+      existing: {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId", "status", "createdAt"]}
+      spec: {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId", "status"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Range: an index missing one of the spec's properties"
+      existing: {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId", "status"]}
+      spec: {kind: "RANGE_INDEX", label: "Proposition", properties: ["contextId", "missing"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Range: another label"
+      existing: {kind: "RANGE_INDEX", label: "Doc", properties: ["name"]}
+      spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Range: another kind on the same label and properties"
+      existing: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["name"]}
+      spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Range: the name is no part of identity"
+      existing: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: "other"}
+      spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: "mine"}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Unique: a constraint over more properties is another constraint, on FalkorDB too"
+      existing: {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId", "x"]}
+      spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Unique: the same properties in another order"
+      existing: {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["userId", "tenantId"]}
+      spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Membership", properties: ["tenantId", "userId"]}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Full-text: an index over more properties covers the spec on FalkorDB only"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body", "summary"]}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Full-text: an index missing a property"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body", "summary"]}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "missing"]}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+    - name: "Full-text: an analyzer asked for and another reported is drift"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], analyzer: "standard"}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], options: {analyzer: "english"}}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Full-text: an analyzer asked for and none reported is not drift"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"]}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], options: {analyzer: "english"}}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Full-text: an analyzer reported and none asked for is not drift"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], analyzer: "standard"}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"]}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Full-text: the analyzer asked for"
+      existing: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], analyzer: "english"}
+      spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"], options: {analyzer: "english"}}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Text: the same index"
+      existing: {kind: "TEXT_INDEX", label: "Chunk", properties: ["title"]}
+      spec: {kind: "TEXT_INDEX", label: "Chunk", properties: ["title"]}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: other dimensions are drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 768, similarity: "COSINE"}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 1536, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Vector: the dimensions and similarity asked for"
+      existing:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        dimensions: 1536
+        similarity: "COSINE"
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 1536, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: dimensions not reported are drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"]}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 1536, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Vector: a similarity not reported is not drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 1536}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 1536, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: another similarity is drift"
+      existing:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        dimensions: 3
+        similarity: "EUCLIDEAN"
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 3, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Vector: an HNSW m pinned and another reported is drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 8, hnswM: 32}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Vector: an HNSW m pinned and none reported is not drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 8}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: an HNSW m reported and none pinned is not drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 8, hnswM: 32}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: an ef_construction pinned and another reported is drift"
+      existing:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        dimensions: 8
+        hnswM: 16
+        hnswEfConstruction: 100
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16, hnswEfConstruction: 200}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: false}
+        falkordb: {identity: true, shape: false}
+        postgres: {identity: true, shape: false}
+        oracle: {identity: true, shape: false}
+        sqlite: {identity: true, shape: false}
+    - name: "Vector: Neo4j's quantization pinned and another reported is drift on Neo4j only"
+      existing:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        dimensions: 8
+        quantizationEnabled: true
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      stores:
+        neo4j: {identity: true, shape: false}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: Neo4j's quantization pinned and none reported is not drift"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 8}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: FalkorDB's efRuntime is never compared"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["embedding"], dimensions: 8, hnswM: 16}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", efRuntime: 10}
+      stores:
+        neo4j: {identity: true, shape: true}
+        memgraph: {identity: true, shape: true}
+        falkordb: {identity: true, shape: true}
+        postgres: {identity: true, shape: true}
+        oracle: {identity: true, shape: true}
+        sqlite: {identity: true, shape: true}
+    - name: "Vector: another property"
+      existing: {kind: "VECTOR_INDEX", label: "Chunk", properties: ["other"], dimensions: 8}
+      spec:
+        kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      stores:
+        neo4j: {identity: false, shape: true}
+        memgraph: {identity: false, shape: true}
+        falkordb: {identity: false, shape: true}
+        postgres: {identity: false, shape: true}
+        oracle: {identity: false, shape: true}
+        sqlite: {identity: false, shape: true}
+  incomplete:
+    - item: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], status: "INCOMPLETE"}
+      stores: {neo4j: false, memgraph: false, falkordb: false, postgres: false, oracle: true, sqlite: false}
+    - item: {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      stores: {neo4j: false, memgraph: false, falkordb: false, postgres: false, oracle: false, sqlite: false}
+    - item: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], status: "incomplete"}
+      stores: {neo4j: false, memgraph: false, falkordb: false, postgres: false, oracle: false, sqlite: false}
+    - item: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], status: "INCOMPLETE"}
+      stores: {neo4j: false, memgraph: false, falkordb: false, postgres: false, oracle: true, sqlite: false}
+    - item: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], status: "UNDER CONSTRUCTION"}
+      stores: {neo4j: false, memgraph: false, falkordb: false, postgres: false, oracle: false, sqlite: false}
+  builds:
+    - {status: null, buildFailed: false, buildInProgress: false}
+    - {status: "OPERATIONAL", buildFailed: false, buildInProgress: false}
+    - {status: "operational", buildFailed: false, buildInProgress: false}
+    - {status: "UNDER CONSTRUCTION", buildFailed: false, buildInProgress: true}
+    - {status: "[Indexing] 0/20000: UNDER CONSTRUCTION", buildFailed: false, buildInProgress: true}
+    - {status: "FAILED", buildFailed: true, buildInProgress: false}
+    - {status: "[Indexing] FAILED: x", buildFailed: true, buildInProgress: false}
+    - {status: "INCOMPLETE", buildFailed: false, buildInProgress: true}
+errors:
+  - name: "Neo4j 2026: a refusal with a uniqueness violation beneath it (22N79)"
+    causes:
+      - {message: "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):"}
+      - code: "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+        gqlStatus: "50N11"
+        message: "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):"
+      - code: "N/A"
+        gqlStatus: "22N79"
+        message: "Property uniqueness constraint violated: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."
+    stores:
+      neo4j: {violation: true, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j 2026: a refusal with an index entry conflict beneath it (22N80)"
+    causes:
+      - {message: "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):"}
+      - code: "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+        gqlStatus: "50N11"
+        message: "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):"
+      - code: "N/A"
+        gqlStatus: "22N80"
+        message: "Index entry conflict: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."
+    stores:
+      neo4j: {violation: true, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j 5.26: a refusal with only an unexpected error beneath it is suspected"
+    causes:
+      - {message: "Unable to create Constraint( name='x', type='UNIQUENESS', schema=(:Person {email}) ):"}
+      - code: "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+        gqlStatus: "50N11"
+        message: "Unable to create Constraint( name='x', type='UNIQUENESS', schema=(:Person {email}) ):"
+      - {code: "N/A", gqlStatus: "50N42", message: "50N42: Unexpected error has occurred. See debug log for details."}
+    stores:
+      neo4j: {violation: true, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: an unexpected error that isn't a refused constraint"
+    causes:
+      - {code: "Neo.DatabaseError.Statement.ExecutionFailed", gqlStatus: "50N11", message: "Something else failed."}
+      - {code: "N/A", gqlStatus: "50N42", message: "Unexpected error."}
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: a refusal whose status names another cause (51N27, a key constraint on Community)"
+    causes:
+      - {message: "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):"}
+      - code: "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+        gqlStatus: "50N11"
+        message: "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):"
+      - {code: "N/A", gqlStatus: "51N27", message: "Key constraint is not supported in community edition."}
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j older than GQL statuses: a refusal by its code alone"
+    causes:
+      - code: "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+        gqlStatus: "50N42"
+        message: "Unable to create Constraint( name='x' ):"
+    stores:
+      neo4j: {violation: true, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: a write the constraint refuses, whatever its status"
+    causes:
+      - code: "Neo.ClientError.Schema.ConstraintValidationFailed"
+        gqlStatus: "22N41"
+        message: "Node(0) already exists with label `Person` and property `email` = 'a@b.c'"
+    stores:
+      neo4j: {violation: true, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: an index in the way of a constraint, wrapped"
+    causes:
+      - {message: "wrapped"}
+      - code: "Neo.ClientError.Schema.IndexAlreadyExists"
+        gqlStatus: "50N42"
+        message: "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped."
+    stores:
+      neo4j: {violation: false, blockedByIndex: true, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: an index of the same name is not in the way"
+    causes:
+      - code: "Neo.ClientError.Schema.IndexWithNameAlreadyExists"
+        gqlStatus: "50N42"
+        message: "There already exists an index called 'person_email'."
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: a wait for an index that ran out, wrapped"
+    causes:
+      - {message: "Timed out waiting for index"}
+      - code: "Neo.ClientError.Procedure.ProcedureTimedOut"
+        gqlStatus: "50N42"
+        message: "Timed out waiting for index"
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: true}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: an index whose build failed"
+    causes: [{code: "Neo.DatabaseError.Schema.IndexCreationFailed", gqlStatus: "50N42", message: "Index failed"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Neo4j: a syntax error"
+    causes: [{code: "Neo.ClientError.Statement.SyntaxError", gqlStatus: "50N42", message: "Invalid input"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "No driver's error: words alone say nothing on Neo4j or the SQL stores"
+    causes:
+      - message: "Unable to create Constraint: both nodes have the same value; constraint violated; UNIQUE constraint failed"
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "No driver's error: an index in the way, by its words alone"
+    causes: [{message: "There already exists an index (:Person {email})."}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "No cause at all"
+    causes: [{message: "no cause"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Memgraph: an existing node violates the constraint"
+    causes:
+      - code: "Memgraph.ClientError.MemgraphError.MemgraphError"
+        gqlStatus: "50N42"
+        message: "Unable to create unique constraint :Person(email), because an existing node violates it."
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Memgraph: constraints not supported in analytical mode"
+    causes:
+      - code: "Memgraph.ClientError.MemgraphError.MemgraphError"
+        gqlStatus: "50N42"
+        message: "Constraints are not supported in analytical storage mode."
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Graph engines: the words split across the chain still count"
+    causes: [{message: "Could not make the constraint"}, {message: "data violates it"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "FalkorDB: a violation said by the driver at submit time"
+    causes: [{message: "ERR constraint violation: duplicate key"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Postgres: 23505, a unique index over rows that repeat a key"
+    causes:
+      - {message: "wrapped"}
+      - sqlState: "23505"
+        vendorCode: 0
+        message: |-
+          ERROR: could not create unique index "drivine_uq_x"
+            Detail: Key ((props ->> 'email'::text))=(a@b.c) is duplicated.
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: true, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Postgres: another SQL state"
+    causes: [{sqlState: "42501", vendorCode: 0, message: "ERROR: permission denied for schema public"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Oracle: ORA-01452, a unique index over rows that repeat a key"
+    causes:
+      - {sqlState: "72000", vendorCode: 1452, message: "ORA-01452: cannot CREATE UNIQUE INDEX; duplicate keys found"}
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: true, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Oracle: ORA-00001, a second row for a unique key"
+    causes:
+      - {message: "wrapped"}
+      - {sqlState: "23000", vendorCode: 1, message: "ORA-00001: unique constraint (DRIVINE.DRIVINE_UQ_X) violated"}
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: true, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: true, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: true, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "Oracle: ORA-01408, the same expressions indexed already"
+    causes: [{sqlState: "72000", vendorCode: 1408, message: "ORA-01408: such column list already indexed"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "SQLite: UNIQUE constraint failed, said in a driver's error"
+    causes:
+      - sqlState: null
+        vendorCode: 19
+        message: "[SQLITE_CONSTRAINT_UNIQUE] A UNIQUE constraint failed (UNIQUE constraint failed: index 'drivine_uq_x')"
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: true, blockedByIndex: false, buildTimeout: false}
+  - name: "SQLite: the words in no driver's error, beneath a driver's error that doesn't say them"
+    causes:
+      - sqlState: null
+        vendorCode: 19
+        message: "[SQLITE_CONSTRAINT_NOTNULL] A NOT NULL constraint failed (NOT NULL constraint failed: drivine_node.x)"
+      - {message: "UNIQUE constraint failed"}
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: false, blockedByIndex: false, buildTimeout: false}
+  - name: "SQLite: a driver's error with no code"
+    causes: [{sqlState: null, vendorCode: 0, message: "UNIQUE constraint failed: drivine_node.x"}]
+    stores:
+      neo4j: {violation: false, blockedByIndex: false, buildTimeout: false}
+      memgraph: {violation: false, blockedByIndex: false, buildTimeout: false}
+      falkordb: {violation: false, blockedByIndex: false, buildTimeout: false}
+      postgres: {violation: false, blockedByIndex: false, buildTimeout: false}
+      oracle: {violation: false, blockedByIndex: false, buildTimeout: false}
+      sqlite: {violation: true, blockedByIndex: false, buildTimeout: false}
+declarations:
+  - name: "Identical declarations are one"
+    specs:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+    items: [{kind: "RANGE_INDEX", label: "Person", properties: ["name"]}]
+  - name: "One key's declarations in two orders disagree"
+    specs:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["born", "name"]}
+    conflict: "Conflicting schema declarations for RANGE_INDEX on Person[name, born] (they disagree on portable parameters): RangeIndexSpec(label=Person, properties=[name, born], name=null, ignoreCase=false); RangeIndexSpec(label=Person, properties=[born, name], name=null, ignoreCase=false)"
+  - name: "Other names disagree"
+    specs:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: "a"}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: "b"}
+    conflict: "Conflicting schema declarations for RANGE_INDEX on Person[name] (they disagree on portable parameters): RangeIndexSpec(label=Person, properties=[name], name=a, ignoreCase=false); RangeIndexSpec(label=Person, properties=[name], name=b, ignoreCase=false)"
+  - name: "Two vector sizes disagree"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 16, similarity: "COSINE"}
+    conflict: "Conflicting schema declarations for VECTOR_INDEX on Chunk[embedding] (they disagree on portable parameters): VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[]); VectorIndexSpec(label=Chunk, property=embedding, dimensions=16, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[])"
+  - name: "A vector declaration that pins engine options wins whole"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+    items:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+  - name: "Two that pin engine options differently disagree"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", efRuntime: 10}
+    conflict: "Conflicting schema declarations for VECTOR_INDEX on Chunk[embedding] (more than one declaration pins engine options): VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[Neo4jVectorOptions(quantizationEnabled=false, hnswM=null, hnswEfConstruction=null)]); VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[FalkorDbVectorOptions(hnswM=null, hnswEfConstruction=null, efRuntime=10)])"
+  - name: "A portable HNSW parameter is part of the declaration"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE"}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", hnswM: 16}
+    conflict: "Conflicting schema declarations for VECTOR_INDEX on Chunk[embedding] (they disagree on portable parameters): VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[]); VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=16, hnswEfConstruction=null, engineOptions=[])"
+  - name: "A constraint that knows its node id property wins"
+    specs:
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "uuid"}
+    items: [{kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "uuid"}]
+  - name: "Of constraints that know their node id property, the first wins"
+    specs:
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "uuid"}
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "id"}
+    items: [{kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], nodeIdProperty: "uuid"}]
+  - name: "Two that pin the same engine options are one"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+    items:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+  - name: "A conflict names each distinct declaration once, without its engine options"
+    specs:
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 8, similarity: "COSINE", quantizationEnabled: false}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 16, similarity: "COSINE"}
+      - kind: "VECTOR_INDEX"
+        label: "Chunk"
+        properties: ["embedding"]
+        options: {dimensions: 16, similarity: "COSINE"}
+    conflict: "Conflicting schema declarations for VECTOR_INDEX on Chunk[embedding] (they disagree on portable parameters): VectorIndexSpec(label=Chunk, property=embedding, dimensions=8, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[]); VectorIndexSpec(label=Chunk, property=embedding, dimensions=16, similarity=COSINE, name=null, hnswM=null, hnswEfConstruction=null, engineOptions=[])"
+  - name: "Keys are kept in the order first declared, of every kind"
+    specs:
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+    items:
+      - {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}
+      - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title"]}
+  - name: "An index that ignores case is another item than one that doesn't"
+    specs:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"], ignoreCase: true}
+    items:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"]}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"], ignoreCase: true}
+  - name: "Declarations that ignore case are compared as declared, and the conflict names the copies they are made over"
+    specs:
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"], ignoreCase: true}
+      - {kind: "RANGE_INDEX", label: "Person", properties: ["email"], name: "Person_email_ci_range", ignoreCase: true}
+    conflict: "Conflicting schema declarations for RANGE_INDEX on Person[__drivine.lower.email] (they disagree on portable parameters): RangeIndexSpec(label=Person, properties=[email], name=null, ignoreCase=true); RangeIndexSpec(label=Person, properties=[email], name=Person_email_ci_range, ignoreCase=true)"

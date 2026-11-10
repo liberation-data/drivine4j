@@ -49,7 +49,7 @@ import java.sql.SQLException
  * and reads the same indexes. What this grammar adds is drivine4j's: reading the catalog's rows, telling a
  * violation from another failure, and sampling the keys a constraint would refuse.
  */
-internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaGrammar, SchemaAliases {
+internal class PostgresSchemaGrammar(internal val graph: PostgresGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = PostgresDdl.ENGINE
     override val supportsIfNotExists = true

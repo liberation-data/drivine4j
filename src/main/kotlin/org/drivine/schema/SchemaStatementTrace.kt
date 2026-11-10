@@ -9,8 +9,9 @@ import org.drivine.query.QuerySpecification
  * and the statement runs as it would: production code never sets it, and reads no property for it.
  *
  * A statement is told here as it leaves [SchemaExecutor] (the schema connection, and FalkorDB's native commands),
- * or as [SchemaVersionStore] and [LowerCopyCatalog] give it to a [PersistenceManager]. A loop that polls a build or
- * a drop until it ends is told as one [Observer.pollStarted] and [Observer.pollEnded], whatever the number of rounds.
+ * or as [SchemaVersionStore], [LowerCopyCatalog] and [SchemaPlanDriver] give it to a [PersistenceManager]. A loop that
+ * polls a build or a drop until it ends, or a run of the schema planner's rounds that poll one, is told as one
+ * [Observer.pollStarted] and [Observer.pollEnded], whatever the number of rounds.
  */
 internal object SchemaStatementTrace {
 
@@ -61,6 +62,19 @@ internal object SchemaStatementTrace {
         if (observer == null) return run()
         val path = if (manager is org.drivine.manager.NonTransactionalPersistenceManager) Path.AUTO_COMMIT else Path.MANAGER
         return traced(manager, path, Kind.STATEMENT, spec.statement?.text.orEmpty(), spec.parameters, run)
+    }
+
+    /**
+     * Tells the observer a poll on [source] until [what] ends has begun, where the polls are a run of the schema planner's
+     * rounds rather than one loop ([poll]): see [pollEnded].
+     */
+    fun pollStarted(source: Any, what: String) {
+        observer?.pollStarted(source, what)
+    }
+
+    /** Tells the observer the poll [pollStarted] told of has ended, as [outcome] says. */
+    fun pollEnded(source: Any, what: String, outcome: String) {
+        observer?.pollEnded(source, what, outcome, null)
     }
 
     /** Runs [poll], a loop on [source] that polls until [what] ends, telling the observer of it as one, with the [outcome] of its result. */

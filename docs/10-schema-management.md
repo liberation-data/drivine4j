@@ -201,10 +201,10 @@ store, are written by the Cypher compiler's module (`org.drivine.cypher.store.ma
 a marker one library wrote is the marker another reads: its label and `scope`, the inventory as one text, a key to a line,
 with `runtime:` and `runtime-stale:` before the keys ensured at runtime, and on Oracle `items:` before it all, and the
 version token of several catalogs, each token once, sorted and joined by `|`. So is the store's stamp, `DrivineStore`.
-The spec's `marker.yaml` pins them for each store, byte for byte. drivine4j runs them, and decides what they're for: when
-a marker is read, written or cleaned up, what a changed token recreates, and which stamp is the store's, the oldest. The
-graph engines take the moment a marker is written from their own `timestamp()`, and the SQL stores are given this
-process's clock, as they have no such function.
+The spec's `marker.yaml` pins them for each store, byte for byte. When a marker is read, written or cleaned up, and what
+a changed token recreates, is the module's schema planner's to decide (below); drivine4j runs the statements, and decides
+which stamp is the store's, the oldest. The graph engines take the moment a marker is written from their own
+`timestamp()`, and the SQL stores are given this process's clock, as they have no such function.
 
 > Recreating a vector index rebuilds it from the stored embedding *properties* — it does **not** re-embed. After a model swap, re-embed the nodes first (same dimensions → the index even auto-updates), then `enforce()`/`recreateAll()` for the structural half. Drivine manages schema, not your embeddings.
 
@@ -230,8 +230,22 @@ Without Spring, the timeout is the `SchemaManager`'s last constructor argument: 
 Oracle, Postgres and SQLite the graph's tables and what finds them made, are written by the Cypher compiler's module
 (`org.drivine.cypher.store.ddl`, in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)), which
 the three Drivine libraries share, so a store one library made is the store another reads and finds its indexes in. The
-spec's `store.yaml` pins them for each store, byte for byte. drivine4j runs them: it decides what to make, drop or
-recreate, takes the locks and tries again, waits for a build, and tells a violation from another failure.
+spec's `store.yaml` pins them for each store, byte for byte, with how each store's listings read back, which item is the
+one a spec declares and in its shape, and what each store's errors say (`org.drivine.cypher.store.schema`).
+
+**Where the decisions come from.** What `enforce`, `recreateAll`, `ensure` and `remove`, and the `indexes` and
+`constraints` managers' `ensure`, `recreate` and `drop`, do on a store is decided by the module's schema planner
+(`org.drivine.cypher.store.plan`), which the three libraries share, so each decides alike of a store any of them made:
+which item matches, drifts or is missing, what a changed version or `recreateAll` recreates, which items are co-owned,
+orphaned or ensured at runtime, what the `_DrivineSchema` marker records, when a build is waited for and a store that
+builds in the background is polled, when a violation is confirmed by the data, and what each owner reports, word for
+word in its log lines. The spec's `plans.yaml` pins its decisions, round by round. The planner plans in rounds: drivine4j
+runs each round's statements (DDL, listings and waits on a schema connection of their own, the marker's statements
+through the auto-commit manager, FalkorDB's commands natively), hands back what each gave, a store's error as the module
+reads one, and logs and throws what the planner's report says. Resolving which databases a catalog applies to, the
+lowercased copies' record, and the connections stay drivine4j's. The planner reads a listing once and uses it until its
+own DDL runs, where drivine4j once read it again for each item, so it sends fewer reads; what it writes, and in which
+order, is what drivine4j wrote.
 
 | | Neo4j | Memgraph | FalkorDB |
 |---|---|---|---|

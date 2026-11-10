@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.DrivineInternalApi
+
 /**
  * Normalized description of a schema item that exists on a database, as discovered by
  * introspection ([SchemaGrammar.parseIndexRow] / [SchemaGrammar.parseConstraintRow]).
@@ -41,17 +43,21 @@ data class SchemaItemInfo(
 
     /**
      * Whether the engine reports that its build of this item failed (FalkorDB's `FAILED` status). FalkorDB
-     * keeps listing such a constraint, though it enforces nothing, so it is never taken as made.
+     * keeps listing such a constraint, though it enforces nothing, so it is never taken as made. Public, as the
+     * module's copy of this class has it, since the module's schema planner reads it (see [org.drivine.cypher.store.plan]).
      */
-    internal val buildFailed: Boolean
+    @DrivineInternalApi
+    val buildFailed: Boolean
         get() = status?.uppercase()?.contains("FAILED") == true
 
     /**
      * Whether the engine reports that this item is still being built (FalkorDB's `UNDER CONSTRUCTION`): it has
      * a status, and that status is neither `OPERATIONAL` nor failed. Such a constraint may yet fail, and such an
-     * index answers from what it holds so far, so either is waited on before it is taken as made.
+     * index answers from what it holds so far, so either is waited on before it is taken as made. Public, as
+     * [buildFailed] is.
      */
-    internal val buildInProgress: Boolean
+    @DrivineInternalApi
+    val buildInProgress: Boolean
         get() = status != null && status.uppercase() != "OPERATIONAL" && !buildFailed
 
     /**

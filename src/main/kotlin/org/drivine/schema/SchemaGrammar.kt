@@ -13,8 +13,10 @@ import org.drivine.cypher.store.ddl.CypherNames
  *    ([listIndexesQuery] / [parseIndexRows], [listConstraintsQuery] / [parseConstraintRows])
  *  - diverges in capability (the `supports*` / `constraints*` flags)
  *
- * The ensure / drift / recreate orchestration lives once, in [IndexManager] and
- * [ConstraintManager]; grammars contain no orchestration.
+ * The ensure / drift / recreate orchestration lives once, in the Cypher compiler's module's schema planner
+ * (`org.drivine.cypher.store.plan`), which [IndexManager], [ConstraintManager] and [SchemaManager] run; grammars contain no
+ * orchestration. The planner is told of a store by the module's schema of it (`org.drivine.cypher.store.schema`), which
+ * decides as drivine4j's own grammars do; a grammar of another kind is asked itself.
  */
 interface SchemaGrammar {
 

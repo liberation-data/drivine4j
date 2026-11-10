@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks src/test/resources/cypher against the Cypher spec (github.com/liberation-data/drivine-cypher-spec):
-# - fails when a file differs from the tag VERSION names, as a case edited here and not in the spec does;
+# - fails when a file differs from the tag VERSION names (or the commit, between tags), as a case edited here and not
+#   in the spec does;
 # - warns when the spec has a later tag than VERSION, so drivine4j can move to it.
 #
 #   scripts/check-cypher-spec.sh
@@ -17,17 +18,21 @@ say() {
     if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::$1::$2"; else echo "$1: $2"; fi
 }
 
-curl -fsSL "$repo/archive/refs/tags/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
+curl -fsSL "$repo/archive/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
 changed=0
-for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml store.yaml marker.yaml README.md; do
+for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml store.yaml marker.yaml plans.yaml README.md; do
     if ! diff -q "$tmp/$file" "$dir/$file" > /dev/null; then
         say error "src/test/resources/cypher/$file differs from the spec at $tag. Change the spec, tag it, and run scripts/sync-cypher-spec.sh <tag>."
         changed=1
     fi
 done
 
+if [[ "$tag" != v* ]]; then
+    say warning "src/test/resources/cypher is the spec at commit $tag, which no tag names yet. Move to the tag that carries it with scripts/sync-cypher-spec.sh <tag>."
+fi
+
 latest="$(git ls-remote --tags --refs "$repo" 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -n 1)"
-if [ "$latest" != "$tag" ] && [ "$(printf '%s\n%s\n' "$tag" "$latest" | sort -V | tail -n 1)" = "$latest" ]; then
+if [[ "$tag" == v* ]] && [ "$latest" != "$tag" ] && [ "$(printf '%s\n%s\n' "$tag" "$latest" | sort -V | tail -n 1)" = "$latest" ]; then
     say warning "The Cypher spec is at $latest; drivine4j runs $tag. Move to it with scripts/sync-cypher-spec.sh $latest."
 fi
 

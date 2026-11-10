@@ -2,6 +2,7 @@ package org.drivine.schema
 
 import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
+import org.drivine.cypher.store.plan.ItemCall
 import org.slf4j.LoggerFactory
 import java.time.Duration
 
@@ -14,9 +15,10 @@ import java.time.Duration
  * Constraints differ from indexes in lifecycle: creation can fail because existing data violates
  * the constraint, which surfaces as [EnsureResult.Violation] (with a bounded sample of the
  * conflicting values) rather than an exception, once the data confirms it. On Neo4j it can also fail
- * because a plain index is in the way of it, which surfaces as [EnsureResult.BlockedByIndex]. Engine divergence — including FalkorDB's
- * native-command constraints, required backing indexes, and asynchronous creation — lives in the
- * [SchemaGrammar].
+ * because a plain index is in the way of it, which surfaces as [EnsureResult.BlockedByIndex]. What each call
+ * does on the store, FalkorDB's native-command constraints, required backing indexes and asynchronous creation
+ * among it, is decided by the Cypher compiler's module's schema planner (`org.drivine.cypher.store.plan`), which
+ * this manager runs ([SchemaPlanDriver]).
  *
  * Example:
  * ```kotlin
@@ -27,6 +29,9 @@ import java.time.Duration
  *     log.error("Duplicate sessionIds exist: {}", result.conflictingSample)
  * }
  * ```
+ *
+ * @param asyncCreationTimeout how long [inForce] waits for a constraint FalkorDB is still building
+ * @param asyncPollInterval how often [inForce] looks again
  */
 class ConstraintManager internal constructor(
     private val executor: SchemaExecutor,
@@ -41,14 +46,7 @@ class ConstraintManager internal constructor(
 
     private val logger = LoggerFactory.getLogger(ConstraintManager::class.java)
 
-    /** Runs [statements], which make or drop a constraint, and tells the grammar they have. */
-    private fun run(statements: List<SchemaStatement>) {
-        try {
-            executor.execute(statements)
-        } finally {
-            grammar.changed()
-        }
-    }
+    private val driver: SchemaPlanDriver get() = indexManager.driver
 
     /**
      * Ensures a constraint matching [spec] exists. Idempotent — safe to call on every startup.
@@ -65,9 +63,9 @@ class ConstraintManager internal constructor(
      * is waited on, as one made here is: matching once built, and dropped and built again if its
      * build fails.
      *
-     * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
-     * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
-     * including one the grammar suspects that no repeated key bears out, is thrown.
+     * A failure counts as a [EnsureResult.Violation] only when the data shows one: the store's error
+     * suggests it, and a key that repeats confirms it. Any other failure,
+     * including one suspected that no repeated key bears out, is thrown.
      *
      * @param violationSampleSize how many conflicting property combinations to sample when a
      *   violation is detected, and how many of the nodes that hold each one to name (0 leaves the
@@ -82,82 +80,7 @@ class ConstraintManager internal constructor(
         spec: ConstraintSpec,
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
-    ): EnsureResult {
-        grammar.requireConstrainable(spec.made())
-        // A constraint that ignores case is made over copies that every node of its label has, so a
-        // node saved before there were copies is held to it too. One made anew fills them in again,
-        // recorded or not: they may have gone out of step while it was gone.
-        indexManager.fillIn(spec) { find(spec) == null }
-        return ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)
-    }
-
-    /** [ensure], of [spec] as it is made. */
-    private fun ensureMade(spec: ConstraintSpec, violationSampleSize: Int, replaceBlockingIndex: Boolean): EnsureResult {
-        // A constraint still being built, by another process or an earlier run, may yet fail: wait for
-        // its build to end, as for one made here. One dropped meanwhile is made again below.
-        val existing = find(spec)?.let { if (it.buildInProgress) awaitBuild(spec, untilListed = false) else it }
-        if (existing != null && existing.buildFailed) {
-            // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
-            // It is not the constraint: drop it and build again, which gives a violation when the
-            // data still repeats a key.
-            dropFailedBuild(spec, existing)
-            logger.warn(
-                "Dropped {} {} on {}{}, whose build had failed, to build it again",
-                grammar.engine, spec.kind, spec.label, spec.properties
-            )
-        } else if (existing != null) {
-            return if (grammar.matchesShape(existing, spec)) {
-                EnsureResult.AlreadyMatching(existing)
-            } else {
-                logger.warn(
-                    "Constraint drift on {}{}: existing {} does not match requested {}",
-                    spec.label, spec.properties, existing, spec
-                )
-                EnsureResult.Drift(existing, spec)
-            }
-        }
-
-        // Some engines (FalkorDB) require an exact-match index on the constrained properties
-        // before the constraint can be created
-        if (grammar.constraintsRequireBackingIndex) {
-            indexManager.ensure(RangeIndexSpec(spec.label, spec.properties))
-        }
-
-        try {
-            run(grammar.createConstraint(spec))
-        } catch (e: Exception) {
-            if (grammar.isConstraintViolation(e)) {
-                confirmedViolation(spec, violationSampleSize, e)?.let { return it }
-            }
-            if (grammar.isBlockedByIndex(e)) {
-                val index = blockingIndex(spec) ?: throw e
-                if (!replaceBlockingIndex) {
-                    logger.warn(
-                        "Could not create constraint on {}{}: index {} is in the way of it",
-                        spec.label, spec.properties, index.name
-                    )
-                    return EnsureResult.BlockedByIndex(spec, index)
-                }
-                // Neo4j refuses for the index before it reads the data, so a key that repeats would
-                // refuse the constraint after the index is gone: look first, and keep the index, as
-                // when the data cannot be read.
-                val repeated = repeatedKeys(spec, violationSampleSize, e) ?: throw e
-                if (repeated.isNotEmpty()) return violation(spec, repeated, violationSampleSize)
-                run(grammar.dropIndex(index))
-                logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
-                return ensureMade(spec, violationSampleSize, replaceBlockingIndex = false)
-            }
-            throw e
-        }
-
-        if (grammar.constraintCreationIsAsync) {
-            return awaitAsyncCreation(spec, violationSampleSize)
-        }
-
-        val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
-        logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-        return EnsureResult.Created(created)
-    }
+    ): EnsureResult = checkNotNull(driver.item(ItemCall.ENSURE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
 
     /** Convenience for [ensure] with a [UniquenessConstraintSpec] (single or composite). */
     fun ensureUnique(label: String, vararg properties: String): EnsureResult =
@@ -165,26 +88,26 @@ class ConstraintManager internal constructor(
 
     /** Finds the existing constraint that [spec] refers to, or null if none exists. */
     fun find(spec: ConstraintSpec): SchemaItemInfo? {
-        val rows = introspect(grammar.listConstraintsQuery()) ?: return null
+        val rows = introspect(driver.store.ddl.listConstraintsQuery()) ?: return null
         val made = spec.made()
-        return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, made) }
+        return driver.store.parseConstraintRows(rows).firstOrNull { driver.store.matchesIdentity(it, made) }
     }
 
     /**
      * Whether the constraint that [spec] refers to is there and built, so that the engine enforces it, as one
      * another process made. One still being built (FalkorDB) is waited on; one whose build failed is not in force,
-     * and is left as it is.
+     * and is left as it is. The store identity's check before it makes its stamp: no schema plan, but a read.
      */
     internal fun inForce(spec: ConstraintSpec): Boolean =
-        awaitBuild(spec, untilListed = false)?.takeUnless { it.buildFailed } != null
+        awaitBuild(spec)?.takeUnless { it.buildFailed } != null
 
     /** Lists all managed constraints on the database. */
     fun list(): List<SchemaItemInfo> =
-        introspect(grammar.listConstraintsQuery())?.let { grammar.parseConstraintRows(it) } ?: emptyList()
+        introspect(driver.store.ddl.listConstraintsQuery())?.let { driver.store.parseConstraintRows(it) } ?: emptyList()
 
     /** Every managed constraint, as [list] gives them, with the aliases its record keeps (see [SchemaAliases]). */
     internal fun recorded(): List<RecordedItem> =
-        introspect(grammar.listConstraintsQuery())?.let { recordedItems(it, grammar::parseConstraintRows) } ?: emptyList()
+        introspect(driver.store.ddl.listConstraintsQuery())?.let { recordedItems(it, driver.store::parseConstraintRows) } ?: emptyList()
 
     /**
      * Drops the constraint that [spec] refers to, including one whose build failed, which FalkorDB
@@ -192,12 +115,7 @@ class ConstraintManager internal constructor(
      *
      * @return true if a constraint was found and dropped, false if none existed
      */
-    fun drop(spec: ConstraintSpec): Boolean {
-        val existing = find(spec) ?: return false
-        run(grammar.dropConstraint(existing))
-        logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-        return true
-    }
+    fun drop(spec: ConstraintSpec): Boolean = checkNotNull(driver.item(ItemCall.DROP, spec).dropped)
 
     /**
      * Drops (if present) and recreates the constraint described by [spec].
@@ -213,137 +131,38 @@ class ConstraintManager internal constructor(
         spec: ConstraintSpec,
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
-    ): EnsureResult {
-        grammar.requireConstrainable(spec.made())
-        val existing = find(spec)
-        // The constraint made again keeps the aliases its record kept.
-        val aliases = if (existing != null && grammar is SchemaAliases) {
-            recorded().firstOrNull { grammar.matchesIdentity(it.info, spec.made()) }?.aliases.orEmpty()
-        } else {
-            emptyList()
-        }
-        if (existing != null) {
-            run(grammar.dropConstraint(existing))
-        }
-        // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
-        indexManager.fillIn(spec) { true }
-        return when (val result = ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)) {
-            is EnsureResult.Created -> {
-                if (aliases.isNotEmpty()) indexManager.alias(result.info, aliases)
-                EnsureResult.Recreated(existing, result.info)
-            }
-            else -> result
-        }
-    }
+    ): EnsureResult = checkNotNull(driver.item(ItemCall.RECREATE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
 
-    // ----- Internals -----
+    /** The call's arguments as the policy an item's plan reads them from. */
+    private fun policy(violationSampleSize: Int, replaceBlockingIndex: Boolean) =
+        SchemaPolicy(violationSampleSize = violationSampleSize, replaceBlockingIndex = replaceBlockingIndex)
 
     /**
-     * Engines with asynchronous constraint creation (FalkorDB) return immediately from CREATE;
-     * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. A FAILED
-     * constraint is dropped: it enforces nothing, yet stays listed, where it would be taken for the
-     * constraint by anything that reads the store. It is reported as a violation when the data
-     * confirms one, and thrown when it does not.
+     * Polls the constraint [spec] refers to until its build has ended, OPERATIONAL or FAILED, and returns it as last
+     * listed, or null where it is not listed. Each poll reads the status from one listing, so a build that fails
+     * between two reads is never taken for built.
      */
-    private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
-        val info = awaitBuild(spec, untilListed = true)!!
-        if (info.buildFailed) {
-            dropFailedBuild(spec, info)
-            val failed = DrivineException(
-                "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
-                    "but no key it covers repeats in the data"
-            )
-            return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
-        }
-        logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-        return EnsureResult.Created(info)
-    }
-
-    /**
-     * Drops [failed], the constraint [spec] refers to, whose build failed. Another process waiting on the
-     * same build sees it fail too, and may drop it first: FalkorDB then refuses the drop, as there is no
-     * such constraint, which is no error once the failed build is no longer listed.
-     */
-    private fun dropFailedBuild(spec: ConstraintSpec, failed: SchemaItemInfo) {
-        try {
-            run(grammar.dropConstraint(failed))
-        } catch (e: Exception) {
-            if (find(spec)?.buildFailed == true) throw e
-            logger.debug("{} {} on {}{}, whose build had failed, was dropped already: {}", grammar.engine, spec.kind, spec.label, spec.properties, e.message)
-        }
-    }
-
-    /**
-     * Polls the constraint [spec] refers to until its build has ended, OPERATIONAL or FAILED, and returns
-     * it as last listed. Each poll reads the status from one listing, so a build that fails between two
-     * reads is never taken for built. While it is not listed, polling goes on when [untilListed] (a
-     * constraint just made, not yet visible), and otherwise ends with null (one dropped meanwhile).
-     */
-    private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean): SchemaItemInfo? {
+    private fun awaitBuild(spec: ConstraintSpec): SchemaItemInfo? {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
         return executor.poll("constraint build", ::pollOutcome) {
-            awaitBuild(spec, untilListed, deadline)
+            while (System.currentTimeMillis() < deadline) {
+                val info = find(spec) ?: return@poll null
+                if (!info.buildInProgress) return@poll info
+                Thread.sleep(asyncPollInterval.toMillis())
+            }
+            throw DrivineException(
+                "Timed out after $asyncCreationTimeout waiting for constraint on " +
+                    "${spec.label}${spec.properties} to become operational"
+            )
         }
     }
 
-    /** [awaitBuild], polling until [deadline]. */
-    private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean, deadline: Long): SchemaItemInfo? {
-        while (System.currentTimeMillis() < deadline) {
-            val info = find(spec)
-            if (info == null && !untilListed) return null
-            if (info != null && !info.buildInProgress) return info
-            Thread.sleep(asyncPollInterval.toMillis())
-        }
-        throw DrivineException(
-            "Timed out after $asyncCreationTimeout waiting for constraint on " +
-                "${spec.label}${spec.properties} to become operational"
-        )
-    }
-
-    /**
-     * The violation a failure to make [spec] is suspected of, confirmed against the data: the key
-     * values that repeat, at most [limit] of them (none when [limit] is 0 or less, though the data is still
-     * read). Null when no key repeats, or the data cannot be read, so that a failure with another
-     * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
-     * why the data could not be read.
-     */
     /** How a poll of a constraint's build ended, as a [SchemaStatementTrace] observer is told. */
     private fun pollOutcome(polled: SchemaItemInfo?): String = when {
         polled == null -> "absent"
         polled.buildFailed -> "failed"
         else -> "built"
     }
-
-    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? =
-        repeatedKeys(spec, limit, failure)?.takeIf { it.isNotEmpty() }?.let { violation(spec, it, limit) }
-
-    /**
-     * The key values of [spec] that repeat in the data, [limit] of them at most and at least one;
-     * null when the data cannot be read, which [failure], when there is one, keeps.
-     */
-    private fun repeatedKeys(spec: ConstraintSpec, limit: Int, failure: Throwable?): List<Map<String, Any?>>? = try {
-        executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
-            .filterIsInstance<Map<*, *>>()
-            .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
-    } catch (e: Exception) {
-        logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
-        failure?.addSuppressed(e)
-        null
-    }
-
-    private fun violation(spec: ConstraintSpec, repeated: List<Map<String, Any?>>, limit: Int): EnsureResult.Violation {
-        logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
-        return EnsureResult.Violation(spec, repeated.take(limit.coerceAtLeast(0)))
-    }
-
-    /**
-     * The plain range index over [spec]'s label and properties, in its order, that the engine said
-     * is in the way of it; null when there is none, and the failure is then not the one it seemed.
-     */
-    private fun blockingIndex(spec: ConstraintSpec): SchemaItemInfo? =
-        indexManager.list().firstOrNull {
-            it.kind == SchemaItemKind.RANGE_INDEX && it.label == spec.label && it.properties == spec.properties
-        }
 
     /**
      * Runs an introspection query, treating failures as "nothing exists yet". The query string is

@@ -51,7 +51,7 @@ import java.sql.SQLException
  * listed as [INCOMPLETE] made again, what is kept of the catalog read again once an index has changed,
  * telling a violation from another failure, and sampling the keys a constraint would refuse.
  */
-internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGrammar, SchemaAliases {
+internal class OracleSchemaGrammar(internal val graph: OracleGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = OracleDdl.ENGINE
     override val supportsIfNotExists = true

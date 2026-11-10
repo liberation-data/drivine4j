@@ -3,6 +3,8 @@ package org.drivine.test
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.NativeSchemaCommandExecutor
+import org.drivine.DrivineException
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
@@ -26,6 +28,9 @@ import java.util.Optional
  * @param ddl the grammar the schema managers write with
  * @param schemaGrammar what the manager says its schema grammar is; null for a manager that has none
  * @param asyncCreationTimeout how long [constraints] waits for a constraint's asynchronous build to end
+ * @param native whether the store runs FalkorDB's native commands, as FalkorDB's provider does: each is kept in
+ *   [schema] as its arguments joined by spaces, and answered as a statement of that text is. Without it, one is refused
+ *   as by a provider that has none.
  */
 class RecordingStore(
     override val type: DatabaseType,
@@ -34,6 +39,7 @@ class RecordingStore(
     override val graphName: String? = null,
     override val supportsSchemaManagement: Boolean = true,
     asyncCreationTimeout: Duration = Duration.ofSeconds(30),
+    private val native: Boolean = false,
     private val answer: (Ran) -> Any? = { emptyList<Any?>() },
 ) : PersistenceManager {
 
@@ -60,7 +66,7 @@ class RecordingStore(
         else -> outcome as List<Any?>
     }
 
-    private val provider = object : ConnectionProvider {
+    private val provider = object : ConnectionProvider, NativeSchemaCommandExecutor {
         override val name = "recording"
         override val type = this@RecordingStore.type
         override val subtypeRegistry: SubtypeRegistry? = null
@@ -89,7 +95,21 @@ class RecordingStore(
         }
 
         override fun end() = Unit
+
+        override fun executeNativeSchemaCommand(args: List<String>): Any? {
+            if (!native) {
+                throw DrivineException(
+                    "Schema operation requires native command support, but connection provider '$name' ($type) does not implement NativeSchemaCommandExecutor"
+                )
+            }
+            val text = args.joinToString(" ")
+            schema += text
+            return answered(Ran(text, emptyMap()))
+        }
     }
+
+    /** Runs schema statements on a connection of this store's own, as [indexes] and [constraints] do. */
+    val executor: SchemaExecutor = SchemaExecutor(provider)
 
     override val database: String = "recording"
     override val grammar: CypherGrammar get() = CypherDialect.NEO4J_5.grammar()
