@@ -95,6 +95,12 @@ jobs:
           echo "exit $?"
           "$binary" -a sqlite::memory: --format plain 'RETURN 1/0'
           echo "exit $?"
+          # The same against Neo4j, with the cause of a failure in full.
+          docker run -d --name cli-smoke-neo4j -p 7687:7687 -e NEO4J_AUTH=neo4j/cli-smoke-password neo4j:2026.10.1 > /dev/null
+          for i in $(seq 1 60); do docker exec cli-smoke-neo4j cypher-shell -u neo4j -p cli-smoke-password 'RETURN 1' > /dev/null 2>&1 && break; sleep 2; done
+          DRIVINE_TRACE_ERRORS=true DRIVINE_USER=neo4j DRIVINE_PASSWORD=cli-smoke-password "$binary" -a bolt://localhost:7687 --format json 'RETURN 1 AS n'
+          echo "exit $?"
+          docker rm -f cli-smoke-neo4j > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:

@@ -50,8 +50,10 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
         val result = try {
             Store.open(plan).use { store -> store.run(plan.cypher) }
         } catch (e: Unreachable) {
+            trace(e)
             return fail(ExitCode.UNREACHABLE, "drivine: can't connect to the ${plan.address.store.flag} store: ${e.message}")
         } catch (e: Exception) {
+            trace(e)
             // The store's message, or the compiler's refusal: a statement that failed prints nothing to stdout.
             return fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
         }
@@ -77,6 +79,14 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
     private fun ok(text: String): Int {
         out.write(text)
         return ExitCode.OK
+    }
+
+    /**
+     * [e]'s stack trace, its causes' too, on stderr, where `DRIVINE_TRACE_ERRORS=true`: to see why a store or a native
+     * build fails, where the message alone doesn't say. It isn't part of the contract, and `--log` takes its place.
+     */
+    private fun trace(e: Throwable) {
+        if (env["DRIVINE_TRACE_ERRORS"] == "true") err.write(e.stackTraceToString())
     }
 
     private fun fail(code: Int, message: String): Int {
