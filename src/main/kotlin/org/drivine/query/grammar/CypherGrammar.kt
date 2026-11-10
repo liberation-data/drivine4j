@@ -240,7 +240,7 @@ interface CypherGrammar {
      * @param rootAlias the alias the matched node must be bound to (the view's root field name)
      * @param scoreAlias the alias the normalized similarity must be bound to
      */
-    @Deprecated("The shared module's FullTextSearch writes the full-text head for Neo4j, Memgraph and FalkorDB; to be removed.")
+    @Deprecated("loadMatching takes the full-text head of Neo4j, Memgraph and FalkorDB from the shared module's FullTextSearch, and calls this only for a grammar of another engine: search with loadMatching. To be removed.")
     fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         throw UnsupportedOperationException(
             "Full-text search is not supported on this backend (${this::class.simpleName} has no native full-text index)."
@@ -285,7 +285,7 @@ interface CypherGrammar {
          * @param indexedLabel the label the index is on: when [labels] is that label alone, every hit has it
          *   and there is nothing to check
          */
-        @Deprecated("The shared module's FullTextSearch writes the full-text head for Neo4j, Memgraph and FalkorDB, and scales the scores as this does; to be removed.")
+        @Deprecated("loadMatching takes the full-text head of Neo4j, Memgraph and FalkorDB, which scales the scores as this does, from the shared module's FullTextSearch: search with loadMatching. To be removed.")
         fun normalizedFullTextHead(
             callClause: String,
             rootAlias: String,
@@ -412,7 +412,7 @@ class Neo4j5Grammar(
      * **name**, and asked for its best `n` hits so Lucene collects no more than that. Neo4j returns an
      * unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
      */
-    @Deprecated("The shared module's FullTextSearch writes the full-text head for Neo4j, Memgraph and FalkorDB; to be removed.")
+    @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         moduleFullTextHead(SearchStore.NEO4J, spec, rootAlias, scoreAlias)
 }
@@ -539,7 +539,7 @@ class FalkorDbCypherGrammar(
      * can return `maxScore == 0` (and thus `0/0 = NaN`); [CypherGrammar.normalizedFullTextHead]'s
      * `CASE WHEN max > 0 … ELSE 1.0` guard handles it.
      */
-    @Deprecated("The shared module's FullTextSearch writes the full-text head for Neo4j, Memgraph and FalkorDB; to be removed.")
+    @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         moduleFullTextHead(SearchStore.FALKORDB, spec, rootAlias, scoreAlias)
 }

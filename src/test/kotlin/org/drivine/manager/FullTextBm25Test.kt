@@ -27,7 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Full-text search scores by BM25 on every store (drivine4j#604): Lucene's, on Neo4j, and [org.drivine.backend.sql.Bm25] on the
+ * Full-text search scores by BM25 on every store (drivine4j#604): Lucene's, on Neo4j, and the shared module's BM25 (`org.drivine.cypher.search.Bm25`) on the
  * SQL stores without a text index of their own. A rare term outweighs a common one, a short text outranks a long one that
  * holds a term as often, and a term's count adds less each time it is counted again.
  */

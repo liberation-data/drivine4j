@@ -82,7 +82,7 @@ class MemgraphGrammar(
      * The `CALL` is given the search's index limit, capped at a million: without one `text_search`
      * yields its best 1,000 hits and no more, and a limit near `Int.MAX_VALUE` takes the server down.
      */
-    @Deprecated("The shared module's FullTextSearch writes the full-text head for Neo4j, Memgraph and FalkorDB; to be removed.")
+    @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         moduleFullTextHead(SearchStore.MEMGRAPH, spec, rootAlias, scoreAlias)
 }

@@ -91,7 +91,7 @@ class GraphViewQueryBuilder(
      * @param thresholdParam optional bound parameter name for a `_score >= $param` floor
      */
     @Suppress("DEPRECATION")
-    @Deprecated("loadMatching writes the search's head through the shared module's FullTextSearch, with the parameters it binds; to be removed.")
+    @Deprecated("loadMatching writes the search's head through the shared module's FullTextSearch, with the parameters it binds: search with loadMatching. To be removed.")
     fun buildFullTextQuery(
         fullTextSpec: FullTextQuerySpec,
         thresholdParam: String? = null,

@@ -2,7 +2,9 @@ package org.drivine.query
 
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.query
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.grammar.FalkorDbCypherGrammar
+import org.drivine.query.grammar.FullTextQuerySpec
 import org.drivine.query.grammar.MemgraphGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.sort.ApocSortMapsEmitter
@@ -145,5 +147,51 @@ class FullTextIndexBoundTest {
         assertTrue(afterHead.contains("WITH n, _score\nLIMIT \$_fullTextTopK"), cypher)
         assertEquals(1, Regex("ORDER BY").findAll(afterHead).count(), cypher)
         assertTrue(afterHead.trimEnd().endsWith("ORDER BY _score DESC"), cypher)
+    }
+
+    @Test
+    fun `every engine binds the query and the limit the shared module's head names`() {
+        val engines = listOf(neo4j, FalkorDbCypherGrammar(CallSubqueryEmitter()), MemgraphGrammar(CallSubqueryEmitter()))
+        engines.forEach { grammar ->
+            val plan = FullTextSearchPlanner.planFiltered(
+                ArticleNode::class.java,
+                GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE).apply { where { query.title eq "Graphs" } },
+                "graph", 8, 0.0, grammar,
+            )
+            val named = Regex("""\$(_cy_ft\w+)""").findAll(plan.cypher).map { it.groupValues[1] }.toSet()
+
+            // Every parameter the head names is bound, the query as the caller gave it; the grammar's own names are not bound.
+            assertTrue(named.isNotEmpty() && named.all { it in plan.bindings }, "${grammar::class.simpleName}: $named not in ${plan.bindings}")
+            assertTrue("graph" in named.map { plan.bindings[it] }, "${grammar::class.simpleName}: ${plan.bindings}")
+            assertEquals(80, indexLimit(plan))
+            assertTrue(FullTextSearchPlanner.QUERY_PARAM !in plan.bindings && FullTextSearchPlanner.INDEX_LIMIT_PARAM !in plan.bindings, plan.bindings.toString())
+            // The caller's predicate keeps its own parameter beside the head's.
+            assertTrue(plan.bindings.keys.any { it.startsWith("param_") }, plan.bindings.toString())
+        }
+    }
+
+    @Test
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    fun `a grammar of another engine still writes its own head, bound under the planner's names`() {
+        val asked = mutableListOf<FullTextQuerySpec>()
+        val custom = object : CypherGrammar by neo4j {
+            override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String {
+                asked += spec
+                return "CALL custom.search(\$${spec.queryParam}, \$${spec.indexLimitParam}) YIELD node, score\n" +
+                    "WITH node AS $rootAlias, score AS $scoreAlias"
+            }
+        }
+        val plan = FullTextSearchPlanner.planFiltered(
+            ArticleNode::class.java,
+            GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE).apply { where { query.title eq "Graphs" } },
+            "graph", 8, 0.0, custom,
+        )
+
+        assertTrue(plan.cypher.startsWith("CALL custom.search(\$_fullTextQuery, \$_fullTextIndexLimit)"), plan.cypher)
+        assertEquals(listOf("Article"), asked.single().labels)
+        assertEquals("graph", plan.bindings[FullTextSearchPlanner.QUERY_PARAM])
+        assertEquals(80, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(80, plan.indexK)
+        assertTrue(plan.bindings.keys.none { it.startsWith("_cy_ft") }, plan.bindings.toString())
     }
 }
