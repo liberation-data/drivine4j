@@ -254,6 +254,7 @@ class SqliteIdsNotReusedTest {
             val refused = assertFailsWith<ReusedIdsException> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN n"))) }
             assertEquals(refusal("drivine", fileOf(path)), refused.message)
             assertFailsWith<ReusedIdsException> { pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Person)"))) }
+            assertFailsWith<ReusedIdsException> { pm.queryResult(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN n"))) }
         } finally {
             provider.end()
         }

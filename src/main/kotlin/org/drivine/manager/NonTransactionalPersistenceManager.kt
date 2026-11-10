@@ -2,6 +2,7 @@ package org.drivine.manager
 
 import org.drivine.DrivineException
 import org.drivine.NonAtomicBatchException
+import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.PinnedConnections
@@ -70,15 +71,7 @@ class NonTransactionalPersistenceManager(
             commands.run(ddl)
             return emptyList()
         }
-        // On the connection a schema command holds, where one does: see SchemaCommands.
-        return try {
-            PinnedConnections.on(connectionProvider) { it.query(spec) }
-        } catch (e: ReusedIdsException) {
-            // The graph is refused as the connection is had, not the statement: given as it is (#713).
-            throw e
-        } catch (e: Exception) {
-            throw DrivineException.withRootCause(e, spec)
-        }
+        return onConnection(spec) { it.query(spec) }
     }
 
     override fun queryResult(spec: QuerySpecification<*>): QueryResult {
@@ -87,13 +80,17 @@ class NonTransactionalPersistenceManager(
             commands.run(ddl)
             return QueryResults.NONE
         }
-        return try {
-            PinnedConnections.on(connectionProvider) { it.queryResult(spec) }
-        } catch (e: ReusedIdsException) {
-            throw e
-        } catch (e: Exception) {
-            throw DrivineException.withRootCause(e, spec)
-        }
+        return onConnection(spec) { it.queryResult(spec) }
+    }
+
+    /** Runs [spec] by [run] on the connection a schema command holds, where one does: see SchemaCommands. */
+    private fun <R> onConnection(spec: QuerySpecification<*>, run: (Connection) -> R): R = try {
+        PinnedConnections.on(connectionProvider, run)
+    } catch (e: ReusedIdsException) {
+        // The graph is refused as the connection is had, not the statement: given as it is (#713).
+        throw e
+    } catch (e: Exception) {
+        throw DrivineException.withRootCause(e, spec)
     }
 
     override fun execute(spec: QuerySpecification<*>) {
