@@ -2,6 +2,8 @@ package org.drivine.schema
 
 import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnection
 import org.drivine.connection.NativeSchemaCommandExecutor
 import org.drivine.connection.PinnedConnections
 import org.drivine.query.QuerySpecification
@@ -30,7 +32,15 @@ class SchemaExecutor internal constructor(
     /** Executes a single DDL statement. */
     fun execute(statement: SchemaStatement) {
         when (statement) {
-            is SchemaStatement.Cypher -> query(statement.statement)
+            is SchemaStatement.Cypher -> if (connectionProvider.type == DatabaseType.POSTGRES && INDEX_BUILD.containsMatchIn(statement.statement)) {
+                // A build in parallel leaves its session holding shared memory: see JdbcConnection.buildingIndex.
+                PinnedConnections.on(connectionProvider) { connection ->
+                    val build = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
+                    (connection as? JdbcConnection)?.buildingIndex(build) ?: build()
+                }
+            } else {
+                query(statement.statement)
+            }
 
             is SchemaStatement.Native -> {
                 val nativeExecutor = connectionProvider as? NativeSchemaCommandExecutor
@@ -47,5 +57,10 @@ class SchemaExecutor internal constructor(
     /** Executes DDL statements in order. */
     fun execute(statements: List<SchemaStatement>) {
         statements.forEach { execute(it) }
+    }
+
+    private companion object {
+        /** A Postgres statement that builds an index, as PostgresSchemaGrammar writes one: a uniqueness constraint's too. */
+        val INDEX_BUILD = Regex("""^\s*CREATE\s+(UNIQUE\s+)?INDEX\b""", RegexOption.IGNORE_CASE)
     }
 }

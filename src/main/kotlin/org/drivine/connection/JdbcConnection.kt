@@ -88,6 +88,21 @@ class JdbcConnection(
      */
     internal var sqliteVersion = SqliteVersion()
 
+    /**
+     * On Postgres, closes the session for good, out of its pool, where its pool can (HikariCP's `evictConnection`); null
+     * where it cannot. See [buildingIndex].
+     */
+    internal var evictor: ((java.sql.Connection) -> Unit)? = null
+
+    /** On Postgres, why an index build on this connection cannot have its session closed after it; null where it can. */
+    internal var noEviction: String? = "it is not a Postgres connection"
+
+    /** Called with [noEviction]'s reason where an index build runs with no parallel workers instead: its provider logs it once. */
+    internal var evictionRefused: (String) -> Unit = {}
+
+    /** Whether [release] closes the session for good rather than giving it back to its pool: an index build ran on it. */
+    private var evicting = false
+
     /** When the open transaction began, by [System.nanoTime]. */
     private var startedAt = 0L
 
@@ -273,15 +288,62 @@ class JdbcConnection(
     }
 
     /**
+     * Runs [block], an index build on Postgres, so that its session keeps no shared memory in its pool after it
+     * (liberation-data/drivine4j#626). A backend that has run anything in parallel, as a `CREATE INDEX` over a table past
+     * `min_parallel_table_scan_size` is, keeps a dynamic shared memory segment for as long as it lives, and a pool keeps
+     * it alive: two of them were enough that an HNSW build, which asks for nearly all of `maintenance_work_mem` as one
+     * segment, failed in a 64 MB `/dev/shm`.
+     *
+     * Where this connection's session is the build's own, out of a HikariCP pool, the build runs as it is, in parallel,
+     * and [release] closes the session for good, with whatever ended the build, and the segment goes with it. Where it
+     * cannot be ([noEviction]): another pool, which has no way to close one of its sessions for good, or a caller's
+     * transaction's session, which closing would end partway through, the build runs with no parallel workers
+     * (`max_parallel_maintenance_workers` 0), set back after to what it was.
+     */
+    internal fun <T> buildingIndex(block: () -> T): T {
+        val refusal = noEviction ?: "it is in a transaction".takeIf { inTransaction } ?: "its pool cannot close a session for good".takeIf { evictor == null }
+        if (refusal == null) {
+            evicting = true
+            return block()
+        }
+        evictionRefused(refusal)
+        val previous = connection.createStatement().use { st ->
+            st.executeQuery("SELECT current_setting('$PARALLEL_WORKERS')").use { it.next(); it.getString(1) }
+        }
+        setParallelWorkers("0")
+        try {
+            return block()
+        } finally {
+            // In a caller's transaction that the build failed, this fails too, and the transaction's rollback sets it back.
+            runCatching { setParallelWorkers(previous) }
+        }
+    }
+
+    private fun setParallelWorkers(value: String) {
+        connection.prepareStatement("SELECT set_config('$PARALLEL_WORKERS', ?, false)").use { st ->
+            st.setString(1, value)
+            st.executeQuery().close()
+        }
+    }
+
+    /**
      * Returns the connection to its pool. A transaction left open is rolled back: nothing is committed by closing. A
      * connection the pool gave committing nothing of itself is given back so ([restoresAutoCommit]); where it cannot be,
-     * that is logged, and it is closed all the same.
+     * that is logged, and it is closed all the same. One an index build ran on is closed for good instead, out of its pool
+     * (see [buildingIndex]), whether the build failed or not.
      */
     override fun release(err: Throwable?) {
         err?.let { logger.warn("Closing connection with error: $it") }
         if (inTransaction) {
             runCatching { rollback() }
             runCatching { endTransaction() }
+        }
+        if (evicting) {
+            evictor?.let { evict ->
+                runCatching { evict(connection) }.onFailure { logger.warn("Could not close the session an index build ran on out of its pool: $it") }
+            }
+            runCatching { connection.close() }
+            return
         }
         if (restoresAutoCommit) {
             runCatching { connection.autoCommit = false }.onFailure {
@@ -294,6 +356,9 @@ class JdbcConnection(
     private companion object {
         /** Past this a string is bound as a CLOB: the longest a PL/SQL `VARCHAR2` holds. */
         const val MAX_STRING = 32_767
+
+        /** The setting [buildingIndex] turns to 0 where a build's session cannot be closed after it. */
+        const val PARALLEL_WORKERS = "max_parallel_maintenance_workers"
     }
 }
 

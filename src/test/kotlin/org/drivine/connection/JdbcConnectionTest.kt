@@ -296,4 +296,95 @@ class JdbcConnectionTest {
         verify(jdbc).close()
         verify(jdbc, never()).rollback()
     }
+
+    /**
+     * A build that fails, as an HNSW build that finds no room in `/dev/shm` does, may have run in parallel as far as it
+     * got, and left its session holding shared memory: its session is closed out of its pool all the same, and not
+     * given back to it (#626).
+     */
+    @Test
+    fun `a Postgres session an index build failed on is closed out of its pool, not given back`() {
+        val evicted = mutableListOf<java.sql.Connection>()
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES).apply {
+            restoresAutoCommit = true
+            noEviction = null
+            evictor = { evicted += it }
+        }
+        val failed = SQLException("could not resize shared memory segment \"/PostgreSQL.1\" to 63999616 bytes: No space left on device")
+
+        assertSame(failed, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw failed } })
+        postgres.release(failed)
+
+        assertEquals(listOf(jdbc), evicted)
+        verify(jdbc).close()
+        // Not turned back to committing nothing of itself, as a session given back to its pool is, and never run with no parallel workers.
+        verify(jdbc, never()).autoCommit = false
+        verify(jdbc, never()).prepareStatement(Mockito.contains("set_config"))
+        verify(jdbc, never()).createStatement()
+    }
+
+    /** A Postgres connection whose session reads `max_parallel_maintenance_workers` as [workers], and sets it with [statement]. */
+    private fun postgresReading(workers: String): JdbcConnection {
+        val setting = Mockito.mock(ResultSet::class.java).also { `when`(it.getString(1)).thenReturn(workers) }
+        val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(anyString())).thenReturn(setting) }
+        `when`(jdbc.createStatement()).thenReturn(read)
+        `when`(statement.executeQuery()).thenReturn(setting)
+        return JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+    }
+
+    /**
+     * A transaction Drivine began on the connection would end partway through were its session closed, so an index build
+     * in it runs with no parallel workers, and the session is given back to its pool, not closed out of it (#626).
+     */
+    @Test
+    fun `a Postgres index build in a transaction Drivine began runs with no parallel workers, and its session is not evicted`() {
+        val evicted = mutableListOf<java.sql.Connection>()
+        val refused = mutableListOf<String>()
+        val postgres = postgresReading("2").apply {
+            noEviction = null
+            evictor = { evicted += it }
+            evictionRefused = { refused += it }
+        }
+        postgres.startTransaction()
+
+        postgres.buildingIndex { }
+        postgres.commitTransaction()
+        postgres.release()
+
+        assertEquals(listOf("it is in a transaction"), refused)
+        verify(statement).setString(1, "0")
+        verify(statement).setString(1, "2")
+        assertEquals(emptyList(), evicted)
+    }
+
+    /** A pool that fails to close a session out of it still has the session closed, rather than taken as given back sound. */
+    @Test
+    fun `a Postgres session whose eviction fails after an index build is closed all the same`() {
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES).apply {
+            restoresAutoCommit = true
+            noEviction = null
+            evictor = { throw IllegalStateException("pool closed") }
+        }
+
+        postgres.buildingIndex { }
+        postgres.release()
+
+        verify(jdbc).close()
+        verify(jdbc, never()).autoCommit = false
+    }
+
+    /**
+     * In a caller's transaction a failed build aborts it, so setting the workers back fails too: the build's failure is the
+     * one thrown, and the transaction's rollback sets the workers back.
+     */
+    @Test
+    fun `a failed Postgres index build in a caller's transaction throws its own failure, not that of setting the workers back`() {
+        val postgres = postgresReading("2").apply { noEviction = "its connection is a transaction's that Drivine did not begin" }
+        val failed = SQLException("could not resize shared memory segment")
+        val aborted = SQLException("current transaction is aborted")
+        Mockito.doThrow(aborted).`when`(statement).setString(1, "2")
+
+        assertSame(failed, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw failed } })
+        verify(statement).setString(1, "0")
+    }
 }
