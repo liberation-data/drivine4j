@@ -7,7 +7,9 @@ import org.drivine.annotation.Direction
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.sql.under
 import org.drivine.manager.PersistenceManager
-import org.drivine.backend.sql.TextQuery
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.SearchStore
 import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.VectorIndexResolver
 import org.drivine.schema.SchemaItemKind
@@ -69,10 +71,18 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val indexed = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties) != null
-        val candidates = select.matching(index.properties, TextQuery.parse(text), indexed)
+        val candidates = select.matching(index.properties, text, indexed = fullTextMade(index.label, index.properties))
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
         return ScoredSearchPlan(statement.statement, statement.bindings)
+    }
+
+    /**
+     * Whether the full-text index on [label]'s [properties] is made, its trigram index there: a row with its details answers
+     * the shared module's lookup of the catalog.
+     */
+    private fun fullTextMade(label: String, properties: List<String>): Boolean {
+        val lookup = requireNotNull(FullTextSearch.lookup(SearchStore.POSTGRES, GraphOptions(graph.name), label, properties))
+        return persistenceManager.query(QuerySpecification.withStatement(lookup.sql).bind(lookup.parameters).transform(Map::class.java)).firstOrNull() != null
     }
 
     /** The details of a recorded index of [kind] on [label]'s [properties] that is there; null when it has not been made. */

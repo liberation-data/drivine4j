@@ -1,7 +1,12 @@
 package org.drivine.backend.oracle
 
-import org.drivine.backend.sql.TextQuery
 import org.drivine.annotation.Direction
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchPlan
+import org.drivine.cypher.api.SearchRequest
+import org.drivine.cypher.api.SearchStore
 import org.drivine.query.ActorDirectorsByReleaseYear
 import org.drivine.query.JavaActorDirectorsLatestFirst
 import org.drivine.query.dsl.CollectionSortSpec
@@ -23,6 +28,7 @@ import sample.stateless.ClaimView
 import sample.stateless.Dossier
 import sample.stateless.UndeclaredAggregate
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -522,74 +528,49 @@ class OracleSelectTest {
         assertEquals(mapOf<String, Any?>("_p0" to listOf(0.5f), "_p1" to 4), select.bindings())
     }
 
+    /** The search the shared module plans for Shelf's [keys] on Oracle, which [OracleSelect.matching] ranks the roots by. */
+    private fun planned(keys: List<String>, query: String, texts: String? = null): SearchPlan =
+        FullTextSearch.plan(SearchStore.ORACLE, GraphOptions("g"), SearchRequest(listOf("Shelf"), keys, query, SearchIndex(oracleText = texts))) as SearchPlan
+
     @Test
-    fun `a text search without an index counts each term on its own, keeps the required and excluded, and scores by BM25`() {
+    fun `a text search without an index ranks the roots as the shared module does, and joins them back to the node table`() {
         val select = select(Shelf::class.java)
-        val sql = select.matching(listOf("title"), TextQuery.parse("graph +data -noise")).squashed()
-        // The text is lowered to match a term in, and measured as it is.
-        assertTrue(sql.contains("SELECT c.nid, LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) AS text, NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len"), sql)
+        val sql = select.matching(listOf("title"), "graph +data -noise").squashed()
+        val plan = planned(listOf("title"), "graph +data -noise")
+        // The module's candidates as it gives them, scored by BM25, each node's row joined back with its document.
+        assertTrue(sql.contains(plan.sql!!.squashed()), sql)
+        assertTrue(sql.startsWith("SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, m.score FROM ("), sql)
+        assertTrue(sql.endsWith(") m JOIN g_node c ON c.nid = m.nid"), sql)
         assertTrue(sql.contains("MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")'))"), sql)
-        // Each term ending where its last word does, less those a word goes on from: Oracle's expressions don't look ahead, and
-        // one that takes the character after a term leaves none before it where the term is written again at once (drivine4j#607).
-        assertTrue(
-            sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) - REGEXP_COUNT(s.text, \$_p1) AS tf1, REGEXP_COUNT(s.text, \$_p2) - REGEXP_COUNT(s.text, \$_p3) AS tf2, REGEXP_COUNT(s.text, \$_p4) - REGEXP_COUNT(s.text, \$_p5) AS r1, REGEXP_COUNT(s.text, \$_p6) - REGEXP_COUNT(s.text, \$_p7) AS x1"),
-            sql,
-        )
-        // Only the nodes that hold a scoring term are counted: every node that holds one is among them, so each term's rarity over them is exact.
-        assertTrue(sql.contains(") s WHERE (REGEXP_LIKE(s.text, \$_p8) OR REGEXP_LIKE(s.text, \$_p9)) ) h"), sql)
-        assertTrue(sql.contains("SUM(CASE WHEN h.tf1 > 0 THEN 1 ELSE 0 END) OVER () AS df1, SUM(CASE WHEN h.tf2 > 0 THEN 1 ELSE 0 END) OVER () AS df2"), sql)
-        // The label's count of nodes and average length, over every node of it, with no term matched.
-        assertTrue(sql.contains("h.*, ( SELECT COUNT(*) FROM ( SELECT NVL(LENGTH(JSON_VALUE(c.props, '$.title' RETURNING CLOB)), 0) AS len FROM GRAPH_TABLE"), sql)
-        assertTrue(sql.contains(") AS n, ( SELECT AVG(l.len) FROM ("), sql)
-        assertTrue(sql.contains("LN(1 + (w.n - w.df1 + 0.5) / (w.df1 + 0.5)) * w.tf1 * 2.2 / (w.tf1 + 1.2 * (0.25 + 0.75 * w.len / NULLIF(w.avglen, 0)))"), sql)
-        // Those that lack a required term, or hold an excluded one, are left out once the rarities are counted.
-        assertTrue(sql.contains(") w WHERE w.r1 > 0 AND w.x1 = 0"), sql)
-        assertTrue(sql.contains(") b JOIN g_node c ON c.nid = b.nid WHERE b.score > 0"), sql)
-        assertTrue(sql.contains("c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, b.score / MAX(b.score) OVER () AS score"), sql)
-        val bound = select.bindings()
-        // Each scoring term's count, the required and the excluded, each as its two expressions; then each scoring term again,
-        // for whether a node holds it.
-        assertEquals((0..9).map { "_p$it" }, bound.keys.toList())
-        val word = { w: String -> "(^|[^[:alnum:]_])$w" }
-        assertEquals(listOf("graph", "data", "data", "noise").flatMap { listOf(word(it), word(it) + "[[:alnum:]_]") }, (0..7).map { bound["_p$it"] })
-        assertEquals(listOf(word("graph"), word("data")).map { "$it(\$|[^[:alnum:]_])" }, listOf(bound["_p8"], bound["_p9"]))
+        // Its parameters are the module's, under the compiler's reserved prefix.
+        assertEquals(plan.parameters, select.bindings())
+        assertTrue(select.bindings().keys.all { it.startsWith("_cy_ft") }, select.bindings().toString())
     }
 
     @Test
-    fun `a text search without an index counts a phrase that repeats a word in the text with each character between words twice`() {
+    fun `a text search through an index asks Oracle Text, as the shared module does`() {
         val select = select(Shelf::class.java)
-        val sql = select.matching(listOf("title"), TextQuery.parse("\"la la\"")).squashed()
-        // Two counts would take different occurrences where one begins inside another: "la la" in "la la land" (drivine4j#607).
-        assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(REGEXP_REPLACE(s.text, '([^[:alnum:]_])', '\\1\\1'), \$_p0) AS tf1 FROM"), sql)
-        assertEquals("(^|[^[:alnum:]_])la[^[:alnum:]_]+la(\$|[^[:alnum:]_])", select.bindings()["_p0"])
+        val sql = select.matching(listOf("title", "body"), "graph +data -noise", texts = "g_t_shelf").squashed()
+        val plan = planned(listOf("title", "body"), "graph +data -noise", texts = "g_t_shelf")
+        assertTrue(sql.contains(plan.sql!!.squashed()), sql)
+        assertTrue(sql.contains("FROM g_t_shelf s WHERE JSON_TEXTCONTAINS(s.doc, '$.title', \$_cy_ft1, 1) OR JSON_TEXTCONTAINS(s.doc, '$.body', \$_cy_ft1, 2)) k"), sql)
+        assertTrue(sql.endsWith(") m JOIN g_node c ON c.nid = m.nid"), sql)
+        assertEquals(mapOf<String, Any?>("_cy_ft1" to "({graph} ACCUM {data}) AND {data} NOT {noise}"), select.bindings())
     }
 
     @Test
-    fun `a text search without an index counts a prefix term, and one with a circled letter, by its one expression`() {
-        // A prefix term takes no character after it, and "ⓐ", a word's to the query and not measured on Oracle, may begin an
-        // occurrence there that two counts would lose (drivine4j#607).
-        listOf("kiw*" to "(^|[^[:alnum:]_])kiw", "bⓐb" to "(^|[^[:alnum:]_])bⓐb(\$|[^[:alnum:]_])").forEach { (query, bound) ->
-            val select = select(Shelf::class.java)
-            val sql = select.matching(listOf("title"), TextQuery.parse(query)).squashed()
-            assertTrue(sql.contains("SELECT s.nid, s.len, REGEXP_COUNT(s.text, \$_p0) AS tf1 FROM"), sql)
-            assertEquals(bound, select.bindings()["_p0"])
-        }
-    }
-
-    @Test
-    fun `a text search with several properties joins their text`() {
-        val sql = select(Shelf::class.java).matching(listOf("title", "body"), TextQuery.parse("graph")).squashed()
-        assertTrue(sql.contains("LOWER(JSON_VALUE(c.props, '$.title' RETURNING CLOB)) || ' ' || LOWER(JSON_VALUE(c.props, '$.body' RETURNING CLOB)) AS text"), sql)
-        assertFalse(sql.contains("AND w."), sql)
-    }
-
-    @Test
-    fun `a text search through an index asks Oracle Text for each property and adds their scores`() {
+    fun `a scored text search binds the module's parameters beside its own`() {
         val select = select(Shelf::class.java)
-        val sql = select.matchingThrough("g_t_shelf", listOf("title", "body"), TextQuery.parse("graph +data -noise")).squashed()
-        assertTrue(sql.contains("SELECT s.nid, SCORE(1) + SCORE(2) AS score FROM g_t_shelf s WHERE JSON_TEXTCONTAINS(s.doc, '$.title', \$_p0, 1) OR JSON_TEXTCONTAINS(s.doc, '$.body', \$_p0, 2)) k"), sql)
-        assertTrue(sql.contains("JOIN g_node c ON c.nid = k.nid WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(c.labels), ']'), '[') || ',\"', ',\"Shelf\",\"') > 0"), sql)
-        assertTrue(sql.endsWith(") h WHERE h.score > 0"), sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "({graph} ACCUM {data}) AND {data} NOT {noise}"), select.bindings())
+        val statement = select.scored(select.matching(listOf("title"), "graph"), emptyList(), 0.5, 3)
+        val module = planned(listOf("title"), "graph").parameters
+        // The threshold and the limit are the select's own, numbered past the module's.
+        assertEquals(module + mapOf("_p${module.size}" to 0.5, "_p${module.size + 1}" to 3), statement.bindings)
+        assertTrue(statement.statement.contains("score >= \$_p${module.size}"), statement.statement)
+    }
+
+    @Test
+    fun `a text query with no word to look for is refused as the shared module refuses it`() {
+        val refused = assertFailsWith<IllegalArgumentException> { select(Shelf::class.java).matching(listOf("title"), "-noise") }
+        assertEquals("A full-text query needs a word to look for: '-noise' has none.", refused.message)
     }
 }

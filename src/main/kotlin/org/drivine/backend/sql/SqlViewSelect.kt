@@ -2,6 +2,13 @@ package org.drivine.backend.sql
 
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.GraphView
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.Refusal
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchPlan
+import org.drivine.cypher.api.SearchRequest
+import org.drivine.cypher.api.SearchStore
 import org.drivine.model.AggregateFieldModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
@@ -9,6 +16,7 @@ import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
 import org.drivine.query.RelationshipDepth
 import org.drivine.query.dsl.CollectionSortSpec
+import org.slf4j.LoggerFactory
 
 /**
  * The walk of a class's model that a SQL store's select makes to read its roots as JSON documents: a
@@ -226,7 +234,28 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
             exists(root, Step.reaching(relationship, GraphTypeLabels.targetLabels(relationship)), scope.row(relationship.fieldName))
         }
 
+    // ----- Full-text search -----
+
+    /**
+     * The roots' nodes whose text under [properties] meets the user's [query], ranked as the shared module's [FullTextSearch]
+     * ranks them on [store], over the graph [graph]: its one query of `nid` and `score`, the best scoring 1, with its
+     * parameters bound in this statement. Each store joins it back to its node table for the rows [scored] reads.
+     *
+     * @throws IllegalArgumentException where the module refuses the query: one with no word to look for
+     */
+    protected fun ranked(store: SearchStore, graph: String, properties: List<String>, query: String, index: SearchIndex): String =
+        when (val planned = FullTextSearch.plan(store, GraphOptions(graph), SearchRequest(rootLabels(), properties, query, index))) {
+            is SearchPlan -> {
+                planned.warnings.forEach { logger.warn(it) }
+                scope.boundAs(planned.parameters)
+                requireNotNull(planned.sql) { "The full-text search on ${store.id} gave no SQL." }
+            }
+            is Refusal -> throw IllegalArgumentException(planned.message)
+        }
+
     companion object {
+        private val logger = LoggerFactory.getLogger(SqlViewSelect::class.java)
+
         /** What a predicate calls a fragment loaded on its own, as the Cypher statements do. */
         const val FRAGMENT_ALIAS = "n"
     }

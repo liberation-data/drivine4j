@@ -1,5 +1,12 @@
 package org.drivine.query.grammar
 
+import org.drivine.cypher.api.FullTextSearch
+import org.drivine.cypher.api.GraphOptions
+import org.drivine.cypher.api.Refusal
+import org.drivine.cypher.api.SearchIndex
+import org.drivine.cypher.api.SearchPlan
+import org.drivine.cypher.api.SearchRequest
+import org.drivine.cypher.api.SearchStore
 import org.drivine.query.indexedNodeLabelCheck
 import org.drivine.query.sort.CollectionSortEmitter
 import org.drivine.schema.SchemaGrammar
@@ -217,18 +224,24 @@ interface CypherGrammar {
      * Emits the *head* of a full-text search: a `CALL` that yields the matching nodes bound to
      * [rootAlias] and a **normalized similarity** in `[0, 1]` bound to [scoreAlias] (higher = more
      * relevant, the same convention on every engine). Raw Lucene/BM25/Tantivy scores are unbounded
-     * and not comparable across engines, so every grammar routes its `CALL` through
-     * [normalizedFullTextHead], which divides each hit by the batch max. The head ends with a `WITH`
+     * and not comparable across engines, so each hit is divided by the batch max: the shared module's
+     * head does so for Neo4j, Memgraph and FalkorDB, and a grammar of another engine routes its `CALL`
+     * through [normalizedFullTextHead], which scales them alike. The head ends with a `WITH`
      * that establishes exactly those two variables — the identical output contract to
      * [vectorSearchHead] — so the rest of the search query (threshold, projection, RETURN, the
      * trailing `LIMIT topK`) composes on top of it unchanged.
      *
      * The default throws — engines without a native full-text index inherit it.
      *
+     * `loadMatching` no longer calls this on the engines the shared module writes the head for (Neo4j,
+     * Memgraph and FalkorDB): it binds the module's own parameters. Their grammars give the module's head
+     * here, bound under [spec]'s names; a grammar of another engine's is still called for its own.
+     *
      * @param spec the resolved index/label + bound parameter names to search with
      * @param rootAlias the alias the matched node must be bound to (the view's root field name)
      * @param scoreAlias the alias the normalized similarity must be bound to
      */
+    @Deprecated("loadMatching takes the full-text head of Neo4j, Memgraph and FalkorDB from the shared module's FullTextSearch, and calls this only for a grammar of another engine: search with loadMatching. To be removed.")
     fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         throw UnsupportedOperationException(
             "Full-text search is not supported on this backend (${this::class.simpleName} has no native full-text index)."
@@ -273,6 +286,7 @@ interface CypherGrammar {
          * @param indexedLabel the label the index is on: when [labels] is that label alone, every hit has it
          *   and there is nothing to check
          */
+        @Deprecated("loadMatching takes the full-text head of Neo4j, Memgraph and FalkorDB, which scales the scores as this does, from the shared module's FullTextSearch: search with loadMatching. To be removed.")
         fun normalizedFullTextHead(
             callClause: String,
             rootAlias: String,
@@ -306,6 +320,34 @@ sealed interface TemporalOrderSupport {
     /** [engine] cannot read a moment as a number, for [reason]. */
     data class Refused(val engine: String, val reason: String) : TemporalOrderSupport
 }
+
+/**
+ * The head the shared module's [FullTextSearch] writes for [store], as [CypherGrammar.fullTextSearchHead] gives it: the
+ * module's parameters named as [spec] names them, its query [FullTextQuerySpec.queryParam] and its index limit
+ * [FullTextQuerySpec.indexLimitParam], for the caller to bind.
+ */
+internal fun moduleFullTextHead(store: SearchStore, spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String {
+    // The module's two parameters told apart by their values: the query is this one, and the index limit the other.
+    val query = "\u0000query"
+    val request = SearchRequest(
+        labels = (listOf(spec.label) + spec.labels).distinct(),
+        properties = spec.properties.ifEmpty { listOf("") },
+        query = query,
+        index = SearchIndex(name = spec.indexName),
+        topK = 1,
+        alias = rootAlias,
+        scoreAlias = scoreAlias,
+    )
+    val plan = when (val planned = FullTextSearch.plan(store, GraphOptions(""), request)) {
+        is SearchPlan -> planned
+        is Refusal -> throw IllegalArgumentException(planned.message)
+    }
+    val names = plan.parameters.mapValues { (_, value) -> if (value == query) spec.queryParam else spec.indexLimitParam }
+    return PARAMETER.replace(requireNotNull(plan.cypher)) { m -> names[m.groupValues[1]]?.let { "\$$it" } ?: m.value }
+}
+
+/** A parameter, as Cypher writes it. */
+private val PARAMETER = Regex("""\$([A-Za-z_][A-Za-z0-9_]*)""")
 
 /** Neo4j 4 and 5 hold a moment as a native temporal value, whose milliseconds since the epoch it gives as a property. */
 private fun neo4jEpochSeconds(moment: String) = TemporalOrderSupport.Written("$moment.epochMillis / 1000.0")
@@ -369,17 +411,11 @@ class Neo4j5Grammar(
     /**
      * `db.index.fulltext.queryNodes(name, query, {limit: n})` — the full-text index is referenced by
      * **name**, and asked for its best `n` hits so Lucene collects no more than that. Neo4j returns an
-     * unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
+     * unbounded Lucene relevance score, which the shared module's head scales to `[0, 1]`.
      */
+    @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
-        CypherGrammar.normalizedFullTextHead(
-            "CALL db.index.fulltext.queryNodes('${spec.indexName}', \$${spec.queryParam}, {limit: \$${spec.indexLimitParam}})",
-            rootAlias,
-            scoreAlias,
-            spec.indexLimitParam,
-            spec.labels,
-            spec.label,
-        )
+        moduleFullTextHead(SearchStore.NEO4J, spec, rootAlias, scoreAlias)
 }
 
 /**
@@ -501,16 +537,10 @@ class FalkorDbCypherGrammar(
     /**
      * `db.idx.fulltext.queryNodes(label, query)` — addressed by **label** (FalkorDB has no index
      * names), searching every full-text-indexed property of that label. FalkorDB is the engine that
-     * can return `maxScore == 0` (and thus `0/0 = NaN`); [CypherGrammar.normalizedFullTextHead]'s
-     * `CASE WHEN max > 0 … ELSE 1.0` guard handles it.
+     * can return `maxScore == 0` (and thus `0/0 = NaN`); the shared module's head guards it with
+     * `CASE WHEN max > 0 … ELSE 1.0`.
      */
+    @Deprecated("loadMatching takes this engine's full-text head from the shared module's FullTextSearch: search with loadMatching. To be removed.")
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
-        CypherGrammar.normalizedFullTextHead(
-            "CALL db.idx.fulltext.queryNodes('${spec.label}', \$${spec.queryParam})",
-            rootAlias,
-            scoreAlias,
-            spec.indexLimitParam,
-            spec.labels,
-            spec.label,
-        )
+        moduleFullTextHead(SearchStore.FALKORDB, spec, rootAlias, scoreAlias)
 }
