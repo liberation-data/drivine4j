@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 /**
  * How closely a SQL store's full-text ranking ([StatelessGraphObjectManager.loadMatching]) agrees with Neo4j's, whose
  * full-text index is Lucene's and scores by BM25 (drivine4j#604). Over a fixed corpus, the chunks of Drivine's own docs at
- * 3a8b0b12 (`fulltext/docs-corpus.json`, each section a node), each query's top hit is compared with Neo4j's, and the top
+ * 3a8b0b12 (the Cypher spec's `search/docs-corpus.json`, synced into `cypher/search/`, each section a node), each query's top hit is compared with Neo4j's, and the top
  * five as sets. Scored by raw term counts, a store let common words outweigh the word a query is about, and long texts win
  * by holding more of everything.
  */
@@ -61,7 +61,7 @@ abstract class FullTextRankingAgreementContract {
         val CORPUS: List<Map<String, Any?>> by lazy {
             @Suppress("UNCHECKED_CAST")
             Neo4jObjectMapper.instance.readValue(
-                FullTextRankingAgreementContract::class.java.getResource("/fulltext/docs-corpus.json")!!, List::class.java,
+                FullTextRankingAgreementContract::class.java.getResource("/cypher/search/docs-corpus.json")!!, List::class.java,
             ) as List<Map<String, Any?>>
         }
 
