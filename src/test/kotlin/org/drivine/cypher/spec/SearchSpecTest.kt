@@ -118,7 +118,8 @@ class SearchSpecTest {
 
     @Test
     fun `a bar for neo4j holds it, and a bar naming no store, or a second bar for a store, fails at once`() {
-        val ranking = SearchSpec.spec.ranking
+        // The spec holds Neo4j to a bar of its own since v0.41.0: left out here, so this one is the only one for neo4j.
+        val ranking = SearchSpec.spec.ranking.let { it.copy(bars = it.bars.filterNot { bar -> "neo4j" in bar.stores }) }
         val neo4j = Bar(listOf("neo4j"), 21, 4.95)
         assertSame(neo4j, ranking.copy(bars = ranking.bars + neo4j).bar("neo4j"))
         assertContains(assertThrows<IllegalArgumentException> { Bar(listOf("neptune"), 1, 1.0) }.message!!, "[neptune]")
