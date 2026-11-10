@@ -101,18 +101,25 @@ abstract class SearchSpecContract {
         }
     }
 
-    /** A full-text index of another shape on a label search.yaml searches, left by another test, is gone once a case is ready. */
+    /**
+     * A full-text index of another shape on a label search.yaml searches, left by another test, is gone once a case is
+     * ready. The file's own indexes are dropped first: on FalkorDB, whose full-text index covers a whole label, one a
+     * case made earlier would take in the one left, and nothing would be left to drop.
+     */
     @Test
     fun `a case searches only the indexes it makes, not one another test left on its label`() {
         assumeTrue(indexed, "$store makes no full-text index")
         val several = spec.indexes.filter { it.properties.size > 1 }
         assertTrue(several.isNotEmpty(), "search.yaml has no index over several properties")
-        several.forEach { pm.indexes.ensure(FullTextIndexSpec(it.label, it.properties.drop(1))) }
-        ready(spec.indexes) {}
         val labels = spec.indexes.map { it.label }.toSet()
-        val made = pm.indexes.list().filter { it.kind == SchemaItemKind.FULLTEXT_INDEX && it.label in labels }
+        fun held() = pm.indexes.list().filter { it.kind == SchemaItemKind.FULLTEXT_INDEX && it.label in labels }
             .map { it.label to it.properties }.toSet()
-        assertTrue(made == spec.indexes.map { it.label to it.properties }.toSet(), "$store holds $made")
+        spec.indexes.forEach { pm.indexes.drop(FullTextIndexSpec(it.label, it.properties)) }
+        val left = several.map { it.label to it.properties.drop(1) }
+        left.forEach { (label, properties) -> pm.indexes.ensure(FullTextIndexSpec(label, properties)) }
+        assertTrue(held().containsAll(left), "$store holds ${held()}, not the indexes left")
+        ready(spec.indexes) {}
+        assertTrue(held() == spec.indexes.map { it.label to it.properties }.toSet(), "$store holds ${held()}")
     }
 
     @Test
