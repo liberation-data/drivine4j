@@ -37,18 +37,21 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
 
     /** Runs [args] and gives the exit code: see [ExitCode]. */
     fun run(args: List<String>): Int {
-        try {
-            return when (val parsed = Args.parse(args)) {
-                Parsed.Help -> ok(Args.USAGE)
-                Parsed.Version -> ok("drivine $VERSION\n")
+        val code = try {
+            when (val parsed = Args.parse(args)) {
+                Parsed.Help -> print { it.write(Args.USAGE) }
+                Parsed.Version -> print { it.write("drivine $VERSION\n") }
                 is Parsed.Run -> run(parsed.invocation.check(env))
             }
         } catch (e: BadInvocation) {
-            return fail(ExitCode.BAD_INVOCATION, e.message.orEmpty())
-        } finally {
-            flush(out)
-            flush(err)
+            fail(ExitCode.BAD_INVOCATION, e.message.orEmpty())
         }
+        try {
+            err.flush()
+        } catch (e: IOException) {
+            // stderr closed by its reader: there's nothing left to tell it.
+        }
+        return code
     }
 
     private fun run(plan: Plan): Int {
@@ -62,29 +65,23 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
             // The store's message, or the compiler's refusal: a statement that failed prints nothing to stdout.
             return fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
         }
+        return print { Renderer.of(plan.format).render(result, it) }
+    }
+
+    /**
+     * Writes to stdout with [write] and flushes it. stdout closed by its reader, as `drivine … | head` closes it, ends
+     * the run with 0: the rows nobody reads aren't printed, with no stack trace. Any other failure to write, as a full
+     * disk under `> file` gives, cuts the output short, so it fails the run with 1.
+     */
+    private fun print(write: (Writer) -> Unit): Int =
         try {
-            Renderer.of(plan.format).render(result, out)
+            write(out)
             out.flush()
+            ExitCode.OK
         } catch (e: IOException) {
-            // stdout closed by its reader, as `drivine … | head` closes it: the statement ran, and the rows nobody reads
-            // aren't printed, with no stack trace.
+            if (closedPipe(e)) ExitCode.OK
+            else fail(ExitCode.STATEMENT_FAILED, "drivine: can't write the result: ${e.message ?: e.javaClass.name}")
         }
-        return ExitCode.OK
-    }
-
-    /** Flushes [stream], where its reader hasn't closed it: see [run]. */
-    private fun flush(stream: Writer) {
-        try {
-            stream.flush()
-        } catch (e: IOException) {
-            // Closed by its reader.
-        }
-    }
-
-    private fun ok(text: String): Int {
-        out.write(text)
-        return ExitCode.OK
-    }
 
     /**
      * [e]'s stack trace, its causes' too, on stderr, where `DRIVINE_TRACE_ERRORS=true`: to see why a store or a native
@@ -101,6 +98,14 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
     }
 
     companion object {
+        /**
+         * Whether [e] is a write to a pipe its reader closed. The JDK's FileOutputStream, and so the native image, which
+         * links the same code, gives EPIPE's text, "Broken pipe" on Linux and macOS alike, and "Stream closed" (or
+         * "Stream Closed") for a stream already closed.
+         */
+        internal fun closedPipe(e: IOException): Boolean =
+            e.message.orEmpty().let { it.equals("Broken pipe", ignoreCase = true) || it.equals("Stream closed", ignoreCase = true) }
+
         /** This build's version, which the build writes into the CLI's resources. */
         val VERSION: String by lazy {
             Cli::class.java.getResourceAsStream("drivine-cli.properties")?.use { stream ->

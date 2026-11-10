@@ -66,7 +66,9 @@ DRIVINE_PASSWORD=… drivine -a postgresql://localhost:5432/graphs -u drivine --
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
-1 when the statement failed, 2 for a bad invocation and 3 when the store can't be reached or refuses the user.
+1 when the statement failed, 2 for a bad invocation and 3 when the store can't be reached or refuses the user. A
+result that can't be written, as on a full disk under `> file`, exits with 1 and says so on stderr; a reader that
+closes the pipe, as `| head` does, isn't a failure, and the run exits with 0.
 
 `DRIVINE_TRACE_ERRORS=true` prints the stack trace of a statement's or a connection's failure, its causes' too, on
 stderr after the message: to see why a store or the native binary fails where the message doesn't say. It's not part of

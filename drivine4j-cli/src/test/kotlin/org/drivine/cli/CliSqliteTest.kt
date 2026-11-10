@@ -72,6 +72,23 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `a stdout that can't be written, as a full disk under a redirect, fails the run with 1 and says so`() {
+        val full = object : java.io.Writer() {
+            override fun write(cbuf: CharArray, off: Int, len: Int) = throw java.io.IOException("No space left on device")
+            override fun flush() = throw java.io.IOException("No space left on device")
+            override fun close() {}
+        }
+        for (args in listOf(memory + listOf("--format", "plain", "RETURN 1 AS one"), listOf("--version"))) {
+            val err = java.io.StringWriter()
+            assertEquals(1, Cli(emptyMap(), full, err).run(args), args.toString())
+            assertEquals("drivine: can't write the result: No space left on device\n", err.toString(), args.toString())
+        }
+        // What the JDK's FileOutputStream gives for a pipe its reader closed, on Linux and macOS, and for a closed stream.
+        for (closed in listOf("Broken pipe", "Stream closed", "Stream Closed")) assertTrue(Cli.closedPipe(java.io.IOException(closed)), closed)
+        assertTrue(!Cli.closedPipe(java.io.IOException("Bad file descriptor")))
+    }
+
+    @Test
     fun `the address may come from DRIVINE_ADDRESS`() {
         assertEquals("one\n1\n", runCli(listOf("RETURN 1 AS one"), mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")).stdout)
     }
