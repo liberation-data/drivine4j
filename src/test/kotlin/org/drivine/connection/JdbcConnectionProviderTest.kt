@@ -996,7 +996,10 @@ class JdbcConnectionProviderTest {
      */
     @Test
     fun `a Postgres index build on a pool that cannot close a session logs once that it runs with no parallel workers`() {
-        val setting = Mockito.mock(java.sql.ResultSet::class.java).also { `when`(it.getString(1)).thenReturn("2") }
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
         val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
         val set = Mockito.mock(PreparedStatement::class.java).also { `when`(it.executeQuery()).thenReturn(setting) }
         val session = Mockito.mock(java.sql.Connection::class.java).also {
@@ -1033,7 +1036,10 @@ class JdbcConnectionProviderTest {
      */
     @Test
     fun `a Postgres index build on a session a HikariCP pool's wrapper hands out wrapped runs with no parallel workers`() {
-        val setting = Mockito.mock(java.sql.ResultSet::class.java).also { `when`(it.getString(1)).thenReturn("2") }
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
         val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
         val set = Mockito.mock(PreparedStatement::class.java).also { `when`(it.executeQuery()).thenReturn(setting) }
         val session = Mockito.mock(java.sql.Connection::class.java).also {
@@ -1065,7 +1071,10 @@ class JdbcConnectionProviderTest {
      */
     @Test
     fun `a Postgres schema statement that builds an index, unique or not, runs as an index build, and no other does`() {
-        val setting = Mockito.mock(java.sql.ResultSet::class.java).also { `when`(it.getString(1)).thenReturn("2") }
+        val setting = Mockito.mock(java.sql.ResultSet::class.java).also {
+            `when`(it.getString(1)).thenReturn("2")
+            `when`(it.getBoolean(2)).thenReturn(true)
+        }
         val read = Mockito.mock(java.sql.Statement::class.java).also { `when`(it.executeQuery(Mockito.anyString())).thenReturn(setting) }
         val session = Mockito.mock(java.sql.Connection::class.java).also {
             `when`(it.autoCommit).thenReturn(true)
