@@ -215,6 +215,13 @@ Without Spring, the timeout is the `SchemaManager`'s last constructor argument: 
 
 ### Per-engine notes
 
+**Where the statements come from.** The statements that make, drop and list each store's indexes and constraints, and on
+Oracle, Postgres and SQLite the graph's tables and what finds them made, are written by the Cypher compiler's module
+(`org.drivine.cypher.store.ddl`, in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)), which
+the three Drivine libraries share, so a store one library made is the store another reads and finds its indexes in. The
+spec's `store.yaml` pins them for each store, byte for byte. drivine4j runs them: it decides what to make, drop or
+recreate, takes the locks and tries again, waits for a build, and tells a violation from another failure.
+
 | | Neo4j | Memgraph | FalkorDB |
 |---|---|---|---|
 | Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |

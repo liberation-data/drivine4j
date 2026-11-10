@@ -19,7 +19,13 @@ say() {
 
 curl -fsSL "$repo/archive/refs/tags/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
 changed=0
-for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml README.md; do
+for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml host.yaml store.yaml README.md; do
+    # A file the spec gained after the tag VERSION names (store.yaml, before the tag that carries it) is copied from the
+    # spec's main ahead of the tag: warned of, not failed, until VERSION moves to a tag that holds it.
+    if [ ! -e "$tmp/$file" ] && [ -e "$dir/$file" ]; then
+        say warning "src/test/resources/cypher/$file is not in the spec at $tag yet. Move to the tag that carries it with scripts/sync-cypher-spec.sh <tag>."
+        continue
+    fi
     if ! diff -q "$tmp/$file" "$dir/$file" > /dev/null; then
         say error "src/test/resources/cypher/$file differs from the spec at $tag. Change the spec, tag it, and run scripts/sync-cypher-spec.sh <tag>."
         changed=1

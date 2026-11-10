@@ -1,6 +1,6 @@
 package org.drivine.schema
 
-import org.drivine.DrivineException
+import org.drivine.cypher.store.ddl.Neo4jDdl
 import org.neo4j.driver.exceptions.Neo4jException
 
 /**
@@ -13,6 +13,10 @@ import org.neo4j.driver.exceptions.Neo4jException
  * - A TEXT index ([TextIndexSpec]) is its own kind, distinct from a FULLTEXT one.
  * - Vector index config uses backtick-quoted dotted keys (`vector.dimensions`,
  *   `vector.similarity_function`).
+ *
+ * The statements are the module's ([Neo4jDdl]), which the three Drivine libraries share; reading what
+ * introspection gives, waiting on an index's build and telling a violation from another failure are this
+ * grammar's.
  *
  * @param elementIdFunction the function that gives a node's own id: `elementId` from Neo4j 5, `id`
  *   on Neo4j 4, which has no `elementId`
@@ -50,74 +54,21 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
     private fun pinnedQuantizationMatches(pinned: Boolean?, observed: Boolean?): Boolean =
         pinned == null || observed == null || pinned == observed
 
-    // ----- DDL emission -----
+    // ----- DDL emission: the module's (Neo4jDdl) -----
 
-    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
-        is VectorIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                """
-                CREATE VECTOR INDEX ${id(spec.effectiveName)} IF NOT EXISTS
-                FOR (n:${id(spec.label)}) ON (n.${id(spec.property)})
-                OPTIONS { indexConfig: { ${vectorIndexConfig(spec)} }}
-                """.trimIndent()
-            )
-        )
+    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = statementsOf { Neo4jDdl.createIndex(spec, existing?.catalogItem()) }
 
-        is RangeIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
-                    "FOR (n:${id(spec.label)}) ON ${propertyList(spec.properties)}"
-            )
-        )
+    /** By name: refused where no name is known for [item]. */
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { Neo4jDdl.dropIndex(item.catalogItem()) }
 
-        is FullTextIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE FULLTEXT INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
-                    "FOR (n:${id(spec.label)}) ON EACH ${eachPropertyList(spec.properties)} " +
-                    "OPTIONS {indexConfig: {${analyzerConfig(spec.analyzer)}}}"
-            )
-        )
+    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = statementsOf { Neo4jDdl.createConstraint(spec) }
 
-        is TextIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE TEXT INDEX `${spec.effectiveName}` IF NOT EXISTS " +
-                    "FOR (n:`${spec.label}`) ON (n.`${spec.property}`)"
-            )
-        )
-    }
-
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> {
-        val name = item.name ?: throw DrivineException(
-            "Cannot drop index on ${item.label}${item.properties}: Neo4j drops indexes by name, " +
-                "but no name is known for this index"
-        )
-        return listOf(SchemaStatement.Cypher("DROP INDEX ${id(name)} IF EXISTS"))
-    }
-
-    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
-        is UniquenessConstraintSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE CONSTRAINT ${id(spec.effectiveName)} IF NOT EXISTS " +
-                    "FOR (n:${id(spec.label)}) REQUIRE ${propertyList(spec.properties)} IS UNIQUE"
-            )
-        )
-    }
-
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> {
-        val name = item.name ?: throw DrivineException(
-            "Cannot drop constraint on ${item.label}${item.properties}: Neo4j drops constraints by name, " +
-                "but no name is known for this constraint"
-        )
-        return listOf(SchemaStatement.Cypher("DROP CONSTRAINT ${id(name)} IF EXISTS"))
-    }
+    /** By name: refused where no name is known for [item]. */
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { Neo4jDdl.dropConstraint(item.catalogItem()) }
 
     // ----- Introspection -----
 
-    override fun listIndexesQuery(kind: SchemaItemKind): String = """
-        SHOW INDEXES
-        YIELD name, type, entityType, labelsOrTypes, properties, options
-        RETURN {name: name, type: type, entityType: entityType, labelsOrTypes: labelsOrTypes, properties: properties, options: options}
-    """.trimIndent()
+    override fun listIndexesQuery(kind: SchemaItemKind): String = Neo4jDdl.listIndexesQuery(kind)
 
     override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> =
         rows.mapNotNull { parseIndexRow(it) }
@@ -179,11 +130,7 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
         return indexConfig?.get("vector.quantization.enabled") as? Boolean
     }
 
-    override fun listConstraintsQuery(): String = """
-        SHOW CONSTRAINTS
-        YIELD name, type, entityType, labelsOrTypes, properties
-        RETURN {name: name, type: type, entityType: entityType, labelsOrTypes: labelsOrTypes, properties: properties}
-    """.trimIndent()
+    override fun listConstraintsQuery(): String = Neo4jDdl.listConstraintsQuery()
 
     override fun parseConstraintRows(rows: List<Any?>): List<SchemaItemInfo> =
         rows.mapNotNull { parseConstraintRow(it) }
@@ -238,52 +185,6 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
     override fun elementId(variable: String): String = "$elementIdFunction($variable)"
 
     // ----- Helpers -----
-
-    /**
-     * A name as Neo4j DDL spells it: always backtick-quoted, so the DDL for a plain name is what it has
-     * always been, and escaped by the rule the other engines share, so a backtick in it stays in the name.
-     */
-    private fun id(name: String): String = SchemaGrammar.quoted(name)
-
-    private fun propertyList(properties: List<String>): String =
-        properties.joinToString(", ", "(", ")") { "n.${id(it)}" }
-
-    /** Fulltext's `ON EACH` takes a bracketed list, not the parenthesized one the other kinds use. */
-    private fun eachPropertyList(properties: List<String>): String =
-        properties.joinToString(", ", "[", "]") { "n.${id(it)}" }
-
-    /**
-     * The `indexConfig` body for a fulltext index. Empty when no analyzer is declared, so Neo4j
-     * applies its own default (`standard-no-stop-words`) rather than us hard-coding one that could
-     * drift from the engine's default across versions.
-     */
-    private fun analyzerConfig(analyzer: String?): String =
-        analyzer?.let { "`fulltext.analyzer`: '$it'" } ?: ""
-
-    /**
-     * The `indexConfig` body for a vector index, as a single line.
-     *
-     * Dimensions and similarity are always emitted; the physical parameters are emitted only when the
-     * spec pins them, so an unpinned schema keeps taking the engine's default rather than freezing
-     * whatever this version of Drivine happened to think the default was.
-     *
-     * Single-line because a multi-line interpolation would defeat the caller's `trimIndent()`: the
-     * continuation lines would set the minimum indent and the surrounding DDL would keep its own.
-     */
-    private fun vectorIndexConfig(spec: VectorIndexSpec): String {
-        val tuning = spec.tuningFor(engine)
-        return listOfNotNull(
-            "`vector.dimensions`: ${spec.dimensions}",
-            "`vector.similarity_function`: '${similarityName(spec.similarity)}'",
-            // `enabled`, not `type`: every Neo4j from 5.x to 2026.10 accepts `enabled`, and
-            // `vector.quantization.type` is refused before 2026.06.
-            neo4jOptions(spec)?.quantizationEnabled?.let { "`vector.quantization.enabled`: $it" },
-            tuning.hnswM?.let { "`vector.hnsw.m`: $it" },
-            tuning.hnswEfConstruction?.let { "`vector.hnsw.ef_construction`: $it" },
-        ).joinToString(", ")
-    }
-
-    private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 
     private fun similarityFromName(name: String): SimilarityFunction? = when (name.lowercase()) {
         "cosine" -> SimilarityFunction.COSINE

@@ -80,7 +80,9 @@ internal object CypherCompile {
 
     /**
      * [compile], with the compiler's refusal thrown as drivine4j's. A refusal's [CompilerException.detail] is null until
-     * the spec's refusals have one (drivine-cypher-spec#62), and DrivineException has no place for it yet.
+     * the spec's refusals have one (drivine-cypher-spec#62), and DrivineException has no place for it yet. The schema
+     * grammars' calls of the module's DDL generators, which refuse what a store cannot make the same way, go through it
+     * too (see `org.drivine.schema.statementsOf`).
      */
     inline fun <T> refusing(compile: () -> T): T = try {
         compile()

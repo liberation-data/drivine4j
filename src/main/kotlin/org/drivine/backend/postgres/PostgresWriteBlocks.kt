@@ -4,6 +4,7 @@ import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.WriteBlocks
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.sql.WriteReturns
+import org.drivine.cypher.store.ddl.PostgresWriteFunctions
 
 /**
  * Postgres carries out a plan by the function the store keeps (see [PostgresWriteFunctions]): the

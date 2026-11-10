@@ -125,8 +125,8 @@ internal class LabelledIndexCatalog(
     companion object {
         private val logger = LoggerFactory.getLogger(LabelledIndexCatalog::class.java)
 
-        /** The labelled indexes recorded for [graph] that are there: see [OracleSchemaGrammar.labelledIndexesQuery]. */
-        fun query(graph: OracleGraph): String = OracleSchemaGrammar(graph).labelledIndexesQuery()
+        /** The labelled indexes recorded for [graph] that are there, as the module lists them: see [org.drivine.cypher.store.ddl.OracleDdl.labelledIndexesQuery]. */
+        fun query(graph: OracleGraph): String = graph.store.labelledIndexesQuery()
 
         private val counts = ConcurrentHashMap<String, AtomicLong>()
 

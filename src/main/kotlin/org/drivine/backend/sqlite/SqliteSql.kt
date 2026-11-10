@@ -4,6 +4,7 @@ import org.drivine.backend.postgres.PostgresSql
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.under
 import org.drivine.cypher.store.SqliteSql as Shared
+import org.drivine.cypher.store.ddl.SqliteDdl
 import org.drivine.model.Stamps
 import org.drivine.schema.SimilarityFunction
 
@@ -34,9 +35,9 @@ internal object SqliteSql {
     /**
      * What a statement whose text values are JSON opens with: drivine's own statements over a SQLite
      * graph return documents as JSON text, and SQLite has no JSON type for a column to say so. See
-     * `JdbcResultMapper`.
+     * `JdbcResultMapper`. The module's catalog listings ([SqliteDdl]) open with it too.
      */
-    const val JSON_ROWS = "/* drivine:json */"
+    const val JSON_ROWS = SqliteDdl.JSON_ROWS
 
     /** As [Shared.literal], which the compiler calls too. */
     fun literal(text: String): String = Shared.literal(text)
@@ -44,11 +45,8 @@ internal object SqliteSql {
     /** As [Shared.quoted], which the compiler calls too. */
     fun quoted(text: String): String = Shared.quoted(text)
 
-    /** The path of the property [key] of a JSON object, as a literal; refused when it is empty, which names no property. */
-    fun path(key: String): String {
-        require(key.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
-        return literal("$.${quoted(key)}")
-    }
+    /** As [Shared.path], which the DDL and the compiler call too. */
+    fun path(key: String): String = Shared.path(key)
 
     /** As [Shared.hasLabel], which the compiler calls too. */
     fun hasLabel(alias: String, label: String): String = Shared.hasLabel(alias, label)

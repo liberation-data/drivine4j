@@ -2,26 +2,21 @@ package org.drivine.backend.postgres
 
 import org.drivine.backend.postgres.PostgresSql.hasLabel
 import org.drivine.backend.postgres.PostgresSql.literal
-import org.drivine.schema.ALIASES
+import org.drivine.backend.sql.SqlGraph
+import org.drivine.cypher.store.ddl.PostgresDdl
 import org.drivine.schema.ConstraintSpec
-import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
-import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaAliases
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
-import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
-import org.drivine.schema.TextIndexSpec
-import org.drivine.schema.UniquenessConstraintSpec
-import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
-import org.drivine.schema.aliasesJson
-import org.drivine.schema.unsupportedTextIndex
+import org.drivine.schema.catalogItem
+import org.drivine.schema.statementsOf
 import java.sql.SQLException
 
 /**
@@ -47,10 +42,14 @@ import java.sql.SQLException
  * What Drivine made is recorded in the graph's catalog table, as on Oracle, and read back from there:
  * an index's expression does not say which label and properties it was made for. An index is named
  * bare, so Postgres keeps its name in lower case, and finds it by the name recorded however it is cased.
+ *
+ * The statements are the module's ([PostgresDdl]), which the three Drivine libraries share, so each makes
+ * and reads the same indexes. What this grammar adds is drivine4j's: reading the catalog's rows, telling a
+ * violation from another failure, and sampling the keys a constraint would refuse.
  */
 internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaGrammar, SchemaAliases {
 
-    override val engine = "Postgres"
+    override val engine = PostgresDdl.ENGINE
     override val supportsIfNotExists = true
     override val supportsNamedItems = true
 
@@ -63,118 +62,25 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
 
     override fun lowerCopies(): LowerCopyStatements = PostgresLowerCopies(graph)
 
-    /** [text] as a schema statement. */
-    private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())
+    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement =
+        SchemaStatement.Cypher(graph.store.aliased(item.catalogItem(), aliases))
 
-    /** [text] as schema statements, after the one that makes the store when it is not there. */
-    private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map(::statement)
+    /** After the block that makes the store when it is not there. */
+    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> =
+        statementsOf { graph.store.createIndex(spec, existing?.catalogItem()) }
 
-    /**
-     * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already; with [updated], a record already there takes [details], and keeps its
-     * aliases (see [SchemaAliases]). Two processes recording it at once record it once.
-     */
-    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}", updated: Boolean = false): String = """
-        INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details)
-        VALUES (${literal(spec.kind.name)}, ${literal(spec.label)}, ${literal(json(spec.properties))}, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)})
-        ON CONFLICT (kind, label, properties) ${if (updated) "DO UPDATE SET details = EXCLUDED.details || jsonb_strip_nulls(jsonb_build_object('$ALIASES', ${graph.catalog}.details -> '$ALIASES'))" else "DO NOTHING"}
-    """
+    /** Forgets [item], and drops the index its record names when nothing else recorded uses it. */
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { graph.store.dropIndex(item.catalogItem()) }
 
-    /**
-     * Forgets [item], and drops what it was made as when nothing else recorded uses it. What is dropped
-     * is the object the record names, and not one named again from the label and the properties, so an
-     * item is dropped as it was made whatever a later version would call it.
-     */
-    private fun forgotten(item: SchemaItemInfo): SchemaStatement {
-        val record = recordOf(item)
-        return statement(
-            """
-            DO ${'$'}forget${'$'}
-            DECLARE
-                v_object text;
-                v_others int;
-            BEGIN
-                SELECT max(object_name) INTO v_object FROM ${graph.catalog} WHERE $record;
-                SELECT count(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object AND NOT ($record);
-                IF v_object IS NOT NULL AND v_others = 0 THEN
-                    -- Written bare, as it was made: Postgres folds the name to lower case either way.
-                    EXECUTE 'DROP INDEX IF EXISTS ' || v_object;
-                END IF;
-                DELETE FROM ${graph.catalog} WHERE $record;
-            END
-            ${'$'}forget${'$'}
-            """
-        )
-    }
+    /** After the block that makes the store when it is not there. */
+    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = statementsOf { graph.store.createConstraint(spec) }
 
-    /** The test of the catalog's key that finds the record of [item]. */
-    private fun recordOf(item: SchemaItemInfo): String =
-        "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { graph.store.dropConstraint(item.catalogItem()) }
 
-    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement {
-        val details = if (aliases.isEmpty()) "details - '$ALIASES'" else "jsonb_set(details, '{$ALIASES}', ${literal(aliasesJson(aliases))}::jsonb)"
-        return statement("UPDATE ${graph.catalog} SET details = $details WHERE ${recordOf(item)}")
-    }
+    /** What is recorded of [kind], and still there: an index dropped by hand is not listed, so that it is made again when asked for. */
+    override fun listIndexesQuery(kind: SchemaItemKind): String = graph.store.listIndexesQuery(kind)
 
-    /**
-     * The partial index over [properties] of the nodes of [label]: each property as a statement reads it,
-     * and the test of the label a statement makes, both of the table's own columns.
-     */
-    private fun over(label: String, properties: List<String>): String =
-        "${graph.nodes} (${properties.joinToString(", ") { "(${PostgresSql.property("", it)})" }}) WHERE ${hasLabel("", label)}"
-
-    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
-        is RangeIndexSpec -> {
-            val name = graph.objectName("ix", listOf(spec.label) + spec.properties)
-            statements("CREATE INDEX IF NOT EXISTS $name ON ${over(spec.label, spec.properties)}", recorded(spec, name))
-        }
-        is VectorIndexSpec -> {
-            // An HNSW index over the embeddings of the label's nodes that are of its size: one of another size is left out, not refused.
-            val property = spec.properties.single()
-            val name = graph.objectName("v", listOf(spec.label, property))
-            statements(
-                "CREATE EXTENSION IF NOT EXISTS vector",
-                "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} USING hnsw ((${PostgresSql.embedding("", property, spec.dimensions)}) ${PostgresSql.operators(spec.similarity)}) " +
-                    "WHERE ${hasLabel("", spec.label)} AND ${PostgresSql.holdsEmbedding("", property, spec.dimensions)}",
-                recorded(spec, name, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
-            )
-        }
-        is FullTextIndexSpec -> {
-            // Trigrams of the text a search reads, which answer whether it holds a term's words.
-            val name = graph.objectName("t", listOf(spec.label) + spec.properties)
-            val details = spec.analyzer?.let { "{\"analyzer\": ${json(listOf(it)).removeSurrounding("[", "]")}}" } ?: "{}"
-            statements(
-                "CREATE EXTENSION IF NOT EXISTS pg_trgm",
-                "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} USING gin ((${PostgresSql.searchedText("", spec.properties)}) gin_trgm_ops) WHERE ${hasLabel("", spec.label)}",
-                recorded(spec, name, details),
-            )
-        }
-        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
-    }
-
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
-
-    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
-        is UniquenessConstraintSpec -> {
-            val name = graph.objectName("uq", listOf(spec.label) + spec.properties)
-            statements("CREATE UNIQUE INDEX IF NOT EXISTS $name ON ${over(spec.label, spec.properties)}", recorded(spec, name))
-        }
-    }
-
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
-
-    /** What is recorded of [kinds], and still there: an index dropped by hand is not listed, so that it is made again when asked for. */
-    private fun listed(kinds: String): String = """
-        SELECT jsonb_build_object('kind', kind, 'label', label, 'properties', properties::jsonb, 'name', name, 'details', details)
-        FROM ${graph.catalog} c
-        WHERE kind IN ($kinds)
-          AND (object_name IS NULL OR to_regclass(object_name) IS NOT NULL)
-        ORDER BY label, properties
-    """.trimIndent()
-
-    override fun listIndexesQuery(kind: SchemaItemKind): String = listed(literal(kind.name))
-
-    override fun listConstraintsQuery(): String = listed(literal(SchemaItemKind.UNIQUENESS_CONSTRAINT.name))
+    override fun listConstraintsQuery(): String = graph.store.listConstraintsQuery()
 
     override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
         val map = row as? Map<*, *> ?: return@mapNotNull null
@@ -214,10 +120,7 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
     }
 
     companion object {
-        /**
-         * The properties of an index as the record of it holds them: part of the catalog's key, so
-         * written here, byte for byte the same each time, as Oracle's grammar writes them.
-         */
-        fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
+        /** The properties of an index as the record of it holds them: see [SqlGraph.json]. */
+        fun json(values: List<String>): String = SqlGraph.json(values)
     }
 }

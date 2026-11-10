@@ -1,6 +1,6 @@
 package org.drivine.schema
 
-import org.drivine.DrivineException
+import org.drivine.cypher.store.ddl.FalkorDbDdl
 
 /**
  * Schema DDL and introspection for FalkorDB.
@@ -15,6 +15,9 @@ import org.drivine.DrivineException
  *   `GRAPH.CONSTRAINT CREATE / DROP`, emitted here as [SchemaStatement.Native] and executed at
  *   driver level. Constraint creation requires an exact-match index on the same properties to
  *   exist first, and runs asynchronously (status `UNDER CONSTRUCTION` → `OPERATIONAL` / `FAILED`).
+ *
+ * The statements are the module's ([FalkorDbDdl]), which the three Drivine libraries share; reading what
+ * introspection gives, matching an index by coverage and waiting on a build are this grammar's.
  */
 class FalkorDbSchemaGrammar : SchemaGrammar {
 
@@ -28,118 +31,32 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     override val constraintCreationIsAsync = true
     override val indexOperationsAreAsync = true
 
-    // ----- DDL emission -----
+    // ----- DDL emission: the module's (FalkorDbDdl) -----
 
     /**
-     * FalkorDB rejects CREATE INDEX statements that mention an already-indexed property
-     * ("Attribute 'x' is already indexed"), so range creation only emits the properties missing
-     * from the label's [existing] index.
+     * FalkorDB rejects a CREATE INDEX that mentions an already-indexed property ("Attribute 'x' is
+     * already indexed"), so a range or full-text index makes only the properties missing from the
+     * label's [existing] index.
      */
-    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
-        is VectorIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                """
-                CREATE VECTOR INDEX FOR (n:${id(spec.label)}) ON (n.${id(spec.property)})
-                OPTIONS {${vectorIndexOptions(spec)}}
-                """.trimIndent()
-            )
-        )
+    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = statementsOf { FalkorDbDdl.createIndex(spec, existing?.catalogItem()) }
 
-        is RangeIndexSpec -> {
-            val alreadyIndexed = existing?.properties?.toSet() ?: emptySet()
-            val missing = spec.properties.filterNot { it in alreadyIndexed }
-            if (missing.isEmpty()) {
-                emptyList()
-            } else {
-                listOf(
-                    SchemaStatement.Cypher(
-                        "CREATE INDEX FOR (n:${id(spec.label)}) ON " +
-                            missing.joinToString(", ", "(", ")") { "n.${id(it)}" }
-                    )
-                )
-            }
-        }
-
-        // Fulltext is Cypher DDL, one statement per property. The `db.idx.fulltext.createNodeIndex`
-        // procedure accepts only a label from FalkorDB 6.0, while this form works on 4.x and 6.x
-        // alike. FalkorDB rejects re-indexing an already-fulltext property ("Attribute 'x' is
-        // already indexed"), so — exactly like the range path — only the properties missing from
-        // [existing]'s fulltext coverage are emitted.
-        is FullTextIndexSpec -> {
-            val alreadyIndexed = existing?.properties?.toSet() ?: emptySet()
-            spec.properties
-                .filterNot { it in alreadyIndexed }
-                .map { property ->
-                    SchemaStatement.Cypher(
-                        "CREATE FULLTEXT INDEX FOR (n:${id(spec.label)}) ON (n.${id(property)})"
-                    )
-                }
-        }
-
-        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
-    }
-
-    /**
-     * FalkorDB indexes are per-property under the hood — emit one DROP per property so that
-     * dropping a narrowed item never removes more than was asked for.
-     */
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {
-        SchemaItemKind.VECTOR_INDEX -> item.properties.map {
-            SchemaStatement.Cypher("DROP VECTOR INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
-        }
-
-        SchemaItemKind.FULLTEXT_INDEX -> item.properties.map {
-            SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
-        }
-
-        else -> item.properties.map {
-            SchemaStatement.Cypher("DROP INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
-        }
-    }
+    /** One drop per property, so that dropping a narrowed item never removes more than was asked for. */
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { FalkorDbDdl.dropIndex(item.catalogItem()) }
 
     /**
      * `GRAPH.CONSTRAINT` takes a label and properties as plain identifiers, and has no way to quote
      * one: a property whose name holds a dot, a bag's key or a lowercased copy, can be indexed and
      * not constrained (FalkorDB/FalkorDB#551).
      */
-    override fun requireConstrainable(spec: ConstraintSpec) {
-        val refused = spec.properties.filterNot { CONSTRAINABLE.matches(it) }.ifEmpty { return }
-        throw DrivineException(
-            "FalkorDB cannot make the ${spec.kind} ${spec.effectiveName} on ${spec.label}${spec.properties}: GRAPH.CONSTRAINT takes only " +
-                "a plain name for a property, and ${refused.joinToString { "'$it'" }} is not one. A uniqueness constraint that ignores " +
-                "case is over the lowercased copy, named so. See https://github.com/FalkorDB/FalkorDB/issues/551"
-        )
-    }
+    override fun requireConstrainable(spec: ConstraintSpec) = refusing { FalkorDbDdl.requireConstrainable(spec) }
 
-    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
-        is UniquenessConstraintSpec -> listOf(
-            SchemaStatement.Native(
-                listOf(
-                    "GRAPH.CONSTRAINT", "CREATE", SchemaStatement.Native.GRAPH_NAME,
-                    "UNIQUE", "NODE", spec.label,
-                    "PROPERTIES", spec.properties.size.toString(),
-                ) + spec.properties
-            )
-        )
-    }
+    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = statementsOf { FalkorDbDdl.createConstraint(spec) }
 
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(
-        SchemaStatement.Native(
-            listOf(
-                "GRAPH.CONSTRAINT", "DROP", SchemaStatement.Native.GRAPH_NAME,
-                "UNIQUE", "NODE", item.label,
-                "PROPERTIES", item.properties.size.toString(),
-            ) + item.properties
-        )
-    )
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { FalkorDbDdl.dropConstraint(item.catalogItem()) }
 
     // ----- Introspection -----
 
-    override fun listIndexesQuery(kind: SchemaItemKind): String = """
-        CALL db.indexes()
-        YIELD label, properties, types, options, entitytype, status
-        RETURN {label: label, properties: properties, types: types, options: options, entitytype: entitytype, status: status}
-    """.trimIndent()
+    override fun listIndexesQuery(kind: SchemaItemKind): String = FalkorDbDdl.listIndexesQuery(kind)
 
     /**
      * One `db.indexes()` row describes all indexes on a label. The `types` map records the index
@@ -236,11 +153,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
         else -> false
     }
 
-    override fun listConstraintsQuery(): String = """
-        CALL db.constraints()
-        YIELD type, label, properties, entitytype, status
-        RETURN {type: type, label: label, properties: properties, entitytype: entitytype, status: status}
-    """.trimIndent()
+    override fun listConstraintsQuery(): String = FalkorDbDdl.listConstraintsQuery()
 
     override fun parseConstraintRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
         val map = row as? Map<*, *> ?: return@mapNotNull null
@@ -291,35 +204,6 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     }
 
     // ----- Helpers -----
-
-    /**
-     * The `OPTIONS` body for a vector index.
-     *
-     * FalkorDB names the HNSW parameters `M` / `efConstruction`, and adds `efRuntime`, which is a
-     * search-time knob rather than a build-time one — hence its home on [FalkorDbVectorOptions] rather
-     * than the portable layer. As everywhere else, an unpinned parameter is simply omitted so the engine
-     * applies its own default.
-     */
-    private fun vectorIndexOptions(spec: VectorIndexSpec): String {
-        val tuning = spec.tuningFor(engine)
-        val options = spec.optionsFor(engine) as? FalkorDbVectorOptions
-        return listOfNotNull(
-            "dimension: ${spec.dimensions}",
-            "similarityFunction: '${similarityName(spec.similarity)}'",
-            tuning.hnswM?.let { "M: $it" },
-            tuning.hnswEfConstruction?.let { "efConstruction: $it" },
-            options?.efRuntime?.let { "efRuntime: $it" },
-        ).joinToString(", ")
-    }
-
-    private fun id(name: String): String = SchemaGrammar.identifier(name)
-
-    private companion object {
-        /** A name `GRAPH.CONSTRAINT` takes, as FalkorDB checks it. */
-        val CONSTRAINABLE = Regex("[A-Za-z_][A-Za-z0-9_]*")
-    }
-
-    private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 
     private fun similarityFromName(name: String): SimilarityFunction? = when (name.lowercase()) {
         "cosine" -> SimilarityFunction.COSINE

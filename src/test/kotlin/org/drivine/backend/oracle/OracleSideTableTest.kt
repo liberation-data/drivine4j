@@ -1,12 +1,16 @@
 package org.drivine.backend.oracle
 
+import org.drivine.cypher.store.ddl.OracleSideTable
 import org.drivine.query.SqlParameters
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** The statements that make and fill a table beside the nodes, apart from the index a grammar puts over it. */
+/**
+ * The statements that make and fill a table beside the nodes, apart from the index a grammar puts over it: the module's
+ * ([OracleSideTable]), as drivine4j runs them, its trigger through JDBC among them.
+ */
 class OracleSideTableTest {
 
     private fun side(tolerant: Boolean = false, filter: ((String) -> String)? = null) = OracleSideTable(

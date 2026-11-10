@@ -2,6 +2,8 @@ package org.drivine.backend.postgres
 
 import org.drivine.backend.sql.DdlContention
 import org.drivine.backend.sql.SqlGraph
+import org.drivine.cypher.store.ddl.PostgresDdl
+import org.drivine.cypher.store.ddl.PostgresWriteFunctions
 import org.drivine.manager.PersistenceManager
 
 /**
@@ -13,76 +15,25 @@ import org.drivine.manager.PersistenceManager
  *
  * Names are written bare, so Postgres folds them to lower case: a graph called `Contracts` keeps its
  * nodes in `contracts_node`, and is the same graph as one called `contracts`.
+ *
+ * The tables, the functions and the block that makes them are the module's ([PostgresDdl]); running the
+ * block, again when another session's writes turn it away, is drivine4j's ([ensure]).
  */
-internal class PostgresGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAME) {
+internal class PostgresGraph(name: String) : SqlGraph(name) {
+
+    override val store = PostgresDdl(name)
 
     /** The functions the graph is written through. */
-    val writes = PostgresWriteFunctions(this)
+    val writes: PostgresWriteFunctions = store.writes
 
     /** What makes the store, when it is not there. Each statement is safe to run again. */
-    val ddl: List<String> = listOf(
-        """
-        CREATE TABLE IF NOT EXISTS $nodes (
-            nid    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            labels jsonb NOT NULL,
-            props  jsonb NOT NULL,
-            stamp  varchar(33)
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS $edges (
-            eid   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            src   bigint NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
-            dst   bigint NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
-            type  varchar(128) NOT NULL,
-            props jsonb NOT NULL DEFAULT '{}'
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS $catalog (
-            kind        varchar(40) NOT NULL,
-            label       varchar(400) NOT NULL,
-            properties  varchar(2000) NOT NULL,
-            name        varchar(400),
-            object_name varchar($MAX_OBJECT_NAME),
-            details     jsonb NOT NULL,
-            PRIMARY KEY (kind, label, properties)
-        )
-        """,
-        "CREATE INDEX IF NOT EXISTS ${name}_edge_src ON $edges (src, type)",
-        "CREATE INDEX IF NOT EXISTS ${name}_edge_dst ON $edges (dst, type)",
-        "CREATE INDEX IF NOT EXISTS ${name}_node_labels ON $nodes USING GIN (labels jsonb_path_ops)",
-    ).map { it.trimIndent() } + writes.ddl + "COMMENT ON TABLE $nodes IS '$VERSION'"
+    val ddl: List<String> = store.ddl
 
     /**
-     * The block that makes the store when it is not there, and does nothing when it is. The node table's
-     * comment, written last, says which version made the store: one this version made is left alone,
-     * and the rest is made again over one an earlier version made, which keeps its rows and has its
-     * functions replaced. The block takes a lock of its own for the graph first, so two processes that
-     * each find the store missing make it one after the other, and the second, looking again once it
-     * has the lock, makes nothing. Postgres runs a block's schema statements in its transaction, so the
-     * store is made whole or not at all.
+     * The block that makes the store when it is not there, and does nothing when it is, under a lock of
+     * the graph's own: see [PostgresDdl.ensuring].
      */
-    val ensuring: String = """
-        DO ${'$'}ensure${'$'}
-        BEGIN
-            IF obj_description(to_regclass('$nodes'), 'pg_class') IS DISTINCT FROM '$VERSION' THEN
-                PERFORM pg_advisory_xact_lock(hashtext('drivine:$name'));
-                -- Looked for again under the lock: another session may have made it while this one waited.
-                IF obj_description(to_regclass('$nodes'), 'pg_class') IS DISTINCT FROM '$VERSION' THEN
-                    -- pgvector, for vector search, where the server has it and the user may make it: without it,
-                    -- everything but a vector search works.
-                    BEGIN
-                        CREATE EXTENSION IF NOT EXISTS vector;
-                    EXCEPTION WHEN OTHERS THEN
-                        NULL;
-                    END;
-        ${ddl.joinToString("\n") { "            ${it.replace("\n", "\n            ")};" }}
-                END IF;
-            END IF;
-        END
-        ${'$'}ensure${'$'}
-    """.trimIndent()
+    val ensuring: String = store.ensuring
 
     /**
      * Runs [ensuring], again after a pause when Postgres turned it away as a deadlock (`40P01`) with other sessions'
@@ -94,17 +45,11 @@ internal class PostgresGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_N
     }
 
     companion object {
-        /** The store's name, for what is said of a graph name it cannot take. */
-        private const val ENGINE = "Postgres"
-
-        /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
-        fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
-
-        /** Postgres names are at most 63 characters: past that, it cuts them short without a word. */
-        private const val MAX_OBJECT_NAME = 63
+        /** Why [name] cannot name a graph here; null where it can (see [PostgresDdl.refusal]). */
+        fun refusal(name: String): String? = PostgresDdl.refusal(name)
 
         /** What the node table's comment says of a store this version made. */
-        const val VERSION = "drivine:7"
+        const val VERSION = PostgresDdl.VERSION
 
         /** The graph [persistenceManager] speaks to, made in the store if it is not there. */
         fun ensured(persistenceManager: PersistenceManager): PostgresGraph =

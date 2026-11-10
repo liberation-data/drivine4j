@@ -2,7 +2,7 @@ package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.DdlContention
 import org.drivine.backend.sql.SqlGraph
-import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.cypher.store.ddl.OracleDdl
 import org.drivine.manager.PersistenceManager
 
 /**
@@ -15,134 +15,37 @@ import org.drivine.manager.PersistenceManager
  * The graph gives each node one more property, `doc`: the node as the map a load returns for it,
  * its properties with its labels and its stamp among them. A read projects `v.doc` and is no longer
  * concerned with how the map is put together.
+ *
+ * The tables, the property graph, the functions a compiled statement calls and the block that makes them
+ * are the module's ([OracleDdl]). Running the block, again when another session's DDL turns it away, and
+ * asking which of the functions a session may call ([OracleStoredFunctions]) are drivine4j's ([ensure]).
  */
-internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAME) {
+internal class OracleGraph(name: String) : SqlGraph(name) {
+
+    override val store = OracleDdl(name)
 
     /** What makes the store, when it is not there. Each statement is safe to run again. */
-    val ddl: List<String> = listOf(
-        """
-        CREATE TABLE IF NOT EXISTS $nodes (
-            nid    NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            labels JSON NOT NULL,
-            props  JSON NOT NULL,
-            stamp  VARCHAR2(33)
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS $edges (
-            eid   NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            src   NUMBER NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
-            dst   NUMBER NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
-            type  VARCHAR2(128) NOT NULL,
-            props JSON DEFAULT '{}' NOT NULL
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS $catalog (
-            kind        VARCHAR2(40) NOT NULL,
-            label       VARCHAR2(400) NOT NULL,
-            properties  VARCHAR2(2000) NOT NULL,
-            name        VARCHAR2(400),
-            object_name VARCHAR2(128),
-            details     JSON NOT NULL,
-            PRIMARY KEY (kind, label, properties)
-        )
-        """,
-        "CREATE INDEX IF NOT EXISTS ${name}_edge_src ON $edges (src, type)",
-        "CREATE INDEX IF NOT EXISTS ${name}_edge_dst ON $edges (dst, type)",
-        "CREATE MULTIVALUE INDEX IF NOT EXISTS ${name}_node_labels ON $nodes n (n.labels.string())",
-        """
-        CREATE OR REPLACE PROPERTY GRAPH $name
-            VERTEX TABLES ($nodes KEY (nid) LABEL node PROPERTIES (nid, labels, props, stamp, ${OracleSql.transform("")} AS doc))
-            EDGE TABLES ($edges KEY (eid)
-                SOURCE KEY (src) REFERENCES $nodes (nid)
-                DESTINATION KEY (dst) REFERENCES $nodes (nid)
-                LABEL edge PROPERTIES (eid, src, dst, type, props))
-        """,
-    ).map { it.trimIndent() }
+    val ddl: List<String> = store.ddl
 
-    /**
-     * The function a compiled Cypher statement compares two values that may hold a null by, list item by list item and
-     * map key by map key (see `OracleCypherCompiler.nullsEqual`): a statement that writes is a PL/SQL block, whose queries
-     * call no function of its own, so the store keeps it. Drivine for TypeScript and for Python make it byte for byte alike.
-     */
-    val nullsEqual: String = OracleCypherCompiler.nullsEqualName(name)
+    /** The function a compiled Cypher statement compares two values that may hold a null by: see [OracleDdl.nullsEqual]. */
+    val nullsEqual: String = store.nullsEqual
 
-    /**
-     * The functions a compiled Cypher statement renumbers a year that may be BC by, as it reads an ISO text ([era]) and as
-     * it writes one ([eraDate]): each reads its text once, where the SQL it stands for read it three or four times, which
-     * Oracle took far longer to plan (see `OracleTemporalSql.era`). Drivine for TypeScript and for Python make them byte
-     * for byte alike.
-     */
-    val era: String = OracleCypherCompiler.eraName(name)
+    /** The functions a compiled Cypher statement renumbers a year that may be BC by: see [OracleDdl.era]. */
+    val era: String = store.era
 
     /** See [era]. */
-    val eraDate: String = OracleCypherCompiler.eraDateName(name)
-
-    /** Each function the store keeps beside the graph's tables, by name, and what makes it: safe to run again. */
-    private val made: Map<String, String> = linkedMapOf(
-        nullsEqual to OracleCypherCompiler.nullsEqualFunction(nullsEqual),
-        era to OracleCypherCompiler.eraFunction(era),
-        eraDate to OracleCypherCompiler.eraDateFunction(eraDate),
-    ).mapValues { (_, function) -> "CREATE OR REPLACE $function" }
+    val eraDate: String = store.eraDate
 
     /** What makes [nullsEqual], [era] and [eraDate]: safe to run again. */
-    val functions: List<String> = made.values.toList()
+    val functions: List<String> = store.functions
 
     /**
-     * The block that makes the store when it is not there, and does nothing when it is. The
-     * property graph is made last, so one that is there, with the `doc` property this version gives
-     * it, says the rest is. It is looked for before anything is run: a schema statement wants its
-     * table to itself, and would be turned away by a writer at work on a store that needs nothing
-     * made. A graph made by an earlier version is replaced, and keeps its tables. One that another
-     * process made in the meantime (`ORA-00955`) is taken as made. A statement turned away because
-     * another session holds a lock it wants (`ORA-00054`), as one making the same store from another
-     * pool or process does, is tried again a tenth of a second later, for up to [BUSY_ATTEMPTS] tries:
-     * Oracle's DDL does not wait for a lock unless the session is told to, and telling it would outlast
-     * the block on a pooled connection.
-     *
-     * Each of the [functions] is made where it is not there, or not valid, so a store an earlier version made gains those it
-     * lacks. A user who may not make a function (`ORA-01031`: making one takes `CREATE PROCEDURE`, which the `RESOURCE` role
-     * grants) still has the store made: a statement then calls none of those it lacks (see `JdbcConnection`).
+     * The block that makes the store when it is not there, and does nothing when it is, waiting out a
+     * lock another session holds for up to [BUSY_ATTEMPTS] tries: see [OracleDdl.ensuring]. A user who
+     * may not make a function still has the store made, and a statement then calls none of those it
+     * lacks (see `JdbcConnection`).
      */
-    val ensuring: String = """
-        DECLARE
-            v_made NUMBER;
-            e_exists EXCEPTION;
-            PRAGMA EXCEPTION_INIT(e_exists, -955);
-            e_denied EXCEPTION;
-            PRAGMA EXCEPTION_INIT(e_denied, -1031);
-            e_busy EXCEPTION;
-            PRAGMA EXCEPTION_INIT(e_busy, -54);
-            PROCEDURE make(p_ddl VARCHAR2) IS
-            BEGIN
-                FOR attempt IN 1 .. $BUSY_ATTEMPTS LOOP
-                    BEGIN
-                        EXECUTE IMMEDIATE p_ddl;
-                        RETURN;
-                    EXCEPTION
-                        WHEN e_exists THEN RETURN;
-                        WHEN e_busy THEN
-                            IF attempt = $BUSY_ATTEMPTS THEN RAISE; END IF;
-                            DBMS_SESSION.SLEEP(0.1);
-                    END;
-                END LOOP;
-            END;
-        BEGIN
-            SELECT COUNT(*) INTO v_made FROM user_pg_prop_definitions WHERE graph_name = '${name.uppercase()}' AND property_name = 'DOC';
-            IF v_made = 0 THEN
-        ${ddl.joinToString("\n") { "        make(${OracleSql.literal(it)});" }}
-            END IF;
-${made.entries.joinToString("\n") { (function, making) ->
-            listOf(
-                "SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${function.uppercase()}' AND status = 'VALID';",
-                "IF v_made = 0 THEN",
-                "    BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(making)}; EXCEPTION WHEN e_denied THEN NULL; END;",
-                "END IF;",
-            ).joinToString("\n") { "            $it" }
-        }}
-        END;
-    """.trimIndent()
+    val ensuring: String = store.ensuring
 
     /**
      * Runs [ensuring]. Schema statements commit as they run. A session found to call none of the
@@ -161,20 +64,14 @@ ${made.entries.joinToString("\n") { (function, making) ->
     }
 
     companion object {
-        /** The store's name, for what is said of a graph name it cannot take. */
-        private const val ENGINE = "Oracle"
-
-        /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
-        fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
+        /** Why [name] cannot name a graph here; null where it can (see [OracleDdl.refusal]). */
+        fun refusal(name: String): String? = OracleDdl.refusal(name)
 
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = SqlGraph.DEFAULT_NAME
 
         /** How many times [ensuring] tries a statement that another session's lock turns away: thirty seconds' worth. */
-        const val BUSY_ATTEMPTS = 300
-
-        /** Oracle names are at most 128 characters. */
-        private const val MAX_OBJECT_NAME = 128
+        const val BUSY_ATTEMPTS = OracleDdl.BUSY_ATTEMPTS
 
         /** The graph [persistenceManager] speaks to, made in the store if it is not there. */
         fun ensured(persistenceManager: PersistenceManager): OracleGraph =
