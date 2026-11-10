@@ -77,6 +77,11 @@ data class Address(
             if (uri.rawQuery != null || uri.rawFragment != null) {
                 throw BadInvocation("drivine: the address $shown has a ?query or a #fragment, which this build doesn't read; see --help")
             }
+            // A password with a `/` in it, unescaped, ends the authority there, and puts the rest of it in the path, as
+            // in postgresql://u:1234/x@h/db: so no database or service holds an `@`, which a store's error would print.
+            if ('@' in uri.rawPath.orEmpty()) {
+                throw BadInvocation("drivine: the address $shown has an @ after its host: write a / in a password as %2F")
+            }
             val hostAndPort = authority.substringAfterLast('@')
             val host = (uri.host ?: hostAndPort.substringBefore(':')).ifEmpty { throw BadInvocation("drivine: the address $shown names no host") }
             val port = if (uri.host != null) uri.port.takeIf { it != -1 } else hostAndPort.substringAfter(':', "").ifEmpty { null }?.let {

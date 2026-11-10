@@ -69,6 +69,14 @@ class AddressTest {
         assertEquals("drivine: a neo4j address names no database: neo4j://***@h/db", refusedFromEnv("neo4j://u@h/db"))
         // A password that holds a `/`, unescaped, is masked to its last `@` too.
         assertTrue("cret" !in refusedFromEnv("postgresql://u:se/cret@h/db"), refusedFromEnv("postgresql://u:se/cret@h/db"))
+        // One whose part before the `/` reads as a port is refused too, not connected to host u with the rest of it in
+        // the database's or the service's name, which the store's error would print.
+        assertEquals(
+            "drivine: the address postgresql://***@h/db has an @ after its host: write a / in a password as %2F",
+            refusedFromEnv("postgresql://u:1234/cret@h/db"),
+        )
+        assertTrue("cret" !in refusedFromEnv("oracle://u:/cret@h/FREEPDB1"))
+        assertTrue("cret" !in refused("postgresql://u:1234/cret@h/db"))
         // With no `//`, java.net.URI reads no authority, and the refusal still masks the password.
         assertEquals("drivine: the address postgresql:***@h/db names no host", refusedFromEnv("postgresql:u:secret@h/db"))
         assertTrue("secret" !in refusedFromEnv("//u:secret@h/db"))

@@ -149,8 +149,8 @@ object Args {
             fun noValue() {
                 if (inline != null) throw BadInvocation("drivine: $flag takes no value; see --help")
             }
-            // -pSECRET is -p with its value attached, as getopt and cypher-shell read it: refused as -p, not named back.
-            if (flag.startsWith("-p")) throw BadInvocation(PASSWORD_REFUSED)
+            // -pSECRET and --passwordSECRET are a password with its flag, the value attached: refused as -p, not named back.
+            if (flag.startsWith("-p") || flag.startsWith("--password")) throw BadInvocation(PASSWORD_REFUSED)
             when (flag) {
                 "-h", "--help" -> { noValue(); return Parsed.Help }
                 "-v", "--version" -> { noValue(); return Parsed.Version }
