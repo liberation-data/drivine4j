@@ -34,6 +34,21 @@ of the six stores. It runs on a pull request that changes this module, the core'
 and by hand, apart from `ci.yml`, so a GraalVM problem doesn't block a pull request's CI. The binaries for the other
 operating systems come in [#707](https://github.com/liberation-data/drivine4j/issues/707).
 
+### Refreshing the reachability metadata
+
+What the binary reaches at run time that native-image can't see, such as a class kotlin-reflect looks up or a Netty
+class the Neo4j driver loads by name, is in
+`src/main/resources/META-INF/native-image/org.drivine/drivine4j-cli/reachability-metadata.json`. cli-native.yml's
+`trace` job records it with GraalVM's tracing agent: on each of the six stores it runs the tests below with
+`DRIVINE_CLI_BINARY` naming a script that runs the CLI on GraalVM's JVM under the agent, so the CLI is traced and not the
+tests. To refresh it:
+
+1. Add the label `cli-trace` to the pull request, or run the workflow by hand (Actions, "CLI native", "Run workflow").
+2. Read each store's metadata from the log of its job, `trace metadata (<store>)`: the step "Print the metadata" prints
+   each file the agent wrote between `=== BEGIN <file> ===` and `=== END ===`. A failing test doesn't stop the trace.
+3. Merge the six stores' files into that `reachability-metadata.json`, one entry for each class or resource, and keep
+   its resource entry for `org/drivine/cli/drivine-cli.properties`, which `--version` reads.
+
 ## Run
 
 ```

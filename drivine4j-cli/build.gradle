@@ -76,6 +76,10 @@ graalvmNative {
                 '-H:+ReportExceptionStackTraces',
                 // Ctrl-C and kill run the shutdown hooks, as on a JVM: sqlite::memory:'s file is deleted then (Store.kt).
                 '--install-exit-handlers',
+                // sqlite-jdbc loads its native library with System.load, a restricted method: as on the JVM
+                // (applicationDefaultJvmArgs above), the binary lets the classpath call it, so it prints no warning
+                // on stderr. native-image takes the java launcher's spelling, the module after an `=`.
+                '--enable-native-access=ALL-UNNAMED',
             )
             // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
             // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is
