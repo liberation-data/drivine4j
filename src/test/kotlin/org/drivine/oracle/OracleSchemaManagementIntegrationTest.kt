@@ -1,6 +1,7 @@
 package org.drivine.oracle
 
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
@@ -9,9 +10,11 @@ import org.drivine.schema.SchemaVersionStore
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -88,6 +91,44 @@ class OracleSchemaManagementIntegrationTest {
 
         assertTrue(created is EnsureResult.Created, "expected Created, got $created")
         assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
+    }
+
+    /**
+     * The module makes an index over the node table with `IF NOT EXISTS`, and takes `ORA-00955`, its name taken
+     * meanwhile, as made (drivine-cypher-spec#150). That is safe only if a same-named index over something else is not
+     * then taken for the one asked for: [ensure] must not report it made, or matching, while what stands under the name
+     * enforces nothing of the spec.
+     */
+    private fun assertNameTakenIsNotMade(name: String, unrelated: String, ensure: () -> EnsureResult) {
+        manager.indexes.run("DROP INDEX IF EXISTS $name")
+        manager.indexes.run("CREATE INDEX $name ON schema_node (JSON_VALUE(props, '$.\"$unrelated\"'))")
+        val result = runCatching(ensure)
+        result.getOrNull()?.let {
+            assertFalse(it is EnsureResult.Created || it is EnsureResult.AlreadyMatching, "an index of another form under $name was taken as made: $it")
+        }
+        manager.indexes.run("DROP INDEX IF EXISTS $name")
+    }
+
+    @Disabled(
+        "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
+            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
+    )
+    @Test
+    fun `a uniqueness constraint whose index's name an index over something else has is not made or matching`() {
+        val spec = UniquenessConstraintSpec("Voucher", "code")
+        assertNameTakenIsNotMade(OracleGraph("schema").objectName("uq", listOf("Voucher", "code")), "voucherRef") { manager.constraints.ensure(spec) }
+        runCatching { manager.constraints.drop(spec) }
+    }
+
+    @Disabled(
+        "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
+            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
+    )
+    @Test
+    fun `a range index whose name an index over something else has is not made or matching`() {
+        val spec = RangeIndexSpec("Coupon", "serial")
+        assertNameTakenIsNotMade(OracleGraph("schema").objectName("ix", listOf("serial")), "couponRef") { manager.indexes.ensure(spec) }
+        runCatching { manager.indexes.drop(spec) }
     }
 
     @Test

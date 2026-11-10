@@ -230,7 +230,7 @@ class StoreIdentityResolverTest {
         var creates = 0
         val store = RecordingStore(DatabaseType.ORACLE, ddl = grammar, graphName = "g") { ran ->
             when {
-                ran.statement.startsWith("CREATE UNIQUE INDEX") -> if (creates++ == 0) deadlock else emptyList<Any?>()
+                "CREATE UNIQUE INDEX" in ran.statement -> if (creates++ == 0) deadlock else emptyList<Any?>()
                 ran.statement == statements.readStamps -> listOf(Stamp("store-10", "2026-01-01T00:00:00Z"))
                 else -> emptyList<Any?>()
             }
@@ -249,7 +249,7 @@ class StoreIdentityResolverTest {
         var creates = 0
         val store = RecordingStore(DatabaseType.ORACLE, ddl = grammar, graphName = "g") { ran ->
             when {
-                ran.statement.startsWith("CREATE UNIQUE INDEX") ->
+                "CREATE UNIQUE INDEX" in ran.statement ->
                     SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.G_NODE", "61000", 4020, madeMeanwhile).also { creates++ }
                 ran.statement == statements.readStamps -> listOf(Stamp("store-12", "2026-01-01T00:00:00Z"))
                 else -> emptyList<Any?>()
