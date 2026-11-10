@@ -70,6 +70,10 @@ data class Address(
             // java.net.URI reads no host, port or user from an authority whose host it won't take as a server's, such as
             // a Docker Compose service's name with a `_` in it, so the authority is read here where it doesn't.
             val authority = uri.rawAuthority ?: throw BadInvocation("drivine: the address $shown names no host")
+            // Not dropped unread: a ?sslmode=require that the CLI didn't pass on would connect without TLS.
+            if (uri.rawQuery != null || uri.rawFragment != null) {
+                throw BadInvocation("drivine: the address $shown has a ?query or a #fragment, which this build doesn't read; see --help")
+            }
             val hostAndPort = authority.substringAfterLast('@')
             val host = (uri.host ?: hostAndPort.substringBefore(':')).ifEmpty { throw BadInvocation("drivine: the address $shown names no host") }
             val port = if (uri.host != null) uri.port.takeIf { it != -1 } else hostAndPort.substringAfter(':', "").ifEmpty { null }?.let {
@@ -101,8 +105,8 @@ data class Address(
         /** [text] with the password its authority holds, if any, as `***`. */
         private fun shown(text: String): String {
             val start = text.indexOf("://").takeIf { it >= 0 }?.plus(3) ?: return text
-            val end = text.indexOf('/', start).takeIf { it >= 0 } ?: text.length
-            val at = text.lastIndexOf('@', end - 1)
+            // The last `@`, and not the last before a `/`: a password may hold a `/`, unescaped.
+            val at = text.lastIndexOf('@')
             val colon = text.indexOf(':', start)
             return if (at < start || colon < 0 || colon > at) text else text.substring(0, colon + 1) + "***" + text.substring(at)
         }

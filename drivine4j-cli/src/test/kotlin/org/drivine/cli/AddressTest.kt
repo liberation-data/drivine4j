@@ -67,6 +67,8 @@ class AddressTest {
         assertTrue("secret" !in refusedFromEnv("postgresql://u:secret@h/db", StoreType.NEO4J))
         assertTrue("secret" !in refusedFromEnv("postgresql://u:sec ret@h/db"))
         assertTrue("u@h" in refusedFromEnv("neo4j://u@h/db"))
+        // A password that holds a `/`, unescaped, is masked to its last `@` too.
+        assertTrue("cret" !in refusedFromEnv("postgresql://u:se/cret@h/db"), refusedFromEnv("postgresql://u:se/cret@h/db"))
     }
 
     @Test
@@ -90,6 +92,10 @@ class AddressTest {
         assertTrue("names no database" in refused("memgraph://h/db"))
         assertTrue("names no database" in refused("falkordb://h/graph"))
         assertTrue("Oracle's service" in refused("oracle://h:1521"))
+        // An option such as sslmode=require isn't read, so it isn't dropped without a word either.
+        assertTrue("?query" in refused("postgresql://h/db?sslmode=require"))
+        assertTrue("?query" in refused("neo4j://h:7687?policy=eu"))
+        assertTrue("?query" in refused("postgresql://h/db#x"))
     }
 
     @Test
