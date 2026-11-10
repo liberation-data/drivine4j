@@ -1,9 +1,13 @@
 package org.drivine.backend.postgres
 
+import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.query.SqlParameters
+import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaStatement
 import org.drivine.schema.UniquenessConstraintSpec
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PostgresSchemaGrammarTest {
@@ -27,6 +31,25 @@ class PostgresSchemaGrammarTest {
             query,
         )
         assertEquals(emptyList(), SqlParameters.positional(query).names)
+    }
+
+    /**
+     * The one statement the switch to the module's DDL changed (drivine-cypher-spec#105): a label's JSON in a partial
+     * index's predicate is written as Jackson writes the labels a node holds, so a tab in it is `\t`. Before, it was
+     * written raw, which jsonb refuses, so such an index could not be made. The compiled read tests the same predicate,
+     * so the index is the read's. Run on no database.
+     */
+    @Test
+    fun `a range index on a label holding a tab tests the label's JSON with the tab escaped, as a compiled read tests it`() {
+        val label = "a\tb"
+        val predicate = """labels @> '["a\tb"]'"""
+        val made = grammar.createIndex(RangeIndexSpec(label, listOf("name"))).map { (it as SchemaStatement.Cypher).statement }
+        val index = made.single { it.startsWith("CREATE INDEX") }
+        assertTrue(index.endsWith("WHERE $predicate"), index)
+        assertFalse('\t' in index, index)
+
+        val read = PostgresCypherCompiler("g").compile("MATCH (n:`$label` {name: \$x}) RETURN n", mapOf("x" to "Ada")).sql
+        assertTrue(".$predicate" in read, read)
     }
 
     @Test

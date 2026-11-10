@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.cypher.store.marker.SchemaMarker
 import kotlin.reflect.KClass
 
 /**
@@ -221,11 +222,11 @@ class SchemaCatalog private constructor(
             return build(catalogs.flatMap { it.items }, targets.first(), combineVersions(catalogs), names.first())
         }
 
-        /** The combined version token of several catalogs, or null if none set one. */
-        internal fun combineVersions(catalogs: List<SchemaCatalog>): String? {
-            val versions = catalogs.mapNotNull { it.version }.distinct().sorted()
-            return if (versions.isEmpty()) null else versions.joinToString("|")
-        }
+        /**
+         * The combined version token of several catalogs, or null if none set one: the module's
+         * ([SchemaMarker.versionToken]), so the token a marker holds is the one every Drivine library computes.
+         */
+        internal fun combineVersions(catalogs: List<SchemaCatalog>): String? = SchemaMarker.versionToken(catalogs.map { it.version })
 
         private fun build(
             specs: List<SchemaItemSpec>,

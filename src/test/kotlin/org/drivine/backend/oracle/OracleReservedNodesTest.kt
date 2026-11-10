@@ -3,16 +3,23 @@ package org.drivine.backend.oracle
 import org.drivine.query.SqlParameters
 import org.drivine.schema.SchemaVersionStore
 import org.junit.jupiter.api.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** The schema marker and the store's stamp as Oracle keeps them: nodes of the graph, written in SQL. */
+/**
+ * The schema marker and the store's stamp as Oracle keeps them: nodes of the graph, written in SQL by the Cypher compiler's
+ * module and given by Oracle's grammar. `StoreMarkerGoldenTest` holds each statement to `marker.yaml` byte for byte; this
+ * says what they do.
+ */
 class OracleReservedNodesTest {
 
     private val graph = OracleGraph("g")
-    private val marker = OracleVersionMarker(graph, SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY)
-    private val stamp = OracleStoreStamp(graph, "DrivineStore", "key")
+    private val grammar = OracleSchemaGrammar(graph)
+    private val marker = grammar.versionMarker(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY)
+    private val stamp = grammar.storeStamp("DrivineStore", "key")
 
     private fun parameters(sql: String): Set<String> = SqlParameters.positional(sql).names.toSet()
 
@@ -98,11 +105,12 @@ class OracleReservedNodesTest {
     }
 
     @Test
-    fun `a scope property with a dot in it is one key, in what is read and in what is written`() {
-        val dotted = OracleVersionMarker(graph, "Marker", "owner.scope")
-
-        assertTrue("JSON_VALUE(n.props, '$.\"owner.scope\"') = \$scope" in dotted.read("version"), dotted.read("version"))
-        assertTrue("JSON_OBJECT('owner.scope' VALUE \$scope" in dotted.merge, dotted.merge)
+    fun `a marker or a stamp of another label or key is refused, as no Drivine library would read it`() {
+        val marker = assertFailsWith<IllegalArgumentException> { grammar.versionMarker("Marker", "owner.scope") }
+        assertContains(marker.message.orEmpty(), "labelled _DrivineSchema keyed by scope")
+        assertFailsWith<IllegalArgumentException> { grammar.versionMarker(SchemaVersionStore.LABEL, "owner") }
+        val stamp = assertFailsWith<IllegalArgumentException> { grammar.storeStamp("Store", "key") }
+        assertContains(stamp.message.orEmpty(), "labelled DrivineStore keyed by key")
     }
 
     // ----- The store's stamp -----

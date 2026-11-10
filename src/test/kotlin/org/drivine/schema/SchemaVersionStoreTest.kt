@@ -61,6 +61,14 @@ class SchemaVersionStoreTest {
         assertNull(statements.prepare)
     }
 
+    @Test
+    fun `the Cypher marker and stamp refuse another label or key, as no Drivine library would read them`() {
+        assertFailsWith<IllegalArgumentException> { CypherVersionMarker("Marker", "scope") }
+        assertFailsWith<IllegalArgumentException> { CypherVersionMarker("_DrivineSchema", "owner") }
+        assertFailsWith<IllegalArgumentException> { CypherStoreStamp("Store", "key") }
+        assertFailsWith<IllegalArgumentException> { CypherStoreStamp("DrivineStore", "id") }
+    }
+
     // ----- Reading -----
 
     @Test

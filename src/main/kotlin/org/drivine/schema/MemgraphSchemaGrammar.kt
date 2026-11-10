@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.cypher.store.ddl.MemgraphDdl
+
 /**
  * Schema DDL and introspection for Memgraph.
  *
@@ -13,6 +15,9 @@ package org.drivine.schema
  * - Uniqueness constraints are unnamed: `CREATE CONSTRAINT ON (n:Label) ASSERT n.prop IS UNIQUE`.
  *   Introspection via `SHOW CONSTRAINT INFO` (positional multi-column rows).
  *
+ * The statements are the module's ([MemgraphDdl]), which the three Drivine libraries share; reading
+ * what introspection gives and telling a violation from another failure are this grammar's.
+ *
  * @param vectorIndexCapacity initial capacity for created vector indexes (Memgraph grows from here)
  */
 class MemgraphSchemaGrammar(
@@ -23,78 +28,24 @@ class MemgraphSchemaGrammar(
     override val supportsIfNotExists = false
     override val supportsNamedItems = true
 
-    // ----- DDL emission -----
+    /** The module's statements, with the capacity a vector index is made with. */
+    private val ddl = MemgraphDdl(vectorIndexCapacity)
 
-    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
-        is VectorIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                """
-                CREATE VECTOR INDEX ${spec.effectiveName} ON :${id(spec.label)}(${id(spec.property)})
-                WITH CONFIG {"dimension": ${spec.dimensions}, "metric": "${metricName(spec.similarity)}", "capacity": $vectorIndexCapacity}
-                """.trimIndent()
-            )
-        )
+    // ----- DDL emission: the module's (MemgraphDdl) -----
 
-        is RangeIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE INDEX ON :${id(spec.label)}(${ids(spec.properties)})"
-            )
-        )
+    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = statementsOf { ddl.createIndex(spec, existing?.catalogItem()) }
 
-        // Memgraph calls it a TEXT index, and it is named and multi-property like Neo4j's.
-        is FullTextIndexSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE TEXT INDEX ${spec.effectiveName} " +
-                    "ON :${id(spec.label)}(${ids(spec.properties)})"
-            )
-        )
+    /** A range index by its label and properties; a vector or text index by its name, or the name it would have been given. */
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { ddl.dropIndex(item.catalogItem()) }
 
-        // Memgraph's TEXT INDEX is full-text, made above from a FullTextIndexSpec; Neo4j's has no equivalent here.
-        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
-    }
+    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = statementsOf { ddl.createConstraint(spec) }
 
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {
-        SchemaItemKind.VECTOR_INDEX -> listOf(
-            SchemaStatement.Cypher("DROP VECTOR INDEX ${item.name ?: defaultVectorName(item)}")
-        )
-
-        SchemaItemKind.FULLTEXT_INDEX -> listOf(
-            SchemaStatement.Cypher("DROP TEXT INDEX ${item.name ?: defaultFullTextName(item)}")
-        )
-
-        else -> listOf(
-            SchemaStatement.Cypher("DROP INDEX ON :${id(item.label)}(${ids(item.properties)})")
-        )
-    }
-
-    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
-        is UniquenessConstraintSpec -> listOf(
-            SchemaStatement.Cypher(
-                "CREATE CONSTRAINT ON (n:${id(spec.label)}) " +
-                    "ASSERT ${spec.properties.joinToString(", ") { "n.${id(it)}" }} IS UNIQUE"
-            )
-        )
-    }
-
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(
-        SchemaStatement.Cypher(
-            "DROP CONSTRAINT ON (n:${id(item.label)}) " +
-                "ASSERT ${item.properties.joinToString(", ") { "n.${id(it)}" }} IS UNIQUE"
-        )
-    )
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { ddl.dropConstraint(item.catalogItem()) }
 
     // ----- Introspection -----
 
-    override fun listIndexesQuery(kind: SchemaItemKind): String = when (kind) {
-        SchemaItemKind.VECTOR_INDEX -> """
-            CALL vector_search.show_index_info()
-            YIELD index_name, label, property, dimension, metric
-            RETURN {index_name: index_name, label: label, property: property, dimension: dimension, metric: metric}
-        """.trimIndent()
-
-        // Range and text (fulltext) indexes both surface through SHOW INDEX INFO.
-        else -> "SHOW INDEX INFO"
-    }
+    /** Range and text (full-text) indexes both are listed by `SHOW INDEX INFO`; vector indexes by `vector_search.show_index_info()`. */
+    override fun listIndexesQuery(kind: SchemaItemKind): String = ddl.listIndexesQuery(kind)
 
     /**
      * Vector rows arrive as maps (single map column from the `CALL … RETURN {…}` query);
@@ -170,7 +121,7 @@ class MemgraphSchemaGrammar(
         )
     }
 
-    override fun listConstraintsQuery(): String = "SHOW CONSTRAINT INFO"
+    override fun listConstraintsQuery(): String = ddl.listConstraintsQuery()
 
     /**
      * `SHOW CONSTRAINT INFO` is multi-column (constraint type, label, properties) so rows arrive
@@ -219,22 +170,6 @@ class MemgraphSchemaGrammar(
      */
     private fun normalizeLabel(raw: String): String = raw.removePrefix(":")
 
-    private fun id(name: String): String = SchemaGrammar.identifier(name)
-
-    private fun ids(names: List<String>): String = names.joinToString(", ") { id(it) }
-
-    private fun defaultVectorName(item: SchemaItemInfo): String =
-        "${item.label}_${item.properties.first()}_vector"
-
-    private fun defaultFullTextName(item: SchemaItemInfo): String =
-        "${item.label}_${item.properties.joinToString("_")}_fulltext"
-
-    /** Memgraph vector indexes use uSearch metric shorthand. */
-    private fun metricName(similarity: SimilarityFunction): String = when (similarity) {
-        SimilarityFunction.COSINE -> "cos"
-        SimilarityFunction.EUCLIDEAN -> "l2sq"
-    }
-
     private fun metricFromName(metric: String): SimilarityFunction? = when (metric.lowercase()) {
         "cos" -> SimilarityFunction.COSINE
         "l2sq" -> SimilarityFunction.EUCLIDEAN
@@ -242,7 +177,7 @@ class MemgraphSchemaGrammar(
     }
 
     companion object {
-        const val DEFAULT_VECTOR_CAPACITY = 10_000
+        const val DEFAULT_VECTOR_CAPACITY = MemgraphDdl.DEFAULT_VECTOR_CAPACITY
 
         /** Extracts `<name>` from a `SHOW INDEX INFO` text-index type string `label_text (name: <name>)`. */
         private val TEXT_INDEX_NAME = Regex("""name:\s*([^)]+)\)""")

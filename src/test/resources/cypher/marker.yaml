@@ -1,0 +1,439 @@
+# The schema marker and the stamps: what each store keeps of the marker `_DrivineSchema` and of the store's stamp
+# `DrivineStore`, the statements that read and write them, the marker's inventory as it is written and read back, the
+# version token, and the node stamp's form. Captured from drivine4j, the reference, with no store. See README.md.
+
+graph: "drivine"
+marker:
+  label: "_DrivineSchema"
+  scopeProperty: "scope"
+  defaultScope: "schema"
+  separator: "\n"
+  runtimePrefix: "runtime:"
+  staleRuntimePrefix: "runtime-stale:"
+  constraint: {kind: "UNIQUENESS_CONSTRAINT", label: "_DrivineSchema", properties: ["scope"]}
+  scopesCypher: "MATCH (m:`_DrivineSchema`) RETURN DISTINCT m.scope"
+  stores:
+    neo4j:
+      prepare: null
+      read:
+        version: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.version ORDER BY m.appliedAt DESC LIMIT 1"
+        items: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.items ORDER BY m.appliedAt DESC LIMIT 1"
+      readParameters: ["scope"]
+      # The server's clock, timestamp(), binding no $now, as drivine4j writes it; the SQL stores bind the caller's. Kept on
+      # purpose: one clock for every store would be a change of its own, made in every library at once.
+      merge: "MERGE (m:`_DrivineSchema` {scope: $scope}) SET m.version = $version, m.items = $items, m.appliedAt = timestamp()"
+      mergeParameters: ["scope", "version", "items"]
+      deleteAllButNewest: "MATCH (m:`_DrivineSchema` {scope: $scope}) WITH m ORDER BY m.appliedAt DESC SKIP 1 DELETE m"
+      delete: "MATCH (m:`_DrivineSchema` {scope: $scope}) DELETE m"
+      scopes: null
+      itemsMark: ""
+      constraint:
+        - "CREATE CONSTRAINT `_DrivineSchema_scope_unique` IF NOT EXISTS FOR (n:`_DrivineSchema`) REQUIRE (n.`scope`) IS UNIQUE"
+    memgraph:
+      prepare: null
+      read:
+        version: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.version ORDER BY m.appliedAt DESC LIMIT 1"
+        items: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.items ORDER BY m.appliedAt DESC LIMIT 1"
+      readParameters: ["scope"]
+      # The server's clock, timestamp(), binding no $now, as drivine4j writes it; the SQL stores bind the caller's. Kept on
+      # purpose: one clock for every store would be a change of its own, made in every library at once.
+      merge: "MERGE (m:`_DrivineSchema` {scope: $scope}) SET m.version = $version, m.items = $items, m.appliedAt = timestamp()"
+      mergeParameters: ["scope", "version", "items"]
+      deleteAllButNewest: "MATCH (m:`_DrivineSchema` {scope: $scope}) WITH m ORDER BY m.appliedAt DESC SKIP 1 DELETE m"
+      delete: "MATCH (m:`_DrivineSchema` {scope: $scope}) DELETE m"
+      scopes: null
+      itemsMark: ""
+      constraint:
+        - "CREATE CONSTRAINT ON (n:_DrivineSchema) ASSERT n.scope IS UNIQUE"
+    falkordb:
+      prepare: null
+      read:
+        version: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.version ORDER BY m.appliedAt DESC LIMIT 1"
+        items: "MATCH (m:`_DrivineSchema` {scope: $scope}) RETURN m.items ORDER BY m.appliedAt DESC LIMIT 1"
+      readParameters: ["scope"]
+      # The server's clock, timestamp(), binding no $now, as drivine4j writes it; the SQL stores bind the caller's. Kept on
+      # purpose: one clock for every store would be a change of its own, made in every library at once.
+      merge: "MERGE (m:`_DrivineSchema` {scope: $scope}) SET m.version = $version, m.items = $items, m.appliedAt = timestamp()"
+      mergeParameters: ["scope", "version", "items"]
+      deleteAllButNewest: "MATCH (m:`_DrivineSchema` {scope: $scope}) WITH m ORDER BY m.appliedAt DESC SKIP 1 DELETE m"
+      delete: "MATCH (m:`_DrivineSchema` {scope: $scope}) DELETE m"
+      scopes: null
+      itemsMark: ""
+      constraint:
+        - {native: ["GRAPH.CONSTRAINT", "CREATE", "{graphName}", "UNIQUE", "NODE", "_DrivineSchema", "PROPERTIES", "1", "scope"]}
+    postgres:
+      prepare: "ensuring"
+      read:
+        version: "SELECT (n.props ->> 'version') FROM drivine_node n WHERE n.labels @> '[\"_DrivineSchema\"]' AND (n.props ->> 'scope') = CAST($scope AS text) ORDER BY CASE WHEN jsonb_typeof((n.props -> 'appliedAt')) = 'number' THEN (n.props ->> 'appliedAt')::numeric END DESC NULLS LAST, n.nid DESC LIMIT 1"
+        items: "SELECT (n.props ->> 'items') FROM drivine_node n WHERE n.labels @> '[\"_DrivineSchema\"]' AND (n.props ->> 'scope') = CAST($scope AS text) ORDER BY CASE WHEN jsonb_typeof((n.props -> 'appliedAt')) = 'number' THEN (n.props ->> 'appliedAt')::numeric END DESC NULLS LAST, n.nid DESC LIMIT 1"
+      readParameters: ["scope"]
+      merge: |-
+        WITH found AS (SELECT m.nid FROM drivine_node m WHERE m.labels @> '["_DrivineSchema"]' AND (m.props ->> 'scope') = CAST($scope AS text) ORDER BY CASE WHEN jsonb_typeof((m.props -> 'appliedAt')) = 'number' THEN (m.props ->> 'appliedAt')::numeric END DESC NULLS LAST, m.nid DESC LIMIT 1),
+        written AS (
+            UPDATE drivine_node n
+            SET props = jsonb_strip_nulls(n.props || jsonb_build_object('version', CAST($version AS text), 'items', CAST($items AS text), 'appliedAt', CAST($now AS bigint)))
+            FROM found WHERE n.nid = found.nid
+            RETURNING n.nid)
+        INSERT INTO drivine_node (labels, props)
+        SELECT '["_DrivineSchema"]',
+               jsonb_strip_nulls(jsonb_build_object('scope', CAST($scope AS text), 'version', CAST($version AS text), 'items', CAST($items AS text), 'appliedAt', CAST($now AS bigint)))
+        WHERE NOT EXISTS (SELECT 1 FROM found)
+      mergeParameters: ["scope", "version", "items", "now"]
+      deleteAllButNewest: |-
+        DELETE FROM drivine_node WHERE nid IN (
+            SELECT nid FROM (SELECT n.nid, row_number() OVER (ORDER BY CASE WHEN jsonb_typeof((n.props -> 'appliedAt')) = 'number' THEN (n.props ->> 'appliedAt')::numeric END DESC NULLS LAST, n.nid DESC) AS position FROM drivine_node n WHERE n.labels @> '["_DrivineSchema"]' AND (n.props ->> 'scope') = CAST($scope AS text)) ranked
+            WHERE position > 1)
+      delete: "DELETE FROM drivine_node n WHERE n.labels @> '[\"_DrivineSchema\"]' AND (n.props ->> 'scope') = CAST($scope AS text)"
+      scopes: null
+      itemsMark: ""
+      constraint:
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineSchemascope_4cab9cbb ON drivine_node (((props ->> 'scope'))) WHERE labels @> '[\"_DrivineSchema\"]'"
+        - |-
+          INSERT INTO drivine_schema (kind, label, properties, name, object_name, details)
+          VALUES ('UNIQUENESS_CONSTRAINT', '_DrivineSchema', '["scope"]', '_DrivineSchema_scope_unique', 'drivine_uq_DrivineSchemascope_4cab9cbb', '{}')
+          ON CONFLICT (kind, label, properties) DO NOTHING
+    oracle:
+      prepare: "ensuring"
+      read:
+        version: "SELECT JSON_VALUE(n.props, '$.version' RETURNING CLOB) FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"_DrivineSchema\")') AND JSON_VALUE(n.props, '$.scope') = $scope ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, n.nid DESC FETCH FIRST 1 ROWS ONLY"
+        items: "SELECT JSON_VALUE(n.props, '$.items' RETURNING CLOB) FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"_DrivineSchema\")') AND JSON_VALUE(n.props, '$.scope') = $scope ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, n.nid DESC FETCH FIRST 1 ROWS ONLY"
+      readParameters: ["scope"]
+      merge: |-
+        MERGE INTO drivine_node n
+        USING (SELECT (SELECT m.nid FROM drivine_node m WHERE JSON_EXISTS(m.labels, '$[*]?(@ == "_DrivineSchema")') AND JSON_VALUE(m.props, '$.scope') = $scope ORDER BY JSON_VALUE(m.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, m.nid DESC FETCH FIRST 1 ROWS ONLY) AS nid FROM dual) found
+        ON (n.nid = found.nid)
+        WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE $version, 'items' VALUE $items, 'appliedAt' VALUE $now RETURNING JSON))
+        WHEN NOT MATCHED THEN INSERT (labels, props)
+            VALUES ('["_DrivineSchema"]', JSON_OBJECT('scope' VALUE $scope, 'version' VALUE $version, 'items' VALUE $items, 'appliedAt' VALUE $now ABSENT ON NULL RETURNING JSON))
+      mergeParameters: ["scope", "version", "items", "now"]
+      deleteAllButNewest: |-
+        DELETE FROM drivine_node WHERE nid IN (
+            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, n.nid DESC) AS position FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "_DrivineSchema")') AND JSON_VALUE(n.props, '$.scope') = $scope)
+            WHERE position > 1)
+      delete: "DELETE FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"_DrivineSchema\")') AND JSON_VALUE(n.props, '$.scope') = $scope"
+      scopes: null
+      itemsMark: "items:"
+      constraint:
+        - "CREATE INDEX IF NOT EXISTS drivine_ix_scope_6833e54 ON drivine_node (JSON_VALUE(props, '$.scope'))"
+        - |-
+          BEGIN
+              MERGE INTO drivine_schema c
+              USING (SELECT 'RANGE_INDEX' AS kind, '_DrivineSchema' AS label, '["scope"]' AS properties FROM dual) k
+              ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+              WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+                  VALUES (k.kind, k.label, k.properties, '_DrivineSchema_scope_range', 'drivine_ix_scope_6833e54', '{"unique": "drivine_uq_DrivineSchemascope_4cab9cbb"}');
+          EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+              -- Another process recorded it between the MERGE's read and its insert: it is recorded.
+              NULL;
+          END;
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineSchemascope_4cab9cbb ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"_DrivineSchema\")') AND JSON_EXISTS(n.props, '$.scope') THEN JSON_VALUE(n.props, '$.scope') END)"
+        - |-
+          DECLARE
+              v_labelled VARCHAR2(128);
+          BEGIN
+              SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM drivine_schema WHERE kind = 'RANGE_INDEX' AND label = '_DrivineSchema' AND properties = '["scope"]';
+              IF v_labelled IS NOT NULL THEN
+                  EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
+              END IF;
+              UPDATE drivine_schema SET details = JSON_MERGEPATCH(details, '{"unique": "drivine_uq_DrivineSchemascope_4cab9cbb", "labelled": null}') WHERE kind = 'RANGE_INDEX' AND label = '_DrivineSchema' AND properties = '["scope"]';
+              COMMIT;
+          END;
+        - |-
+          BEGIN
+              MERGE INTO drivine_schema c
+              USING (SELECT 'UNIQUENESS_CONSTRAINT' AS kind, '_DrivineSchema' AS label, '["scope"]' AS properties FROM dual) k
+              ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+              WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+                  VALUES (k.kind, k.label, k.properties, '_DrivineSchema_scope_unique', 'drivine_uq_DrivineSchemascope_4cab9cbb', '{}');
+          EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+              -- Another process recorded it between the MERGE's read and its insert: it is recorded.
+              NULL;
+          END;
+    sqlite:
+      prepare: "ddl[0]"
+      read:
+        version: "SELECT (CASE json_type(n.props, '$.\"version\"') WHEN 'text' THEN n.props ->> '$.\"version\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"version\"' END) FROM drivine_node n WHERE instr(n.labels, '\"_DrivineSchema\"') > 0 AND (CASE json_type(n.props, '$.\"scope\"') WHEN 'text' THEN n.props ->> '$.\"scope\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"scope\"' END) = CAST($scope AS TEXT) ORDER BY (CASE WHEN json_type(n.props, '$.\"appliedAt\"') IN ('integer', 'real') THEN n.props ->> '$.\"appliedAt\"' END) DESC NULLS LAST, n.nid DESC LIMIT 1"
+        items: "SELECT (CASE json_type(n.props, '$.\"items\"') WHEN 'text' THEN n.props ->> '$.\"items\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"items\"' END) FROM drivine_node n WHERE instr(n.labels, '\"_DrivineSchema\"') > 0 AND (CASE json_type(n.props, '$.\"scope\"') WHEN 'text' THEN n.props ->> '$.\"scope\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"scope\"' END) = CAST($scope AS TEXT) ORDER BY (CASE WHEN json_type(n.props, '$.\"appliedAt\"') IN ('integer', 'real') THEN n.props ->> '$.\"appliedAt\"' END) DESC NULLS LAST, n.nid DESC LIMIT 1"
+      readParameters: ["scope"]
+      merge: |-
+        INSERT INTO drivine_node (nid, labels, props)
+        SELECT (SELECT m.nid FROM drivine_node m WHERE instr(m.labels, '"_DrivineSchema"') > 0 AND (CASE json_type(m.props, '$."scope"') WHEN 'text' THEN m.props ->> '$."scope"' WHEN 'null' THEN NULL ELSE m.props -> '$."scope"' END) = CAST($scope AS TEXT) ORDER BY (CASE WHEN json_type(m.props, '$."appliedAt"') IN ('integer', 'real') THEN m.props ->> '$."appliedAt"' END) DESC NULLS LAST, m.nid DESC LIMIT 1),
+               '["_DrivineSchema"]',
+               json_patch('{}', json_object('scope', CAST($scope AS TEXT), 'version', $version, 'items', $items, 'appliedAt', $now))
+        WHERE 1
+        ON CONFLICT (nid) DO UPDATE SET props = json_patch(props, json_object('version', $version, 'items', $items, 'appliedAt', $now))
+      mergeParameters: ["scope", "version", "items", "now"]
+      deleteAllButNewest: |-
+        DELETE FROM drivine_node WHERE nid IN (
+            SELECT nid FROM (SELECT n.nid, row_number() OVER (ORDER BY (CASE WHEN json_type(n.props, '$."appliedAt"') IN ('integer', 'real') THEN n.props ->> '$."appliedAt"' END) DESC NULLS LAST, n.nid DESC) AS position FROM drivine_node n WHERE instr(n.labels, '"_DrivineSchema"') > 0 AND (CASE json_type(n.props, '$."scope"') WHEN 'text' THEN n.props ->> '$."scope"' WHEN 'null' THEN NULL ELSE n.props -> '$."scope"' END) = CAST($scope AS TEXT)) ranked
+            WHERE position > 1)
+      delete: "DELETE FROM drivine_node WHERE nid IN (SELECT n.nid FROM drivine_node n WHERE instr(n.labels, '\"_DrivineSchema\"') > 0 AND (CASE json_type(n.props, '$.\"scope\"') WHEN 'text' THEN n.props ->> '$.\"scope\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"scope\"' END) = CAST($scope AS TEXT))"
+      scopes: "SELECT DISTINCT (CASE json_type(n.props, '$.\"scope\"') WHEN 'text' THEN n.props ->> '$.\"scope\"' WHEN 'null' THEN NULL ELSE n.props -> '$.\"scope\"' END) FROM drivine_node n WHERE instr(n.labels, '\"_DrivineSchema\"') > 0"
+      itemsMark: ""
+      constraint:
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineSchemascope_4cab9cbb ON drivine_node ((CASE json_type(props, '$.\"scope\"') WHEN 'text' THEN props ->> '$.\"scope\"' WHEN 'null' THEN NULL ELSE props -> '$.\"scope\"' END)) WHERE instr(labels, '\"_DrivineSchema\"') > 0"
+        - |-
+          INSERT INTO drivine_schema (kind, label, properties, name, object_name, details)
+          VALUES ('UNIQUENESS_CONSTRAINT', '_DrivineSchema', '["scope"]', '_DrivineSchema_scope_unique', 'drivine_uq_DrivineSchemascope_4cab9cbb', '{}')
+          ON CONFLICT (kind, label, properties) DO NOTHING
+keys:
+  - {spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"]}, key: "RANGE_INDEX:Person:name:Person_name_range"}
+  - {spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name", "born"], name: "person_name_born"}, key: "RANGE_INDEX:Person:name,born:person_name_born"}
+  - {spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], name: ""}, key: "RANGE_INDEX:Person:name:Person_name_range"}
+  - {spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["id"]}, key: "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"}
+  - {spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email", "tenant"]}, key: "UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"}
+  - {spec: {kind: "VECTOR_INDEX", label: "Doc", properties: ["embedding"]}, key: "VECTOR_INDEX:Doc:embedding:Doc_embedding_vector"}
+  - {spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"], name: "doc_text"}, key: "FULLTEXT_INDEX:Doc:title,body:doc_text"}
+  - {spec: {kind: "TEXT_INDEX", label: "Doc", properties: ["title"]}, key: "TEXT_INDEX:Doc:title:Doc_title_text"}
+  - {spec: {kind: "RANGE_INDEX", label: "Ns:Thing", properties: ["a:b"]}, key: "RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range"}
+  - {spec: {kind: "RANGE_INDEX", label: "Line\nBreak", properties: ["x"]}, key: "RANGE_INDEX:Line\nBreak:x:Line\nBreak_x_range"}
+  - {spec: {kind: "VECTOR_INDEX", label: "Doc", properties: ["embedding"], name: "doc_vectors"}, key: "VECTOR_INDEX:Doc:embedding:doc_vectors"}
+  - {spec: {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["title", "body"]}, key: "FULLTEXT_INDEX:Doc:title,body:Doc_title_body_fulltext"}
+  - {spec: {kind: "TEXT_INDEX", label: "Doc", properties: ["title"], name: "doc_title"}, key: "TEXT_INDEX:Doc:title:doc_title"}
+  - {spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["id"], name: ""}, key: "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"}
+  - {spec: {kind: "RANGE_INDEX", label: "Person", properties: ["name"], ignoreCase: true}, key: "RANGE_INDEX:Person:__drivine.lower.name:Person_name_ci_range"}
+  - {spec: {kind: "UNIQUENESS_CONSTRAINT", label: "Person", properties: ["email"], ignoreCase: true}, key: "UNIQUENESS_CONSTRAINT:Person:__drivine.lower.email:Person_email_ci_unique"}
+  - {spec: {kind: "TEXT_INDEX", label: "Doc", properties: ["title"], ignoreCase: true}, key: "TEXT_INDEX:Doc:__drivine.lower.title:Doc_title_ci_text"}
+scopeFor:
+  - {owner: null, scope: "schema"}
+  - {owner: "billing", scope: "billing"}
+  - {owner: "", scope: ""}
+inventory:
+  - name: "Declared items only"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: [], stale: []}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nRANGE_INDEX:Person:name,born:person_name_born\nRANGE_INDEX:Person:name:Person_name_range\nUNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: [], stale: []}
+  - name: "Runtime items"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], stale: []}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nruntime:RANGE_INDEX:Person:name,born:person_name_born\nRANGE_INDEX:Person:name:Person_name_range\nruntime:UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], stale: []}
+  - name: "Stale items"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], stale: ["UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"]}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nruntime:RANGE_INDEX:Person:name,born:person_name_born\nRANGE_INDEX:Person:name:Person_name_range\nruntime-stale:UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "RANGE_INDEX:Person:name:Person_name_range", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"], stale: ["UNIQUENESS_CONSTRAINT:Person:id:Person_id_unique"]}
+  - name: "Stale without runtime"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"], runtime: [], stale: ["UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"]}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nRANGE_INDEX:Person:name,born:person_name_born\nruntime-stale:UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born", "UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"], runtime: ["UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"], stale: ["UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"]}
+  - name: "Carried items"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "VECTOR_INDEX:Doc:embedding:Doc_embedding_vector", "RANGE_INDEX:Order:total:Order_total_range"], runtime: ["RANGE_INDEX:Order:total:Order_total_range"], stale: []}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nVECTOR_INDEX:Doc:embedding:Doc_embedding_vector\nruntime:RANGE_INDEX:Order:total:Order_total_range"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "VECTOR_INDEX:Doc:embedding:Doc_embedding_vector", "RANGE_INDEX:Order:total:Order_total_range"], runtime: ["RANGE_INDEX:Order:total:Order_total_range"], stale: []}
+  - name: "Carried and stale"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Order:total:Order_total_range", "VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"], runtime: ["RANGE_INDEX:Order:total:Order_total_range", "VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"], stale: ["VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"]}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nruntime:RANGE_INDEX:Order:total:Order_total_range\nruntime-stale:VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Order:total:Order_total_range", "VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"], runtime: ["RANGE_INDEX:Order:total:Order_total_range", "VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"], stale: ["VECTOR_INDEX:Chunk:embedding:Chunk_embedding_vector"]}
+  - name: "Colons in a key"
+    record: {keys: ["RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range", "RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range"], stale: []}
+    items: "runtime:RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range\nRANGE_INDEX:Person:name:Person_name_range"
+    read: {keys: ["RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range", "RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Ns:Thing:a:b:Ns:Thing_a:b_range"], stale: []}
+  - name: "A newline in a key"
+    record: {keys: ["RANGE_INDEX:Line\nBreak:x:Line\nBreak_x_range", "RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Line\nBreak:x:Line\nBreak_x_range"], stale: []}
+    items: "runtime:RANGE_INDEX:Line\nBreak:x:Line\nBreak_x_range\nRANGE_INDEX:Person:name:Person_name_range"
+    read: {keys: ["RANGE_INDEX:Line", "Break:x:Line", "Break_x_range", "RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Line"], stale: []}
+  - name: "Marks beyond the keys"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born"], stale: ["UNIQUENESS_CONSTRAINT:Person:email,tenant:Person_email_tenant_unique"]}
+    items: "runtime:RANGE_INDEX:Person:name:Person_name_range"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range"], runtime: ["RANGE_INDEX:Person:name:Person_name_range"], stale: []}
+  - name: "A key twice"
+    record: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born"], stale: []}
+    items: "RANGE_INDEX:Person:name:Person_name_range\nRANGE_INDEX:Person:name:Person_name_range\nruntime:RANGE_INDEX:Person:name,born:person_name_born"
+    read: {keys: ["RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name:Person_name_range", "RANGE_INDEX:Person:name,born:person_name_born"], runtime: ["RANGE_INDEX:Person:name,born:person_name_born"], stale: []}
+  - name: "Empty inventory"
+    record: {keys: [], runtime: [], stale: []}
+    items: ""
+    read: {keys: [], runtime: [], stale: []}
+  - name: "Empty inventory with no version"
+    record: {keys: [], runtime: [], stale: []}
+    items: ""
+    read: {keys: [], runtime: [], stale: []}
+  - name: "One empty key"
+    record: {keys: [""], runtime: [], stale: []}
+    items: ""
+    read: {keys: [], runtime: [], stale: []}
+reads:
+  - {stored: null, read: null}
+  - {stored: "", read: {keys: [], runtime: [], stale: []}}
+  - {stored: "items:", read: {keys: ["items:"], runtime: [], stale: []}, oracle: {keys: [], runtime: [], stale: []}}
+  - {stored: "items:items:", read: {keys: ["items:items:"], runtime: [], stale: []}, oracle: {keys: ["items:"], runtime: [], stale: []}}
+  - {stored: "a\n\nb", read: {keys: ["a", "", "b"], runtime: [], stale: []}}
+  - {stored: "runtime:", read: {keys: [""], runtime: [""], stale: []}}
+  - {stored: "runtime-stale:", read: {keys: [""], runtime: [""], stale: [""]}}
+  - {stored: "runtime-stale:runtime:x", read: {keys: ["runtime:x"], runtime: ["runtime:x"], stale: ["runtime:x"]}}
+  - {stored: "runtime:runtime-stale:x", read: {keys: ["runtime-stale:x"], runtime: ["runtime-stale:x"], stale: []}}
+  - {stored: "\n", read: {keys: ["", ""], runtime: [], stale: []}}
+  - {stored: "items:runtime:a\nb", read: {keys: ["items:runtime:a", "b"], runtime: [], stale: []}, oracle: {keys: ["a", "b"], runtime: ["a"], stale: []}}
+versions:
+  - {versions: [], token: null}
+  - {versions: [null], token: null}
+  - {versions: ["v1"], token: "v1"}
+  - {versions: ["b", "a", "b"], token: "a|b"}
+  - {versions: ["v2", null, "v1"], token: "v1|v2"}
+  - {versions: ["\uFFFF", "😀", "a", "Z"], token: "Z|a|😀|\uFFFF"}
+  - {versions: ["a|b", "a"], token: "a|a|b"}
+  - {versions: ["", "x"], token: "|x"}
+  - {versions: [""], token: ""}
+storeStamp:
+  label: "DrivineStore"
+  keyProperty: "key"
+  key: "singleton"
+  constraint: {kind: "UNIQUENESS_CONSTRAINT", label: "DrivineStore", properties: ["key"]}
+  parameters: ["key", "storeId", "assignedAt", "engine"]
+  stores:
+    neo4j:
+      engine: "NEO4J"
+      prepare: null
+      assignIfAbsent: |-
+        MERGE (s:DrivineStore { key: $key })
+        ON CREATE SET s.storeId = $storeId,
+                      s.assignedAt = $assignedAt,
+                      s.engine = $engine
+      readStamps: |-
+        MATCH (s:DrivineStore)
+        RETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp
+        ORDER BY s.assignedAt, s.storeId
+      constraint:
+        - "CREATE CONSTRAINT `DrivineStore_key_unique` IF NOT EXISTS FOR (n:`DrivineStore`) REQUIRE (n.`key`) IS UNIQUE"
+    memgraph:
+      engine: "MEMGRAPH"
+      prepare: null
+      assignIfAbsent: |-
+        MERGE (s:DrivineStore { key: $key })
+        ON CREATE SET s.storeId = $storeId,
+                      s.assignedAt = $assignedAt,
+                      s.engine = $engine
+      readStamps: |-
+        MATCH (s:DrivineStore)
+        RETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp
+        ORDER BY s.assignedAt, s.storeId
+      constraint:
+        - "CREATE CONSTRAINT ON (n:DrivineStore) ASSERT n.key IS UNIQUE"
+    falkordb:
+      engine: "FALKORDB"
+      prepare: null
+      assignIfAbsent: |-
+        MERGE (s:DrivineStore { key: $key })
+        ON CREATE SET s.storeId = $storeId,
+                      s.assignedAt = $assignedAt,
+                      s.engine = $engine
+      readStamps: |-
+        MATCH (s:DrivineStore)
+        RETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp
+        ORDER BY s.assignedAt, s.storeId
+      constraint:
+        - {native: ["GRAPH.CONSTRAINT", "CREATE", "{graphName}", "UNIQUE", "NODE", "DrivineStore", "PROPERTIES", "1", "key"]}
+    postgres:
+      engine: "POSTGRES"
+      prepare: "ensuring"
+      assignIfAbsent: |-
+        INSERT INTO drivine_node (labels, props)
+        SELECT '["DrivineStore"]',
+               jsonb_build_object('key', CAST($key AS text), 'storeId', CAST($storeId AS text), 'assignedAt', CAST($assignedAt AS text), 'engine', CAST($engine AS text))
+        WHERE NOT EXISTS (SELECT 1 FROM drivine_node n WHERE n.labels @> '["DrivineStore"]' AND (n.props ->> 'key') = CAST($key AS text))
+      readStamps: |-
+        SELECT jsonb_build_object('id', (n.props ->> 'storeId'), 'assignedAt', (n.props ->> 'assignedAt'))
+        FROM drivine_node n WHERE n.labels @> '["DrivineStore"]'
+        ORDER BY (n.props ->> 'assignedAt'), (n.props ->> 'storeId')
+      constraint:
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineStorekey_e211949b ON drivine_node (((props ->> 'key'))) WHERE labels @> '[\"DrivineStore\"]'"
+        - |-
+          INSERT INTO drivine_schema (kind, label, properties, name, object_name, details)
+          VALUES ('UNIQUENESS_CONSTRAINT', 'DrivineStore', '["key"]', 'DrivineStore_key_unique', 'drivine_uq_DrivineStorekey_e211949b', '{}')
+          ON CONFLICT (kind, label, properties) DO NOTHING
+    oracle:
+      engine: "ORACLE"
+      prepare: "ensuring"
+      assignIfAbsent: |-
+        INSERT INTO drivine_node (labels, props)
+        SELECT '["DrivineStore"]', JSON_OBJECT('key' VALUE $key, 'storeId' VALUE $storeId, 'assignedAt' VALUE $assignedAt, 'engine' VALUE $engine)
+        FROM dual
+        WHERE NOT EXISTS (SELECT 1 FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "DrivineStore")') AND JSON_VALUE(n.props, '$.key') = $key)
+      readStamps: |-
+        SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$.storeId'), 'assignedAt' VALUE JSON_VALUE(n.props, '$.assignedAt') RETURNING JSON)
+        FROM drivine_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == "DrivineStore")')
+        ORDER BY JSON_VALUE(n.props, '$.assignedAt'), JSON_VALUE(n.props, '$.storeId')
+      constraint:
+        - "CREATE INDEX IF NOT EXISTS drivine_ix_key_19e5f ON drivine_node (JSON_VALUE(props, '$.key'))"
+        - |-
+          BEGIN
+              MERGE INTO drivine_schema c
+              USING (SELECT 'RANGE_INDEX' AS kind, 'DrivineStore' AS label, '["key"]' AS properties FROM dual) k
+              ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+              WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+                  VALUES (k.kind, k.label, k.properties, 'DrivineStore_key_range', 'drivine_ix_key_19e5f', '{"unique": "drivine_uq_DrivineStorekey_e211949b"}');
+          EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+              -- Another process recorded it between the MERGE's read and its insert: it is recorded.
+              NULL;
+          END;
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineStorekey_e211949b ON drivine_node n (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == \"DrivineStore\")') AND JSON_EXISTS(n.props, '$.key') THEN JSON_VALUE(n.props, '$.key') END)"
+        - |-
+          DECLARE
+              v_labelled VARCHAR2(128);
+          BEGIN
+              SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM drivine_schema WHERE kind = 'RANGE_INDEX' AND label = 'DrivineStore' AND properties = '["key"]';
+              IF v_labelled IS NOT NULL THEN
+                  EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
+              END IF;
+              UPDATE drivine_schema SET details = JSON_MERGEPATCH(details, '{"unique": "drivine_uq_DrivineStorekey_e211949b", "labelled": null}') WHERE kind = 'RANGE_INDEX' AND label = 'DrivineStore' AND properties = '["key"]';
+              COMMIT;
+          END;
+        - |-
+          BEGIN
+              MERGE INTO drivine_schema c
+              USING (SELECT 'UNIQUENESS_CONSTRAINT' AS kind, 'DrivineStore' AS label, '["key"]' AS properties FROM dual) k
+              ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+              WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+                  VALUES (k.kind, k.label, k.properties, 'DrivineStore_key_unique', 'drivine_uq_DrivineStorekey_e211949b', '{}');
+          EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+              -- Another process recorded it between the MERGE's read and its insert: it is recorded.
+              NULL;
+          END;
+    sqlite:
+      engine: "SQLITE"
+      prepare: "ddl[0]"
+      assignIfAbsent: |-
+        INSERT INTO drivine_node (labels, props)
+        SELECT '["DrivineStore"]',
+               json_object('key', CAST($key AS TEXT), 'storeId', CAST($storeId AS TEXT), 'assignedAt', CAST($assignedAt AS TEXT), 'engine', CAST($engine AS TEXT))
+        WHERE NOT EXISTS (SELECT 1 FROM drivine_node n WHERE instr(n.labels, '"DrivineStore"') > 0 AND (CASE json_type(n.props, '$."key"') WHEN 'text' THEN n.props ->> '$."key"' WHEN 'null' THEN NULL ELSE n.props -> '$."key"' END) = CAST($key AS TEXT))
+      readStamps: |-
+        /* drivine:json */
+        SELECT json_object('id', (CASE json_type(n.props, '$."storeId"') WHEN 'text' THEN n.props ->> '$."storeId"' WHEN 'null' THEN NULL ELSE n.props -> '$."storeId"' END), 'assignedAt', (CASE json_type(n.props, '$."assignedAt"') WHEN 'text' THEN n.props ->> '$."assignedAt"' WHEN 'null' THEN NULL ELSE n.props -> '$."assignedAt"' END))
+        FROM drivine_node n WHERE instr(n.labels, '"DrivineStore"') > 0
+        ORDER BY (CASE json_type(n.props, '$."assignedAt"') WHEN 'text' THEN n.props ->> '$."assignedAt"' WHEN 'null' THEN NULL ELSE n.props -> '$."assignedAt"' END), (CASE json_type(n.props, '$."storeId"') WHEN 'text' THEN n.props ->> '$."storeId"' WHEN 'null' THEN NULL ELSE n.props -> '$."storeId"' END)
+      constraint:
+        - "CREATE UNIQUE INDEX IF NOT EXISTS drivine_uq_DrivineStorekey_e211949b ON drivine_node ((CASE json_type(props, '$.\"key\"') WHEN 'text' THEN props ->> '$.\"key\"' WHEN 'null' THEN NULL ELSE props -> '$.\"key\"' END)) WHERE instr(labels, '\"DrivineStore\"') > 0"
+        - |-
+          INSERT INTO drivine_schema (kind, label, properties, name, object_name, details)
+          VALUES ('UNIQUENESS_CONSTRAINT', 'DrivineStore', '["key"]', 'DrivineStore_key_unique', 'drivine_uq_DrivineStorekey_e211949b', '{}')
+          ON CONFLICT (kind, label, properties) DO NOTHING
+nodeStamps:
+  property: "__drivine.stamp"
+  token: 16
+  separator: ":"
+  neverStamped: "-"
+  tokens:
+    - {bits: "0", token: "0000000000000000"}
+    - {bits: "1", token: "0000000000000001"}
+    - {bits: "-1", token: "ffffffffffffffff"}
+    - {bits: "-9223372036854775808", token: "8000000000000000"}
+    - {bits: "9223372036854775807", token: "7fffffffffffffff"}
+    - {bits: "4587410805208705190", token: "3fa9c1d27b40e8a6"}
+    - {bits: "-7953622155270522349", token: "919f0eca356c7a13"}
+    - {bits: "255", token: "00000000000000ff"}
+  stamps:
+    - {stamp: "3fa9c1d27b40e8a6:91d0f4b2c7ee5a13", nodeToken: "3fa9c1d27b40e8a6", linksToken: "91d0f4b2c7ee5a13", twoTokens: true, hasNodeToken: true, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: "3fa9c1d27b40e8a6:", nodeToken: "3fa9c1d27b40e8a6", linksToken: null, twoTokens: false, hasNodeToken: true, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: "3fa9c1d27b40e8a6", nodeToken: "3fa9c1d27b40e8a6", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: "", nodeToken: "", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: ":"}
+    - {stamp: ":", nodeToken: "", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: ":"}
+    - {stamp: "-", nodeToken: "-", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: "-:"}
+    - {stamp: "abc", nodeToken: "abc", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: "abc:"}
+    - {stamp: "abc:def", nodeToken: "abc", linksToken: "def", twoTokens: false, hasNodeToken: false, withoutLinks: "abc:"}
+    - {stamp: "3fa9c1d27b40e8a6:91d0f4b2c7ee5a13x", nodeToken: "3fa9c1d27b40e8a6", linksToken: "91d0f4b2c7ee5a13x", twoTokens: false, hasNodeToken: true, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: "3fa9c1d27b40e8a6x91d0f4b2c7ee5a13", nodeToken: "3fa9c1d27b40e8a6x91d0f4b2c7ee5a13", linksToken: null, twoTokens: false, hasNodeToken: false, withoutLinks: "3fa9c1d27b40e8a6x91d0f4b2c7ee5a13:"}
+    - {stamp: "3fa9c1d27b40e8a6:91d0:f4b2c7ee5a1", nodeToken: "3fa9c1d27b40e8a6", linksToken: "91d0:f4b2c7ee5a1", twoTokens: true, hasNodeToken: true, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: ":91d0f4b2c7ee5a13", nodeToken: "", linksToken: "91d0f4b2c7ee5a13", twoTokens: false, hasNodeToken: false, withoutLinks: ":"}
+    - {stamp: "3fa9c1d27b40e8a6::", nodeToken: "3fa9c1d27b40e8a6", linksToken: ":", twoTokens: false, hasNodeToken: true, withoutLinks: "3fa9c1d27b40e8a6:"}
+    - {stamp: "3FA9C1D27B40E8A6:91D0F4B2C7EE5A13", nodeToken: "3FA9C1D27B40E8A6", linksToken: "91D0F4B2C7EE5A13", twoTokens: true, hasNodeToken: true, withoutLinks: "3FA9C1D27B40E8A6:"}
+    - {stamp: "0123456789abcdef0:123456789abcdef", nodeToken: "0123456789abcdef0", linksToken: "123456789abcdef", twoTokens: false, hasNodeToken: false, withoutLinks: "0123456789abcdef0:"}

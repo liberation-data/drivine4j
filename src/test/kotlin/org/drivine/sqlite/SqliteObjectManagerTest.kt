@@ -1,9 +1,18 @@
 package org.drivine.sqlite
 
+import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.backend.sqlite.SqliteDataSource
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.CascadeType
+import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.PatchResult
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
 import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.manager.Replace
@@ -26,8 +35,11 @@ import org.drivine.query.dsl.hasItem
 import org.drivine.query.dsl.none
 import org.drivine.query.dsl.notIn
 import org.drivine.query.dsl.query
+import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.sqlite.SQLiteException
 import sample.fulltext.ArticleNode
 import sample.groups.Feedback
 import sample.groups.FeedbackQueryDsl
@@ -52,9 +64,11 @@ import sample.stateless.Memo
 import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -412,6 +426,136 @@ class SqliteObjectManagerTest {
             pool.shutdown()
         }
         assertEquals(0, stateless.count(Claim::class.java))
+    }
+
+    /**
+     * Runs [write] while a connection of its own holds the file's write lock (`BEGIN IMMEDIATE`), as another writer
+     * does, and gives the lock up after [HOLD_MILLIS], longer than a write turned away is run again for. A write that
+     * reads before it takes the lock is turned away (`SQLITE_BUSY`) without the busy timeout's wait, each time it is
+     * run; one that takes the lock as it begins waits for it (#330). Gives what [write] gave, and fails where it was
+     * done before the lock was given up.
+     */
+    private fun <T> whileAnotherWriterHoldsTheLock(write: () -> T): T {
+        val holder = SqliteDataSource(SqliteTestDatabase.path).connection
+        val releaser = Executors.newSingleThreadExecutor()
+        try {
+            holder.createStatement().use { it.execute("BEGIN IMMEDIATE") }
+            val released = AtomicBoolean()
+            val release = releaser.submit {
+                Thread.sleep(HOLD_MILLIS)
+                released.set(true)
+                holder.createStatement().use { it.execute("COMMIT") }
+            }
+            val result = write()
+            assertTrue(released.get(), "the write was done while another connection held the write lock")
+            release.get(1, TimeUnit.MINUTES)
+            return result
+        } finally {
+            releaser.shutdown()
+            releaser.awaitTermination(1, TimeUnit.MINUTES)
+            holder.close()
+        }
+    }
+
+    @Test
+    fun `a save waits for another connection's write lock, held longer than a save is run again for, and is written`() {
+        val loaded = stateless.save(Claim("c1", "first"))
+
+        val saved = whileAnotherWriterHoldsTheLock { stateless.save(loaded.copy(text = "second")) }
+
+        assertNotEquals(loaded.stamp, saved.stamp)
+        assertEquals("second", stateless.load("c1", Claim::class.java)?.text)
+        assertEquals(saved.stamp, stamp("c1"))
+    }
+
+    @Test
+    fun `a delete waits for another connection's write lock, held longer than a delete is run again for, and deletes`() {
+        stateless.saveAll(listOf(Claim("c1", "one"), Claim("c2", "two")))
+
+        assertEquals(1, whileAnotherWriterHoldsTheLock { stateless.delete("c1", Claim::class.java) })
+        assertEquals(1, whileAnotherWriterHoldsTheLock { stateless.deleteAll(Claim::class.java, "n.id = 'c2'") })
+        assertEquals(0, count("node"))
+    }
+
+    @Test
+    fun `a patch waits for another connection's write lock, held longer than a patch is run again for, and is applied`() {
+        stateless.save(Claim("c1", "one", "first"))
+
+        val patched = whileAnotherWriterHoldsTheLock {
+            stateless.patch("c1", Claim::class.java, ClaimQueryDsl.INSTANCE) { fields { query.note setTo "patched" }; where { query.text eq "one" } }
+        }
+
+        assertEquals(changed, patched)
+        assertEquals("patched", stateless.load("c1", Claim::class.java)?.note)
+    }
+
+    @Test
+    fun `an edge write waits for another connection's write lock, held longer than one is run again for, and is written`() {
+        stateless.save(Claim("c1", "one"))
+        stateless.save(Human("ada", "Ada"))
+        val claim = nodeRef<Claim>("c1")
+        val ada = nodeRef<Human>("ada")
+
+        assertTrue(whileAnotherWriterHoldsTheLock { stateless.edges.relate(claim, ada, "MENTIONS", mapOf("weight" to 2)) })
+        assertEquals(setOf("ada"), related("c1", "MENTIONS"))
+        assertEquals(1, whileAnotherWriterHoldsTheLock { stateless.edges.unrelate(claim, ada, "MENTIONS") })
+        assertEquals(0, count("edge"))
+    }
+
+    @Test
+    fun `a write that waits out the busy timeout for another connection's write lock fails as a DrivineException, and is not run again`() {
+        val loaded = stateless.save(Claim("c1", "one"))
+        val provider = JdbcConnectionProvider.sqlite("ogm-quick", SqliteTestDatabase.path, busyTimeoutMillis = QUICK_BUSY_MILLIS.toInt(), graphName = "ogm")
+        val holder = SqliteDataSource(SqliteTestDatabase.path).connection
+        try {
+            val quick = StatelessGraphObjectManager(
+                NonTransactionalPersistenceManager(provider, "ogm-quick", DatabaseType.SQLITE, SubtypeRegistry()), Neo4jObjectMapper.instance, SubtypeRegistry(),
+            )
+            assertEquals(1, quick.count(Claim::class.java))
+            holder.createStatement().use { it.execute("BEGIN IMMEDIATE") }
+
+            // The transaction of its own cannot begin: thrown as a statement that fails is, not as the driver's error.
+            // It has waited the busy timeout once, and is not run again to wait it as many times as a write is run again.
+            val started = System.nanoTime()
+            val saved = assertFailsWith<DrivineException> { quick.save(Claim("c2", "two")) }
+            val waited = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertTrue(waited < 3 * QUICK_BUSY_MILLIS, "the save waited ${waited} ms, the busy timeout more than once")
+            val deleted = assertFailsWith<DrivineException> { quick.delete("c1", Claim::class.java) }
+            // Nor is a checked save that could not take the lock called stale: the node is as it was loaded.
+            val checked = assertFailsWith<DrivineException> { quick.save(loaded.copy(text = "two")) }
+
+            listOf(saved, deleted, checked).forEach { assertIs<SQLiteException>(it.rootCause) }
+            holder.createStatement().use { it.execute("COMMIT") }
+            assertEquals(listOf("c1"), stateless.loadAll(Claim::class.java).map { it.id })
+        } finally {
+            holder.close()
+            provider.end()
+        }
+    }
+
+    @Test
+    fun `writes inside a caller's transaction run in it, not in one of their own, and are undone with it`() {
+        stateless.saveAll(listOf(Claim("c1", "one"), Claim("c2", "two")))
+        stateless.save(Human("ada", "Ada"))
+        val provider = JdbcConnectionProvider("ogm", DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, graphName = "ogm")
+        val registry = DatabaseRegistry(DataSourceMap()).also { it.register(provider) }
+        val holder = TransactionContextHolder(registry)
+        val inside = StatelessGraphObjectManager(
+            PersistenceManagerFactory(registry, holder).get("ogm", PersistenceManagerType.TRANSACTIONAL), Neo4jObjectMapper.instance, SubtypeRegistry(),
+        )
+
+        val seen = Transactions(holder).transaction(rollback = true) {
+            val saved = inside.save(Claim("c3", "three"))
+            val patched = inside.patch("c1", Claim::class.java, ClaimQueryDsl.INSTANCE) { fields { query.note setTo "patched" } }
+            val related = inside.edges.relate(nodeRef<Claim>("c1"), nodeRef<Human>("ada"), "MENTIONS")
+            val deleted = inside.delete("c2", Claim::class.java)
+            // A write in a transaction of its own would wait for this one's write lock, and be committed whatever this one does.
+            listOf(saved.text, patched, related, deleted, inside.loadAll(Claim::class.java).map { it.id to it.note }.sortedBy { it.first })
+        }
+
+        assertEquals(listOf("three", changed, true, 1, listOf("c1" to "patched", "c3" to null)), seen)
+        assertEquals(listOf("c1" to null, "c2" to null), stateless.loadAll(Claim::class.java).map { it.id to it.note }.sortedBy { it.first }, "every write was undone")
+        assertEquals(0, count("edge"))
     }
 
     // ----- Patching -----
@@ -851,5 +995,13 @@ class SqliteObjectManagerTest {
 
         assertEquals(listOf("c1"), stateless.loadAll(Claim::class.java, "instr(n.labels, '\"It''s \\\"odd\\\"\"') > 0").map { it.id })
         assertEquals(listOf("c1"), stateless.loadAll(Claim::class.java, "n.`metadata.source` = 'web'").map { it.id })
+    }
+
+    private companion object {
+        /** How long [whileAnotherWriterHoldsTheLock] holds the write lock: three times what a write turned away is run again for, at most. */
+        const val HOLD_MILLIS = 1_500L
+
+        /** The busy timeout of a provider that waits a short time for the write lock: six waits are well over three. */
+        const val QUICK_BUSY_MILLIS = 400L
     }
 }

@@ -20,7 +20,7 @@ import java.sql.SQLException
 /**
  * The backend of Postgres. A graph is two tables (see [PostgresGraph]), read with joins over them (see
  * [PostgresSelect]) and written by a plan of steps that a function the store keeps carries out (see
- * [PostgresWriteFunctions]): the plan is the one Oracle's block carries out.
+ * [org.drivine.cypher.store.ddl.PostgresWriteFunctions]): the plan is the one Oracle's block carries out.
  *
  * Everything an object manager asks of a store is here.
  */

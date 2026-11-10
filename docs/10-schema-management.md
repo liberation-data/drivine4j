@@ -195,6 +195,17 @@ fun chunkSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
 
 How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across the engines; on Oracle it is a row of the graph's node table). On `enforce()`, a **changed** token drops and recreates that catalog's items, then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
 
+**Where the marker comes from.** What the `_DrivineSchema` marker holds, and the statements that read and write it on each
+store, are written by the Cypher compiler's module (`org.drivine.cypher.store.marker`, in
+[drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)), which the three Drivine libraries share, so
+a marker one library wrote is the marker another reads: its label and `scope`, the inventory as one text, a key to a line,
+with `runtime:` and `runtime-stale:` before the keys ensured at runtime, and on Oracle `items:` before it all, and the
+version token of several catalogs, each token once, sorted and joined by `|`. So is the store's stamp, `DrivineStore`.
+The spec's `marker.yaml` pins them for each store, byte for byte. drivine4j runs them, and decides what they're for: when
+a marker is read, written or cleaned up, what a changed token recreates, and which stamp is the store's, the oldest. The
+graph engines take the moment a marker is written from their own `timestamp()`, and the SQL stores are given this
+process's clock, as they have no such function.
+
 > Recreating a vector index rebuilds it from the stored embedding *properties* — it does **not** re-embed. After a model swap, re-embed the nodes first (same dimensions → the index even auto-updates), then `enforce()`/`recreateAll()` for the structural half. Drivine manages schema, not your embeddings.
 
 ### Configuration
@@ -214,6 +225,13 @@ drivine:
 Without Spring, the timeout is the `SchemaManager`'s last constructor argument: `SchemaManager(factory, registry, catalogs, policy, Duration.ofMinutes(5))`.
 
 ### Per-engine notes
+
+**Where the statements come from.** The statements that make, drop and list each store's indexes and constraints, and on
+Oracle, Postgres and SQLite the graph's tables and what finds them made, are written by the Cypher compiler's module
+(`org.drivine.cypher.store.ddl`, in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)), which
+the three Drivine libraries share, so a store one library made is the store another reads and finds its indexes in. The
+spec's `store.yaml` pins them for each store, byte for byte. drivine4j runs them: it decides what to make, drop or
+recreate, takes the locks and tries again, waits for a build, and tells a violation from another failure.
 
 | | Neo4j | Memgraph | FalkorDB |
 |---|---|---|---|

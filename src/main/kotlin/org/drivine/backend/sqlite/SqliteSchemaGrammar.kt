@@ -1,28 +1,23 @@
 package org.drivine.backend.sqlite
 
-import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteSql.hasLabel
 import org.drivine.backend.sqlite.SqliteSql.literal
-import org.drivine.schema.ALIASES
+import org.drivine.cypher.store.ddl.SqliteDdl
 import org.drivine.schema.ConstraintSpec
-import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
-import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaAliases
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
-import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
-import org.drivine.schema.TextIndexSpec
-import org.drivine.schema.UniquenessConstraintSpec
-import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
-import org.drivine.schema.aliasesJson
-import org.drivine.schema.unsupportedTextIndex
+import org.drivine.schema.catalogItem
+import org.drivine.schema.sharedStoreStamp
+import org.drivine.schema.sharedVersionMarker
+import org.drivine.schema.statementsOf
 import java.sql.SQLException
 
 /**
@@ -44,109 +39,52 @@ import java.sql.SQLException
  * What Drivine made is recorded in the graph's catalog table, as on Oracle and Postgres, and read back
  * from there: an index's expression does not say which label and properties it was made for. An index
  * a record names that is no longer there is not listed, so it is made again when asked for.
+ *
+ * The statements are the module's ([SqliteDdl]), which the three Drivine libraries share, so each makes and
+ * reads the same indexes. What this grammar adds is drivine4j's: reading the catalog's rows, telling a
+ * violation from another failure, and sampling the keys a constraint would refuse.
  */
 internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGrammar, SchemaAliases {
 
-    override val engine = "SQLite"
+    override val engine = SqliteDdl.ENGINE
     override val supportsIfNotExists = true
     override val supportsNamedItems = true
 
     /** The unique index finds a node as a range index does. */
     override val constraintsRequireBackingIndex = false
 
-    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = SqliteVersionMarker(graph, label, scopeProperty)
+    /** The marker as the module writes it for this graph ([org.drivine.cypher.store.marker.MarkerStatements]). */
+    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements =
+        sharedVersionMarker(label, scopeProperty, graph.store)
 
-    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = SqliteStoreStamp(graph, label, keyProperty)
+    /** The store's stamp as the module writes it for this graph ([org.drivine.cypher.store.marker.StoreStampStatements]). */
+    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements =
+        sharedStoreStamp(label, keyProperty, graph.store)
 
     override fun lowerCopies(): LowerCopyStatements = SqliteLowerCopies(graph)
 
-    /** [text] as a schema statement. */
-    private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())
+    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement =
+        SchemaStatement.Cypher(graph.store.aliased(item.catalogItem(), aliases))
 
-    /** [text] as schema statements, after those that make the store when it is not there. */
-    private fun statements(vararg text: String) = (graph.ddl + text).map(::statement)
-
-    /**
-     * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already. Two processes recording it at once record it once.
-     */
-    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}"): String = """
-        INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details)
-        VALUES (${literal(spec.kind.name)}, ${literal(spec.label)}, ${literal(json(spec.properties))}, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)})
-        ON CONFLICT (kind, label, properties) DO NOTHING
-    """
+    /** After the statements that make the store when it is not there. */
+    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> =
+        statementsOf { graph.store.createIndex(spec, existing?.catalogItem()) }
 
     /**
-     * Forgets [item], and drops the index it was made as. SQLite has no block to read the record's
-     * object in, so the index is named again from the item's kind, label and properties, as this version
-     * names it. Nothing was made for a vector or a full-text index, so nothing is dropped for one.
+     * Forgets [item], and drops the index it was made as. SQLite has no block to read the record's object in, so the
+     * index is named again from the item's kind, label and properties, as this version names it.
      */
-    private fun forgotten(item: SchemaItemInfo): List<SchemaStatement> {
-        val kind = when (item.kind) {
-            SchemaItemKind.RANGE_INDEX -> RANGE
-            SchemaItemKind.UNIQUENESS_CONSTRAINT -> UNIQUE
-            else -> null
-        }
-        return listOfNotNull(
-            kind?.let { statement("DROP INDEX IF EXISTS ${graph.objectName(it, listOf(item.label) + item.properties)}") },
-            statement("DELETE FROM ${graph.catalog} WHERE ${recordOf(item)}"),
-        )
-    }
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { graph.store.dropIndex(item.catalogItem()) }
 
-    /** The test of the catalog's key that finds the record of [item]. */
-    private fun recordOf(item: SchemaItemInfo): String =
-        "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+    /** After the statements that make the store when it is not there. */
+    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = statementsOf { graph.store.createConstraint(spec) }
 
-    override fun aliased(item: SchemaItemInfo, aliases: List<String>): SchemaStatement {
-        val details = if (aliases.isEmpty()) "json_remove(details, '$.$ALIASES')" else "json_set(details, '$.$ALIASES', json(${literal(aliasesJson(aliases))}))"
-        return statement("UPDATE ${graph.catalog} SET details = $details WHERE ${recordOf(item)}")
-    }
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = statementsOf { graph.store.dropConstraint(item.catalogItem()) }
 
-    /**
-     * The partial index over [properties] of the nodes of [label]: each property as a statement reads it,
-     * and the test of the label a statement makes, both of the table's own columns.
-     */
-    private fun over(label: String, properties: List<String>): String =
-        "${graph.nodes} (${properties.joinToString(", ") { SqliteSql.property("", it) }}) WHERE ${hasLabel("", label)}"
+    /** What is recorded of [kind], and still there: an index dropped by hand is not listed, so that it is made again when asked for. */
+    override fun listIndexesQuery(kind: SchemaItemKind): String = graph.store.listIndexesQuery(kind)
 
-    override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
-        is RangeIndexSpec -> {
-            val name = graph.objectName(RANGE, listOf(spec.label) + spec.properties)
-            statements("CREATE INDEX IF NOT EXISTS $name ON ${over(spec.label, spec.properties)}", recorded(spec, name))
-        }
-        // Recorded and not made: SQLite has no vector index of its own.
-        is VectorIndexSpec -> statements(recorded(spec, null, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""))
-        // Recorded and not made yet: a search reads every node of the label.
-        is FullTextIndexSpec -> statements(
-            recorded(spec, null, spec.analyzer?.let { "{\"analyzer\": ${json(listOf(it)).removeSurrounding("[", "]")}}" } ?: "{}"),
-        )
-        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
-    }
-
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = forgotten(item)
-
-    override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
-        is UniquenessConstraintSpec -> {
-            val name = graph.objectName(UNIQUE, listOf(spec.label) + spec.properties)
-            statements("CREATE UNIQUE INDEX IF NOT EXISTS $name ON ${over(spec.label, spec.properties)}", recorded(spec, name))
-        }
-    }
-
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = forgotten(item)
-
-    /** What is recorded of [kinds], and still there: an index dropped by hand is not listed, so that it is made again when asked for. */
-    private fun listed(kinds: String): String = """
-        ${SqliteSql.JSON_ROWS}
-        SELECT json_object('kind', kind, 'label', label, 'properties', json(properties), 'name', name, 'details', json(details))
-        FROM ${graph.catalog} c
-        WHERE kind IN ($kinds)
-          AND (object_name IS NULL OR EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = c.object_name))
-        ORDER BY label, properties
-    """.trimIndent()
-
-    override fun listIndexesQuery(kind: SchemaItemKind): String = listed(literal(kind.name))
-
-    override fun listConstraintsQuery(): String = listed(literal(SchemaItemKind.UNIQUENESS_CONSTRAINT.name))
+    override fun listConstraintsQuery(): String = graph.store.listConstraintsQuery()
 
     override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
         val map = row as? Map<*, *> ?: return@mapNotNull null
@@ -191,14 +129,5 @@ internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGramm
             GROUP BY $grouping
             LIMIT $limit
         """.trimIndent()
-    }
-
-    companion object {
-        /** What the name of a range index, and of a uniqueness constraint's index, says it is. */
-        private const val RANGE = "ix"
-        private const val UNIQUE = "uq"
-
-        /** The properties of an index as the record of it holds them, byte for byte as Postgres's grammar writes them. */
-        fun json(values: List<String>): String = PostgresSchemaGrammar.json(values)
     }
 }

@@ -58,7 +58,7 @@ internal object OracleSql {
      * Given the choice, Oracle reads every node of the label and tests each for the id, where the
      * index over the id gives the one node. The label is looked for by its text: see [holdsLabel].
      */
-    fun carriesLabel(alias: String, label: String): String = holdsLabel("$alias.labels", label)
+    fun carriesLabel(alias: String, label: String): String = Shared.carriesLabel(alias, label)
 
     /** As [Shared.holdsLabel], which the compiler calls too. */
     fun holdsLabel(labels: String, label: String): String = Shared.holdsLabel(labels, label)
@@ -94,15 +94,11 @@ internal object OracleSql {
     fun hasProperty(alias: String, key: String): String =
         if (key == Stamps.PROPERTY) "$alias.stamp IS NOT NULL" else "JSON_EXISTS($alias.props, ${path(key)})"
 
-    /** The embedding stored under [key] of the node [alias], as a vector. */
-    fun embedding(alias: String, key: String): String = "TO_VECTOR(JSON_QUERY($alias.props, ${path(key)} RETURNING CLOB))"
+    /** As [Shared.embedding]: what the module's side table of a vector index holds. */
+    fun embedding(alias: String, key: String): String = Shared.embedding(alias, key)
 
-    /**
-     * Whether the embedding stored under [key] of [alias] is of [dimensions]: a search measures only
-     * those, as Oracle refuses to measure vectors of two sizes against each other, and a vector index
-     * holds only those, so a node written with another is left out of it and not refused.
-     */
-    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String = "VECTOR_DIMENSION_COUNT(${embedding(alias, key)}) = $dimensions"
+    /** As [Shared.holdsEmbedding]: the embeddings a vector index holds, and so the ones a search measures. */
+    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String = Shared.holdsEmbedding(alias, key, dimensions)
 
     /**
      * The node [alias] as the map a load returns for it: the `doc` property the graph gives each
@@ -110,15 +106,8 @@ internal object OracleSql {
      */
     fun document(alias: String): String = "$alias.doc"
 
-    /**
-     * The map a load returns for a node, put together from the columns of the row [alias] (`""` for
-     * the columns themselves): its properties, with its labels under `labels` and its stamp under the
-     * property the graph engines store it as. What the graph's `doc` property is.
-     */
-    fun transform(alias: String): String {
-        val of = if (alias.isEmpty()) "" else "$alias."
-        return "JSON_TRANSFORM(${of}props, SET '$.labels' = ${of}labels, SET ${path(Stamps.PROPERTY)} = ${of}stamp)"
-    }
+    /** As [Shared.transform]: the map a load returns for a node, what the module's property graph gives as `doc`. */
+    fun transform(alias: String): String = Shared.transform(alias)
 
     /** The columns a row of a node carries, each as [alias]'s, `doc` among them. */
     fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
@@ -129,11 +118,8 @@ internal object OracleSql {
     /** The columns a row of a node has: those of the table, and the map the graph makes of them. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp", "doc")
 
-    /** The distance a vector index is built with for [similarity], and a search by it must name. */
-    fun metric(similarity: SimilarityFunction): String = when (similarity) {
-        SimilarityFunction.COSINE -> "COSINE"
-        SimilarityFunction.EUCLIDEAN -> "EUCLIDEAN_SQUARED"
-    }
+    /** As [Shared.metric]: the distance the module's vector index is built with, which a search by it must name. */
+    fun metric(similarity: SimilarityFunction): String = Shared.metric(similarity)
 
     /** The score the graph engines give for a [distance] by [similarity]: in `[0, 1]`, higher the nearer. */
     fun score(similarity: SimilarityFunction, distance: String): String = when (similarity) {

@@ -2,13 +2,14 @@ package org.drivine.backend.sql
 
 import org.drivine.connection.Connection
 import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 
 /**
  * A graph as a SQL store keeps it: a table of nodes, a table of relationships, and a catalog of what
- * Drivine made of indexes and constraints. Oracle and Postgres keep the same tables, so a store written
- * from one library reads the same from another:
+ * Drivine made of indexes and constraints. Oracle, Postgres and SQLite keep the same tables, so a store
+ * written from one library reads the same from another:
  *
  * - `<name>_node`: a row for each node, keyed by `nid`, with its labels (a JSON array), its properties
  *   (a JSON object keyed by the names the graph engines store them under) and its stamp;
@@ -20,49 +21,38 @@ import org.drivine.query.QuerySpecification
  * or `type`. A node's stamp is a column of its own and not a property: every save rewrites it, and it
  * is read back as the property the graph engines store it under.
  *
- * What a store makes beside the tables is named by [objectName], within the [maxObjectName] it allows.
- *
- * @param engine the store's name, for what is said of a name it cannot take
+ * What the tables, their indexes and what is made beside them are, and what each is named, is the Cypher
+ * compiler's module's ([store], `org.drivine.cypher.store.ddl`), which the three Drivine libraries share,
+ * so that each makes the same store. A graph name the store cannot take is refused as the module's [store]
+ * is made. What is drivine4j's is running the statements: looking for the store, making it, and waiting
+ * out another session's DDL.
  */
-internal abstract class SqlGraph(val name: String, engine: String, private val maxObjectName: Int) {
+internal abstract class SqlGraph(val name: String) {
 
-    init {
-        refusal(name, engine, maxObjectName)?.let { throw IllegalArgumentException(it) }
-    }
+    /** The module's DDL of the graph on this store: its tables, their names and what makes them. */
+    abstract val store: SqlStoreDdl
 
     /** The table of nodes: a row each, with its labels, its properties and its stamp. */
-    val nodes = "${name}_node"
+    val nodes: String get() = store.nodes
 
     /** The table of relationships: a row each, from the node `src` to the node `dst`, with its type and its properties. */
-    val edges = "${name}_edge"
+    val edges: String get() = store.edges
 
     /** What Drivine made of indexes and constraints. */
-    val catalog = "${name}_schema"
+    val catalog: String get() = store.catalog
 
     /** The table that holds the text a full-text index on [label]'s [properties] is over. */
-    fun texts(label: String, properties: List<String>): String = objectName("t", listOf(label) + properties)
+    fun texts(label: String, properties: List<String>): String = store.texts(label, properties)
 
     /** The table that holds the embeddings a vector index on [label]'s [property] is over. */
-    fun vectors(label: String, property: String): String = objectName("v", listOf(label, property))
+    fun vectors(label: String, property: String): String = store.vectors(label, property)
 
     /**
-     * A name for an object of [kind] made for [parts], a label and properties: the graph's name, the
-     * kind, what of the parts reads as a name, and a hash of the parts whole, which tells apart two
-     * objects whose parts read as one name: a label and a property that run together as another
-     * pair does, or names that differ only in what a name cannot hold. It is a hash of 32 bits and
-     * not a proof: two sets of parts that read alike and hash alike would share a name. It leaves
-     * room for the `_t` or `_i` an object made beside it adds, within the [maxObjectName] the store
-     * allows.
-     *
-     * The name is written to the graph's catalog with what it was made for, and an object is dropped
-     * by the name recorded there.
+     * A name for an object of [kind] made for [parts], a label and properties, as the module names it
+     * ([SqlStoreDdl.objectName]): the name is written to the graph's catalog with what it was made for,
+     * and an object is dropped by the name recorded there.
      */
-    fun objectName(kind: String, parts: List<String>): String {
-        val hash = Integer.toHexString(parts.joinToString("\u0000").hashCode())
-        val fixed = "${name}_${kind}__${hash}".length + BESIDE.length
-        val readable = parts.joinToString("") { it.replace(Regex("[^A-Za-z0-9]"), "") }.take((maxObjectName - fixed).coerceIn(0, 40))
-        return "${name}_${kind}_${readable}_$hash"
-    }
+    fun objectName(kind: String, parts: List<String>): String = store.objectName(kind, parts)
 
     /**
      * Makes the store if it is not there, each statement given to [run], which returns its rows. Each
@@ -97,18 +87,11 @@ internal abstract class SqlGraph(val name: String, engine: String, private val m
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = JdbcConnectionProvider.DEFAULT_GRAPH
 
-        /** The longest an object made beside another adds to its name: a trigger's `_t`, an index's `_i`. */
-        private const val BESIDE = "_t"
-
         /**
-         * Why [name] cannot name a graph on [engine], whose names are at most [maxObjectName] long; null where it can. A
-         * name that cannot is refused by the graph, and by a Cypher statement compiled over its tables.
+         * The properties of an index as the catalog's record of it holds them: part of the catalog's key, which a read of
+         * the catalog binds to find a record the module's DDL wrote, so written byte for byte as the module writes it,
+         * and not by a JSON library whose spacing or escaping might change.
          */
-        internal fun refusal(name: String, engine: String, maxObjectName: Int): String? {
-            // The longest a name adds is a table beside the nodes, `_v__` and a hash with nothing readable, and that table's trigger.
-            val longest = maxObjectName - ("_v__".length + 8 + BESIDE.length)
-            if (Regex("[A-Za-z][A-Za-z0-9_]{0,${longest - 1}}").matches(name)) return null
-            return "'$name' cannot name a graph on $engine: it names tables, so it is letters, digits and underscores, begins with a letter, and is at most $longest long, so that what it names fits in $engine's $maxObjectName."
-        }
+        fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
     }
 }

@@ -555,11 +555,11 @@ class GraphObjectManager internal constructor(
 
     /**
      * Runs a delete, and runs it again if the engine turned it away as contended, as a save is (see
-     * [SaveExecutor.whenNotContended]). Outside a transaction SQLite turns away a delete that read the
-     * nodes it takes before another connection wrote; a delete turned away has deleted nothing.
+     * [SaveExecutor.whenNotContended]). Outside a transaction SQLite runs it in a transaction of its own, which takes
+     * the write lock before it reads (see [SaveExecutor.written]); a delete turned away has deleted nothing.
      */
     private fun deleted(spec: QuerySpecification<Int>): Int =
-        SaveExecutor(persistenceManager, backend).whenNotContended { persistenceManager.getOne(spec) }
+        SaveExecutor(persistenceManager, backend).let { executor -> executor.whenNotContended { executor.writtenOne(spec) } }
 
     override fun <T : Any> deleteAll(graphClass: Class<T>): Int {
         return deleteAll(graphClass, null as String?)

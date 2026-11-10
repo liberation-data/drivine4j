@@ -1589,6 +1589,8 @@ A save replaces the data token when it changes the node: a property that differs
 
 Every node a save writes is given a stamp if it has none, whether or not its type declares a `@NodeStamp` field, and so is the node at each end of a relationship that is written or removed. A stored value that is not two tokens, which no save leaves, counts as none and is replaced whole.
 
+The stamp's form, and how it is taken apart and told to be two tokens, are written once, by the Cypher compiler's module (`org.drivine.cypher.store.Stamps`, in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)), which the three Drivine libraries share, so a stamp one library wrote is read alike by another. The spec's `marker.yaml` pins it. What a save hands back, and the Cypher that marks a node, are drivine4j's.
+
 #### When a save is refused
 
 A save is refused when what it would overwrite has changed since the object was loaded. Every save of an object that carries a stamp compares the data token. A save with `Replace` overwrites a relationship list, so it compares the relationship token too. A refused save writes nothing, to that node or any other, and throws `StaleObjectException`.

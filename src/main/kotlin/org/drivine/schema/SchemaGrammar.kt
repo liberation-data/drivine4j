@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.cypher.store.ddl.CypherNames
 
 /**
  * Encapsulates engine-specific schema DDL and introspection.
@@ -93,13 +94,15 @@ interface SchemaGrammar {
 
     /**
      * The statements that keep the schema-version marker, a node of the graph with [label] keyed by
-     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise.
+     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise. Drivine's own grammars
+     * refuse any but `_DrivineSchema` and `scope`, the marker every Drivine library reads.
      */
     fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = CypherVersionMarker(label, scopeProperty)
 
     /**
      * The statements that keep the store's identity, a node of the graph with [label] keyed by
-     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise.
+     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise. Drivine's own grammars
+     * refuse any but `DrivineStore` and `key`, the stamp every Drivine library reads.
      */
     fun storeStamp(label: String, keyProperty: String): StoreStampStatements = CypherStoreStamp(label, keyProperty)
 
@@ -299,22 +302,19 @@ interface SchemaGrammar {
          * backtick-quoted otherwise. A property bag flattens to keys like `metadata.context`, and
          * unquoted that is not one name: FalkorDB rejects the dot, and Memgraph reads it as a path
          * into a nested map — creating an index that a lookup on the flat property never uses.
-         * Plain names stay bare so the DDL for them is unchanged.
+         * Plain names stay bare so the DDL for them is unchanged. The module's rule
+         * ([CypherNames.identifier]), which its DDL spells names by, so a statement here names what the DDL made.
          */
-        fun identifier(name: String): String = if (PLAIN_IDENTIFIER.matches(name)) name else quoted(name)
+        fun identifier(name: String): String = CypherNames.identifier(name)
 
         /**
          * [name] between backticks, as one identifier whatever it holds: a backtick in it is doubled,
          * as Cypher escapes them. Neo4j decodes a `\uXXXX` escape before it reads the statement, inside
          * backticks as outside, so the escape of a backtick ends the quotes as a backtick does. It is
-         * doubled as one, and a name can end its own quotes in neither spelling.
+         * doubled as one, and a name can end its own quotes in neither spelling. The module's rule
+         * ([CypherNames.quoted]).
          */
-        fun quoted(name: String): String = "`${name.replace(ESCAPED_BACKTICK, "`").replace("`", "``")}`"
-
-        private val PLAIN_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
-
-        /** The Unicode escape of a backtick, with as many `u` as an escape may have. */
-        private val ESCAPED_BACKTICK = Regex("\\\\u+0060")
+        fun quoted(name: String): String = CypherNames.quoted(name)
 
         /**
          * The property a violation's sample names a node by, beside its element id: [spec]'s

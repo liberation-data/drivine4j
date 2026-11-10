@@ -12,6 +12,7 @@ import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
 import org.drivine.query.sqlStatement
+import org.drivine.schema.SchemaVersionStore
 import org.drivine.schema.UnsupportedSchemaGrammar
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -173,8 +174,8 @@ class JdbcConnectionProviderTest {
         assertEquals("ledger", named.graphName)
         assertEquals("drivine", defaulted.graphName)
         // The grammar writes for the graph the provider names: its statements make that graph first.
-        assertContains(named.schemaGrammar.versionMarker("M", "scope").prepare.orEmpty(), "graph_name = 'LEDGER'")
-        assertContains(defaulted.schemaGrammar.versionMarker("M", "scope").prepare.orEmpty(), "graph_name = 'DRIVINE'")
+        assertContains(named.schemaGrammar.versionMarker(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY).prepare.orEmpty(), "graph_name = 'LEDGER'")
+        assertContains(defaulted.schemaGrammar.versionMarker(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY).prepare.orEmpty(), "graph_name = 'DRIVINE'")
         assertSame(named.schemaGrammar, named.schemaGrammar)
     }
 

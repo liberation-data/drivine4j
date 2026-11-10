@@ -3,6 +3,7 @@ package org.drivine.store
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphBackends
 import org.drivine.backend.sql.DdlContention
+import org.drivine.cypher.store.marker.StoreStamp
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.SaveExecutor
 import org.drivine.mapper.Neo4jObjectMapper
@@ -14,7 +15,6 @@ import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.reservedNode
-import org.drivine.schema.UniquenessConstraintSpec
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.time.Instant
@@ -29,6 +29,11 @@ import kotlin.random.Random
  * database reads the same value.
  *
  * Resolution is idempotent and safe to call on every boot.
+ *
+ * What the stamp holds, and the statements that make and read it on each store, are the Cypher
+ * compiler's module's ([StoreStamp], [org.drivine.cypher.store.marker.StoreStampStatements]), which the
+ * three Drivine libraries share, so every library reads the stamp another made. Running them, the
+ * constraint's races and retries, and taking the first (oldest) of the stamps read are this resolver's.
  *
  * [sleep] waits out the pauses between looks for the winner's constraint (see [winnersInForce]); a test gives one that
  * doesn't wait, as [DdlContention.whenNotContended]'s pause is given.
@@ -84,9 +89,9 @@ class StoreIdentityResolver internal constructor(
      * otherwise, as Oracle's does. See [SchemaGrammar.storeStamp].
      */
     private val statements: StoreStampStatements by lazy {
-        val label = KEY_CONSTRAINT.label
-        val key = KEY_CONSTRAINT.properties.single()
-        persistenceManager.reservedNode("the store's identity", { storeStamp(label, key) }) { CypherStoreStamp(label, key) }
+        persistenceManager.reservedNode("the store's identity", { storeStamp(StoreStamp.LABEL, StoreStamp.KEY_PROPERTY) }) {
+            CypherStoreStamp(StoreStamp.LABEL, StoreStamp.KEY_PROPERTY)
+        }
     }
 
     /**
@@ -225,13 +230,10 @@ class StoreIdentityResolver internal constructor(
         while (true) {
             try {
                 persistenceManager.execute(
+                    // The module has no clock or random source, so the id and the moment are this process's. The engine is
+                    // named by the manager's type, which names a store the module has no DDL of, as Neptune, too.
                     QuerySpecification.withStatement(statements.assignIfAbsent).bind(
-                        mapOf(
-                            "key" to SINGLETON_KEY,
-                            "storeId" to UUID.randomUUID().toString(),
-                            "assignedAt" to Instant.now().toString(),
-                            "engine" to persistenceManager.type.value,
-                        )
+                        StoreStamp.assignParameters(UUID.randomUUID().toString(), Instant.now().toString(), persistenceManager.type.value)
                     )
                 )
                 return
@@ -356,10 +358,10 @@ class StoreIdentityResolver internal constructor(
             detail.javaClass.getMethod("getSchema").invoke(detail) == PG_CATALOG
         }.getOrDefault(false)
 
-        /** The MERGE key. Fixed, so a second boot matches the node the first one wrote. */
-        internal const val SINGLETON_KEY = "singleton"
+        /** The MERGE key, the module's ([StoreStamp.KEY]). Fixed, so a second boot matches the node the first one wrote. */
+        internal const val SINGLETON_KEY = StoreStamp.KEY
 
-        /** Makes the MERGE key unique, so concurrent first boots cannot leave two stamps. */
-        internal val KEY_CONSTRAINT = UniquenessConstraintSpec("DrivineStore", "key")
+        /** Makes the MERGE key unique, so concurrent first boots cannot leave two stamps: the module's ([StoreStamp.CONSTRAINT]). */
+        internal val KEY_CONSTRAINT = StoreStamp.CONSTRAINT
     }
 }

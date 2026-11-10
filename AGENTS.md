@@ -23,7 +23,10 @@ These are read by all three libraries. Change them here only together with the o
 
 ## The Cypher compiler is a module of its own
 
-The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`) is not in this repository:
+The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`, the store layout's
+DDL, `org.drivine.cypher.store.ddl`, which the schema grammars and SQL graphs run, and the `_DrivineSchema` marker, the
+store stamp and the node stamp's form, `org.drivine.cypher.store.marker` and `store.Stamps`, which `SchemaVersionStore`,
+`StoreIdentityResolver` and `model.Stamps` run) is not in this repository:
 it is [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)'s `compiler/` module, which the other
 two libraries are to share, and drivine4j builds against its JVM artifact, `org.drivine:drivine-cypher-compiler-jvm`.
 `gradle/cypher-compiler.properties` pins a release, which the build reads from Maven Central: a spec tag `vX.Y.Z` is the
