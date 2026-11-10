@@ -62,13 +62,19 @@ class AddressTest {
     @Test
     fun `a refusal of DRIVINE_ADDRESS's address doesn't print its password`() {
         fun refusedFromEnv(text: String, type: StoreType? = null) = assertFailsWith<BadInvocation> { parse(text, type, fromCommandLine = false) }.message!!
-        assertEquals("drivine: the address postgresql://u:***@h:x/db has no port number after its host", refusedFromEnv("postgresql://u:secret@h:x/db"))
-        assertEquals("drivine: a neo4j address names no database: neo4j://u:***@h/db", refusedFromEnv("neo4j://u:s@cret@h/db"))
-        assertTrue("secret" !in refusedFromEnv("postgresql://u:secret@h/db", StoreType.NEO4J))
+        assertEquals("drivine: the address postgresql://***@h:x/db has no port number after its host", refusedFromEnv("postgresql://u:secret@h:x/db"))
+        assertEquals("drivine: a neo4j address names no database: neo4j://***@h/db", refusedFromEnv("neo4j://u:s@cret@h/db"))
+        assertEquals("drivine: --type neo4j contradicts the address postgresql://***@h/db, which is postgres's", refusedFromEnv("postgresql://u:secret@h/db", StoreType.NEO4J))
         assertTrue("secret" !in refusedFromEnv("postgresql://u:sec ret@h/db"))
-        assertTrue("u@h" in refusedFromEnv("neo4j://u@h/db"))
+        assertEquals("drivine: a neo4j address names no database: neo4j://***@h/db", refusedFromEnv("neo4j://u@h/db"))
         // A password that holds a `/`, unescaped, is masked to its last `@` too.
         assertTrue("cret" !in refusedFromEnv("postgresql://u:se/cret@h/db"), refusedFromEnv("postgresql://u:se/cret@h/db"))
+        // With no `//`, java.net.URI reads no authority, and the refusal still masks the password.
+        assertEquals("drivine: the address postgresql:***@h/db names no host", refusedFromEnv("postgresql:u:secret@h/db"))
+        assertTrue("secret" !in refusedFromEnv("//u:secret@h/db"))
+        // An escaped `:` in the user, and an address with no `@`, which holds no credentials and is shown as it is.
+        assertTrue("secret" !in refusedFromEnv("postgresql://u%3Asecret@h:x/db"))
+        assertEquals("drivine: the address postgresql://h:x/db has no port number after its host", refusedFromEnv("postgresql://h:x/db"))
     }
 
     @Test
@@ -92,6 +98,9 @@ class AddressTest {
         assertTrue("names no database" in refused("memgraph://h/db"))
         assertTrue("names no database" in refused("falkordb://h/graph"))
         assertTrue("Oracle's service" in refused("oracle://h:1521"))
+        // A port no store can listen on is a bad value, refused before connecting.
+        assertTrue("out of range" in refused("postgresql://h:99999/db"))
+        assertTrue("out of range" in refused("neo4j://neo4j_db:0"))
         // An option such as sslmode=require isn't read, so it isn't dropped without a word either.
         assertTrue("?query" in refused("postgresql://h/db?sslmode=require"))
         assertTrue("?query" in refused("neo4j://h:7687?policy=eu"))

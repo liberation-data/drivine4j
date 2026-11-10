@@ -35,6 +35,9 @@ data class Address(
         /** The `neo4j://` schemes, which route, and which only Neo4j speaks. */
         private val NEO4J = setOf("neo4j", "neo4j+s", "neo4j+ssc")
 
+        /** A URI's scheme and its `:`. */
+        private val SCHEME = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
+
         /**
          * Reads [text] as an address. [type] is `--type`'s, which only a Bolt address leaves room for: a type the scheme
          * contradicts is refused. An address [fromCommandLine], given with `-a`, may not hold a password, which would show
@@ -79,6 +82,8 @@ data class Address(
             val port = if (uri.host != null) uri.port.takeIf { it != -1 } else hostAndPort.substringAfter(':', "").ifEmpty { null }?.let {
                 it.toIntOrNull() ?: throw BadInvocation("drivine: the address $shown has no port number after its host")
             }
+            // A bad value, refused before connecting, and not left to a driver to fail on as a connection.
+            if (port != null && port !in 1..65535) throw BadInvocation("drivine: the address $shown has a port out of range: give 1 to 65535")
             val (user, password) = (uri.rawUserInfo ?: authority.substringBeforeLast('@', "").ifEmpty { null })?.let { info ->
                 decoded(info.substringBefore(':')).ifEmpty { null } to (if (':' in info) decoded(info.substringAfter(':')) else null)
             } ?: (null to null)
@@ -104,16 +109,19 @@ data class Address(
 
         /** [text] with the password its authority holds, if any, as `***`. */
         private fun shown(text: String): String {
-            val start = text.indexOf("://").takeIf { it >= 0 }?.plus(3) ?: return text
-            // The last `@`, and not the last before a `/`: a password may hold a `/`, unescaped.
+            // Everything between the scheme and the last `@` is hidden, user and all, however it is written: with or
+            // without a `//` (postgresql:u:secret@h, which java.net.URI reads as opaque), with a `/` or a `:` in the
+            // password, or one escaped (%3A). An address with no `@` holds no credentials, and is shown as it is.
             val at = text.lastIndexOf('@')
-            val colon = text.indexOf(':', start)
-            return if (at < start || colon < 0 || colon > at) text else text.substring(0, colon + 1) + "***" + text.substring(at)
+            if (at < 0) return text
+            val scheme = SCHEME.find(text)?.value.orEmpty()
+            val slashes = if (text.startsWith("$scheme//")) "//" else ""
+            return scheme + slashes + "***" + text.substring(at)
         }
 
         /** [store], the one the scheme names, where `--type` gives none or the same one. */
         private fun agreeing(store: StoreType, type: StoreType?, text: String): StoreType {
-            if (type != null && type != store) throw BadInvocation("drivine: --type ${type.flag} contradicts the address $text, which is ${store.flag}'s")
+            if (type != null && type != store) throw BadInvocation("drivine: --type ${type.flag} contradicts the address ${shown(text)}, which is ${store.flag}'s")
             return store
         }
 
