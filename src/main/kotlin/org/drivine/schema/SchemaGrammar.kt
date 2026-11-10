@@ -17,6 +17,12 @@ import org.drivine.cypher.store.ddl.CypherNames
  * (`org.drivine.cypher.store.plan`), which [IndexManager], [ConstraintManager] and [SchemaManager] run; grammars contain no
  * orchestration. The planner is told of a store by the module's schema of it (`org.drivine.cypher.store.schema`), which
  * decides as drivine4j's own grammars do; a grammar of another kind is asked itself.
+ *
+ * A grammar of the application's own is asked less than drivine4j's managers asked it before the planner, until the
+ * module asks it the rest: an exception it throws from a rule the planner calls ends the whole call, not only its owner
+ * (liberation-data/drivine-cypher-spec#169); [requireConstrainable] is asked by [ConstraintManager] but not on
+ * [SchemaManager]'s paths (#170); and [createIndex], [dropIndex] and [dropConstraint] are given an item with only its
+ * kind, label, properties and name, not the rest of what was listed (#172).
  */
 interface SchemaGrammar {
 
