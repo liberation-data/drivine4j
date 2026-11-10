@@ -70,15 +70,23 @@ abstract class SearchSpecContract {
         if (indexed) settle()
     }
 
-    /** A search's hits, by id, best first, with no threshold. */
-    private fun search(label: String, properties: List<String>, query: String, topK: Int): List<String> {
-        val model = requireNotNull(MODELS[label to properties]) { "No model class for a search of $label on $properties" }
-        return manager.loadMatching(model, query, topK, 0.0).map { (it.value as SpecNode).id }
-    }
+    private fun model(label: String, properties: List<String>): Class<*> =
+        requireNotNull(MODELS[label to properties]) { "No model class for a search of $label on $properties" }
 
+    /** A search's hits, by id, best first, with no threshold. */
+    private fun search(label: String, properties: List<String>, query: String, topK: Int): List<String> =
+        manager.loadMatching(model(label, properties), query, topK, 0.0).map { (it.value as SpecNode).id }
+
+    /**
+     * A test for each case. Each search's model class is found first, so that one the file names and [MODELS] lacks fails
+     * the run, and isn't taken, in a held step, for the store's failure.
+     */
     @TestFactory
-    fun cases(): List<DynamicTest> = spec.tests(store, before = { ready(spec.indexes) { write(spec.graph) } }) {
-        search(it.label, it.properties, it.query, it.topK)
+    fun cases(): List<DynamicTest> {
+        spec.cases.flatMap { it.steps }.forEach { model(it.search.label, it.search.properties) }
+        return spec.tests(store, before = { ready(spec.indexes) { write(spec.graph) } }) {
+            search(it.label, it.properties, it.query, it.topK)
+        }
     }
 
     @Test
@@ -95,7 +103,7 @@ abstract class SearchSpecContract {
 
     companion object {
         /** The model class each search of search.yaml loads: its label and the properties of its full-text index. */
-        private val MODELS: Map<Pair<String, List<String>>, Class<*>> = mapOf(
+        internal val MODELS: Map<Pair<String, List<String>>, Class<*>> = mapOf(
             ("Doc" to listOf("body")) to SpecDoc::class.java,
             ("Paper" to listOf("title", "body")) to SpecPaper::class.java,
             ("Article" to listOf("body")) to SpecArticle::class.java,

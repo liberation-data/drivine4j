@@ -51,6 +51,7 @@ data class SearchSpec(
     ) {
         init {
             require(listOfNotNull(ids, ranked, error).size == 1) { "A step of search.yaml gives one of ids, ranked and error: $search" }
+            requireKnown(only.orEmpty() + except) { "A step of search.yaml names $it, no store or group: $search" }
         }
 
         fun runsOn(store: String) = (only == null || named(only, store)) && !named(except, store)
@@ -84,11 +85,21 @@ data class SearchSpec(
             val target: Any? = null,
             val measured: Any? = null,
             val note: String? = null,
-        )
+        ) {
+            init {
+                requireKnown(stores) { "A bar of search.yaml names $it, no store or group" }
+            }
+        }
+
+        init {
+            STORES.forEach { store ->
+                require(bars.count { named(it.stores, store) } <= 1) { "search.yaml holds $store's ranking to more than one bar" }
+            }
+        }
 
         data class Query(val query: String, val neo4j: List<String>)
 
-        /** The bar [store] is held to, if one is. */
+        /** The bar [store] is held to, if one is: `neo4j` too, where the file gives it one. */
         fun bar(store: String): Bar? = bars.singleOrNull { bar -> named(bar.stores, store) }
 
         /** How closely [ranked], each query's best [top] hits on a store, agrees with Neo4j's. */
@@ -191,7 +202,13 @@ data class SearchSpec(
             "sql" to setOf("postgres", "oracle", "oracle-text", "sqlite"),
         )
 
-        private fun named(names: List<String>, store: String) = names.any { it == store || GROUPS[it]?.contains(store) == true }
+        internal fun named(names: List<String>, store: String) = names.any { it == store || GROUPS[it]?.contains(store) == true }
+
+        /** Fails with [message] where [names] has one that is no store or group, so that a typo or a new store is not passed over. */
+        private fun requireKnown(names: List<String>, message: (List<String>) -> String) {
+            val unknown = names.filter { it !in STORES && it !in GROUPS }
+            require(unknown.isEmpty()) { message(unknown) }
+        }
 
         private const val GRAPH_ENGINES = "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"
         private const val FALKORDB = "liberation-data/drivine4j#666"
@@ -200,7 +217,8 @@ data class SearchSpec(
 
         /**
          * The steps search.yaml's `today` says a store fails, by case: the steps (from 1), the stores or groups they are held
-         * on, and the issue that makes them pass.
+         * on, and the issue that makes them pass. The runner doesn't read `today`; SearchSpecTest checks that these hold
+         * just the steps and stores it names, for its issues.
          */
         internal val HELD: Map<String, List<Hold>> = mapOf(
             "Words are ORed" to listOf(Hold(FALKORDB, listOf("falkordb"), listOf(1, 2))),
@@ -235,7 +253,8 @@ data class SearchSpec(
             "An empty query" to listOf(Hold(GRAPH_ENGINES, listOf("graph"))),
         )
 
-        private val yaml = ObjectMapper(YAMLFactory()).registerKotlinModule()
+        /** Fails on a key the runner doesn't know, so that a spec tag's new key is read, not passed over. */
+        internal val yaml = ObjectMapper(YAMLFactory()).registerKotlinModule()
             .enable(DeserializationFeature.USE_LONG_FOR_INTS)
 
         val spec: SearchSpec by lazy {

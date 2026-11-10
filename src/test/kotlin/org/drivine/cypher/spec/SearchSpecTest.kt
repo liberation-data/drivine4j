@@ -1,20 +1,25 @@
 package org.drivine.cypher.spec
 
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException
+import com.fasterxml.jackson.module.kotlin.readValue
 import org.drivine.cypher.spec.SearchSpec.Case
 import org.drivine.cypher.spec.SearchSpec.Hold
 import org.drivine.cypher.spec.SearchSpec.Search
+import org.drivine.cypher.spec.SearchSpec.Ranking.Bar
 import org.drivine.cypher.spec.SearchSpec.Step
+import org.drivine.manager.SearchSpecContract
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 /**
  * The search spec's runner, with no store: a held step must still fail, by an assertion or as the store fails; a hold
- * must name a case, steps and stores the file has; `ids` is a set and `ranked` an order; and the ranking's measure.
+ * must name a case, steps and stores the file has, and HELD hold just what `today` says; a key, store or bar the runner
+ * doesn't know fails at once; `ids` is a set and `ranked` an order; and the ranking's measure and bars.
  */
 class SearchSpecTest {
 
@@ -96,9 +101,57 @@ class SearchSpecTest {
     fun `each store a search runs on but neo4j has one bar, and the corpus has a node for each id the ranking names`() {
         val ranking = SearchSpec.spec.ranking
         (SearchSpec.STORES - "neo4j").forEach { assertNotNull(ranking.bar(it), it) }
-        assertNull(ranking.bar("neo4j"))
         val ids = SearchSpec.corpus.map { it["id"] }.toSet()
         ranking.queries.flatMap { it.neo4j }.forEach { assertContains(ids, it) }
+    }
+
+    @Test
+    fun `a bar for neo4j holds it, and a bar naming no store, or a second bar for a store, fails at once`() {
+        val ranking = SearchSpec.spec.ranking
+        val neo4j = Bar(listOf("neo4j"), 21, 4.95)
+        assertSame(neo4j, ranking.copy(bars = ranking.bars + neo4j).bar("neo4j"))
+        assertContains(assertThrows<IllegalArgumentException> { Bar(listOf("neptune"), 1, 1.0) }.message!!, "[neptune]")
+        val twice = assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("sql"), 1, 1.0)) }
+        assertContains(twice.message!!, "more than one bar")
+    }
+
+    @Test
+    fun `a key the runner doesn't know, or a store or group no step can run on, fails at once`() {
+        assertThrows<UnrecognizedPropertyException> {
+            SearchSpec.yaml.readValue<Step>("{search: {label: Doc, properties: [body], query: kiwi, topK: 50}, ids: [], unordered: true}")
+        }
+        assertContains(assertThrows<IllegalArgumentException> { step.copy(only = listOf("oracletext")) }.message!!, "[oracletext]")
+        assertContains(assertThrows<IllegalArgumentException> { step.copy(except = listOf("neptune")) }.message!!, "[neptune]")
+    }
+
+    /** Each store a step's `today` names, by case and step, and the issue, as `owner/repo#n`. */
+    private fun held(case: Case, index: Int, stores: List<String>, issue: String) =
+        SearchSpec.STORES.filter { SearchSpec.named(stores, it) && case.steps[index].runsOn(it) }
+            .map { listOf(case.name, index + 1, it, Regex("""[\w-]+/[\w-]+#\d+""").find(issue)?.value ?: issue) }
+
+    @Test
+    fun `HELD holds each step on each store its today names, for the same issue, and no other`() {
+        val cases = SearchSpec.spec.cases.associateBy { it.name }
+        val today = cases.values.flatMap { case ->
+            case.steps.withIndex().flatMap { (index, step) ->
+                (step.today as List<*>?).orEmpty().map { it as Map<*, *> }.flatMap {
+                    @Suppress("UNCHECKED_CAST")
+                    held(case, index, it["stores"] as List<String>, (it["issue"] as String?) ?: "unfiled")
+                }
+            }
+        }
+        val holds = SearchSpec.HELD.flatMap { (name, holds) ->
+            val case = cases.getValue(name)
+            holds.flatMap { hold -> (hold.steps ?: (1..case.steps.size).toList()).flatMap { held(case, it - 1, hold.on, hold.issue) } }
+        }
+        assertEquals(today.sortedBy { it.toString() }, holds.sortedBy { it.toString() })
+    }
+
+    @Test
+    fun `each search of the file has a model class to load`() {
+        val spec = SearchSpec.spec
+        (spec.cases.flatMap { case -> case.steps.map { it.search.label to it.search.properties } } + (spec.ranking.search.label to spec.ranking.search.properties))
+            .forEach { assertContains(SearchSpecContract.MODELS.keys, it) }
     }
 
     @Test
