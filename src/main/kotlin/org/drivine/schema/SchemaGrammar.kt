@@ -94,13 +94,15 @@ interface SchemaGrammar {
 
     /**
      * The statements that keep the schema-version marker, a node of the graph with [label] keyed by
-     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise.
+     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise. Drivine's own grammars
+     * refuse any but `_DrivineSchema` and `scope`, the marker every Drivine library reads.
      */
     fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = CypherVersionMarker(label, scopeProperty)
 
     /**
      * The statements that keep the store's identity, a node of the graph with [label] keyed by
-     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise.
+     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise. Drivine's own grammars
+     * refuse any but `DrivineStore` and `key`, the stamp every Drivine library reads.
      */
     fun storeStamp(label: String, keyProperty: String): StoreStampStatements = CypherStoreStamp(label, keyProperty)
 
