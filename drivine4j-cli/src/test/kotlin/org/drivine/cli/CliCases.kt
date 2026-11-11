@@ -78,8 +78,8 @@ class CliCases(
 
     /**
      * Why [case] isn't run here, or null where it is. A case is run where it needs only what this build has: statements
-     * given as the argument, with `-c`, in a `-f` file or on stdin, the commands `:exit` and `:quit`, `--continue`, the
-     * address, the user, `--type` and the formats plain, json and auto.
+     * given as the argument, with `-c`, in a `-f` file or on stdin, the commands `:exit` and `:quit`, a command the
+     * contract doesn't have, `--continue`, the address, the user, `--type` and the formats plain, json and auto.
      */
     fun skipped(case: Map<String, Any?>): String? {
         val args = args(case)
@@ -159,7 +159,7 @@ class CliCases(
             }
         }
 
-    /** The commands, by their names, that [case]'s statements hold, which this build doesn't run: all but `:exit` and `:quit`. */
+    /** The commands, by their names, that [case]'s statements hold, of the contract's that this build doesn't run yet. */
     private fun commands(case: Map<String, Any?>, args: List<String>): List<String> {
         val texts = buildList {
             try {
@@ -171,8 +171,8 @@ class CliCases(
             files(case).values.forEach { add(it.first) }
         }
         return texts.flatMap { text -> Statements(StringReader(text)).asSequence().filterIsInstance<Input.Command>().toList() }
-            .map { it.line.trim().substringBefore(' ') }
-            .filter { it != ":exit" && it != ":quit" }
+            .map { it.name }
+            .filter { it in Cli.LATER_COMMANDS }
     }
 
     /** An octal mode, as `644`, as the POSIX permissions it gives, as `rw-r--r--`. */

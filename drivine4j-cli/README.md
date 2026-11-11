@@ -73,7 +73,10 @@ statements on `;`, but not on one inside a string, a backticked name or a commen
 each statement runs in a transaction of its own as it's read, its result printed as it comes. So a file larger than
 memory, as an export may be, runs as it's read. The first statement that fails stops the run, with the results before
 it printed; `--continue` runs the rest, reports each failure on stderr, and exits with 1. `:exit` and `:quit` stop
-reading. The other commands, `:begin`, `:param` and the rest, come later, and fail as a statement does for now.
+reading. The contract's other commands, `:begin`, `:param` and the rest, come later, and fail as a statement does for
+now. A command the contract doesn't have, as `:nope`, fails as a statement does too, with cypher-shell's line, `Could not
+find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
+statement's `;` on the same line is no command.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
 `plain` and `json` for now) and `--non-interactive`, and `-c`, `--continue` (cypher-shell's `--fail-at-end`), `--type`,

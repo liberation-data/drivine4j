@@ -112,9 +112,10 @@ class Cli(
         for (input in inputs) {
             val code = when (input) {
                 is Input.Statement -> statement(plan, store, renderer, input.cypher)
-                is Input.Command -> when (input.line.trim().substringBefore(' ')) {
+                is Input.Command -> when (val name = input.name) {
                     ":exit", ":quit" -> break
-                    else -> fail(ExitCode.STATEMENT_FAILED, "drivine: ${input.line.trim().substringBefore(' ')} comes later, and this build doesn't run it")
+                    in LATER_COMMANDS -> fail(ExitCode.STATEMENT_FAILED, "drivine: $name comes later, and this build doesn't run it")
+                    else -> fail(ExitCode.STATEMENT_FAILED, "Could not find command $name, use :help to see available commands")
                 }
             }
             when (code) {
@@ -123,7 +124,7 @@ class Cli(
                     failed = true
                     if (!plan.continueOnFailure) return code
                 }
-                Done -> return ExitCode.OK
+                Done -> break
                 else -> return code
             }
         }
@@ -191,9 +192,13 @@ class Cli(
     companion object {
         /**
          * Not an exit code: stdout's reader closed it, so no more is to be run or printed, and the run ends with
-         * [ExitCode.OK]. Only [print] and the statement loop see it.
+         * [ExitCode.OK], or with [ExitCode.STATEMENT_FAILED] where a statement failed before it under `--continue`. Only
+         * [print] and the statement loop see it.
          */
         private const val Done = -1
+
+        /** The contract's commands, but `:exit` and `:quit`, which this build doesn't run yet: each fails as a statement does. */
+        internal val LATER_COMMANDS = setOf(":begin", ":commit", ":rollback", ":param", ":params", ":use", ":source", ":help")
 
         /**
          * Whether [e] is a write to a pipe its reader closed. The JDK's FileOutputStream, and so the native image, which

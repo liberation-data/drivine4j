@@ -117,6 +117,57 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `given a text, stdin isn't read, and an empty -f file runs nothing`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        val out = java.io.StringWriter()
+        val err = java.io.StringWriter()
+        val cli = Cli(emptyMap(), out, err, stdin = { throw AssertionError("stdin read") }, stdinTerminal = false)
+        assertEquals(0, cli.run(memory + listOf("--format", "plain", "--non-interactive", "RETURN 1 AS one")), err.toString())
+        assertEquals("one\n1\n", out.toString())
+        java.nio.file.Files.writeString(dir.resolve("empty.cypher"), "")
+        assertEquals(CliRun(0, "", ""), runCli(memory + listOf("-f", "empty.cypher"), dir = dir.toFile()))
+    }
+
+    @Test
+    fun `an unknown command fails as cypher-shell says, and one of the contract's that comes later says so`() {
+        val nope = runCli(memory + listOf("--format", "plain"), stdin = ":nope\nRETURN 1 AS a;\n")
+        assertEquals(CliRun(1, "", "Could not find command :nope, use :help to see available commands\n"), nope)
+        assertTrue(":source comes later" in runCli(memory, stdin = ":source x.cypher\n").stderr)
+    }
+
+    @Test
+    fun `a reader that closes stdout after a failure under --continue still leaves the run failed`() {
+        val out = object : java.io.Writer() {
+            val taken = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                if ('\n' in taken) throw java.io.IOException("Broken pipe")
+                taken.append(cbuf, off, len)
+            }
+            override fun flush() {}
+            override fun close() {}
+        }
+        val err = java.io.StringWriter()
+        val run = Cli(emptyMap(), out, err).run(memory + listOf("--format", "json", "--continue", "RETURN 1/0; RETURN 1 AS a; RETURN 2 AS b"))
+        assertEquals(1, run, err.toString())
+    }
+
+    @Test
+    fun `a result that can't be written stops the run with 1, past those before it`() {
+        val out = object : java.io.Writer() {
+            val taken = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                if ('\n' in taken) throw java.io.IOException("No space left on device")
+                taken.append(cbuf, off, len)
+            }
+            override fun flush() {}
+            override fun close() {}
+        }
+        val err = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), out, err).run(memory + listOf("--format", "json", "RETURN 1 AS a; RETURN 2 AS b; RETURN 3 AS c")))
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.taken.toString())
+        assertEquals("drivine: can't write the result: No space left on device\n", err.toString())
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

@@ -73,6 +73,16 @@ class StatementsTest {
         assertEquals(statements("RETURN '\n:begin'"), split("RETURN '\n:begin';"))
         // On a line after a statement's ;, it's a command again.
         assertEquals(listOf(Input.Statement("RETURN 1"), Input.Command(":exit")), split("RETURN 1;\n:exit"))
+        assertEquals(listOf(Input.Statement("RETURN 1"), Input.Command(":exit")), split("RETURN 1;\r\n:exit\r\n"))
+        // On the line of a statement's ;, the line's first character isn't the colon, so it's no command.
+        assertEquals(statements("RETURN 1", ":exit"), split("RETURN 1; :exit"))
+        assertEquals(statements("RETURN 1", ":exit"), split("RETURN 1; /* c */\n;:exit"))
+    }
+
+    @Test
+    fun `a line break of carriage return and line feed is no part of a statement's ends, and a slash at the end is the statement's`() {
+        assertEquals(statements("RETURN 1", "RETURN 2"), split("RETURN 1;\r\nRETURN 2\r\n"))
+        assertEquals(statements("RETURN 4 /"), split("RETURN 4 /"))
     }
 
     @Test
