@@ -1,28 +1,31 @@
 package org.drivine.schema
 
-import org.drivine.DrivineException
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.PersistenceManagerType
+import org.drivine.transaction.TransactionContextHolder
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.store.StoreIdentityResolver
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
 import java.sql.DriverManager
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
  * [SchemaLock] on Oracle (liberation-data/drivine4j#777): managers making one graph's schema at once take turns, so none
- * waits out the library-cache deadlock their DDL can meet together; a lock held past its wait fails with a message that
- * names the graph; and a graph with no lock table runs its DDL unlocked.
+ * waits out the library-cache deadlock their DDL can meet together; a lock held past its wait is gone without, in either
+ * schema mode, so the DDL runs unlocked with one warning that names the graph; and a graph with no lock table runs its DDL
+ * unlocked.
  */
 @OracleTests
 class SchemaLockTest {
@@ -61,34 +64,6 @@ class SchemaLockTest {
     }
 
     @Test
-    fun `a lock another session holds past the wait fails with a message that names the graph, and a boot behind it doesn't hang`() {
-        val graph = "lock_held"
-        open(graph).constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
-        OracleTestDatabase.clear(OracleTestDatabase.graphManager(graph))
-        val provider = JdbcConnectionProvider(graph, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph)
-        connect().use { holder ->
-            holder.autoCommit = false
-            holder.createStatement().use { it.executeQuery("SELECT name FROM ${graph}_lock2 WHERE name = 'schema' FOR UPDATE").close() }
-            try {
-                val started = System.nanoTime()
-                val failure = assertThrows<DrivineException> { SchemaLock.take(provider) }
-                assertContains(failure.message!!, "making the schema of graph $graph")
-                assertContains(failure.message!!, "past ${SchemaLock.WAIT_SECONDS} seconds")
-                assertTrue((System.nanoTime() - started) / 1_000_000 >= SchemaLock.WAIT_SECONDS * 1_000L - 500)
-                // A boot behind the held lock gives up on it after the wait, as its schema fails, rather than hang.
-                val boot = System.nanoTime()
-                runCatching { open(graph).storeIdentity.id }
-                assertTrue((System.nanoTime() - boot) / 1_000_000 < (SchemaLock.WAIT_SECONDS + 20) * 1_000L)
-            } finally {
-                holder.rollback()
-            }
-        }
-        // Freed, the lock is had at once.
-        SchemaLock.take(provider)!!.close()
-        provider.end()
-    }
-
-    @Test
     fun `a graph with no lock table, as one made before layout 2, makes its schema unlocked`() {
         val graph = "lock_none"
         open(graph).constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
@@ -100,5 +75,83 @@ class SchemaLockTest {
             // Made again with the graph, for the next run.
             OracleTestDatabase.graphManager(graph)
         }
+    }
+
+    /** The warnings [SchemaLock] logs while [block] runs. */
+    private fun warnings(block: () -> Unit): List<String> {
+        val logger = org.slf4j.LoggerFactory.getLogger(SchemaLock::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
+        }
+        return appender.list.filter { it.level == ch.qos.logback.classic.Level.WARN }.map { it.formattedMessage }
+    }
+
+    /**
+     * While another session holds [graph]'s schema lock, the [SchemaManager] of a uniqueness constraint on it, under
+     * [mode], makes the constraint unlocked once the wait is out, and warns of it once for the graph however many plans
+     * meet it.
+     */
+    private fun madeUnlockedWhileHeld(graph: String, mode: SchemaMode) {
+        OracleTestDatabase.graphManager(graph)
+        val registry = DatabaseRegistry(DataSourceMap()).also {
+            it.register(JdbcConnectionProvider(graph, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph))
+        }
+        val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+        val pm = factory.get(graph, PersistenceManagerType.NON_TRANSACTIONAL)
+        val spec = UniquenessConstraintSpec("Ledger", "id")
+        val other = RangeIndexSpec("Ledger", "name")
+        pm.constraints.drop(spec)
+        pm.indexes.drop(other)
+        connect().use { holder ->
+            holder.autoCommit = false
+            holder.createStatement().use { it.executeQuery("SELECT name FROM ${graph}_lock2 WHERE name = 'schema' FOR UPDATE").close() }
+            try {
+                val started = System.nanoTime()
+                val logged = warnings {
+                    SchemaManager(factory, registry, listOf(SchemaCatalog.of(spec)), SchemaPolicy(mode = mode)).enforce()
+                    SchemaManager(factory, registry, listOf(SchemaCatalog.of(other)), SchemaPolicy(mode = mode)).enforce()
+                }
+                assertTrue((System.nanoTime() - started) / 1_000_000 >= SchemaLock.WAIT_SECONDS * 1_000L - 500, "it waited for the lock first")
+                kotlin.test.assertNotNull(pm.constraints.find(spec), "the constraint is made, unlocked, not skipped")
+                kotlin.test.assertNotNull(pm.indexes.find(other), "and so is the index after it")
+                val lockWarnings = logged.filter { "schema lock of graph $graph" in it }
+                assertEquals(1, lockWarnings.size, "warned of once for the graph: $logged")
+                assertTrue(Regex("in \\d+ ms").containsMatchIn(lockWarnings.single()), lockWarnings.single())
+            } finally {
+                holder.rollback()
+            }
+        }
+        registry.databaseNames.forEach { registry.connectionProvider(it)?.end() }
+    }
+
+    @Test
+    fun `under FAIL_FAST a lock not had is gone without after its wait, and the constraint is made unlocked`() =
+        madeUnlockedWhileHeld("lock_fail", SchemaMode.FAIL_FAST)
+
+    @Test
+    fun `under WARN a lock not had is gone without after its wait, and the constraint is made unlocked`() =
+        madeUnlockedWhileHeld("lock_warn", SchemaMode.WARN)
+
+    @Test
+    fun `a lock not had within its wait is none, and the DDL runs unlocked`() {
+        val graph = "lock_held"
+        OracleTestDatabase.graphManager(graph)
+        val provider = JdbcConnectionProvider(graph, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph)
+        connect().use { holder ->
+            holder.autoCommit = false
+            holder.createStatement().use { it.executeQuery("SELECT name FROM ${graph}_lock2 WHERE name = 'schema' FOR UPDATE").close() }
+            try {
+                assertEquals(null, SchemaLock.take(provider))
+            } finally {
+                holder.rollback()
+            }
+        }
+        // Freed, the lock is had at once.
+        SchemaLock.take(provider)!!.close()
+        provider.end()
     }
 }

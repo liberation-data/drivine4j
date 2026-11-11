@@ -57,6 +57,12 @@ import kotlin.test.assertTrue
  */
 abstract class SchemaDdlContract {
 
+    /**
+     * Whether a schema command that runs DDL holds the graph's schema lock on a connection of its own while it does
+     * (drivine4j#777): on Oracle, so it borrows two connections, and one that runs none, as one made already, borrows one.
+     */
+    open val locksDdl: Boolean = false
+
     /** The store's data source. */
     abstract val dataSource: DataSource
 
@@ -438,7 +444,7 @@ abstract class SchemaDdlContract {
     }
 
     @Test
-    fun `one schema command borrows one connection, gives it back however it ends, and starts no transaction on it`() {
+    fun `one schema command borrows one connection, and on Oracle one for its lock where it runs DDL, gives them back however it ends, and starts no transaction on its own`() {
         val counting = CountingDataSource(dataSource)
         val counted = DatabaseRegistry(DataSourceMap()).also { it.register(provider(graph, counting)) }
         val manager = PersistenceManagerFactory(counted, TransactionContextHolder(counted)).get(graph, PersistenceManagerType.NON_TRANSACTIONAL)
@@ -467,7 +473,9 @@ abstract class SchemaDdlContract {
         )
         LoggerFactory.getLogger(SchemaDdlContract::class.java).info("Connections per schema command: {}", counts)
 
-        assertEquals(counts.mapValues { 1 }, counts)
+        // A command that ran DDL: on Oracle, its own connection and the schema lock's.
+        val ranDdl = setOf("CREATE CONSTRAINT IF NOT EXISTS", "CREATE INDEX", "CREATE CONSTRAINT of Drivine's own", "DROP CONSTRAINT", "DROP INDEX")
+        assertEquals(counts.mapValues { (name, _) -> if (locksDdl && name in ranDdl) 2 else 1 }, counts)
         // Each statement committed as it ran: the session was never put in a transaction.
         assertEquals(emptyList(), counting.transactional)
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "id")))
@@ -528,6 +536,8 @@ class SchemaDdlPostgresTest : SchemaDdlContract() {
 @OracleTests
 class SchemaDdlOracleTest : SchemaDdlContract() {
     override val dataSource: DataSource get() = OracleTestDatabase.provider.nativeDriver
+
+    override val locksDdl: Boolean = true
 
     override fun provider(graph: String, dataSource: DataSource): ConnectionProvider =
         JdbcConnectionProvider(graph, DatabaseType.ORACLE, dataSource, SubtypeRegistry(), graphName = graph)

@@ -1,6 +1,5 @@
 package org.drivine.schema
 
-import org.drivine.DrivineException
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
@@ -19,9 +18,11 @@ import java.sql.SQLException
  * It is a row lock of the graph's lock table (`<graph>_lock2`, made with the graph since layout 2): `SELECT … FOR UPDATE
  * WAIT 10` on a connection of its own, as DDL commits the session it runs on and would end a lock taken there. It's
  * taken only when a plan runs DDL, so a boot with nothing to make takes none, and released, by a rollback, when the
- * plan ends. A lock not had within [WAIT_SECONDS] fails with a message that names the graph, so a manager that died
- * holding it can't hang a boot: Oracle frees a dead session's locks when it ends it. A store made before layout 2 has
- * no lock table, and its DDL runs unlocked, as before.
+ * plan ends. A lock not had within [WAIT_SECONDS], as when another manager holds it that long, or one that died holding
+ * it hasn't been ended yet, is gone without: its DDL runs unlocked, as it did before the lock, and a warning says so,
+ * once for each graph in a process, with how long it waited. So nothing is ever left unmade or skipped, in either schema
+ * mode, and the worst case is the deadlock the lock avoids. A store made before layout 2 has no lock table, and its DDL
+ * runs unlocked too.
  */
 internal class SchemaLock private constructor(private val connection: Connection) : AutoCloseable {
 
@@ -35,10 +36,13 @@ internal class SchemaLock private constructor(private val connection: Connection
     }
 
     companion object {
-        /** How long a manager waits for another's DDL, in seconds, before it fails. */
+        /** How long a manager waits for another's DDL, in seconds, before it runs its own unlocked. */
         const val WAIT_SECONDS = 10
 
         private val logger = LoggerFactory.getLogger(SchemaLock::class.java)
+
+        /** The graphs whose lock this process has warned of not having, so it warns once for each. */
+        private val warned: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
         /**
          * Another manager held the row past the wait: `ORA-00054` on Oracle 23, which gives the row lock's `ORA-40097`
@@ -56,12 +60,14 @@ internal class SchemaLock private constructor(private val connection: Connection
 
         /**
          * The lock of [provider]'s graph, held: on Oracle only, as Postgres serialises its own DDL with a lock of the
-         * graph's and SQLite has one writer. Null on another store, and where the graph has no lock table.
+         * graph's and SQLite has one writer. Null on another store, where the graph has no lock table, and where the lock
+         * isn't had within [WAIT_SECONDS]: then the DDL runs unlocked.
          */
         fun take(provider: ConnectionProvider): SchemaLock? {
             if (provider.type != DatabaseType.ORACLE) return null
             val graph = provider.graphName ?: return null
             val connection = provider.connect()
+            val started = System.nanoTime()
             try {
                 connection.startTransaction()
                 connection.query(QuerySpecification.withStatement(statement(graph)))
@@ -69,20 +75,31 @@ internal class SchemaLock private constructor(private val connection: Connection
             } catch (e: Exception) {
                 try {
                     connection.rollbackTransaction()
-                } catch (ignored: Exception) {
-                    // The transaction may not have begun: the connection is given back either way.
+                } catch (rollback: Exception) {
+                    // The transaction may not have begun, or Oracle may have ended the session: the error that brought
+                    // us here is the one that counts, and the connection is given back either way.
+                    e.addSuppressed(rollback)
                 }
-                connection.release(e)
+                try {
+                    connection.release(e)
+                } catch (release: Exception) {
+                    e.addSuppressed(release)
+                }
                 when (oracleCode(e)) {
                     NO_TABLE -> {
                         logger.debug("Graph {} has no lock table, as a store made before layout 2: its DDL runs unlocked.", graph)
                         return null
                     }
-                    in WAIT_EXPIRED -> throw DrivineException(
-                        "Another Drivine is making the schema of graph $graph, and held its lock past $WAIT_SECONDS seconds. " +
-                            "Start again once it's done; a manager that died holding it is freed as Oracle ends its session.",
-                        e,
-                    )
+                    in WAIT_EXPIRED -> {
+                        if (warned.add(graph)) {
+                            logger.warn(
+                                "Couldn't take the schema lock of graph {} in {} ms: another Drivine holds it. Making its schema " +
+                                    "unlocked, which may wait out a contention of Oracle's (drivine4j#777).",
+                                graph, (System.nanoTime() - started) / 1_000_000,
+                            )
+                        }
+                        return null
+                    }
                     else -> throw e
                 }
             }
