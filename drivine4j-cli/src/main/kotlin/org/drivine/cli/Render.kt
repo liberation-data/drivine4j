@@ -260,14 +260,16 @@ object TableRenderer : Renderer {
 
     /**
      * [counts] as cypher-shell prints them, as `Created 1 node, deleted 1 node, added 1 label`: each that isn't 0, in the
-     * order the store gives them, the first word capitalised; null where there are none.
+     * contract's order, the first word capitalised; null where there are none.
      */
     internal fun counts(counts: Map<String, Int>): String? {
-        val words = counts.mapNotNull { (name, n) -> WORDS[name]?.let { (verb, one, many) -> "$verb $n ${if (n == 1) one else many}" } }
+        val words = WORDS.mapNotNull { (name, word) ->
+            counts[name]?.takeIf { it != 0 }?.let { n -> "${word.first} $n ${if (n == 1) word.second else word.third}" }
+        }
         return if (words.isEmpty()) null else words.joinToString(", ").replaceFirstChar { it.uppercase() }
     }
 
-    /** Each count's verb and noun, one and many, as cypher-shell words them. */
+    /** Each count's verb and noun, one and many, as cypher-shell words them, in the order it prints them. */
     private val WORDS = mapOf(
         "nodesCreated" to Triple("created", "node", "nodes"),
         "nodesDeleted" to Triple("deleted", "node", "nodes"),

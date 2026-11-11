@@ -184,6 +184,8 @@ class RenderTest {
                 "labelsAdded" to 1, "labelsRemoved" to 2, "indexesAdded" to 1, "indexesRemoved" to 2, "constraintsAdded" to 1, "constraintsRemoved" to 2,
             )))
         assertEquals("Removed 1 label", TableRenderer.counts(mapOf("labelsRemoved" to 1)))
+        // In the contract's order, and only those that aren't 0, whatever the order and the zeros of the map it's given.
+        assertEquals("Created 1 node, added 1 label", TableRenderer.counts(linkedMapOf("labelsAdded" to 1, "nodesDeleted" to 0, "nodesCreated" to 1)))
     }
 
     @Test
