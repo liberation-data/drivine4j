@@ -258,9 +258,9 @@ data class SearchSpec(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 4)),
                 Hold("liberation-data/drivine4j#761", listOf("sql"), listOf(2, 3, 4)),
             ),
-            // Seen on the arm64 test box: there drivine4j's search finds a word in the first property of the index alone,
-            // while CI's amd64 runs find it in every property, as Neo4j does. Memgraph 3.14.0's arm64 build asked directly
-            // searches every property, so the cause is under investigation (#762). Held where Docker's host is arm64 meanwhile.
+            // Memgraph 3.14.0's arm64 build indexes only the first property of a text index over several when another text
+            // index was made before it, as search.yaml's Doc index is (memgraph/memgraph#5353, #762). Its amd64 build, CI's,
+            // searches every property, as Neo4j does. Held where Docker's host is arm64.
             "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3), ARM64), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
             "Escapes" to listOf(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 5, 6)),
