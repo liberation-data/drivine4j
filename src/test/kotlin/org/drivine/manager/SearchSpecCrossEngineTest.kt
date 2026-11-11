@@ -20,7 +20,7 @@ import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedFalkorDb
-import org.drivine.test.SharedMemgraph
+import org.drivine.test.sharedContainer
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -186,11 +186,17 @@ class Neo4jSearchSpecTest : BoltSearchSpecContract() {
     }
 }
 
+/**
+ * On a Memgraph container of its own, not the shared one: Memgraph 3.14.0 indexes only the first property of a text index
+ * over several made after another text index (memgraph/memgraph#5353), and what other classes made on the shared
+ * container before decides that, not the indexes there now. On its own container every text index is this class's, so
+ * "Several properties" fails alike in a run of one class and of all, on arm64 and amd64, and its hold holds.
+ */
 class MemgraphSearchSpecTest : BoltSearchSpecContract() {
     override val store = "memgraph"
     override val type = DatabaseType.MEMGRAPH
     override val provider by lazy {
-        val container = SharedMemgraph.forClass()
+        val container = sharedContainer("memgraph/memgraph:latest", 7687)
         Neo4jConnectionProvider(
             name = "memgraph-search-spec", type = DatabaseType.MEMGRAPH, host = container.host, port = container.getMappedPort(7687),
             user = "", password = "", database = null, config = emptyMap(),
