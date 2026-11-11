@@ -644,10 +644,10 @@ cases:
     note: "A SQL store refuses a path: liberation-data/drivine-cypher-spec#163."
 
   - name: "json writes a map of the user's own that has a $t key inside a $t map, so it can't pass for a node"
-    args: ["--format", "json", "RETURN {`$t`: 'node'} AS m, {k: 1} AS p"]
-    stdout: "{\"columns\":[\"m\",\"p\"],\"rows\":[[{\"$t\":\"map\",\"v\":{\"$t\":\"node\"}},{\"k\":1}]]}\n"
+    args: ["--format", "json", "RETURN {`$t`: 'node'} AS m, [{`$t`: 1}] AS l, {k: {`$t`: 2}} AS p"]
+    stdout: "{\"columns\":[\"m\",\"l\",\"p\"],\"rows\":[[{\"$t\":\"map\",\"v\":{\"$t\":\"node\"}},[{\"$t\":\"map\",\"v\":{\"$t\":1}}],{\"k\":{\"$t\":\"map\",\"v\":{\"$t\":2}}}]]}\n"
     exit: 0
-    note: "A map with no $t key is written as it is. The escape is typed output's (#161)."
+    note: "A map with no $t key is written as it is, and one in a list or a map is escaped too. The escape is typed output's (liberation-data/drivine-cypher-spec#161)."
 
   - name: "json writes a temporal value as its ISO 8601 text, a string"
     only: [neo4j, sql]
