@@ -152,4 +152,50 @@ class RenderTest {
         assertEquals("{\"\$t\":\"map\",\"v\":{\"\$t\":1}}", json(mapOf(StringBuilder("\$t") to 1L)))
         assertEquals("{\"1\":2}", json(sortedMapOf(1L to 2L)))
     }
+
+    private fun table(result: Result) = StringBuilder().also { TableRenderer.render(result, it) }.toString()
+
+    @Test
+    fun `table prints a border as wide as its header, each column as wide as its widest value, and the count of rows`() {
+        assertEquals(
+            "+------------+\n" +
+                "| x   | s    |\n" +
+                "+------------+\n" +
+                "| 1   | \"a\"  |\n" +
+                "| 333 | NULL |\n" +
+                "+------------+\n" +
+                "\n" +
+                "2 rows\n" +
+                "ready to start consuming query after 7 ms, results consumed after another 0 ms\n",
+            table(Result(listOf("x", "s"), listOf(listOf(1L, "a"), listOf(333L, null)), millis = 7)),
+        )
+        // No rows: the columns' names between borders. No columns, as a write with no RETURN: no table at all.
+        assertEquals("+---+\n| n |\n+---+\n+---+\n\n0 rows\nready to start consuming query after 0 ms, results consumed after another 0 ms\n", table(Result(listOf("n"), emptyList())))
+        assertEquals("0 rows\nready to start consuming query after 0 ms, results consumed after another 0 ms\nCreated 2 nodes, set 1 property\n",
+            table(Result(emptyList(), emptyList(), linkedMapOf("nodesCreated" to 2, "propertiesSet" to 1))))
+    }
+
+    @Test
+    fun `table words each count as cypher-shell does, one and many, the first capitalised, and none where there are none`() {
+        assertEquals(null, TableRenderer.counts(emptyMap()))
+        assertEquals("Created 1 node, deleted 2 nodes, created 1 relationship, deleted 2 relationships, set 3 properties, added 1 label, removed 2 labels, added 1 index, removed 2 indexes, added 1 constraint, removed 2 constraints",
+            TableRenderer.counts(linkedMapOf(
+                "nodesCreated" to 1, "nodesDeleted" to 2, "relationshipsCreated" to 1, "relationshipsDeleted" to 2, "propertiesSet" to 3,
+                "labelsAdded" to 1, "labelsRemoved" to 2, "indexesAdded" to 1, "indexesRemoved" to 2, "constraintsAdded" to 1, "constraintsRemoved" to 2,
+            )))
+        assertEquals("Removed 1 label", TableRenderer.counts(mapOf("labelsRemoved" to 1)))
+    }
+
+    @Test
+    fun `csv quotes a field only where it needs it, writes texts and temporals as they are, and parts results by one empty line`() {
+        val csv = CsvRenderer()
+        val out = StringBuilder()
+        csv.render(Result(listOf("t", "d", "l", "z", "q"), listOf(listOf("a\nb", LocalDate.of(2024, 1, 2), listOf(1L, "x"), null, "it's"))), out)
+        // A result with no columns prints nothing, not even its separator.
+        csv.render(Result(emptyList(), emptyList()), out)
+        csv.render(Result(listOf("n"), listOf(listOf(2.0))), out)
+        assertEquals("t,d,l,z,q\n\"a\nb\",2024-01-02,\"[1,\"\"x\"\"]\",,it's\n\nn\n2.0\n", out.toString())
+        // A run's own: another run starts with no separator.
+        assertEquals("n\n1\n", StringBuilder().also { CsvRenderer().render(Result(listOf("n"), listOf(listOf(1L))), it) }.toString())
+    }
 }

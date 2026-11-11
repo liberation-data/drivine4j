@@ -150,4 +150,16 @@ class QueryResultTest {
         val spec = QuerySpecification.withStatement("RETURN 1")
         assertContains(assertThrows<UnsupportedOperationException> { connection.queryResult(spec) }.message!!, "use query")
     }
+
+    @Test
+    fun `a result's counts are its own copy, and one made without them has none and equals one made with none`() {
+        val counts = linkedMapOf("nodesCreated" to 1)
+        val result = QueryResult(listOf("n"), emptyList(), counts)
+        counts["nodesDeleted"] = 2
+        assertEquals(mapOf("nodesCreated" to 1), result.counts)
+        assertEquals(QueryResult(listOf("n"), emptyList()), QueryResult(listOf("n"), emptyList(), emptyMap()))
+        assertNotEquals(QueryResult(listOf("n"), emptyList()), result)
+        assertEquals("QueryResult(columns=[n], rows=[], counts={nodesCreated=1})", result.toString())
+        assertEquals("QueryResult(columns=[n], rows=[])", QueryResult(listOf("n"), emptyList()).toString())
+    }
 }

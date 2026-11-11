@@ -10,8 +10,11 @@ import org.drivine.query.QuerySpecification
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** What a statement gave: its columns, by name, and a row of values for each, in the columns' order. */
-data class Result(val columns: List<String>, val rows: List<List<Any?>>)
+/**
+ * What a statement gave: its columns, by name, and a row of values for each, in the columns' order; what it wrote, as the
+ * store [counts] it (see [org.drivine.query.QueryResult.counts]); and how long it took, in milliseconds, which `table` prints.
+ */
+data class Result(val columns: List<String>, val rows: List<List<Any?>>, val counts: Map<String, Int> = emptyMap(), val millis: Long = 0)
 
 /** The store couldn't be reached, or it refused the user and password: exit code [ExitCode.UNREACHABLE]. */
 class Unreachable(cause: Throwable) : Exception(cause.message ?: cause.javaClass.name, cause)
@@ -36,12 +39,13 @@ class Store private constructor(private val drivine: Drivine, private val scratc
      * gave because it couldn't be reached is thrown as [Unreachable]; any other is the statement's, and is thrown as it is.
      */
     fun run(cypher: String, parameters: Map<String, Any?> = emptyMap()): Result {
+        val started = System.nanoTime()
         val result = try {
             manager.queryResult(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
         } catch (e: Exception) {
             throw if (Failures.unreachable(e)) Unreachable(e) else e
         }
-        return Result(result.columns, result.rows)
+        return Result(result.columns, result.rows, result.counts, (System.nanoTime() - started) / 1_000_000)
     }
 
     /**

@@ -491,6 +491,64 @@ cases:
     stdout: ""
     exit: 2
 
+  - name: "verbose prints each kind of count cypher-shell gives, nodes and relationships"
+    cypherShell: true
+    mode: cypher-shell
+    only: [neo4j]
+    args: ["--format", "verbose", "CREATE (a:A)-[r:R {w: 1}]->(b:B) DELETE r, a, b"]
+    stdout: "0 rows\nCreated 2 nodes, deleted 2 nodes, created 1 relationship, deleted 1 relationship, set 1 property, added 2 labels\n"
+    exit: 0
+
+  - name: "table prints each kind of count cypher-shell gives, nodes and relationships"
+    only: [neo4j]
+    args: ["--format", "table", "CREATE (a:A)-[r:R {w: 1}]->(b:B) DELETE r, a, b"]
+    stdout: "0 rows\nCreated 2 nodes, deleted 2 nodes, created 1 relationship, deleted 1 relationship, set 1 property, added 2 labels\n"
+    exit: 0
+
+  - name: "verbose prints labels removed and properties set on a node it returns"
+    cypherShell: true
+    mode: cypher-shell
+    only: [neo4j]
+    args: ["--format", "verbose", "CREATE (n:A:B {x: 1}) REMOVE n:B SET n.y = 2 RETURN n.x AS x"]
+    stdout: "+---+\n| x |\n+---+\n| 1 |\n+---+\n\n1 row\nCreated 1 node, set 2 properties, added 2 labels, removed 1 label\n"
+    exit: 0
+
+  - name: "table prints labels removed and properties set on a node it returns"
+    only: [neo4j]
+    args: ["--format", "table", "CREATE (n:A:B {x: 1}) REMOVE n:B SET n.y = 2 RETURN n.x AS x"]
+    stdout: "+---+\n| x |\n+---+\n| 1 |\n+---+\n\n1 row\nCreated 1 node, set 2 properties, added 2 labels, removed 1 label\n"
+    exit: 0
+
+  - name: "verbose prints an index and a constraint added and removed"
+    cypherShell: true
+    mode: cypher-shell
+    only: [neo4j]
+    stdin: "CREATE INDEX i FOR (n:A) ON (n.x);\nDROP INDEX i;\nCREATE CONSTRAINT c FOR (n:A) REQUIRE n.y IS UNIQUE;\nDROP CONSTRAINT c;\n"
+    args: ["--format", "verbose"]
+    stdout: "0 rows\nAdded 1 index\n0 rows\nRemoved 1 index\n0 rows\nAdded 1 constraint\n0 rows\nRemoved 1 constraint\n"
+    exit: 0
+
+  - name: "table prints an index and a constraint added and removed"
+    only: [neo4j]
+    stdin: "CREATE INDEX i FOR (n:A) ON (n.x);\nDROP INDEX i;\nCREATE CONSTRAINT c FOR (n:A) REQUIRE n.y IS UNIQUE;\nDROP CONSTRAINT c;\n"
+    args: ["--format", "table"]
+    stdout: "0 rows\nAdded 1 index\n0 rows\nRemoved 1 index\n0 rows\nAdded 1 constraint\n0 rows\nRemoved 1 constraint\n"
+    exit: 0
+
+  - name: "verbose prints several results, a table of several rows, and a column as wide as its widest value"
+    cypherShell: true
+    mode: cypher-shell
+    stdin: "UNWIND [1, 22, 333] AS x RETURN x, 'a' AS s;\nRETURN 'longer text' AS t;\n"
+    args: ["--format", "verbose"]
+    stdout: "+-----------+\n| x   | s   |\n+-----------+\n| 1   | \"a\" |\n| 22  | \"a\" |\n| 333 | \"a\" |\n+-----------+\n\n3 rows\n+---------------+\n| t             |\n+---------------+\n| \"longer text\" |\n+---------------+\n\n1 row\n"
+    exit: 0
+
+  - name: "table prints several results, a table of several rows, and a column as wide as its widest value"
+    stdin: "UNWIND [1, 22, 333] AS x RETURN x, 'a' AS s;\nRETURN 'longer text' AS t;\n"
+    args: ["--format", "table"]
+    stdout: "+-----------+\n| x   | s   |\n+-----------+\n| 1   | \"a\" |\n| 22  | \"a\" |\n| 333 | \"a\" |\n+-----------+\n\n3 rows\n+---------------+\n| t             |\n+---------------+\n| \"longer text\" |\n+---------------+\n\n1 row\n"
+    exit: 0
+
   - name: "verbose isn't a format"
     store: false
     args: ["--format", "verbose", "RETURN 1"]

@@ -78,8 +78,7 @@ class ArgsTest {
         assertTrue("-c needs a value" in refused("RETURN 1", "-c"))
         assertTrue("xml" in refused("--format", "xml"))
         assertTrue("verbose" in refused("--format", "verbose"))
-        assertTrue("comes later" in refused("--format", "table"))
-        assertTrue("comes later" in refused("--format", "csv"))
+        assertTrue("give auto, table, plain, json or csv" in refused("--format", "xml"))
         assertTrue("isn't a store" in refused("--type", "neptune"))
         assertTrue("takes no value" in refused("--help=yes"))
         // A short flag with something attached is named as itself, not as an unknown flag.
@@ -154,5 +153,11 @@ class ArgsTest {
     @Test
     fun `an address on the command line that holds a password is refused as -p is`() {
         assertEquals(Args.PASSWORD_REFUSED, assertFailsWith<BadInvocation> { run("-a", "postgresql://u:secret@localhost:1/db", "RETURN 1").check(emptyMap()) }.message)
+    }
+
+    @Test
+    fun `every format of the contract is taken`() {
+        val env = mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")
+        Format.entries.forEach { format -> assertEquals(format, run("--format", format.flag, "RETURN 1").check(env).format, format.flag) }
     }
 }

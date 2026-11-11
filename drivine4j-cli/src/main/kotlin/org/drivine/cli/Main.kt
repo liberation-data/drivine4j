@@ -33,16 +33,18 @@ fun main(args: Array<String>) {
     val out = OutputStreamWriter(FileOutputStream(FileDescriptor.out), Charsets.UTF_8)
     val err = OutputStreamWriter(FileOutputStream(FileDescriptor.err), Charsets.UTF_8)
     // Cli.run flushes both streams.
-    exitProcess(Cli(System.getenv(), out, err, stdin = { InputStreamReader(System.`in`, Charsets.UTF_8) }, stdinTerminal = stdinTerminal()).run(args.toList()))
+    exitProcess(Cli(System.getenv(), out, err, stdin = { InputStreamReader(System.`in`, Charsets.UTF_8) }, stdinTerminal = terminal(), stdoutTerminal = terminal()).run(args.toList()))
 }
 
 /**
- * Whether stdin is a terminal, where with no input given the REPL would run. On JDK 21, which the CLI compiles against,
+ * Whether stdin and stdout are terminals: where with no input given the REPL would run, and where `auto` prints `table`.
+ * Java can't ask of one stream alone, so a run typed at a terminal with its stdout piped is taken as not one, and prints
+ * `plain`, as `auto` is to where stdout isn't a terminal. On JDK 21, which the CLI compiles against,
  * the console is there only where stdin and stdout both are terminals. From JDK 22, as the native image's GraalVM 25 is,
  * it's there where they aren't too, and `Console.isTerminal` says: called by reflection, as JDK 21 has no such method,
  * which the native image's metadata registers (`java.io.Console`). A pipe or a file on stdin is never a terminal here.
  */
-private fun stdinTerminal(): Boolean = System.console()?.let { console ->
+private fun terminal(): Boolean = System.console()?.let { console ->
     try {
         java.io.Console::class.java.getMethod("isTerminal").invoke(console) as Boolean
     } catch (e: NoSuchMethodException) {
@@ -62,6 +64,8 @@ class Cli(
     private val err: Writer,
     private val stdin: () -> Reader = { StringReader("") },
     private val stdinTerminal: Boolean = false,
+    /** Whether stdout is a terminal, where `auto` prints `table`. */
+    private val stdoutTerminal: Boolean = false,
     private val dir: File = File("."),
 ) {
 
@@ -99,7 +103,7 @@ class Cli(
         return store.use {
             try {
                 reader(plan.source).use { reader ->
-                    Session(store, Renderer.of(plan.format), output, dir, plan.continueOnFailure) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
+                    Session(store, Renderer.of(plan.format, stdoutTerminal), output, dir, plan.continueOnFailure) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
                         .run(plan.parameters, Statements(reader), (plan.source as? Source.File)?.file)
                 }
             } catch (e: IOException) {
