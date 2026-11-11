@@ -260,6 +260,26 @@ class SchemaLockUnitTest {
     }
 
     @Test
+    fun `a HikariCP pool of two that times out giving the lock a connection leaves the DDL unlocked, and warns once`() {
+        // JdbcConnectionProvider.connect throws HikariCP's own SQLTransientConnectionException, unwrapped.
+        val pool = com.zaxxer.hikari.HikariDataSource().apply {
+            jdbcUrl = "jdbc:oracle:thin:@//nowhere.invalid:1521/none"
+            maximumPoolSize = 2
+            connectionTimeout = 250
+            initializationFailTimeout = -1
+        }
+        val provider = org.drivine.connection.JdbcConnectionProvider("two", DatabaseType.ORACLE, pool, graphName = "pool_two_timeout")
+        try {
+            val warned = warnings { repeat(2) { assertNull(SchemaLock.take(provider)) } }
+
+            assertEquals(1, warned.size, "once for the graph: $warned")
+            assertTrue("schema lock of graph pool_two_timeout" in warned.single() && "gave no connection" in warned.single(), warned.single())
+        } finally {
+            pool.close()
+        }
+    }
+
+    @Test
     fun `a connection the lock can't have for another reason is thrown`() {
         val refused = DrivineException("wrapped", SQLException("ORA-01017: invalid username/password; logon denied", "72000", 1017))
         val provider = FakeProvider("connect_refused", connectFails = refused)

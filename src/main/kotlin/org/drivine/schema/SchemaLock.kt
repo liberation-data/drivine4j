@@ -26,7 +26,8 @@ import java.util.concurrent.locks.ReentrantLock
  * taken only when a plan runs DDL, so a boot with nothing to make takes none, and released, by a rollback, when the
  * plan ends. A lock not had within [WAIT_SECONDS], as when another manager holds it that long, or one that died holding
  * it hasn't been ended yet, is gone without: its DDL runs unlocked, as it did before the lock, and a warning says so,
- * once for each graph in a process, with how long it waited. So nothing is ever left unmade or skipped, in either schema
+ * once for each graph in a process, with how long it waited. So does one whose pool can't spare it a connection: a
+ * HikariCP pool of one, whose one connection the DDL needs, and a pool that gives none within its timeout. So nothing is ever left unmade or skipped, in either schema
  * mode, and the worst case is the deadlock the lock avoids. A store made before layout 2 has no lock table, and its DDL
  * runs unlocked too.
  */
