@@ -107,4 +107,14 @@ class StatementsTest {
         assertEquals(Input.Statement("RETURN 1"), inputs.next())
         assertEquals("RETURN 1;".length, read)
     }
+
+    @Test
+    fun `the parameters a statement uses are each named once, in the order it first uses them, and none in a string, a name or a comment`() {
+        assertEquals(listOf("b", "a"), parametersUsed("RETURN \$b AS x, \$a AS y, \$b AS z"))
+        assertEquals(listOf("limit", "a b", "x1", "_y"), parametersUsed("MATCH (n) WHERE n.k = \$limit OR n.j = \$`a b` RETURN \$x1, \$_y"))
+        assertEquals(emptyList(), parametersUsed("RETURN '\$a', \"\$b\", 1 AS `\$c` // \$d\n/* \$e */"))
+        assertEquals(listOf("f"), parametersUsed("RETURN 'it\\'s \$a' AS t, \$f"))
+        assertEquals(listOf("a`b"), parametersUsed("RETURN \$`a``b`"))
+        assertEquals(emptyList(), parametersUsed("RETURN 1 AS n, '\$'"))
+    }
 }

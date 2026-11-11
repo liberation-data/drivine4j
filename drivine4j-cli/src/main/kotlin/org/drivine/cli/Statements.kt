@@ -155,3 +155,52 @@ class Statements(private val reader: Reader) : Iterator<Input> {
         }
     }
 }
+
+/**
+ * The parameters [cypher] uses, by their names, in the order it first uses each: every `$name` or `` $`a name` `` outside a
+ * string, a backticked name and a comment, read with the rules [Statements] splits by. A name repeated is given once.
+ */
+internal fun parametersUsed(cypher: String): List<String> {
+    val used = LinkedHashSet<String>()
+    var i = 0
+    fun skipQuoted(quote: Char) {
+        i++
+        while (i < cypher.length) {
+            val c = cypher[i]
+            if (c == '\\' && quote != '`') { i += 2; continue }
+            i++
+            if (c == quote) return
+        }
+    }
+    while (i < cypher.length) {
+        val c = cypher[i]
+        when {
+            c == '\'' || c == '"' || c == '`' -> skipQuoted(c)
+            c == '/' && cypher.getOrNull(i + 1) == '/' -> { i = cypher.indexOf('\n', i).let { if (it < 0) cypher.length else it } }
+            c == '/' && cypher.getOrNull(i + 1) == '*' -> { i = cypher.indexOf("*/", i + 2).let { if (it < 0) cypher.length else it + 2 } }
+            c == '$' && cypher.getOrNull(i + 1) == '`' -> {
+                val start = i + 2
+                var end = start
+                val name = StringBuilder()
+                while (end < cypher.length) {
+                    if (cypher[end] == '`') {
+                        if (cypher.getOrNull(end + 1) == '`') { name.append('`'); end += 2; continue }
+                        break
+                    }
+                    name.append(cypher[end]); end++
+                }
+                if (name.isNotEmpty()) used += name.toString()
+                i = end + 1
+            }
+            c == '$' -> {
+                val start = i + 1
+                var end = start
+                while (end < cypher.length && (cypher[end].isLetterOrDigit() || cypher[end] == '_')) end++
+                if (end > start) used += cypher.substring(start, end)
+                i = end
+            }
+            else -> i++
+        }
+    }
+    return used.toList()
+}

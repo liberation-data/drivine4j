@@ -717,6 +717,19 @@ cases:
     stdoutLines: ["\\S", "^-- parameters: \\{.*\"x\":1.*\\}$"]
     exit: 0
 
+  - name: "--explain prints the parameters a statement uses, in the order it first uses them, and no other"
+    only: [sql]
+    args: ["--explain", "-P", "a => 1", "-P", "b => 2", "-P", "c => 3", "RETURN $b AS x, $a AS y, $b AS z"]
+    stdoutLines: ['^-- parameters: \{"b":2,"a":1\}$']
+    exit: 0
+    note: "c is set and not used, so isn't printed; b, first used before a, comes first."
+
+  - name: "--explain prints no parameters for a statement that uses none"
+    only: [sql]
+    args: ["--explain", "-P", "a => 1", "RETURN 1 AS n"]
+    stdoutLines: ['^-- parameters: \{\}$']
+    exit: 0
+
   - name: "--explain is refused on a graph engine"
     only: [graph]
     args: ["--explain", "RETURN 1"]

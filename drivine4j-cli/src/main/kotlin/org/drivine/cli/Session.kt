@@ -257,8 +257,9 @@ internal class Session(
     }
 
     /**
-     * Under `--explain`, [cypher]'s SQL, then `-- parameters: ` and the parameters the statement is given, by their names,
-     * as compact JSON, as `json` writes values: what it would run, with nothing run.
+     * Under `--explain`, [cypher]'s SQL, then `-- parameters: ` and the parameters it uses, by their names, in the order it
+     * first uses them, as compact JSON, as `json` writes values: what it would run, with nothing run. A parameter set and
+     * not used isn't printed, and one used and not set isn't either, as it has no value.
      */
     private fun explained(cypher: String): Int {
         val sql = try {
@@ -271,7 +272,7 @@ internal class Session(
         }
         return out.print {
             it.append(sql.trimEnd()).append('\n').append("-- parameters: ")
-            JsonRenderer.write(parameters, it)
+            JsonRenderer.write(parametersUsed(cypher).filter { name -> name in parameters }.associateWith { name -> parameters[name] }, it)
             it.append('\n')
         }
     }
