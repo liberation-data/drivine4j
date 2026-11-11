@@ -166,6 +166,23 @@ class ConnectingTest {
     }
 
     @Test
+    fun `DRIVINE_TYPE isn't read, as the contract names no such variable`() {
+        // drivine-cypher-spec#128 proposes it; until the contract has it, a type comes from --type or the profile.
+        profiles(dir, "default: p\nprofiles:\n  p:\n    address: \"bolt://h:7687\"\n")
+        assertEquals(StoreType.NEO4J, plan(env = mapOf("DRIVINE_TYPE" to "memgraph")).address.store)
+    }
+
+    @Test
+    fun `the database given is the store's, on the graph engines and on Postgres with none in its address`() {
+        assertEquals("flag", Store.properties(plan("-a", "neo4j://h", "-d", "flag")).databaseName)
+        assertEquals("flag", Store.properties(plan("-a", "memgraph://h", "-d", "flag")).databaseName)
+        assertEquals("flag", Store.properties(plan("-a", "postgresql://h", "-u", "who", "-d", "flag")).databaseName)
+        assertEquals("in_address", Store.properties(plan("-a", "postgresql://h/in_address", "-d", "flag")).databaseName)
+        assertEquals("who", Store.properties(plan("-a", "postgresql://h", "-u", "who")).databaseName)
+        assertNull(Store.properties(plan("-a", "neo4j://h")).databaseName)
+    }
+
+    @Test
     fun `a profile file that is bad is refused, and names no secret it holds`() {
         profiles(dir, "profiles:\n  p:\n    address: \"sqlite::memory:\"\n    password: \"hunter2\n")
         val bad = refused("--profile", "p")

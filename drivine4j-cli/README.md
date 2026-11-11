@@ -110,7 +110,8 @@ and the SQL stores give no counts, so none print there. `csv` is RFC 4180, with 
 the default, is `table` where stdout is a terminal and `plain` where it isn't; Java can't ask that of stdout alone, so a
 run whose stdin isn't a terminal, as `cat x.cypher | drivine` at a terminal, prints `plain` too.
 
-The address is `-a`'s, else `DRIVINE_ADDRESS`'s, else the profile's; the user `-u`'s, else the address's, else
+The address is `-a`'s, else `DRIVINE_ADDRESS`'s, else the profile's; the type of a `bolt://` one `--type`'s, else
+the profile's; the user `-u`'s, else the address's, else
 `DRIVINE_USER`'s, else the profile's; the password `DRIVINE_PASSWORD`'s, else the profile's, else that of an address
 kept off the command line, else, where stdin is a terminal and the store takes one, asked for with no echo: never a
 flag's. The database (Neo4j's, Memgraph's or Postgres's) or the service (Oracle's) is the address's, else `-d`'s, else

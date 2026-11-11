@@ -109,6 +109,8 @@ data class Invocation(
             ?: env[ENV_ADDRESS]?.let { it to false }
             ?: chosen?.address?.let { it to false }
             ?: throw BadInvocation("drivine: no address: give -a ADDRESS, $ENV_ADDRESS or a profile; see --help")
+        // The type: --type, then the profile's. DRIVINE_TYPE, which drivine-cypher-spec#128 proposes, isn't the
+        // contract's yet, which names the variables the CLI reads.
         val storeType = type ?: chosen?.type?.let { named ->
             StoreType.named(named) ?: throw BadInvocation("drivine: the profile ${chosen.name}'s type ${Args.shownValue(named)} isn't a store: give one of ${StoreType.entries.joinToString { it.flag }}")
         }
@@ -333,14 +335,16 @@ object Args {
         |                                 postgresql://host:port/database, oracle://host:port/service,
         |                                 sqlite:path or sqlite::memory:
         |                               else a profile's address.
-        |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph.
+        |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph, else
+        |                               the profile's.
         |  -d, --database DATABASE      The database (Neo4j, Memgraph, Postgres) or the service (Oracle), else
         |                               DRIVINE_DATABASE, else the profile's: one the address names wins.
         |  -g, --graph GRAPH            The graph (FalkorDB, Postgres, Oracle, SQLite), else DRIVINE_GRAPH, else
         |                               the profile's.
         |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER, else the profile's.
-        |                               The password is DRIVINE_PASSWORD's, else the profile's, else asked for
-        |                               where stdin is a terminal: never a flag's.
+        |                               The password is DRIVINE_PASSWORD's, else the profile's, else that of an
+        |                               address not given with -a, else asked for where stdin is a terminal:
+        |                               never a flag's.
         |  --profile NAME               The profile of ~/.drivine.yml or ./.drivine.yml to connect with, else its
         |                               default:. Flags and DRIVINE_ variables override its keys.
         |  --format FORMAT              auto (the default: table where stdout is a terminal, plain where it isn't),
