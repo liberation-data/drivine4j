@@ -97,7 +97,7 @@ class SchemaLockUnitTest {
         val warned = warnings { assertNull(SchemaLock.take(provider)) }
 
         assertEquals(emptyList(), warned)
-        assertReleasedWithError(provider)
+        assertReleased(provider, withError = false)
     }
 
     @Test
@@ -115,8 +115,8 @@ class SchemaLockUnitTest {
         assertEquals(2, warned.size, "once for each graph: $warned")
         assertTrue("schema lock of graph wait_one" in warned[0] && Regex("in \\d+ ms").containsMatchIn(warned[0]), warned[0])
         assertTrue("schema lock of graph wait_two" in warned[1], warned[1])
-        first.made.forEach { assertTrue(it.calls.last().startsWith("release:"), "${it.calls}") }
-        assertReleasedWithError(second)
+        first.made.forEach { assertEquals(listOf("rollback", "release"), it.calls.takeLast(2), "given back without the error, whose release would warn: ${it.calls}") }
+        assertReleased(second, withError = false)
     }
 
     @Test
@@ -125,7 +125,7 @@ class SchemaLockUnitTest {
         val provider = FakeProvider("denied", fails = denied)
 
         assertSame(denied, assertFailsWith<SQLException> { SchemaLock.take(provider) })
-        assertReleasedWithError(provider)
+        assertReleased(provider, withError = true)
     }
 
     @Test
@@ -188,10 +188,14 @@ class SchemaLockUnitTest {
         }
     }
 
-    private fun assertReleasedWithError(provider: FakeProvider) {
+    /**
+     * [provider]'s one connection was rolled back and given back, with the error where [withError]: only an error that is
+     * thrown, as a release with one warns (JdbcConnection), and a lock not had warns once for each graph, a missing table never.
+     */
+    private fun assertReleased(provider: FakeProvider, withError: Boolean) {
         val calls = provider.made.single().calls
         assertEquals("rollback", calls[calls.size - 2], "$calls")
-        assertTrue(calls.last().startsWith("release:"), "$calls")
+        if (withError) assertTrue(calls.last().startsWith("release:"), "$calls") else assertEquals("release", calls.last(), "$calls")
     }
 
     /** The warnings [SchemaLock] logs while [block] runs. */

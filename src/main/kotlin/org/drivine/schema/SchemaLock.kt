@@ -107,12 +107,15 @@ internal class SchemaLock private constructor(private val connection: Connection
                     // us here is the one that counts, and the connection is given back either way.
                     e.addSuppressed(rollback)
                 }
+                val code = oracleCode(e)
                 try {
-                    connection.release(e)
+                    // Given back with its error only where that is thrown: a release with one warns, and a lock not had
+                    // is warned of once for each graph, a missing lock table not at all.
+                    if (code == NO_TABLE || code in WAIT_EXPIRED) connection.release() else connection.release(e)
                 } catch (release: Exception) {
                     e.addSuppressed(release)
                 }
-                when (oracleCode(e)) {
+                when (code) {
                     NO_TABLE -> {
                         logger.debug("Graph {} has no lock table, as a store made before layout 2: its DDL runs unlocked.", graph)
                         return null
