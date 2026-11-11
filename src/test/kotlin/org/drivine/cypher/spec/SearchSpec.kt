@@ -58,7 +58,7 @@ data class SearchSpec(
         fun runsOn(store: String) = (only == null || named(only, store)) && !named(except, store)
     }
 
-    /** Neo4j's own ranking of a corpus, and the bars each other store's must reach. */
+    /** Neo4j's own ranking of a corpus, and the bar each store's must reach, Neo4j's own included. */
     data class Ranking(
         /** The corpus, beside search.yaml: a node each, `{id, title, body}`. */
         val corpus: String,

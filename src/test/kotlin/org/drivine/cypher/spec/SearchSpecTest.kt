@@ -15,6 +15,7 @@ import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * The search spec's runner, with no store: a held step must still fail, by an assertion or as the store fails; a hold
@@ -122,6 +123,9 @@ class SearchSpecTest {
         val neo4j = assertNotNull(ranking.bar("neo4j"))
         assertEquals(listOf("neo4j"), neo4j.stores)
         assertEquals(ranking.queries.count { it.neo4j.isNotEmpty() }, neo4j.sameTop)
+        val recorded = ranking.agreement(ranking.queries.associate { it.query to it.neo4j })
+        assertEquals(neo4j.sameTop, recorded.sameTop)
+        assertTrue(recorded.overlap >= neo4j.overlap, "Neo4j's own recording, $recorded, misses its bar of ${neo4j.overlap}")
         assertContains(assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("neo4j"), 1, 1.0)) }.message!!, "more than one bar")
         assertContains(assertThrows<IllegalArgumentException> { Bar(listOf("neptune"), 1, 1.0) }.message!!, "[neptune]")
         val twice = assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("sql"), 1, 1.0)) }
