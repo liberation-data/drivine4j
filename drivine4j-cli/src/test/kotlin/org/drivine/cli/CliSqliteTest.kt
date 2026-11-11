@@ -264,6 +264,37 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `under --continue a param of none of the forms inside a transaction leaves it open, as it reaches no store`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:param nope\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("c\n1\n", run.stdout)
+            assertTrue(":param takes" in run.stderr, run.stderr)
+            assertTrue("no transaction is open" !in run.stderr, run.stderr)
+            // Nor does a map form whose value the store gives, but isn't a map: the store evaluated it, and is as it was.
+            val notMap = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:param {a: 1}['a']\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals("c\n2\n", notMap.stdout, notMap.stderr)
+            assertTrue("a parameter map is a map" in notMap.stderr, notMap.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a store that can't be reached as a transaction begins, or as a -P is evaluated, exits with 3`() {
+        // Port 1 on this machine refuses the connection, so no store is needed, and none is started.
+        val begin = runCli(listOf("-a", "bolt://localhost:1", "--continue"), mapOf("DRIVINE_USER" to "u", "DRIVINE_PASSWORD" to "p"), stdin = ":begin\nRETURN 1 AS a;\n")
+        assertEquals(3, begin.exit, begin.stderr)
+        assertEquals("", begin.stdout)
+        assertTrue("can't connect" in begin.stderr, begin.stderr)
+        val parameter = runCli(listOf("-a", "bolt://localhost:1", "-P", "a => 1", "RETURN 1"), mapOf("DRIVINE_USER" to "u", "DRIVINE_PASSWORD" to "p"))
+        assertEquals(3, parameter.exit, parameter.stderr)
+        assertTrue("can't connect" in parameter.stderr, parameter.stderr)
+    }
+
+    @Test
     fun `a second begin fails, exit inside a transaction rolls it back, and a source file runs in the transaction open`() {
         val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
         try {

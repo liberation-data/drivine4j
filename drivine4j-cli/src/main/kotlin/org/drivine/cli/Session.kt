@@ -68,7 +68,7 @@ internal class Session(
      */
     fun run(assignments: List<Assignment>, inputs: Iterator<Input>, file: File? = null): Int {
         for (assignment in assignments) {
-            val code = assign(assignment)
+            val (code, _) = assign(assignment)
             if (code != ExitCode.OK) return code
         }
         return Sources(inputs, file?.canonicalFile).use { sources ->
@@ -155,12 +155,13 @@ internal class Session(
                 !store.transactions -> handled(out.fail(ExitCode.STATEMENT_FAILED, FALKORDB_ROLLBACK), transaction)
                 else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: no transaction is open: :begin opens one"), transaction)
             }
-            ":param" -> handled(
-                Assignment.parse(rest)?.let(::assign)
-                    ?: out.fail(ExitCode.STATEMENT_FAILED, "drivine: :param takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}"),
-                transaction,
-                statement = true,
-            )
+            // A :param whose expression the store evaluates fails as a statement does; one of none of the forms reaches
+            // no store, and fails as a command does, leaving the transaction open.
+            ":param" -> when (val assignment = Assignment.parse(rest)) {
+                null -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: :param takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}"), transaction)
+                // A :param is a statement where the store failed to evaluate it: then its transaction may be unusable.
+                else -> assign(assignment).let { (code, storeFailed) -> handled(code, transaction, statement = storeFailed) }
+            }
             ":params" -> handled(
                 when (rest) {
                     "" -> out.print { PlainRenderer.parameters(parameters, it) }
@@ -225,24 +226,28 @@ internal class Session(
         return null
     }
 
-    /** Evaluates [assignment] on the store, as `RETURN expression`, and sets what it names: [ExitCode.OK], or the code it failed with. */
-    private fun assign(assignment: Assignment): Int {
+    /**
+     * Evaluates [assignment] on the store, as `RETURN expression`, and sets what it names: [ExitCode.OK], or the code it
+     * failed with; and whether the store failed to evaluate it, which may leave its transaction unusable.
+     */
+    private fun assign(assignment: Assignment): Pair<Int, Boolean> {
         val value = try {
             store.run(assignment.cypher, parameters).rows.single().single()
         } catch (e: Unreachable) {
-            return unreachable(e)
+            return unreachable(e) to true
         } catch (e: Exception) {
             out.trace(e)
-            return out.fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
+            return out.fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name) to true
         }
         when (assignment) {
             is Assignment.Named -> parameters[assignment.name] = value
             is Assignment.Map -> {
-                if (value !is Map<*, *>) return out.fail(ExitCode.STATEMENT_FAILED, "drivine: a parameter map is a map, as in {limit: 10}")
+                // The store evaluated it, and its transaction is as it was: only what it gave isn't a map.
+                if (value !is Map<*, *>) return out.fail(ExitCode.STATEMENT_FAILED, "drivine: a parameter map is a map, as in {limit: 10}") to false
                 value.forEach { (name, item) -> parameters[name.toString()] = item }
             }
         }
-        return ExitCode.OK
+        return ExitCode.OK to false
     }
 
     /** Runs one statement and prints what it gives: [ExitCode.OK], or the code it failed with, or [Cli.DONE] where stdout was closed. */
