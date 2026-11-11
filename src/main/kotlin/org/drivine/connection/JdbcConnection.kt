@@ -156,7 +156,8 @@ class JdbcConnection(
      * The database's plan of the SQL the Cypher statement [spec] compiles to, its parameters bound as [query] binds them,
      * with nothing run: Postgres's `EXPLAIN`, SQLite's `EXPLAIN QUERY PLAN`, each row's detail indented by its depth, and
      * Oracle's `EXPLAIN PLAN`, as `DBMS_XPLAN.DISPLAY` gives it. A plan the database refuses, as Oracle and Postgres refuse to
-     * plan what a write compiles to, is none, with the database's message. SQL as it is is refused, as [explain] refuses it.
+     * plan what a write compiles to, is none, with the database's message; a connection lost fails. SQL as it is is refused,
+     * as [explain] refuses it.
      */
     override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
         val given = spec.finalizedCopy(QueryLanguage.SQL)
@@ -191,6 +192,8 @@ class JdbcConnection(
                 }
             }
         } catch (e: java.sql.SQLException) {
+            // A connection lost isn't a plan refused: it fails as a statement's would.
+            if (e.sqlState.orEmpty().startsWith("08") || e is java.sql.SQLRecoverableException) throw e
             savepoint?.let(connection::rollback)
             org.drivine.query.QueryPlan.none("the database doesn't plan what it compiles to: ${e.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim() ?: e.javaClass.simpleName}")
         } finally {

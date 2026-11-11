@@ -582,6 +582,18 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a connection lost while planning fails, as a statement's would, rather than give no plan`() {
+        `when`(jdbc.autoCommit).thenReturn(true)
+        val lost = SQLException("An I/O error occurred while sending to the backend.", "08006")
+        `when`(statement.executeQuery()).thenThrow(lost)
+        val thrown = assertFailsWith<SQLException> {
+            JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+                .plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        }
+        assertSame(lost, thrown)
+    }
+
+    @Test
     fun `a plan of SQL as it is is refused, as explain refuses it`() {
         val refused = assertFailsWith<DrivineException> { connection.plan(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual"))) }
         assertContains(refused.message!!, "this is SQL already")
