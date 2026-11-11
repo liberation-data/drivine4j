@@ -140,6 +140,7 @@ abstract class SearchSpecContract {
             ("Doc" to listOf("body")) to SpecDoc::class.java,
             ("Paper" to listOf("title", "body")) to SpecPaper::class.java,
             ("Article" to listOf("body")) to SpecArticle::class.java,
+            ("It's \\label" to listOf("body")) to SpecEscapedLabel::class.java,
         )
     }
 }
@@ -157,6 +158,10 @@ data class SpecPaper(@NodeId override val id: String, val title: String?, val bo
 
 @NodeFragment(labels = ["Article"])
 data class SpecArticle(@NodeId override val id: String, val title: String?, @FullTextIndex val body: String) : SpecNode
+
+/** A label with a quote and a backslash in it, which each engine is given escaped (liberation-data/drivine4j#767). */
+@NodeFragment(labels = ["It's \\label"])
+data class SpecEscapedLabel(@NodeId override val id: String, @FullTextIndex val body: String) : SpecNode
 
 /** A graph engine's manager over Bolt, ended after the class. */
 abstract class BoltSearchSpecContract : SearchSpecContract() {
