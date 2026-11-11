@@ -1,1 +1,1 @@
-cli/cli.yaml of liberation-data/drivine-cypher-spec, copied unchanged from branch cli-continue-tx at 940a3cea1948e6190052468b6a65b3507e888a76 (#128), until a tag carries it; v0.42.0 and #178 before it. Copy it again from a later tag as scripts/sync-cypher-spec.sh copies the spec.
+cli/cli.yaml of liberation-data/drivine-cypher-spec, copied unchanged from branch cli-continue-tx at fa83dd57d991ef2a782f54e16dbd8d2496456204 (#128), until a tag carries it; v0.42.0 and #178 before it. Copy it again from a later tag as scripts/sync-cypher-spec.sh copies the spec.

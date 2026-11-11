@@ -305,11 +305,11 @@ cases:
 
   - name: "With --continue, a statement that fails inside a transaction rolls it back, and the statements after it run on their own"
     except: [falkordb]
-    files: {"t.cypher": ":begin\nCREATE (:Gone);\nRETURN 1/0;\nCREATE (:Kept);\n:commit\nMATCH (n) RETURN labels(n)[0] AS l;\n"}
+    files: {"t.cypher": ":begin\nCREATE (:Gone);\nRETURN 1/0;\nCREATE (:Kept);\n:commit\nMATCH (n) RETURN count(n) AS c;\n"}
     args: ["--format", "plain", "--continue", "-f", "t.cypher"]
-    stdout: "l\n\"Kept\"\n"
+    stdout: "c\n1\n"
     exit: 1
-    note: "The failure rolls back :Gone. :Kept then commits on its own, and :commit fails, as no transaction is open."
+    note: "The failure rolls back :Gone, and :Kept then commits on its own, so one node is left; :commit fails, as no transaction is open."
 
   - name: "With --continue, a :param whose expression fails inside a transaction rolls it back too"
     except: [falkordb]
@@ -325,6 +325,14 @@ cases:
     stdout: "c\n1\n"
     stderr: "Could not find command :nope, use :help to see available commands"
     exit: 1
+
+  - name: "With --continue, a :source file that can't be read inside a transaction leaves it open"
+    except: [falkordb]
+    files: {"t.cypher": ":begin\nCREATE (:Kept);\n:source missing.cypher\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n"}
+    args: ["--format", "plain", "--continue", "-f", "t.cypher"]
+    stdout: "c\n1\n"
+    exit: 1
+    note: "Reading the file doesn't reach the store, so the transaction is still open, and :commit keeps :Kept."
 
   - name: "Statements piped to stdin run"
     cypherShell: true
