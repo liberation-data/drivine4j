@@ -7,6 +7,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.io.PushbackReader
 import java.io.Reader
 import java.io.StringReader
 import java.io.Writer
@@ -153,11 +154,15 @@ class Cli(
         return fail(ExitCode.UNREACHABLE, "drivine: can't connect to the ${plan.address.store.flag} store: ${e.message}")
     }
 
-    /** The statements' text, read as it comes: the command line's, the file's in UTF-8, or stdin's. */
+    /**
+     * The statements' text, read as it comes: the command line's, the file's in UTF-8, or stdin's. A file's or stdin's
+     * one byte-order mark at its very start isn't part of its text, as the contract's "Files" says: an editor on Windows
+     * may write one, and a command on the first line is still a command.
+     */
     private fun reader(source: Source): Reader = when (source) {
         is Source.Text -> StringReader(source.cypher)
-        is Source.File -> source.file.bufferedReader(Charsets.UTF_8)
-        Source.Stdin -> BufferedReader(stdin())
+        is Source.File -> withoutMark(source.file.bufferedReader(Charsets.UTF_8))
+        Source.Stdin -> withoutMark(BufferedReader(stdin()))
     }
 
     /**
@@ -216,6 +221,16 @@ class Cli(
          */
         internal fun closedPipe(e: IOException): Boolean =
             e.message.orEmpty().let { it.equals("Broken pipe", ignoreCase = true) || it.equals("Stream closed", ignoreCase = true) }
+
+        /** [reader] past one byte-order mark (U+FEFF) at its very start, where it has one; any other is its text's. */
+        internal fun withoutMark(reader: Reader): Reader {
+            val pushback = PushbackReader(reader, 1)
+            val first = pushback.read()
+            if (first != -1 && first != BYTE_ORDER_MARK) pushback.unread(first)
+            return pushback
+        }
+
+        private const val BYTE_ORDER_MARK = 0xFEFF
 
         /** This build's version, which the build writes into the CLI's resources. */
         val VERSION: String by lazy {

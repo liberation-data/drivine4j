@@ -133,6 +133,20 @@ cases:
     stdout: ""
     exit: 1
 
+  - name: "A byte-order mark at the start of a file isn't part of its text"
+    args: ["--format", "json", "-f", "b.cypher"]
+    files:
+      b.cypher: "\uFEFF:exit\nRETURN 1 AS n;\n"
+    stdout: ""
+    exit: 0
+    note: "Read as text, the mark would make :exit part of a statement, which fails."
+
+  - name: "A byte-order mark at the start of stdin isn't part of its text, and one elsewhere is"
+    stdin: "\uFEFFRETURN 1 AS n;\nRETURN '\uFEFF' AS s;\n"
+    args: ["--format", "json"]
+    stdout: "{\"columns\":[\"n\"],\"rows\":[[1]]}\n{\"columns\":[\"s\"],\"rows\":[[\"\uFEFF\"]]}\n"
+    exit: 0
+
   - name: "A file is split on ; outside strings and comments"
     cypherShell: true
     files: {"f.cypher": "RETURN 1 AS a;\nRETURN \"x;y\" AS b;\n// c;\nRETURN 2 AS c;\n"}
