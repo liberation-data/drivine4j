@@ -21,7 +21,7 @@ import org.neo4j.driver.exceptions.Neo4jException
  * @param elementIdFunction the function that gives a node's own id: `elementId` from Neo4j 5, `id`
  *   on Neo4j 4, which has no `elementId`
  */
-class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : SchemaGrammar {
+class Neo4jSchemaGrammar(internal val elementIdFunction: String = "elementId") : SchemaGrammar {
 
     override val engine = "Neo4j"
     override val supportsIfNotExists = true

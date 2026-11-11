@@ -29,7 +29,7 @@ class MemgraphSchemaGrammar(
     override val supportsNamedItems = true
 
     /** The module's statements, with the capacity a vector index is made with. */
-    private val ddl = MemgraphDdl(vectorIndexCapacity)
+    internal val ddl = MemgraphDdl(vectorIndexCapacity)
 
     // ----- DDL emission: the module's (MemgraphDdl) -----
 

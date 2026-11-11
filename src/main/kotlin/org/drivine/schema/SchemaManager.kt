@@ -1,9 +1,14 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
-import org.drivine.connection.ReusedIdsException
 import org.drivine.connection.DatabaseRegistry
-import org.drivine.manager.PersistenceManager
+import org.drivine.cypher.store.plan.DeclaredCatalog
+import org.drivine.cypher.store.plan.Operation
+import org.drivine.cypher.store.plan.Owners
+import org.drivine.cypher.store.plan.PlanRequest
+import org.drivine.cypher.store.plan.RuntimeCatalog
+import org.drivine.cypher.store.plan.SchemaPlanner
+import org.drivine.cypher.store.schema.Neo4jSchema
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.PersistenceManagerType
 import org.slf4j.LoggerFactory
@@ -68,6 +73,12 @@ import java.time.Duration
  * built later (the next process) keeps them in the inventory, without reporting them as orphans, until
  * they are ensured again.
  *
+ * **Decided by the module.** What each call reads, makes, drops, recreates, waits for and records on a database, and
+ * what it reports, is decided by the Cypher compiler's module's schema planner (`org.drivine.cypher.store.plan`), which
+ * the three Drivine libraries share: this manager resolves the databases, in order of their names, asks the planner for
+ * each ([PlanRequest]), runs what it decides ([SchemaPlanDriver]), and logs and throws what its report says. The items
+ * ensured at runtime are kept as the module says ([SchemaPlanner.runtimeAfter]).
+ *
  * All DDL runs in auto-commit mode (the non-transactional manager) — schema operations cannot run
  * inside an open data transaction.
  */
@@ -98,12 +109,12 @@ class SchemaManager(
     private val logger = LoggerFactory.getLogger(SchemaManager::class.java)
 
     /**
-     * What [ensure] was given, by owner and target, each item by its identity (kind, label,
-     * properties): an item ensured again with the same identity replaces the one before.
+     * What [ensure] was given, by owner and target, each item once by its identity (kind, label, properties), as the
+     * module keeps them ([SchemaPlanner.runtimeAfter]): an item ensured again with the same identity replaces the one before.
      */
-    private val runtime = linkedMapOf<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>>()
+    private var runtime: List<RuntimeCatalog> = emptyList()
 
-    /** Serializes [enforce], [recreateAll] and [ensure], which read and write the [runtime] items and the owners' markers. */
+    /** Serializes [enforce], [recreateAll], [ensure] and [remove], which read and write the [runtime] items and the owners' markers. */
     private val lock = Any()
 
     /**
@@ -111,14 +122,14 @@ class SchemaManager(
      * runtime: items are ensured (creating what's missing, reporting drift), and an owner's items are
      * recreated only when its effective version changed or [SchemaPolicy] requests it.
      */
-    fun enforce() = apply(forceRecreate = false, ownerFilter = AllOwners)
+    fun enforce() = apply(Operation.Enforce(Owners.All))
 
     /**
      * Idempotent, version-aware application of a single owner's catalogs (see [SchemaCatalog.named]).
      * The specific call site for a library that wants to converge its own schema without touching the
      * host application's. Pass `null` to target the anonymous (unnamed) owner.
      */
-    fun enforce(name: String?) = apply(forceRecreate = false, ownerFilter = OneOwner(name))
+    fun enforce(name: String?) = apply(Operation.Enforce(Owners.One(name)))
 
     /**
      * Brute-force: drop and recreate **every** item of **every** owner on every target database,
@@ -127,7 +138,7 @@ class SchemaManager(
      * uniqueness constraint can surface a violation if data conflicts. Because it is explicit, it
      * **does** rebuild co-owned items too.
      */
-    fun recreateAll() = apply(forceRecreate = true, ownerFilter = AllOwners)
+    fun recreateAll() = apply(Operation.RecreateAll(Owners.All))
 
     /**
      * Brute-force recreate of a single owner's items (see [SchemaCatalog.named]) — the escape hatch a
@@ -136,7 +147,7 @@ class SchemaManager(
      * explicitly; that will drop-and-recreate the shared item the other owner also depends on, so use
      * it deliberately. Pass `null` to target the anonymous (unnamed) owner.
      */
-    fun recreateAll(name: String?) = apply(forceRecreate = true, ownerFilter = OneOwner(name))
+    fun recreateAll(name: String?) = apply(Operation.RecreateAll(Owners.One(name)))
 
     /**
      * Ensures schema known only at runtime under [owner] (see [SchemaCatalog.named]; `null` is the
@@ -185,22 +196,20 @@ class SchemaManager(
             return
         }
         synchronized(lock) {
-            val candidate = withRuntime(catalog)
-            val runtimeCatalogs = runtimeCatalogs(candidate)
+            val operation = Operation.Ensure(catalog.name, catalog.items)
+            val candidate = SchemaPlanner.runtimeAfter(operation, runtime, databasesOf(catalog.target))
             val resolution = SchemaTargets.resolve(listOf(catalog), databaseRegistry)
             warnSkipped(resolution)
-            val ownerFilter = OneOwner(catalog.name)
-            // Plan every database before anything is kept or applied, so a conflict leaves both as they were.
-            val plans = resolution.databases.sorted().mapNotNull { database ->
-                plan(database, runtimeCatalogs, ownerFilter)?.let { database to it }
+            // Every database is checked before anything is kept or applied, so a conflict leaves both as they were.
+            val planned = resolution.databases.sorted().map { database ->
+                val planning = planning(database)
+                val request = request(database, operation, candidate)
+                planning.driver.validate(request)?.let { throw DrivineException(it) }
+                planning to request
             }
             VectorAnnotationCheck.register(listOf(catalog))
-            runtime.clear()
-            runtime.putAll(candidate)
-            val given = catalog.items.map { it.inventoryKey }.toSet()
-            plans.forEach { (database, plan) ->
-                applyToDatabase(database, plan, forceRecreate = false, ownerFilter = ownerFilter, only = given)
-            }
+            runtime = candidate
+            planned.forEach { (planning, request) -> planning.run(request) }
         }
     }
 
@@ -230,119 +239,24 @@ class SchemaManager(
         }
         if (catalog.isEmpty()) return
         synchronized(lock) {
-            val identities = catalog.items.map(::identityOf).toSet()
-            runtime.forEach { (key, specs) ->
-                if (key.first == catalog.name && (catalog.target == DatabaseTarget.All || key.second == catalog.target)) {
-                    identities.forEach { specs.remove(it) }
-                }
-            }
-            runtime.entries.removeIf { it.value.isEmpty() }
+            val operation = Operation.Remove(catalog.name, catalog.items)
+            VALIDATOR.validate(PlanRequest(DEFAULT_DATABASE, operation))?.let { throw DrivineException(it) }
+            // The items are forgotten before the databases are resolved: a target refused then leaves them forgotten.
+            runtime = SchemaPlanner.runtimeAfter(operation, runtime, databasesOf(catalog.target))
             val resolution = SchemaTargets.resolve(listOf(catalog), databaseRegistry)
             warnSkipped(resolution)
-            resolution.databases.sorted().forEach { database -> removeFromDatabase(database, catalog) }
+            resolution.databases.sorted().forEach { database -> planning(database).run(request(database, operation, runtime)) }
         }
     }
 
     /** What [ensure] has given [owner], on any database. */
     internal fun ensured(owner: String?): List<SchemaItemSpec> = synchronized(lock) {
-        runtime.filterKeys { it.first == owner }.values.flatMap { it.values }
+        runtime.filter { it.owner == owner }.flatMap { it.items }
     }
 
-    /** [remove], on one database: drops what no one else declares there, and takes the items out of the owner's marker. */
-    private fun removeFromDatabase(database: String, catalog: SchemaCatalog) {
-        val owner = catalog.name
-        val ownerLabel = owner ?: "schema"
-        val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
-        val elsewhere = catalogs.filter { it.target.includes(database) && !it.isEmpty() } +
-            runtimeCatalogs(runtime).filter { it.name != owner && it.target.includes(database) }
-        val versionStore = SchemaVersionStore(manager, SchemaVersionStore.scopeFor(owner))
-        // What other owners' markers record, declared or ensured at runtime: an owner this manager was not given,
-        // such as an application's, whose catalogs are another manager's or another process's.
-        val recordedElsewhere = versionStore.otherScopes().associateWith { SchemaVersionStore(manager, it).storedRecord()?.keys.orEmpty() }
-        var dropped = 0
-        val kept = mutableListOf<SchemaItemSpec>()
-        catalog.items.forEach { spec ->
-            val identity = identityOf(spec)
-            val declaring = (
-                elsewhere.filter { other -> other.items.any { identityOf(it) == identity } }.map { it.name ?: "schema" } +
-                    recordedElsewhere.filterValues { keys -> keys.any { recordsIdentity(it, spec) } }.keys
-                ).distinct()
-            if (declaring.isNotEmpty()) {
-                logger.warn(
-                    "{} on {}{} is removed from owner '{}' on '{}' and left in place, as {} declare(s) it",
-                    spec.kind, spec.label, spec.properties, ownerLabel, database, declaring.joinToString { "'$it'" }
-                )
-                kept += spec
-                return@forEach
-            }
-            val removed = when (spec) {
-                is IndexSpec -> manager.indexes.drop(spec)
-                is ConstraintSpec -> manager.constraints.drop(spec)
-            }
-            if (removed) dropped++
-        }
-
-        versionStore.storedRecord()?.let { recorded ->
-            val gone = recorded.keys.filter { key -> catalog.items.any { recordsIdentity(key, it) } }.toSet()
-            if (gone.isNotEmpty()) {
-                versionStore.record(versionStore.storedVersion(), recorded.keys - gone, recorded.runtime - gone, recorded.stale - gone)
-            }
-        }
-
-        logger.info(
-            "Schema for owner '{}' on '{}': {} removed, {} dropped, {} left in place",
-            ownerLabel, database, catalog.items.size, dropped, kept.size
-        )
-    }
-
-    private sealed interface OwnerFilter {
-        fun includes(name: String?): Boolean
-    }
-
-    private object AllOwners : OwnerFilter {
-        override fun includes(name: String?) = true
-    }
-
-    private data class OneOwner(val name: String?) : OwnerFilter {
-        override fun includes(name: String?) = name == this.name
-    }
-
-    /** What makes two declarations the same item: kind, label and property set. */
-    private data class Identity(val kind: SchemaItemKind, val label: String, val properties: Set<String>)
-
-    private fun identityOf(spec: SchemaItemSpec) = Identity(spec.kind, spec.label, spec.made().properties.toSet())
-
-    /**
-     * Whether the inventory [key] is of an item of [spec]'s identity, whatever its name: of its kind and label, and of
-     * its properties in any order, as [identityOf] compares them. An item of the properties in another order is the
-     * same item on the store, so another owner's key of that order co-owns it, and the owner's own is forgotten with it.
-     */
-    private fun recordsIdentity(key: String, spec: SchemaItemSpec): Boolean {
-        val made = spec.made()
-        val head = "${made.kind}:${made.label}:"
-        if (!key.startsWith(head)) return false
-        val length = made.properties.sumOf { it.length } + made.properties.size - 1
-        val rest = key.substring(head.length)
-        if (rest.length <= length || rest[length] != ':') return false
-        val properties = rest.substring(0, length)
-        return properties == made.properties.joinToString(",") || properties.split(",").sorted() == made.properties.sorted()
-    }
-
-    /** The [runtime] items with [catalog]'s added, each replacing an item of its identity, owner and target. */
-    private fun withRuntime(catalog: SchemaCatalog): Map<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>> {
-        val copy = runtime.mapValuesTo(linkedMapOf()) { (_, specs) -> LinkedHashMap(specs) }
-        val specs = copy.getOrPut(catalog.name to catalog.target) { linkedMapOf() }
-        catalog.items.forEach { specs[identityOf(it)] = it }
-        return copy
-    }
-
-    private fun runtimeCatalogs(items: Map<Pair<String?, DatabaseTarget>, Map<Identity, SchemaItemSpec>>): List<SchemaCatalog> =
-        items.map { (key, specs) -> SchemaCatalog.of(specs.values.toList()).named(key.first).withTarget(key.second) }
-
-    private fun apply(forceRecreate: Boolean, ownerFilter: OwnerFilter) {
+    private fun apply(operation: Operation) {
         synchronized(lock) {
-            val runtimeCatalogs = runtimeCatalogs(runtime)
-            val all = catalogs + runtimeCatalogs
+            val all = catalogs + runtime.map(::catalogOf)
             if (all.none { !it.isEmpty() }) {
                 logNothingToApply()
                 return
@@ -350,12 +264,39 @@ class SchemaManager(
             VectorAnnotationCheck.register(all)
             val resolution = SchemaTargets.resolve(all, databaseRegistry)
             warnSkipped(resolution)
-            resolution.databases.sorted().forEach { database ->
-                val plan = plan(database, runtimeCatalogs, ownerFilter) ?: return@forEach
-                applyToDatabase(database, plan, forceRecreate, ownerFilter, only = null)
-            }
+            resolution.databases.sorted().forEach { database -> planning(database).run(request(database, operation, runtime)) }
         }
     }
+
+    /** What the planner is asked of [database]: its startup catalogs, of every owner, and the [runtime] items on it. */
+    private fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>) = PlanRequest(
+        database = database,
+        operation = operation,
+        catalogs = catalogs.filter { it.target.includes(database) }.map { DeclaredCatalog(it.name, it.version, it.items) },
+        runtime = SchemaPlanner.runtimeOn(database, runtime),
+        policy = policy,
+        buildTimeoutMillis = indexBuildTimeout.toMillis(),
+    )
+
+    /** Where [database]'s plans run: its auto-commit manager, whose schema managers run what the planner decides. */
+    private inner class Planning(database: String) {
+        // Schema DDL must run in auto-commit mode.
+        val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
+        val driver = manager.indexes.driver
+
+        fun run(request: PlanRequest) {
+            driver.run(request, manager)
+        }
+    }
+
+    private fun planning(database: String) = Planning(database)
+
+    /** The runtime items of [runtime] as a catalog of their owner on their databases, which [SchemaTargets] resolves. */
+    private fun catalogOf(runtime: RuntimeCatalog): SchemaCatalog =
+        SchemaCatalog.of(runtime.items).named(runtime.owner).withTarget(runtime.databases?.let(DatabaseTarget::Named) ?: DatabaseTarget.All)
+
+    /** The databases [target] names, as the module keeps runtime items by them: null for all. */
+    private fun databasesOf(target: DatabaseTarget): Set<String>? = (target as? DatabaseTarget.Named)?.databases
 
     private fun warnSkipped(resolution: SchemaTargets.Resolution) {
         val (refused, incapable) = resolution.skipped.map { it to databaseRegistry.connectionProvider(it)?.schemaRefusal }
@@ -395,325 +336,10 @@ class SchemaManager(
         )
     }
 
-    /** What one database is to be given: its catalogs, each owner's merged items, and which are co-owned or runtime-only. */
-    private class Plan(
-        val contributing: List<SchemaCatalog>,
-        val ownerSpecs: Map<String?, List<SchemaItemSpec>>,
-        val coOwnedKeys: Set<String>,
-        /** Per owner, the keys of the items only [ensure] gave it, not one of its startup catalogs. */
-        val runtimeOnlyKeys: Map<String?, Set<String>>,
-    )
+    private companion object {
+        /** Checks what reads no store: a remove's items, before any database is resolved. */
+        val VALIDATOR = SchemaPlanner(Neo4jSchema())
 
-    /**
-     * Merges what each owner declares on [database], startup and runtime alike, and fails on a
-     * conflict; null when nothing applies there.
-     */
-    private fun plan(database: String, runtimeCatalogs: List<SchemaCatalog>, ownerFilter: OwnerFilter): Plan? {
-        val declared = catalogs.filter { it.target.includes(database) && !it.isEmpty() }
-        val ensured = runtimeCatalogs.filter { it.target.includes(database) && !it.isEmpty() }
-        val contributing = declared + ensured
-        if (contributing.isEmpty()) {
-            return null
-        }
-
-        // Group by owner. Each owner is deduplicated, versioned, and recorded independently. This is
-        // computed over *all* owners on the database (even when the filter targets one), so a co-owned
-        // item is still recognized as shared and a cross-owner conflict is still caught.
-        val ownerSpecs: Map<String?, List<SchemaItemSpec>> = contributing
-            .groupBy { it.name }
-            .mapValues { (_, cats) -> SchemaCatalog.of(cats.flatMap { it.items }).items }
-
-        detectCrossOwnerConflicts(database, ownerSpecs, ownerFilter)
-
-        val runtimeOnlyKeys = ensured.groupBy { it.name }.mapValues { (owner, cats) ->
-            val atStartup = declared.filter { it.name == owner }.flatMap { it.items }.map { it.inventoryKey }.toSet()
-            cats.flatMap { it.items }.map { it.inventoryKey }.toSet() - atStartup
-        }
-        return Plan(contributing, ownerSpecs, coOwnedKeys(ownerSpecs), runtimeOnlyKeys)
-    }
-
-    /** Applies [plan] to [database] for the owners [ownerFilter] takes; [only] the items of those keys, when given. */
-    private fun applyToDatabase(database: String, plan: Plan, forceRecreate: Boolean, ownerFilter: OwnerFilter, only: Set<String>?) {
-        val ownerSpecs = plan.ownerSpecs
-
-        // Schema DDL must run in auto-commit mode.
-        val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
-
-        val failures = mutableListOf<DrivineException>()
-        ownerSpecs.keys
-            .filter { ownerFilter.includes(it) }
-            .sortedBy { it ?: "" }
-            .forEach { owner ->
-                val cats = plan.contributing.filter { it.name == owner }
-                val declaredByOthers = ownerSpecs.filterKeys { it != owner }.values.flatten().map { it.inventoryKey }.toSet()
-                try {
-                    applyOwner(
-                        database, manager, owner, ownerSpecs.getValue(owner), cats, plan.coOwnedKeys,
-                        plan.runtimeOnlyKeys[owner].orEmpty(), declaredByOthers, forceRecreate, only,
-                    )
-                } catch (e: ReusedIdsException) {
-                    // The graph itself is refused, for every owner alike: given as it is, not as an owner's failure.
-                    throw e
-                } catch (e: DrivineException) {
-                    // Isolate per owner: record the failure but keep applying other owners so a
-                    // library's schema still converges (and records its version) when the app's fails.
-                    logger.error("Schema application for owner '{}' on '{}' failed: {}", owner ?: "schema", database, e.message)
-                    failures += e
-                }
-            }
-
-        if (failures.isNotEmpty()) {
-            throw DrivineException(
-                "Schema application on database '$database' failed for ${failures.size} owner(s):\n" +
-                    failures.joinToString("\n\n") { it.message ?: it.toString() }
-            )
-        }
-    }
-
-    /**
-     * Applies one owner's items on one database and records them in its marker. [only], when given,
-     * is the keys of the items [ensure] was given: just those are applied, the version stays as it was
-     * recorded, and `recreateOnStartup` does not apply.
-     */
-    private fun applyOwner(
-        database: String,
-        manager: PersistenceManager,
-        owner: String?,
-        specs: List<SchemaItemSpec>,
-        cats: List<SchemaCatalog>,
-        coOwnedKeys: Set<String>,
-        runtimeOnlyKeys: Set<String>,
-        declaredByOthers: Set<String>,
-        forceRecreate: Boolean,
-        only: Set<String>?,
-    ) {
-        val ownerLabel = owner ?: "schema"
-        val ensuring = only != null
-        val effectiveVersion = SchemaCatalog.combineVersions(cats)
-
-        val versionStore = SchemaVersionStore(manager, SchemaVersionStore.scopeFor(owner))
-        if (effectiveVersion != null) {
-            // Guard the marker's singleton invariant (dedupe + uniqueness constraint on the MERGE
-            // key) before reading or writing it — concurrent enforcing processes could otherwise
-            // each create a marker.
-            versionStore.ensureSingleton()
-        }
-        // ensure() records the version it finds, so a change it does not act on is left to enforce.
-        val storedVersion = if (effectiveVersion != null || ensuring) versionStore.storedVersion() else null
-        // A version *change* (a prior value existed and now differs) forces a rebuild of this owner's
-        // items. A first-ever value is adopted without recreating, so enabling versioning never nukes
-        // a healthy schema.
-        val versionChanged = !ensuring && effectiveVersion != null && storedVersion != null && storedVersion != effectiveVersion
-        val recreateOwner = versionChanged || (!ensuring && policy.recreateOnStartup)
-
-        // Items an earlier manager ensured at runtime that this one has not been given: kept in the
-        // inventory, not orphans, since they arrive later — unless an item declared now has the same
-        // identity under another key (a rename), which makes the recorded one an orphan.
-        val recorded = versionStore.storedRecord()
-        val declaredKeys = specs.map { it.inventoryKey }.toSet()
-        val identities = specs.map { it.inventoryKey.removeSuffix(it.effectiveName) }
-        val carried = recorded?.runtime.orEmpty().filter { key -> key !in declaredKeys && identities.none { key.startsWith(it) } }
-        val stale = recorded?.stale.orEmpty()
-
-        // Report an owner's items that the marker recorded but that are no longer declared (orphans),
-        // excluding any still co-owned by another live owner. Detection only; cleanup is manual or via
-        // a deliberate recreateAll (see the docs) — auto-drop is a documented follow-up.
-        reportOrphans(database, ownerLabel, recorded?.keys, declaredKeys + carried, coOwnedKeys)
-
-        val toApply = if (only == null) specs else specs.filter { it.inventoryKey in only }
-        if (ensuring) {
-            logger.info(
-                "Ensuring schema for owner '{}' on '{}': {} runtime items, {} declared in all",
-                ownerLabel, database, toApply.size, specs.size
-            )
-        } else {
-            logger.info(
-                "Applying schema for owner '{}' on '{}': {} items (forceRecreate={}, versionChanged={}, version={})",
-                ownerLabel, database, specs.size, forceRecreate, versionChanged, effectiveVersion
-            )
-        }
-
-        val outcomes = mutableListOf<Pair<SchemaItemSpec, EnsureResult>>()
-        val unbuilt = mutableListOf<UnbuiltIndex>()
-        val build = IndexBuild(indexBuildTimeout) { unbuilt += it }
-        toApply.forEach { spec ->
-            // A co-owned item is never dropped by a single owner's version bump — ensure it instead.
-            // Only an explicit recreateAll (forceRecreate) rebuilds a co-owned item. A runtime item
-            // marked stale missed its owner's recreate, and is recreated now.
-            val coOwned = spec.inventoryKey in coOwnedKeys
-            val recreate = forceRecreate || ((recreateOwner || spec.inventoryKey in stale) && !coOwned)
-            outcomes += spec to when (spec) {
-                is IndexSpec -> applyIndex(manager, spec, recreate, build)
-                is ConstraintSpec -> applyConstraint(manager, spec, recreate)
-            }
-        }
-
-        finish(database, ownerLabel, outcomes, unbuilt) {
-            // A carried item misses a recreate of its owner, having no spec here: mark it, so that it
-            // is recreated when next ensured. A version change spares one another owner declares, as
-            // it spares a co-owned item. A runtime item not applied this time keeps its mark.
-            val applied = toApply.map { it.inventoryKey }.toSet()
-            val staleAfter = stale.filter { it in runtimeOnlyKeys && it !in applied } +
-                carried.filter { it in stale || forceRecreate || (recreateOwner && it !in declaredByOthers) }
-            versionStore.record(
-                if (ensuring) storedVersion else effectiveVersion,
-                specs.map { it.inventoryKey } + carried,
-                runtimeOnlyKeys + carried,
-                staleAfter.toSet(),
-            )
-        }
-    }
-
-    /**
-     * Fails fast when two owners declare the same (kind, label, properties) with non-identical specs.
-     *
-     * Conflicts are computed across **all** owners on the database, but only raised when at least one
-     * side is an owner actually being applied — so a selective `enforce("rag")` is not blocked by a
-     * misconfiguration between two unrelated owners, consistent with per-owner isolation.
-     */
-    private fun detectCrossOwnerConflicts(
-        database: String,
-        ownerSpecs: Map<String?, List<SchemaItemSpec>>,
-        ownerFilter: OwnerFilter,
-    ) {
-        data class Owned(val owner: String?, val spec: SchemaItemSpec)
-
-        val byIdentity = mutableMapOf<Triple<SchemaItemKind, String, Set<String>>, MutableList<Owned>>()
-        ownerSpecs.forEach { (owner, specs) ->
-            specs.forEach { spec ->
-                val identity = Triple(spec.kind, spec.label, spec.made().properties.toSet())
-                byIdentity.getOrPut(identity) { mutableListOf() } += Owned(owner, spec)
-            }
-        }
-        byIdentity.forEach { (identity, owned) ->
-            // The property a constraint's violation sample names nodes by is no part of the item.
-            val distinctSpecs = owned.map { (it.spec as? UniquenessConstraintSpec)?.copy(nodeIdProperty = null) ?: it.spec }.distinct()
-            if (distinctSpecs.size > 1 && owned.any { ownerFilter.includes(it.owner) }) {
-                throw DrivineException(
-                    "Conflicting schema declarations for ${identity.first} on " +
-                        "${identity.second}${identity.third.toList()} on database '$database', across owners: " +
-                        owned.joinToString("; ") { "'${it.owner ?: "schema"}' declares ${it.spec}" } +
-                        ". Reconcile the declaration, or have only one owner declare this item."
-                )
-            }
-        }
-    }
-
-    /** The [SchemaItemSpec.inventoryKey]s declared by more than one live owner. */
-    private fun coOwnedKeys(ownerSpecs: Map<String?, List<SchemaItemSpec>>): Set<String> =
-        ownerSpecs.values
-            .flatMap { specs -> specs.map { it.inventoryKey }.distinct() }
-            .groupingBy { it }
-            .eachCount()
-            .filterValues { it > 1 }
-            .keys
-
-    private fun reportOrphans(
-        database: String,
-        ownerLabel: String,
-        stored: List<String>?,
-        kept: Set<String>,
-        coOwnedKeys: Set<String>,
-    ) {
-        if (stored == null) return // legacy marker: no known prior inventory
-        val orphans = stored.filter { it !in kept && it !in coOwnedKeys }
-        if (orphans.isNotEmpty()) {
-            logger.warn(
-                "Owner '{}' on '{}' previously applied {} item(s) it no longer declares (orphans): {}. " +
-                    "They are left in place; drop them manually, or via a deliberate recreate, if unwanted.",
-                ownerLabel, database, orphans.size, orphans
-            )
-        }
-    }
-
-    /** Ensures or recreates [spec], waiting for it to be built as [build] says, which collects an index that is not. */
-    private fun applyIndex(manager: PersistenceManager, spec: IndexSpec, recreate: Boolean, build: IndexBuild): EnsureResult {
-        if (recreate) {
-            return manager.indexes.recreate(spec, build)
-        }
-        val result = manager.indexes.ensure(spec, build)
-        return if (result is EnsureResult.Drift && policy.recreateOnDrift) {
-            manager.indexes.recreate(spec, build)
-        } else {
-            result
-        }
-    }
-
-    private fun applyConstraint(manager: PersistenceManager, spec: ConstraintSpec, recreate: Boolean): EnsureResult {
-        if (recreate) {
-            return manager.constraints.recreate(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
-        }
-        val result = manager.constraints.ensure(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
-        return if (result is EnsureResult.Drift && policy.recreateOnDrift) {
-            manager.constraints.recreate(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
-        } else {
-            result
-        }
-    }
-
-    /**
-     * Reports outcomes and records the owner's version and inventory ([record]). The marker is written
-     * only on success — if FAIL_FAST throws on a problem, the marker is left untouched so the next
-     * enforce retries. An index that is [unbuilt] is a problem too, while its outcome counts as what was
-     * done. The inventory is recorded even when this owner has no version token, so orphan detection
-     * works for un-versioned owners too.
-     */
-    private fun finish(
-        database: String,
-        ownerLabel: String,
-        outcomes: List<Pair<SchemaItemSpec, EnsureResult>>,
-        unbuilt: List<UnbuiltIndex>,
-        record: () -> Unit,
-    ) {
-        val created = outcomes.count { it.second is EnsureResult.Created }
-        val matching = outcomes.count { it.second is EnsureResult.AlreadyMatching }
-        val recreated = outcomes.count { it.second is EnsureResult.Recreated }
-        val problems = outcomes.filter {
-            it.second is EnsureResult.Drift || it.second is EnsureResult.Violation || it.second is EnsureResult.BlockedByIndex
-        }.map { (spec, result) -> describe(spec, result) } + unbuilt.map(::describe)
-
-        logger.info(
-            "Schema for owner '{}' on '{}': {} created, {} already matching, {} recreated, {} needing attention",
-            ownerLabel, database, created, matching, recreated, problems.size
-        )
-
-        if (problems.isNotEmpty() && policy.mode == SchemaMode.FAIL_FAST) {
-            throw DrivineException(
-                "Schema application for owner '$ownerLabel' on database '$database' found problems:\n" +
-                    problems.joinToString("\n") + "\n" +
-                    "Resolve them, set drivine.schema.recreate-on-drift=true (destructive), " +
-                    "drivine.schema.replace-blocking-index=true for an index in the way of a constraint, " +
-                    "drivine.schema.index-build-timeout longer for an index still being built, " +
-                    "or set drivine.schema.mode=WARN to continue with warnings.",
-                unbuilt.firstOrNull()?.error,
-            )
-        }
-
-        // Record what this owner applied, versioned or not, so its inventory ties to the marker.
-        record()
-
-        problems.forEach { logger.warn(it) }
-    }
-
-    private fun describe(index: UnbuiltIndex): String =
-        if (index.stillBuilding) {
-            "  - STILL BUILDING: ${index.error.message}. It is left to be built, and waited for again on the next enforce"
-        } else {
-            "  - BUILD FAILED: ${index.error.message}. It is left in place, failed: drop or recreate it once the data it failed on is fixed"
-        }
-
-    private fun describe(spec: SchemaItemSpec, result: EnsureResult): String = when (result) {
-        is EnsureResult.Drift ->
-            "  - DRIFT: ${spec.kind} on ${spec.label}${spec.properties} exists with a different shape: ${result.existing}"
-
-        is EnsureResult.Violation ->
-            "  - VIOLATION: ${spec.kind} on ${spec.label}${spec.properties} cannot be created — " +
-                "existing data violates it. Conflicting sample: ${result.conflictingSample}"
-
-        is EnsureResult.BlockedByIndex ->
-            "  - BLOCKED: ${spec.kind} on ${spec.label}${spec.properties} cannot be created while " +
-                "index ${result.index.name} is in the way of it. Drop the index, or replace it with the constraint"
-
-        else -> ""
+        const val DEFAULT_DATABASE = "default"
     }
 }

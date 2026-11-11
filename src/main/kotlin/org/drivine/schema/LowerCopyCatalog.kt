@@ -109,6 +109,20 @@ class CypherLowerCopies(
 }
 
 /**
+ * The store's record of which lowercased copies every node of a label has, as the schema planner's actions read it
+ * ([org.drivine.cypher.store.plan.PlanAction.ReadLowerCopies]) and fill it in
+ * ([org.drivine.cypher.store.plan.PlanAction.FillLowerCopies]): [LowerCopyCatalog], whose statements stay drivine4j's.
+ */
+internal interface LowerCopyRecord {
+
+    /** What the store records, read now: each a label and a property. */
+    fun stored(): Set<Pair<String, String>>
+
+    /** Fills in the copy of each of [properties] on the nodes of [label] and records it; one recorded already only where [again]. */
+    fun fillIn(label: String, properties: List<String>, again: Boolean)
+}
+
+/**
  * Which `@CaseInsensitive` properties have their lowercased copy (see [LowerCopies]) on every node of
  * a label, so that the query DSL may compare with the copy: those an `ensure` of an index or a
  * constraint that ignores case has filled in, as the store records them.
@@ -131,7 +145,7 @@ internal class LowerCopyCatalog(
     private val maxAge: Long = 60_000,
     private val clock: () -> Long = System::currentTimeMillis,
     private val refresh: Executor = CatalogReads.BACKGROUND,
-) {
+) : LowerCopyRecord {
     private class Read(val entries: Set<Pair<String, String>>, val at: Long)
 
     private val statements: LowerCopyStatements by lazy {
@@ -161,15 +175,14 @@ internal class LowerCopyCatalog(
      * Fills in the copy of each of [properties] on the nodes of [label], [BATCH] at a time, and records
      * that they all have it; one recorded already is left as it is, unless [again].
      */
-    fun fillIn(label: String, properties: List<String>, again: Boolean = false) {
+    override fun fillIn(label: String, properties: List<String>, again: Boolean) {
         if (properties.isEmpty()) return
         val stored = if (again) emptySet() else stored()
         properties.filter { again || label to it !in stored }.forEach { property ->
             var filled = 0L
             do {
-                val written = owner.getOne(
-                    QuerySpecification.withStatement(statements.fill(label, property)).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
-                ).toLong()
+                val fill = QuerySpecification.withStatement(statements.fill(label, property)).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
+                val written = SchemaStatementTrace.traced(owner, fill) { owner.getOne(fill) }.toLong()
                 filled += written
             } while (written >= BATCH)
             // The graph engines keep the record on the store's own node, which is made when it is not there.
@@ -178,10 +191,9 @@ internal class LowerCopyCatalog(
             // Memgraph turns away the second of two processes recording at once rather than wait for the
             // node's lock; recording again is harmless, so it is run again, as a contended save is.
             recording.whenNotContended {
-                owner.execute(
-                    QuerySpecification.withStatement(statements.record)
-                        .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
-                )
+                val record = QuerySpecification.withStatement(statements.record)
+                    .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
+                SchemaStatementTrace.traced(owner, record) { owner.execute(record) }
             }
             recorded += label to property
             logger.info("Filled in the lowercased copy of {}.{} on {} node(s), and recorded every node has it", label, property, filled)
@@ -189,7 +201,10 @@ internal class LowerCopyCatalog(
     }
 
     /** What the store records, read now. */
-    fun stored(): Set<Pair<String, String>> = statements.entries(query(statements.read))
+    override fun stored(): Set<Pair<String, String>> = statements.entries(query(statements.read))
+
+    /** [fillIn] of the copies not recorded already. */
+    fun fillIn(label: String, properties: List<String>) = fillIn(label, properties, again = false)
 
     private fun readAgain() {
         if (!reading.compareAndSet(false, true)) return

@@ -44,7 +44,7 @@ import java.sql.SQLException
  * reads the same indexes. What this grammar adds is drivine4j's: reading the catalog's rows, telling a
  * violation from another failure, and sampling the keys a constraint would refuse.
  */
-internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGrammar, SchemaAliases {
+internal class SqliteSchemaGrammar(internal val graph: SqliteGraph) : SchemaGrammar, SchemaAliases {
 
     override val engine = SqliteDdl.ENGINE
     override val supportsIfNotExists = true

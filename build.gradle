@@ -120,7 +120,8 @@ dependencies {
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	// The Cypher spec's files (src/test/resources/cypher) are YAML.
 	testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	// The launcher's TestExecutionListener keys the schema-statement golden by test (src/test/resources/schema-golden).
+	testImplementation 'org.junit.platform:junit-platform-launcher'
 
 	// TestContainers
 	// Testcontainers - provided as api dependency so DrivineTestContainer and
@@ -202,6 +203,19 @@ tasks.named('test') {
 	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
 	// Each statement is logged in full only when asked: -Pdrivine.statements.level=DEBUG (see logback-test.xml).
 	if (project.hasProperty('drivine.statements.level')) systemProperty 'drivine.statements.level', project.property('drivine.statements.level')
+	// The schema-statement golden (src/test/resources/schema-golden/README.md): -Pdrivine.schema.golden.record=<dir> records
+	// the schema statements each test sends, and -Pdrivine.schema.golden.check=true (or a golden dir) checks them. Off by default.
+	['drivine.schema.golden.record', 'drivine.schema.golden.check'].each { key ->
+		def value = project.findProperty(key) ?: System.getProperty(key)
+		// A check of "false" is off, as SchemaStatementGolden reads it (to Groovy, any text but the empty one is true).
+		if (value && !(key == 'drivine.schema.golden.check' && value.toString() == 'false')) {
+			systemProperty key, value.toString()
+			// What a test sends depends on what earlier classes left on a shared store, so the classes run in one order.
+			systemProperty 'junit.jupiter.testclass.order.default', 'org.junit.jupiter.api.ClassOrderer$ClassName'
+			// The check runs in an extension the platform finds on the classpath.
+			if (key == 'drivine.schema.golden.check') systemProperty 'junit.jupiter.extensions.autodetection.enabled', 'true'
+		}
+	}
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 

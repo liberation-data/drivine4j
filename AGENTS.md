@@ -24,11 +24,14 @@ These are read by all three libraries. Change them here only together with the o
 ## The Cypher compiler is a module of its own
 
 The compiler of Cypher to SQL (the parser, `org.drivine.cypher`, the schema specs, `SchemaDdl`, the store layout's
-DDL, `org.drivine.cypher.store.ddl`, which the schema grammars and SQL graphs run, and the `_DrivineSchema` marker, the
+DDL, `org.drivine.cypher.store.ddl`, which the schema grammars and SQL graphs run, the `_DrivineSchema` marker, the
 store stamp and the node stamp's form, `org.drivine.cypher.store.marker` and `store.Stamps`, which `SchemaVersionStore`,
-`StoreIdentityResolver` and `model.Stamps` run, and full-text search, `org.drivine.cypher.api.FullTextSearch`: the
-user's query read, BM25 and each store's search SQL or head, which the SQL backends' `matching` and
-`FullTextSearchPlanner` run, joining back their own projection) is not in this repository:
+`StoreIdentityResolver` and `model.Stamps` run, each store's schema knowledge, `org.drivine.cypher.store.schema`, the
+schema planner, `org.drivine.cypher.store.plan`, which decides what `SchemaManager`, `IndexManager` and
+`ConstraintManager` read, make, drop, wait for and record, and which `org.drivine.schema.SchemaPlanDriver` runs, and
+full-text search, `org.drivine.cypher.api.FullTextSearch`: the user's query read, BM25 and each store's search SQL or
+head, which the SQL backends' `matching` and `FullTextSearchPlanner` run, joining back their own projection) is not in
+this repository:
 it is [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec)'s `compiler/` module, which the other
 two libraries are to share, and drivine4j builds against its JVM artifact, `org.drivine:drivine-cypher-compiler-jvm`.
 `gradle/cypher-compiler.properties` pins a release, which the build reads from Maven Central: a spec tag `vX.Y.Z` is the
@@ -41,6 +44,12 @@ publishes into `.compiler-repo` in the checkout for the build to read; drivine4j
   `DrivineException`. `CompilerBoundaryTest` fails if anything else calls in, or if a class is in both jars.
 - **What drivine4j calls beyond the compiler's API** is marked `@DrivineInternalApi` in the module; drivine4j opts in
   module-wide.
+- **Schema decisions come from `store.plan`.** drivine4j's schema managers build a `PlanRequest` and run the planner's
+  rounds through `SchemaPlanDriver`; what to make, drop, recreate, wait for, record in the marker and report is the
+  planner's, pinned by the spec's `plans.yaml` (`StorePlanGoldenTest` runs drivine4j's driver over it). A change to what
+  schema management decides goes to the module, not here. What stays here: the connections, running each action, the
+  grammar's `changed()` after DDL, the lowercased copies' read, fill and record, resolving the databases, and turning a
+  driver's error into the module's `StoreError` (`StoreErrors`).
 
 ## Releases go out as trains
 

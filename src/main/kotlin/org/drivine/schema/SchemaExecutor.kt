@@ -27,16 +27,20 @@ class SchemaExecutor internal constructor(
 
     /** Runs [statement] with [parameters] bound, and returns its raw rows. */
     fun query(statement: String, parameters: Map<String, Any?>): List<Any?> =
-        PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(statement).bind(parameters)) }
+        traced(statement, parameters) {
+            PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(statement).bind(parameters)) }
+        }
 
     /** Executes a single DDL statement. */
     fun execute(statement: SchemaStatement) {
         when (statement) {
             is SchemaStatement.Cypher -> if (connectionProvider.type == DatabaseType.POSTGRES && INDEX_BUILD.containsMatchIn(statement.statement)) {
                 // A build in parallel leaves its session holding shared memory: see JdbcConnection.buildingIndex.
-                PinnedConnections.on(connectionProvider) { connection ->
-                    val build = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
-                    (connection as? JdbcConnection)?.buildingIndex(build) ?: build()
+                traced(statement.statement, emptyMap()) {
+                    PinnedConnections.on(connectionProvider) { connection ->
+                        val build = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
+                        (connection as? JdbcConnection)?.buildingIndex(build) ?: build()
+                    }
                 }
             } else {
                 query(statement.statement)
@@ -49,7 +53,10 @@ class SchemaExecutor internal constructor(
                             "'${connectionProvider.name}' (${connectionProvider.type}) does not implement " +
                             "NativeSchemaCommandExecutor"
                     )
-                nativeExecutor.executeNativeSchemaCommand(statement.args)
+                SchemaStatementTrace.traced(
+                    connectionProvider, SchemaStatementTrace.Path.SCHEMA_CONNECTION, SchemaStatementTrace.Kind.NATIVE,
+                    statement.args.joinToString(" "), emptyMap(),
+                ) { nativeExecutor.executeNativeSchemaCommand(statement.args) }
             }
         }
     }
@@ -58,6 +65,24 @@ class SchemaExecutor internal constructor(
     fun execute(statements: List<SchemaStatement>) {
         statements.forEach { execute(it) }
     }
+
+    /** Runs [poll], a loop that polls the store until [what] ends, told to a [SchemaStatementTrace] observer as one. */
+    internal fun <T> poll(what: String, outcome: (T) -> String, poll: () -> T): T =
+        SchemaStatementTrace.poll(connectionProvider, what, outcome, poll)
+
+    /** Tells a [SchemaStatementTrace] observer a poll until [what] ends has begun, a run of the planner's rounds: see [pollEnded]. */
+    internal fun pollStarted(what: String) = SchemaStatementTrace.pollStarted(connectionProvider, what)
+
+    /** Tells a [SchemaStatementTrace] observer the poll [pollStarted] told of has ended, as [outcome] says. */
+    internal fun pollEnded(what: String, outcome: String) = SchemaStatementTrace.pollEnded(connectionProvider, what, outcome)
+
+    /** The name of the database this runs on, as the planner's requests name it. */
+    internal val database: String get() = connectionProvider.name
+
+    private inline fun <T> traced(statement: String, parameters: Map<String, Any?>, run: () -> T): T =
+        SchemaStatementTrace.traced(
+            connectionProvider, SchemaStatementTrace.Path.SCHEMA_CONNECTION, SchemaStatementTrace.Kind.STATEMENT, statement, parameters, run,
+        )
 
     private companion object {
         /** A Postgres statement that builds an index, as PostgresSchemaGrammar writes one: a uniqueness constraint's too. */

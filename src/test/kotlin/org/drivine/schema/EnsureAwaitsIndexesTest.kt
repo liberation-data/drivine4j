@@ -11,6 +11,11 @@ import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.cypher.store.plan.DeclaredCatalog
+import org.drivine.cypher.store.plan.Operation
+import org.drivine.cypher.store.plan.OwnerReport
+import org.drivine.cypher.store.plan.Owners
+import org.drivine.cypher.store.plan.PlanRequest
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
@@ -33,6 +38,7 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -51,6 +57,24 @@ private fun PersistenceManager.rows(cypher: String, params: Map<String, Any?> = 
 /** Seeds [SEEDED] nodes of [label], each with a number `k`, a text `s` and an embedding `e` of four dimensions. */
 private fun PersistenceManager.seed(label: String) =
     run("UNWIND range(1, $SEEDED) AS i CREATE (:$label {k: i, s: 'text of node ' + toString(i), e: [toFloat(i), 1.0, 2.0, 3.0]})")
+
+/**
+ * [spec] applied as a [SchemaManager] applies an owner's items under `WARN`, waiting [timeout] for an index to be built,
+ * through drivine4j's driver of the schema planner over [grammar], a store's grammar as a test changes it; the owner's
+ * marker, [owner]'s own, is cleared after. What came of it, an index not built among it.
+ */
+private fun PersistenceManager.applyWarn(provider: org.drivine.connection.ConnectionProvider, grammar: SchemaGrammar, owner: String, spec: SchemaItemSpec, timeout: Duration): OwnerReport {
+    val driver = SchemaPlanDriver(SchemaExecutor(provider), grammar, { null })
+    val request = PlanRequest(
+        "default", Operation.Enforce(Owners.One(owner)), catalogs = listOf(DeclaredCatalog(owner, items = listOf(spec))),
+        policy = SchemaPolicy(mode = SchemaMode.WARN), buildTimeoutMillis = timeout.toMillis(),
+    )
+    try {
+        return driver.run(request, this).owners.single()
+    } finally {
+        SchemaVersionStore(this, owner).clear()
+    }
+}
 
 /**
  * Neo4j builds an index in the background: `CREATE INDEX … IF NOT EXISTS` returns while it is still POPULATING.
@@ -146,10 +170,9 @@ class Neo4jEnsureAwaitsIndexesTest {
         try {
             assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
             assertEquals("ONLINE", state(spec.effectiveName))
-            val reported = mutableListOf<UnbuiltIndex>()
-            val thrown = assertFails { indexes.ensure(spec, IndexBuild(Duration.ofSeconds(5)) { reported += it }) }
-            assertTrue(reported.isEmpty(), "not reported as unbuilt: ${reported.map { it.error.message }}")
+            val thrown = assertFails { indexes.ensure(spec) }
             assertFalse("failed to build" in thrown.message.orEmpty(), thrown.message)
+            assertFalse("still being built" in thrown.message.orEmpty(), thrown.message)
             assertContains(thrown.message.orEmpty(), "AwaitNeoNoSuchIndex")
         } finally {
             manager.indexes.drop(spec)
@@ -162,17 +185,15 @@ class Neo4jEnsureAwaitsIndexesTest {
         val codeUnknown = object : SchemaGrammar by Neo4jSchemaGrammar() {
             override fun isBuildTimeout(e: Throwable) = false
         }
-        val indexes = IndexManager(SchemaExecutor(provider), codeUnknown)
         manager.seed("AwaitNeoPopulating")
         val spec = FullTextIndexSpec("AwaitNeoPopulating", listOf("s"))
         try {
-            val reported = mutableListOf<UnbuiltIndex>()
-            val created = indexes.ensure(spec, IndexBuild(Duration.ZERO) { reported += it })
-            assertTrue(created is EnsureResult.Created, "$created")
-            val unbuilt = reported.single()
-            assertTrue(unbuilt.stillBuilding, unbuilt.error.message)
-            assertContains(unbuilt.error.message!!, "still being built")
-            assertContains(unbuilt.error.message!!, spec.effectiveName)
+            val applied = manager.applyWarn(provider, codeUnknown, "await-neo-populating", spec, Duration.ZERO)
+            assertTrue(applied.results.single().result is EnsureResult.Created, "${applied.results}")
+            val unbuilt = applied.unbuilt.single()
+            assertTrue(unbuilt.stillBuilding, unbuilt.message)
+            assertContains(unbuilt.message, "still being built")
+            assertContains(unbuilt.message, spec.effectiveName)
         } finally {
             manager.run("CALL db.awaitIndexes(60)")
             manager.indexes.drop(spec)
@@ -205,6 +226,8 @@ class Neo4jEnsureAwaitsIndexesTest {
             val failed = assertFailsWith<DrivineException> { manager.indexes.ensure(spec) }
             assertContains(failed.message!!, spec.effectiveName)
             assertContains(failed.message!!, "too large", ignoreCase = true)
+            // The driver's error of the wait is kept as the cause, as it was before the planner.
+            assertContains(assertNotNull(failed.cause, "the wait's error is the cause").message.orEmpty(), "too large", ignoreCase = true)
             assertEquals("FAILED", state(spec.effectiveName))
 
             // Found again, it is not taken for an index that serves: it is still the error.
@@ -315,10 +338,9 @@ class FalkorDbEnsureAwaitsIndexesTest {
             assertContains(thrown.message!!, "failed to build")
             assertContains(thrown.message!!, "AwaitFalkorFailed")
 
-            val reported = mutableListOf<UnbuiltIndex>()
-            val found = indexes.ensure(spec, IndexBuild(Duration.ofSeconds(5)) { reported += it })
-            assertTrue(found is EnsureResult.AlreadyMatching, "$found")
-            assertFalse(reported.single().stillBuilding, reported.single().error.message)
+            val applied = manager.applyWarn(provider, failed, "await-falkor-failed", spec, Duration.ofSeconds(5))
+            assertTrue(applied.results.single().result is EnsureResult.AlreadyMatching, "${applied.results}")
+            assertFalse(applied.unbuilt.single().stillBuilding, applied.unbuilt.single().message)
         } finally {
             manager.indexes.drop(spec)
         }
@@ -616,14 +638,56 @@ class IndexBuildTimeoutTest {
     private val registry = DatabaseRegistry(DataSourceMap(emptyMap()))
     private val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
 
+    /** The timeout `db.awaitIndex` is given when a manager waiting [timeout] makes an index on a store with nothing in it. */
+    private fun awaited(timeout: Duration): Any? {
+        val timeouts = mutableListOf<Any?>()
+        val store = org.drivine.test.RecordingStore(DatabaseType.NEO4J) { ran ->
+            if (ran.statement.startsWith("CALL db.awaitIndex")) timeouts += ran.parameters["timeout"]
+            emptyList<Any?>()
+        }
+        val request = PlanRequest(
+            "recording", Operation.Enforce(), catalogs = listOf(DeclaredCatalog(null, items = listOf(RangeIndexSpec("Awaited", "k")))),
+            buildTimeoutMillis = timeout.toMillis(),
+        )
+        store.indexes.driver.run(request, store)
+        return timeouts.single()
+    }
+
     @Test
     fun `the timeout is rounded up to the whole seconds db awaitIndex takes, so the wait is at least what was asked`() {
-        assertEquals(0L, IndexBuild(Duration.ZERO).timeoutSeconds, "zero checks once")
-        assertEquals(1L, IndexBuild(Duration.ofMillis(1)).timeoutSeconds)
-        assertEquals(1L, IndexBuild(Duration.ofMillis(500)).timeoutSeconds)
-        assertEquals(1L, IndexBuild(Duration.ofSeconds(1)).timeoutSeconds)
-        assertEquals(2L, IndexBuild(Duration.ofMillis(1001)).timeoutSeconds)
-        assertEquals(60L, IndexBuild(Duration.ofSeconds(60)).timeoutSeconds)
+        assertEquals(0L, awaited(Duration.ZERO), "zero checks once")
+        assertEquals(1L, awaited(Duration.ofMillis(1)))
+        assertEquals(1L, awaited(Duration.ofMillis(500)))
+        assertEquals(1L, awaited(Duration.ofSeconds(1)))
+        assertEquals(2L, awaited(Duration.ofMillis(1001)))
+        assertEquals(60L, awaited(Duration.ofSeconds(60)))
+    }
+
+    /** A store whose `db.awaitIndex` fails with [awaitError], and whose state of the index is [state]. */
+    private fun failingWait(awaitError: Exception, state: String) = org.drivine.test.RecordingStore(DatabaseType.NEO4J) { ran ->
+        when {
+            ran.statement.startsWith("CALL db.awaitIndex") -> awaitError
+            ran.statement.startsWith("SHOW INDEXES YIELD name, state") -> listOf(mapOf("state" to state))
+            else -> emptyList<Any?>()
+        }
+    }
+
+    @Test
+    fun `an item call whose index failed to build is thrown with the driver's error of the wait as its cause`() {
+        val awaitError = RuntimeException("Index population failed: the value is too large")
+        val store = failingWait(awaitError, "FAILED")
+        val thrown = assertFailsWith<DrivineException> { store.indexes.ensure(RangeIndexSpec("AwaitedFailed", "k")) }
+        assertContains(thrown.message!!, "failed to build: Index population failed")
+        assertSame(awaitError, thrown.cause)
+    }
+
+    @Test
+    fun `an item call whose index is still being built when the wait fails is thrown with the driver's error of the wait as its cause`() {
+        val awaitError = RuntimeException("The wait ended")
+        val store = failingWait(awaitError, "POPULATING")
+        val thrown = assertFailsWith<DrivineException> { store.indexes.ensure(RangeIndexSpec("AwaitedPopulating", "k")) }
+        assertContains(thrown.message!!, "still being built")
+        assertSame(awaitError, thrown.cause)
     }
 
     @Test
