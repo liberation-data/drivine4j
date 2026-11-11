@@ -46,6 +46,14 @@ abstract class SearchSpecContract {
     /** Whether the full-text indexes are made: on every store but `oracle`, and on Postgres both made and not. */
     open val indexed = true
 
+    /**
+     * Whether every full-text index on the store is dropped before a case makes [SearchSpec]'s, its own among them, so they
+     * are made anew in the file's order whatever ran before on a shared container: on Memgraph, whose arm64 build indexes
+     * only the first property of an index over several made after another text index (memgraph/memgraph#5353), so the
+     * case's result, and the hold on it, are the same in a run of one class and of all.
+     */
+    open val remakesAllIndexes = false
+
     /** Empties the graph. */
     open fun clear() {
         pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
@@ -73,8 +81,8 @@ abstract class SearchSpecContract {
         if (indexed) {
             val labels = indexes.map { it.label }.toSet()
             pm.indexes.list()
-                .filter { it.kind == SchemaItemKind.FULLTEXT_INDEX && it.label in labels }
-                .filter { info -> indexes.none { it.label == info.label && it.properties == info.properties } }
+                .filter { it.kind == SchemaItemKind.FULLTEXT_INDEX }
+                .filter { info -> remakesAllIndexes || info.label in labels && indexes.none { it.label == info.label && it.properties == info.properties } }
                 .forEach { pm.indexes.drop(FullTextIndexSpec(it.label, it.properties)) }
             indexes.forEach { pm.indexes.ensure(FullTextIndexSpec(it.label, it.properties)) }
         }
@@ -187,6 +195,7 @@ class Neo4jSearchSpecTest : BoltSearchSpecContract() {
 }
 
 class MemgraphSearchSpecTest : BoltSearchSpecContract() {
+    override val remakesAllIndexes = true
     override val store = "memgraph"
     override val type = DatabaseType.MEMGRAPH
     override val provider by lazy {
