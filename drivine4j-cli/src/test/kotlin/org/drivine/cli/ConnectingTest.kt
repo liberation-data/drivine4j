@@ -263,6 +263,10 @@ class ConnectingTest {
         assertEquals(emptyList(), prompted("-a", "postgresql://localhost:1/db", "RETURN 1", env = mapOf("DRIVINE_PASSWORD" to "x")).first)
         assertEquals(emptyList<String?>() to ExitCode.OK, prompted("-a", "sqlite::memory:", "RETURN 1"))
         assertEquals(emptyList<String?>() to ExitCode.BAD_INVOCATION, prompted("-a", "sqlite::memory:", "-d", "x", "RETURN 1"))
+        // The user asked for is the one the run connects as, a profile's too; a profile's password asks nothing.
+        profiles(dir, "profiles:\n  p:\n    address: \"postgresql://localhost:1/db\"\n    user: from_profile\n  q:\n    address: \"postgresql://localhost:1/db\"\n    password: x\n")
+        assertEquals(listOf<String?>("from_profile"), prompted("--profile", "p", "RETURN 1").first)
+        assertEquals(emptyList(), prompted("--profile", "q", "RETURN 1").first)
     }
 
     @Test

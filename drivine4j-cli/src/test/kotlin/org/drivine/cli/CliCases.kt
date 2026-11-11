@@ -101,6 +101,10 @@ class CliCases(
         }
         val args = (if (case["store"] == false) emptyList() else listOf("-a", address)) + args(case)
         val env = if (case["store"] == false) mutableMapOf() else credentials()
+        // HOME another empty directory, as the contract's runner gives it, so no .drivine.yml of the user's is read. Set
+        // before the case's variables, so a case that gives HOME as null runs with it unset.
+        val home = Files.createTempDirectory("drivine-home-").toFile()
+        env["HOME"] = home.path
         (case["env"] as Map<*, *>?)?.forEach { (name, value) ->
             if (value == null) env.remove(name as String) else env[name as String] = substituted(value as String)
         }
@@ -111,9 +115,6 @@ class CliCases(
             val written = File(dir, name).also { it.writeText(substituted(file.first), Charsets.UTF_8) }
             Files.setPosixFilePermissions(written.toPath(), PosixFilePermissions.fromString(permissions(file.second ?: "644")))
         }
-        // HOME another empty directory, as the contract's runner gives it, so no .drivine.yml of the user's is read.
-        val home = Files.createTempDirectory("drivine-home-").toFile()
-        if (!env.containsKey("HOME")) env["HOME"] = home.path
         val run = try {
             runCli(args, env, case["stdin"] as String?, dir)
         } finally {
