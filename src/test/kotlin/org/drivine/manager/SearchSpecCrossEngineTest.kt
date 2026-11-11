@@ -189,8 +189,8 @@ class Neo4jSearchSpecTest : BoltSearchSpecContract() {
 /**
  * On a Memgraph container of its own, not the shared one: Memgraph 3.14.0's arm64 build indexes only the first property of
  * a text index over several made after another text index (memgraph/memgraph#5353), and what other classes made on the
- * shared container before decides that, not the indexes there now. On its own container the indexes are only search.yaml's,
- * made in its order, so "Several properties" fails alike on arm64 in a run of one class and of all, and its hold holds.
+ * shared container before decides that, not the indexes there now. On its own container every text index is this class's,
+ * so "Several properties" fails alike on arm64 in a run of one class and of all, and its hold holds.
  */
 class MemgraphSearchSpecTest : BoltSearchSpecContract() {
     override val store = "memgraph"
