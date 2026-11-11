@@ -50,7 +50,8 @@ class FalkorDbConnectionProvider(
 
     /**
      * Executes a native Redis command against the FalkorDB server — used for schema operations
-     * that are not expressible as Cypher (`GRAPH.CONSTRAINT CREATE` / `DROP`).
+     * that are not expressible as Cypher (`GRAPH.CONSTRAINT CREATE` / `DROP`), and for `GRAPH.EXPLAIN`, which
+     * [FalkorDbConnection.plan] sends through it.
      *
      * The command name is the first element of [args]; [SchemaStatement.Native.GRAPH_NAME]
      * placeholders are substituted with this provider's graph name.

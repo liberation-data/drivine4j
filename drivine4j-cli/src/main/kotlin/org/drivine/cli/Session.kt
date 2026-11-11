@@ -291,7 +291,8 @@ internal class Session(
                     it.append("-- plan: none (").append(none.lineSequence().first().trim()).append(")\n")
                 } else {
                     it.append("-- plan:\n")
-                    p.lines.forEach { line -> it.append("-- $line".trimEnd()).append('\n') }
+                    // A line with a line break in it is two, each after its own `-- `, so the plan stays a comment.
+                    p.lines.flatMap { line -> line.lines() }.forEach { line -> it.append("-- $line".trimEnd()).append('\n') }
                 }
             }
             it.append("-- parameters: ")

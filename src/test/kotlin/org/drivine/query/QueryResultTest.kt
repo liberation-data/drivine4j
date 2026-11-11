@@ -185,7 +185,7 @@ class QueryResultTest {
     }
 
     @Test
-    fun `a connection written before explain refuses it`() {
+    fun `a connection written before explain or plan refuses each`() {
         val connection = object : Connection {
             override fun sessionId() = "old"
             override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = emptyList()
@@ -195,5 +195,6 @@ class QueryResultTest {
             override fun release(err: Throwable?) {}
         }
         assertContains(assertThrows<UnsupportedOperationException> { connection.explain(QuerySpecification.withStatement("RETURN 1")) }.message!!, "gives no SQL")
+        assertContains(assertThrows<UnsupportedOperationException> { connection.plan(QuerySpecification.withStatement(CypherStatement("RETURN 1"))) }.message!!, "gives no plan")
     }
 }
