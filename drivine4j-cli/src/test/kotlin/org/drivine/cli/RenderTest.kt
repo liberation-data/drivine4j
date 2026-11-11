@@ -124,7 +124,7 @@ class RenderTest {
         assertEquals("{\"type\":\"S\",\"properties\":{}}", json(s))
         assertEquals(
             "{\"nodes\":[{\"labels\":[\"B\"],\"properties\":{}},{\"labels\":[\"C\"],\"properties\":{}}]," +
-                "\"relationships\":[{\"type\":\"S\",\"properties\":{}}]}",
+                "\"relationships\":[{\"type\":\"S\",\"properties\":{}}],\"forward\":[false]}",
             json(GraphPath(listOf(b, c), listOf(s), listOf(false))),
         )
         assertEquals("{\"columns\":[\"n\"],\"rows\":[[{\"labels\":[\"B\"],\"properties\":{}}]]}\n", json(Result(listOf("n"), listOf(listOf(b)))))

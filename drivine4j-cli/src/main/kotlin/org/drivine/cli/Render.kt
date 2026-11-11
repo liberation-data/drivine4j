@@ -26,7 +26,8 @@ fun interface Renderer {
  * Java's `Double.toString` writes it (`2.0`, `1.0E10`), where a JSON writer would make `2` of it, a whole number; NaN and
  * the infinities, which JSON has no number for, are `{"$float":"NaN"}` and the others. A whole number is written exactly,
  * past 2^53 too. A text is escaped only where JSON requires it. A node is `{"labels":[…],"properties":{…}}`, a
- * relationship `{"type":…,"properties":{…}}` and a path `{"nodes":[…],"relationships":[…]}`, with no store's ids
+ * relationship `{"type":…,"properties":{…}}` and a path `{"nodes":[…],"relationships":[…],"forward":[…]}`, where
+ * `forward[i]` says whether `relationships[i]` goes from `nodes[i]` to `nodes[i + 1]`, all with no store's ids
  * (liberation-data/drivine-cypher-spec#128).
  */
 object JsonRenderer : Renderer {
@@ -50,7 +51,7 @@ object JsonRenderer : Renderer {
             is CharSequence -> string(value, out)
             is GraphNode -> write(mapOf("labels" to value.labels, "properties" to value.properties), out)
             is GraphRelationship -> write(mapOf("type" to value.type, "properties" to value.properties), out)
-            is GraphPath -> write(mapOf("nodes" to value.nodes, "relationships" to value.relationships), out)
+            is GraphPath -> write(mapOf("nodes" to value.nodes, "relationships" to value.relationships, "forward" to value.forward), out)
             is Map<*, *> -> {
                 out.append('{')
                 value.entries.forEachIndexed { i, (key, item) ->

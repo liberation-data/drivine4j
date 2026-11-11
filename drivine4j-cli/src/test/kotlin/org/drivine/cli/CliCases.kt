@@ -90,8 +90,6 @@ class CliCases(
             args.zipWithNext().any { (flag, value) -> flag == "--format" && value in Format.LATER } -> "--format table and csv come later"
             case["stdin"] != null && !statementGiven(args) -> "reading statements from stdin comes later"
             env.keys.any { it == "DRIVINE_DATABASE" || it == "DRIVINE_GRAPH" } -> "--database and --graph come later"
-            case["name"] in PATHS && GROUPS.getValue("sql").contains(store) ->
-                "a SQL store refuses a path: liberation-data/drivine-cypher-spec#163"
             else -> null
         }
     }
@@ -153,9 +151,6 @@ class CliCases(
 
     companion object {
         private val GROUPS = mapOf("graph" to listOf("neo4j", "memgraph", "falkordb"), "sql" to listOf("postgres", "oracle", "sqlite"))
-
-        /** The cases that print a path, which a SQL store refuses (liberation-data/drivine-cypher-spec#163). */
-        private val PATHS = setOf("plain prints a path along and against its relationships' directions")
 
         @Suppress("UNCHECKED_CAST")
         fun cases(): List<Map<String, Any?>> {
