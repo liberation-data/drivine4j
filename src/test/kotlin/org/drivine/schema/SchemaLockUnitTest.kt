@@ -135,6 +135,7 @@ class SchemaLockUnitTest {
             "made" to { _ -> null },
             "the DDL failed" to { statement -> if (statement.trimStart().startsWith("DECLARE")) RuntimeException("refused") else null },
             "the lock's statement failed" to { statement -> if ("FOR UPDATE" in statement) denied else null },
+            "the lock wasn't had" to { statement -> if ("FOR UPDATE" in statement) SQLException("ORA-30006: resource busy", "61000", 30006) else null },
         )
         for ((case, fails) in cases) {
             val provider = PlanProvider("gate_$case".replace(' ', '_').replace("'", ""), fails)
@@ -153,6 +154,20 @@ class SchemaLockUnitTest {
             assertEquals(listOf(true), provider.lockReleased, "$case: the lock's is given back before the gate is freed")
             assertTrue(!gate.isLocked, "$case: the gate is freed")
         }
+    }
+
+    @Test
+    fun `a plan that runs no DDL, as a drop of what isn't there, takes neither the gate nor the lock`() {
+        val provider = PlanProvider("gate_none") { _ -> null }
+        val driver = SchemaPlanDriver(SchemaExecutor(provider), provider.schemaGrammar, { null })
+
+        driver.item(org.drivine.cypher.store.plan.ItemCall.DROP, RangeIndexSpec("Absent", "k"))
+
+        assertTrue(provider.ran.isNotEmpty(), "the plan read the catalog")
+        assertTrue(provider.ran.none { "FOR UPDATE" in it.statement }, "no lock is taken: ${provider.ran}")
+        assertTrue(provider.ran.none { it.gated }, "nothing ran inside the gate: ${provider.ran}")
+        assertTrue(!SchemaLock.gate(provider)!!.isLocked)
+        assertEquals(provider.connected, provider.releasedCount, "every connection is given back")
     }
 
     @Test
