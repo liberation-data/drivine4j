@@ -10,10 +10,13 @@ import org.drivine.backend.sqlite.SqliteVersion
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
+import org.drivine.mapper.JdbcRow
+import org.drivine.mapper.JdbcTypedValues
 import org.drivine.mapper.ResultMapper
 import org.drivine.query.JdbcParameterCoercer
 import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SpecCompiler
 import org.drivine.query.SqlParameters
@@ -127,9 +130,29 @@ class JdbcConnection(
     override fun parameterCoercers(): List<ParameterCoercer> = listOf(JdbcParameterCoercer)
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
+        val ran = run(spec, typed = false)
+        @Suppress("UNCHECKED_CAST")
+        return resultMapper.mapQueryResults(ran.rows, ran.spec as QuerySpecification<T>)
+    }
+
+    /**
+     * [spec]'s columns and rows: a Cypher statement's as the compiler names them, compiled typed and read by [JdbcTypedValues];
+     * a SQL statement's as the driver names them, a value each as [query] reads it.
+     */
+    override fun queryResult(spec: QuerySpecification<*>): QueryResult {
+        val ran = run(spec, typed = true)
+        val compiled = ran.cypher ?: return QueryResult(ran.columns, ran.rows.map { it.values })
+        return JdbcTypedValues.result(compiled.columns, ran.rows.map { it.values.single() })
+    }
+
+    /** A statement [run] ran: the spec it ran as SQL, the Cypher it was compiled from, if any, its columns as the driver names them, and its rows. */
+    private class Ran(val spec: QuerySpecification<*>, val cypher: CompiledCypher?, val columns: List<String>, val rows: List<JdbcRow>)
+
+    /** Runs [spec], a Cypher statement compiled to the store's SQL, [typed] for [queryResult], or SQL as it is. */
+    private fun run(spec: QuerySpecification<*>, typed: Boolean): Ran {
         val given = spec.finalizedCopy(QueryLanguage.SQL)
         val compiledFromCypher = given.statement!!.language == QueryLanguage.CYPHER
-        val cypher = cypherCompiled(given)
+        val cypher = cypherCompiled(given, typed)
         val finalizedSpec = cypher?.let { given.withSql(it.sql, it.parameters) } ?: given
         if (finalizedSpec.statement!!.language != QueryLanguage.SQL) {
             throw DrivineException("This database speaks SQL, and was given a ${finalizedSpec.statement!!.language} statement.", spec = spec)
@@ -141,6 +164,7 @@ class JdbcConnection(
         val statementLogger = StatementLogger(sessionId())
 
         try {
+            var columns = emptyList<String>()
             val rows = connection.prepareStatement(positional.statement).use { statement ->
                 // Oracle keeps a cursor's memory while the driver keeps its statement, and a compiled Cypher statement holds
                 // megabytes of it: about 4 MB, and over 20 MB where it reads a text past 32 KB. Kept in the driver's cache, up
@@ -153,19 +177,22 @@ class JdbcConnection(
                 }
                 // A query answers with a result set; a block that returns one is asked for it.
                 if (statement.execute() || statement.moreResults) {
-                    if (type == DatabaseType.SQLITE) {
-                        val json = positional.statement.trimStart().startsWith(SqliteSql.JSON_ROWS)
-                        statement.resultSet.use { JdbcResultMapper.sqliteRows(it, json, cypher?.nonFinite == true) }
-                    } else {
-                        statement.resultSet.use { JdbcResultMapper.rows(it, cypher?.nonFinite == true) }
+                    statement.resultSet.use { results ->
+                        // Named before the rows are read, so a result with no rows has them too.
+                        columns = (1..results.metaData.columnCount).map { results.metaData.getColumnLabel(it) }
+                        if (type == DatabaseType.SQLITE) {
+                            val json = positional.statement.trimStart().startsWith(SqliteSql.JSON_ROWS)
+                            JdbcResultMapper.sqliteRows(results, json, cypher?.nonFinite == true)
+                        } else {
+                            JdbcResultMapper.rows(results, cypher?.nonFinite == true)
+                        }
                     }
                 } else {
                     emptyList()
                 }
             }
-            val mapped = resultMapper.mapQueryResults(rows, finalizedSpec)
             statementLogger.log(spec, startTime)
-            return mapped
+            return Ran(finalizedSpec, cypher, columns, rows)
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
             tablesPending?.takeIf { compiledFromCypher && missingTable(e) }?.let { throw DrivineException("$it ${e.message}", e, spec) }
@@ -187,7 +214,7 @@ class JdbcConnection(
      * A Cypher statement compiled to the store's SQL over the graph's tables, so a statement written for a
      * graph engine runs here and gives the same rows; null for anything else, which runs as it is.
      */
-    private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): CompiledCypher? {
+    private fun cypherCompiled(spec: QuerySpecification<*>, typed: Boolean): CompiledCypher? {
         if (spec.statement!!.language != QueryLanguage.CYPHER) return null
         // A graph name that cannot name tables is refused here, when Cypher is first run, and not as the connection is had:
         // plain SQL works whatever the name, as it did before the provider made the graph's tables (#364).
@@ -195,16 +222,17 @@ class JdbcConnection(
         // So is an Oracle older than 23.9, which has no UUID() for randomUUID().
         cypherRefusal?.let { throw DrivineException(it, spec = spec) }
         return when (type) {
-            DatabaseType.POSTGRES -> CypherCompile.postgres(graphName, spec.statement!!.text, spec.parameters)
+            DatabaseType.POSTGRES -> CypherCompile.postgres(graphName, spec.statement!!.text, spec.parameters, typed)
             DatabaseType.ORACLE -> CypherCompile.oracle(
                 graphName, spec.statement!!.text, spec.parameters,
                 nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
+                typed = typed,
             )
             DatabaseType.SQLITE -> {
                 // So is a SQLite older than 3.53.2, which the application's sqlite-jdbc may be: plain SQL runs on it.
                 sqliteVersion.refusal(connection)?.let { throw DrivineException(it, spec = spec) }
-                CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters)
+                CypherCompile.sqlite(graphName, spec.statement!!.text, spec.parameters, typed)
             }
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }

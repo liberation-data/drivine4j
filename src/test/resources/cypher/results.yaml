@@ -1,0 +1,126 @@
+# A statement's columns, and its values with their kinds kept: a node with its labels, a relationship with its type, as a
+# graph engine's driver gives them. Run over the graph below, through each library's call that gives a result's columns
+# and typed values (drivine4j#741), not PersistenceManager.query. See README.md.
+label: CyTest
+graph: |
+  CREATE (keanu:Person:CyTest {name: 'Keanu', born: 1964}),
+         (carrie:Person:CyTest {name: 'Carrie', born: 1967}),
+         (matrix:Movie:CyTest {title: 'The Matrix', released: 1999}),
+         (keanu)-[:ACTED_IN {role: 'Neo'}]->(matrix),
+         (carrie)-[:ACTED_IN {role: 'Trinity'}]->(matrix),
+         (keanu)-[:KNOWS]->(carrie)
+
+cases:
+  - name: "Column names"
+    description: "A column is named by its alias, or by its text as written, and RETURN * gives the variables in the order of their names."
+    steps:
+      - cypher: "MATCH (p:Person) RETURN p.name AS name, p.born ORDER BY name"
+        columns: ["name", "p.born"]
+        rows: [["Carrie", 1967], ["Keanu", 1964]]
+      - cypher: "MATCH (p:Person) RETURN count(*), count(p.born)"
+        columns: ["count(*)", "count(p.born)"]
+        rows: [[2, 2]]
+      - cypher: "MATCH (m:Movie)<-[r:ACTED_IN]-(b:Person {name: 'Keanu'}) RETURN *"
+        columns: ["b", "m", "r"]
+        rows: [[
+          {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Keanu", born: 1964}},
+          {$t: "node", labels: ["CyTest", "Movie"], properties: {title: "The Matrix", released: 1999}},
+          {$t: "relationship", type: "ACTED_IN", properties: {role: "Neo"}}
+        ]]
+
+  - name: "Columns of no rows"
+    description: "A statement that finds nothing still names its columns."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Nobody'}) RETURN p, p.name AS name"
+        columns: ["p", "name"]
+        rows: []
+      - note: "One that returns nothing has no columns."
+        cypher: "MATCH (p:Person {name: 'Nobody'}) SET p.seen = true"
+        columns: []
+        rows: []
+
+  - name: "Columns of a UNION and a procedure"
+    description: "A UNION's columns are its first query's names, and a procedure's are what it yields."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN p.name AS x UNION ALL MATCH (m:Movie) RETURN m.title AS x"
+        columns: ["x"]
+        rows: ["Keanu", "The Matrix"]
+      - cypher: "CALL db.labels() YIELD label RETURN label ORDER BY label"
+        only: [neo4j, sql]
+        columns: ["label"]
+        rows: ["CyTest", "Movie", "Person"]
+      - note: "A procedure called alone gives a column for each value it yields."
+        cypher: "CALL db.relationshipTypes()"
+        only: [neo4j, sql]
+        unordered: true
+        columns: ["relationshipType"]
+        rows: ["ACTED_IN", "KNOWS"]
+
+  - name: "A node and a relationship"
+    description: "A node comes back with its labels and properties, a relationship with its type and properties, and one OPTIONAL MATCH doesn't find as null."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'})-[k:KNOWS]->(f) RETURN p, k, f"
+        columns: ["p", "k", "f"]
+        rows: [[
+          {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Keanu", born: 1964}},
+          {$t: "relationship", type: "KNOWS", properties: {}},
+          {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Carrie", born: 1967}}
+        ]]
+      - cypher: "MATCH (p:Person) OPTIONAL MATCH (p)-[k:KNOWS]->(f) RETURN p.name, k, f ORDER BY p.name"
+        columns: ["p.name", "k", "f"]
+        rows: [
+          ["Carrie", null, null],
+          ["Keanu", {$t: "relationship", type: "KNOWS", properties: {}}, {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Carrie", born: 1967}}]
+        ]
+      - note: "Kept distinct, and through a UNION, a node keeps its labels."
+        cypher: "MATCH (m:Movie)<-[:ACTED_IN]-() RETURN DISTINCT m UNION MATCH (m:Movie) RETURN m"
+        columns: ["m"]
+        rows: [{$t: "node", labels: ["CyTest", "Movie"], properties: {title: "The Matrix", released: 1999}}]
+
+  - name: "A list of nodes or relationships"
+    description: "collect() of nodes or relationships gives each with its labels or type, in a list."
+    steps:
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) WITH m, collect(r) AS rs, collect(p) AS ps RETURN m.title, size(rs), ps"
+        unorderedLists: true
+        columns: ["m.title", "size(rs)", "ps"]
+        rows: [["The Matrix", 2, [
+          {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Carrie", born: 1967}},
+          {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Keanu", born: 1964}}
+        ]]]
+      - cypher: "MATCH (:Person)-[r:ACTED_IN]->(m) RETURN m.title, collect(r) AS rs"
+        unorderedLists: true
+        columns: ["m.title", "rs"]
+        rows: [["The Matrix", [
+          {$t: "relationship", type: "ACTED_IN", properties: {role: "Neo"}},
+          {$t: "relationship", type: "ACTED_IN", properties: {role: "Trinity"}}
+        ]]]
+
+  - name: "Other values"
+    description: "Every other value comes back as PersistenceManager.query gives it, a map with a $t key of its own among them."
+    steps:
+      - cypher: "RETURN {`$t`: 'node', labels: []} AS m, [1, 'a'] AS l, null AS n"
+        columns: ["m", "l", "n"]
+        rows: [[{$map: {$t: "node", labels: []}}, [1, "a"], null]]
+
+  - name: "A node in a map or a list"
+    description: "A node a returned map or list holds comes back with its labels too."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN {who: p} AS m"
+        except: [sql]
+        columns: ["m"]
+        rows: [{who: {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Keanu", born: 1964}}}]
+        note: "On a SQL store a node a map or a list holds comes back as its properties: liberation-data/drivine-cypher-spec#164."
+
+  - name: "A path"
+    description: "A path comes back as its nodes and relationships, in the order it walks them."
+    steps:
+      - cypher: "MATCH p = (:Person {name: 'Keanu'})-[:KNOWS]->(:Person) RETURN p"
+        except: [sql]
+        columns: ["p"]
+        rows: [{$t: "path",
+          nodes: [
+            {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Keanu", born: 1964}},
+            {$t: "node", labels: ["CyTest", "Person"], properties: {name: "Carrie", born: 1967}}
+          ],
+          relationships: [{$t: "relationship", type: "KNOWS", properties: {}}]}]
+        note: "A SQL store refuses a path: liberation-data/drivine-cypher-spec#163."

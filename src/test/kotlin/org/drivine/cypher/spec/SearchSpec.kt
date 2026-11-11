@@ -58,7 +58,7 @@ data class SearchSpec(
         fun runsOn(store: String) = (only == null || named(only, store)) && !named(except, store)
     }
 
-    /** Neo4j's own ranking of a corpus, and the bars each other store's must reach. */
+    /** Neo4j's own ranking of a corpus, and the bar each store's must reach, Neo4j's own included. */
     data class Ranking(
         /** The corpus, beside search.yaml: a node each, `{id, title, body}`. */
         val corpus: String,
@@ -100,7 +100,7 @@ data class SearchSpec(
 
         data class Query(val query: String, val neo4j: List<String>)
 
-        /** The bar [store] is held to, if one is: `neo4j` too, where the file gives it one. */
+        /** The bar [store] is held to, if one is: the file gives every store one, `neo4j` too, against its own recording. */
         fun bar(store: String): Bar? = bars.singleOrNull { bar -> named(bar.stores, store) }
 
         /** How closely [ranked], each query's best [top] hits on a store, agrees with Neo4j's. */
