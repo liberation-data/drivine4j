@@ -22,7 +22,9 @@ import org.drivine.cypher.store.ddl.CypherNames
  * module asks it the rest: an exception it throws from a rule the planner calls ends the whole call, not only its owner
  * (liberation-data/drivine-cypher-spec#169); [requireConstrainable] is asked by [ConstraintManager] but not on
  * [SchemaManager]'s paths (#170); and [createIndex], [dropIndex] and [dropConstraint] are given an item with only its
- * kind, label, properties and name, not the rest of what was listed (#172).
+ * kind, label, properties and name, not the rest of what was listed (#172). Nor is its items' form told on the SQL stores:
+ * every item reads as current and nothing under Drivine's names is taken for another item, so a same-named index of
+ * another shape is reported made, even for a grammar that delegates to one of drivine4j's (liberation-data/drivine4j#794).
  */
 interface SchemaGrammar {
 

@@ -250,7 +250,7 @@ internal object SchemaStatementGolden {
         "[class:org.drivine.schema.FalkorDbEnsureAwaitsIndexesTest]/[method:an index FalkorDB lists as FAILED is an error naming it, not an index taken as built()]" to
             "rewritten: its second ensure went through an IndexManager with IndexBuild and a handler, which are gone; it now applies an owner under WARN, which writes the owner's marker and clears it",
         "[class:org.drivine.store.StatelessStoreIdentityOracleTest]/[method:concurrent first boots without the constraint agree on one identity over a full node table on Oracle()]" to
-            "added after the recording: it came with the merge of main (#755, drivine4j#517), after the golden was taken, so the golden has nothing of it",
+            "added after the recording: it came with the merge of main (#755, drivine4j#517), after the golden was first taken, so the managers' record has nothing of it (the forms' recording has its lines, kept as recorded)",
     )
 
     /**

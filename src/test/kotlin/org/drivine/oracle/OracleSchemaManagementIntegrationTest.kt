@@ -172,7 +172,8 @@ class OracleSchemaManagementIntegrationTest {
                 { manager.constraints.ensure(spec) }, { manager.constraints.recreate(spec) },
             )
             execute("CREATE (:Voucher {code: 'v-1'})")
-            assertFailsWith<DrivineException>("the constraint made in the other index's place is enforced") { execute("CREATE (:Voucher {code: 'v-1'})") }
+            val refused = assertFailsWith<DrivineException>("the constraint made in the other index's place is enforced") { execute("CREATE (:Voucher {code: 'v-1'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
         } finally {
             runCatching { manager.constraints.drop(spec) }
         }
