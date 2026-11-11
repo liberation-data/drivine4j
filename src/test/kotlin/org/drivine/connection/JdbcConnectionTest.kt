@@ -582,6 +582,26 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `on Oracle the plan is DBMS_XPLAN's lines of the statement EXPLAIN PLAN planned, not kept in the driver's cache, and its rows are deleted after`() {
+        `when`(statement.execute()).thenReturn(false)
+        val rows = Mockito.mock(ResultSet::class.java)
+        `when`(rows.next()).thenReturn(true, true, false)
+        `when`(rows.getString(1)).thenReturn("Plan hash value: 1", "| Id | Operation |")
+        `when`(statement.executeQuery()).thenReturn(rows)
+        val plan = connection.plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        assertEquals(listOf("Plan hash value: 1", "| Id | Operation |"), plan.lines)
+        assertEquals(null, plan.none)
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc, Mockito.times(3)).prepareStatement(prepared.capture())
+        val id = Regex("^EXPLAIN PLAN SET STATEMENT_ID = '([^']+)' FOR ").find(prepared.allValues[0])!!.groupValues[1]
+        assertContains(prepared.allValues[1], "DBMS_XPLAN.DISPLAY")
+        assertEquals("DELETE FROM plan_table WHERE statement_id = ?", prepared.allValues[2])
+        verify(statement, Mockito.times(2)).setString(1, id)
+        verify(statement).executeUpdate()
+        verify(statement, Mockito.atLeastOnce()).isPoolable = false
+    }
+
+    @Test
     fun `a connection lost while planning fails, as a statement's would, rather than give no plan`() {
         `when`(jdbc.autoCommit).thenReturn(true)
         val lost = SQLException("An I/O error occurred while sending to the backend.", "08006")
