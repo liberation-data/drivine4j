@@ -20,8 +20,8 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * [SchemaLock] without a store (liberation-data/drivine4j#777): which errors of the lock's statement leave the DDL to run
- * unlocked, which are thrown, that the lock's connection is given back on every path, and that the warning of a lock not
+ * [SchemaLock] without a store (liberation-data/drivine4j#777): which errors of the lock's statement, and which pools that
+ * can't spare it a connection, leave the DDL to run unlocked, which are thrown, that the lock's connection is given back on every path, and that the warning of a lock not
  * had is given once for each graph; and that a plan takes the lock within its provider's gate, frees both on every path,
  * and queues at the gate while another plan of the provider holds it. SchemaLockTest drives it on Oracle.
  */

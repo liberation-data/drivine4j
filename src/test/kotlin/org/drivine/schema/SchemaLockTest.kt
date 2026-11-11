@@ -24,8 +24,8 @@ import kotlin.test.assertTrue
 /**
  * [SchemaLock] on Oracle (liberation-data/drivine4j#777): managers making one graph's schema at once take turns, so none
  * waits out the library-cache deadlock their DDL can meet together; a lock held past its wait is gone without, in either
- * schema mode, so the DDL runs unlocked with one warning that names the graph; and a graph with no lock table runs its DDL
- * unlocked.
+ * schema mode, so the DDL runs unlocked with one warning that names the graph, as it does on a pool of one connection; and a
+ * graph with no lock table runs its DDL unlocked.
  */
 @OracleTests
 class SchemaLockTest {
