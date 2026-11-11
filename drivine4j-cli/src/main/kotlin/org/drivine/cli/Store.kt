@@ -137,8 +137,9 @@ class Store private constructor(private val drivine: Drivine, private val scratc
                     StoreType.ORACLE -> address.database
                     else -> null
                 },
-                // One statement runs at a time. SQLite's provider makes the graph's tables on a connection of its own.
-                poolMax = 2,
+                // One statement runs at a time. SQLite's provider makes the graph's tables on a connection of its own, and
+                // on Oracle schema DDL runs on one while the schema lock holds another (drivine4j#777).
+                poolMax = 3,
             )
         }
     }

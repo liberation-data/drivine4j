@@ -383,13 +383,16 @@ class StatelessStoreIdentityOracleTest {
      * before the build is done. Each must end up under the constraint, on one identity (#517), whether it waited the lock
      * out or found the other's constraint by looking again: this cannot tell the two apart, and OracleSchemaGrammarTest
      * pins the wait.
+     *
+     * On a graph of its own, [FULL]: on the one the others share, the next test's wipe deleted its 300,000 nodes first,
+     * and took some 30 seconds to.
      */
     @Nightly
     @Test fun `concurrent first boots without the constraint agree on one identity over a full node table on Oracle`() =
-        verifyConcurrentFirstBootsWithoutTheConstraintAgree(::open, ::wipe, rounds = 2) {
+        verifyConcurrentFirstBootsWithoutTheConstraintAgree({ open(FULL) }, { OracleTestDatabase.clear(OracleTestDatabase.graphManager(FULL)) }, rounds = 2) {
             OracleTestDatabase.run(
                 """
-                INSERT INTO ${OracleGraph("identity").nodes} (labels, props)
+                INSERT INTO ${OracleGraph(FULL).nodes} (labels, props)
                 SELECT JSON('["Filler"]'), JSON_OBJECT('key' VALUE 'f' || level, 'n' VALUE level RETURNING JSON)
                 FROM dual CONNECT BY level <= 300000
                 """,
@@ -401,6 +404,11 @@ class StatelessStoreIdentityOracleTest {
 
     @Test fun `two graphs in one Oracle schema are two stores`() =
         verifyDistinctStoresDiffer(::open) { open("identity_other") }
+
+    private companion object {
+        /** The graph the test over a full node table fills, apart from the one the others share. */
+        const val FULL = "identity_full"
+    }
 }
 
 @PostgresTests

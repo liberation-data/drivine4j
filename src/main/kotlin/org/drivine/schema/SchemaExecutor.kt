@@ -22,6 +22,12 @@ class SchemaExecutor internal constructor(
     private val connectionProvider: ConnectionProvider,
 ) {
 
+    /**
+     * The lock that serialises the schema DDL of this graph's managers, held until it's closed: on Oracle, where the graph
+     * has its lock table, and null elsewhere. See [SchemaLock].
+     */
+    internal fun schemaLock(): SchemaLock? = SchemaLock.take(connectionProvider)
+
     /** Runs an introspection query and returns its raw rows (maps, positional lists, or scalars). */
     fun query(statement: String): List<Any?> = query(statement, emptyMap())
 

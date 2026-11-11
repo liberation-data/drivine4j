@@ -107,6 +107,7 @@ internal class SchemaPlanDriver(
             return report
         } finally {
             execution.endPoll()
+            execution.unlock()
             if (outer == null) thrown.remove() else thrown.set(outer)
         }
     }
@@ -176,6 +177,23 @@ internal class SchemaPlanDriver(
 
         /** The error of the last wait for an index ([PlanAction.AwaitIndex]) that failed, the cause of an item call's failure that is its. */
         var waitFailed: Throwable? = null
+
+        /** The lock this plan's DDL runs under, taken before its first DDL, and held until the plan ends: see [SchemaLock]. */
+        private var lock: SchemaLock? = null
+        private var locked = false
+
+        /** Takes the lock, once, before the plan's first DDL: a plan with no DDL takes none. */
+        private fun lockForDdl() {
+            if (locked) return
+            locked = true
+            lock = executor.schemaLock()
+        }
+
+        /** Frees the lock, where the plan took it. */
+        fun unlock() {
+            lock?.close()
+            lock = null
+        }
 
         /** Runs [actions] in order, stopping at the first that fails, and gives what came of each. */
         fun round(actions: List<PlanAction>): List<PlanOutcome> {
@@ -261,6 +279,7 @@ internal class SchemaPlanDriver(
                 Purpose.MARKER -> markerExecute(statementText(action.statement), action.parameters)
                 Purpose.PREPARE -> executor.execute(schemaStatement(action.statement))
                 else -> try {
+                    lockForDdl()
                     when (action.retry) {
                         Retry.ONCE -> executor.execute(schemaStatement(action.statement))
                         Retry.CONTENDED -> DdlContention.whenNotContended { executor.execute(schemaStatement(action.statement)) }
