@@ -2,6 +2,10 @@ package org.drivine.connection
 
 import org.drivine.query.grammar.CypherDialect
 
+/**
+ * What a provider of one database is built from (see [ConnectionProviderBuilder]). Its [toString] prints the password as
+ * `***`, so a properties object an application logs, or a [DataSourceMap] of them, doesn't show it.
+ */
 data class ConnectionProperties(
     val type: DatabaseType,
     /** Empty for engines with no wire — see [DatabaseType.buildableFromProperties]. */
@@ -19,4 +23,10 @@ data class ConnectionProperties(
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
     val region: String? = null,
     val neptuneAuth: NeptuneAuthMode? = null,
-) {}
+) {
+    override fun toString(): String =
+        "ConnectionProperties(type=$type, host=$host, port=$port, userName=$userName, password=${password?.let { "***" }}, " +
+            "idleTimeout=$idleTimeout, connectionTimeout=$connectionTimeout, poolMax=$poolMax, databaseName=$databaseName, " +
+            "defaultGraphPath=$defaultGraphPath, protocol=$protocol, cypherDialect=$cypherDialect, " +
+            "falkorDbTransactionMode=$falkorDbTransactionMode, region=$region, neptuneAuth=$neptuneAuth)"
+}
