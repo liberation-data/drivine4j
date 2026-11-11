@@ -1,1 +1,1 @@
-cli/cli.yaml of liberation-data/drivine-cypher-spec, copied unchanged from branch cli-json-entities-128 at 0838214d6c876e978eec8bf19dbc39dc7843f53b (#128), until it merges. Untagged: once a spec tag carries cli/, copy it from the tag as scripts/sync-cypher-spec.sh copies the spec.
+cli/cli.yaml of liberation-data/drivine-cypher-spec, copied unchanged from tag v0.42.0. Copy it again from a later tag as scripts/sync-cypher-spec.sh copies the spec.
