@@ -233,3 +233,26 @@ private fun nameEnd(cypher: String, from: Int): Int {
     }
     return end
 }
+
+/**
+ * The statement [cypher] after its `EXPLAIN`, where it starts with one, after any blank space and comments, as `EXPLAIN`
+ * and `explain` are the same word to Cypher; null where it doesn't. The contract's "Explaining" explains such a statement
+ * as `--explain=plan` does, and doesn't run it.
+ */
+internal fun explainedStatement(cypher: String): String? {
+    var i = 0
+    while (i < cypher.length) {
+        when {
+            cypher[i].isWhitespace() -> i++
+            cypher.startsWith("//", i) -> i = cypher.indexOf('\n', i).let { if (it < 0) cypher.length else it + 1 }
+            cypher.startsWith("/*", i) -> i = cypher.indexOf("*/", i + 2).let { if (it < 0) cypher.length else it + 2 }
+            else -> break
+        }
+    }
+    val word = "EXPLAIN"
+    if (!cypher.regionMatches(i, word, 0, word.length, ignoreCase = true)) return null
+    val after = i + word.length
+    // EXPLAIN as a word of its own, not the start of a name such as EXPLAINED.
+    if (after < cypher.length && !cypher[after].isWhitespace() && !cypher.startsWith("/*", after) && !cypher.startsWith("//", after)) return null
+    return cypher.substring(after)
+}

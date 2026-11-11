@@ -24,6 +24,13 @@ interface Connection {
     fun explain(spec: QuerySpecification<*>): String =
         throw UnsupportedOperationException("${this::class.simpleName} gives no SQL: it runs Cypher as it is.")
 
+    /**
+     * The store's plan of the statement [spec], which runs nothing: on a SQL store, its plan of the SQL a Cypher statement
+     * compiles to, and on a graph engine, its plan of the Cypher. A connection written before this call was added refuses it.
+     */
+    fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no plan.")
+
 //    fun <T> openCursor(cursorSpec: CursorSpecification<T>): Cursor<T>
 
     /**

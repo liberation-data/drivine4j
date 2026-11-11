@@ -30,8 +30,8 @@ internal class Session(
     private val out: Output,
     private val dir: File,
     private val continueOnFailure: Boolean,
-    /** `--explain`: each statement's SQL printed, and none run; `:begin`, `:commit` and `:rollback` open and close nothing. */
-    private val explain: Boolean = false,
+    /** `--explain`: what each statement would run printed, and none run; `:begin`, `:commit` and `:rollback` open and close nothing. */
+    private val explain: Explain? = null,
     /** Opens a `:source` file's text as the run reads a `-f` file's, its byte-order mark left out. */
     private val open: (File) -> Reader,
 ) {
@@ -125,7 +125,16 @@ internal class Session(
     private fun inputs(inputs: Sources, transaction: Boolean): Outcome {
         for (input in inputs) {
             val outcome = when (input) {
-                is Input.Statement -> handled(if (explain) explained(input.cypher) else statement(input.cypher), transaction, statement = true)
+                is Input.Statement -> {
+                    // A statement that starts with EXPLAIN is explained as --explain=plan explains it, whatever the flags.
+                    val explainedAlone = explainedStatement(input.cypher)
+                    val code = when {
+                        explainedAlone != null -> explained(explainedAlone, Explain.PLAN)
+                        explain != null -> explained(input.cypher, explain)
+                        else -> statement(input.cypher)
+                    }
+                    handled(code, transaction, statement = true)
+                }
                 is Input.Command -> command(input, inputs, transaction)
             }
             if (outcome != null) return outcome
@@ -140,7 +149,7 @@ internal class Session(
             ":exit", ":quit" -> Outcome.Exited
             ":begin" -> when {
                 // Under --explain nothing runs, so there's no transaction to open or end.
-                explain -> null
+                explain != null -> null
                 !store.transactions -> {
                     out.warn(FALKORDB_BEGIN)
                     null
@@ -149,14 +158,14 @@ internal class Session(
                 else -> begin(inputs)
             }
             ":commit" -> when {
-                explain -> null
+                explain != null -> null
                 transaction -> Outcome.Committed
                 // FalkorDB's statements have each committed already, so there's nothing to commit and nothing fails.
                 !store.transactions -> null
                 else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: no transaction is open: :begin opens one"), transaction)
             }
             ":rollback" -> when {
-                explain -> null
+                explain != null -> null
                 transaction -> Outcome.RolledBack
                 !store.transactions -> handled(out.fail(ExitCode.STATEMENT_FAILED, FALKORDB_ROLLBACK), transaction)
                 else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: no transaction is open: :begin opens one"), transaction)
@@ -257,13 +266,17 @@ internal class Session(
     }
 
     /**
-     * Under `--explain`, [cypher]'s SQL, then `-- parameters: ` and the parameters it uses, by their names, in the order it
-     * first uses them, as compact JSON, as `json` writes values: what it would run, with nothing run. A parameter set and
-     * not used isn't printed, and one used and not set isn't either, as it has no value.
+     * [cypher] explained as [mode] says, with nothing run, as the contract's "Explaining" says. On a SQL store, its SQL, and
+     * with [Explain.PLAN] the store's plan of it; on a graph engine, the store's plan. A plan is `-- plan:`, then its lines
+     * each after `-- `, their trailing spaces dropped, or `-- plan: none (` and why `)`. Then `-- parameters: ` and the
+     * parameters it uses, by their names, in the order it first uses them, as compact JSON, as `json` writes values. A
+     * parameter set and not used isn't printed, and one used and not set isn't either, as it has no value.
      */
-    private fun explained(cypher: String): Int {
-        val sql = try {
-            store.explain(cypher, parameters)
+    private fun explained(cypher: String, mode: Explain): Int {
+        val (sql, plan) = try {
+            val sql = if (store.runsCypher) null else store.explain(cypher, parameters)
+            val plan = if (store.runsCypher || mode == Explain.PLAN) store.plan(cypher, parameters) else null
+            sql to plan
         } catch (e: Unreachable) {
             return unreachable(e)
         } catch (e: Exception) {
@@ -271,7 +284,18 @@ internal class Session(
             return out.fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
         }
         return out.print {
-            it.append(sql.trimEnd()).append('\n').append("-- parameters: ")
+            sql?.let { text -> it.append(text.trimEnd()).append('\n') }
+            plan?.let { p ->
+                val none = p.none
+                if (none != null) {
+                    it.append("-- plan: none (").append(none.lineSequence().first().trim()).append(")\n")
+                } else {
+                    it.append("-- plan:\n")
+                    // A line with a line break in it is two, each after its own `-- `, so the plan stays a comment.
+                    p.lines.flatMap { line -> line.lines() }.forEach { line -> it.append("-- $line".trimEnd()).append('\n') }
+                }
+            }
+            it.append("-- parameters: ")
             JsonRenderer.write(parametersUsed(cypher).filter { name -> name in parameters }.associateWith { name -> parameters[name] }, it)
             it.append('\n')
         }

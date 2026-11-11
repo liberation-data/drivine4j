@@ -405,6 +405,49 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `--explain=plan prints the SQL, then SQLite's plan of it, then the parameters`() {
+        val run = runCli(memory + listOf("--explain=plan", "-P", "x => 1", "MATCH (n:Explained) WHERE n.x = \$x RETURN n"))
+        assertEquals(0, run.exit, run.stderr)
+        val lines = run.stdout.trimEnd('\n').split('\n')
+        val plan = lines.indexOf("-- plan:")
+        assertTrue(plan > 0 && lines.take(plan).all { !it.startsWith("-- ") }, run.stdout)
+        assertTrue(lines.subList(plan + 1, lines.size - 1).let { it.isNotEmpty() && it.all { line -> line.startsWith("-- ") && line == line.trimEnd() } }, run.stdout)
+        assertEquals("-- parameters: {\"x\":1}", lines.last())
+        // --explain=sql, as --explain, prints no plan.
+        assertTrue("-- plan:" !in runCli(memory + listOf("--explain=sql", "RETURN 1 AS n")).stdout)
+    }
+
+    @Test
+    fun `a statement that starts with EXPLAIN is explained with its plan, isn't run, and those around it run`() {
+        val run = runCli(memory + listOf("--format", "plain"), stdin = "CREATE (:Kept);\n/* a */ explain CREATE (:Explained);\nMATCH (n) RETURN count(n) AS c;\n")
+        assertEquals(0, run.exit, run.stderr)
+        assertTrue(Regex("(?m)^-- plan:").containsMatchIn(run.stdout), run.stdout)
+        assertTrue(run.stdout.endsWith("-- parameters: {}\nc\n1\n"), run.stdout)
+        // A name that starts with EXPLAIN is no EXPLAIN.
+        assertEquals("explained\n1\n", runCli(memory + listOf("--format", "plain", "WITH 1 AS explained RETURN explained")).stdout)
+    }
+
+    @Test
+    fun `an EXPLAIN statement inside a transaction plans in it and leaves it open, and one that fails under --continue doesn't stop the run`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val kept = runCli(db, stdin = ":begin\nCREATE (:Kept);\nEXPLAIN MATCH (n:Kept) RETURN n;\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(0, kept.exit, kept.stderr)
+            assertTrue(Regex("(?m)^-- plan:$").containsMatchIn(kept.stdout), kept.stdout)
+            assertTrue(kept.stdout.endsWith("-- parameters: {}\nc\n1\n"), kept.stdout)
+
+            // A path, which SQLite refuses, fails as the statement would, and --continue runs the next.
+            val went = runCli(db + listOf("--continue"), stdin = "EXPLAIN MATCH p = ()-->() RETURN p;\nRETURN 1 AS a;\n")
+            assertEquals(1, went.exit, went.stderr)
+            assertEquals("a\n1\n", went.stdout)
+            assertTrue(went.stderr.isNotBlank())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `--explain prints the same in every format, explains a source file's statements, and prints nothing for no statement`() {
         val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
         try {

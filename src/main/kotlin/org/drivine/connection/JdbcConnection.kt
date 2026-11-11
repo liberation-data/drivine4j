@@ -152,6 +152,81 @@ class JdbcConnection(
             ?: throw DrivineException("explain gives the SQL a Cypher statement compiles to, and this is SQL already.", spec = spec)
     }
 
+    /**
+     * The database's plan of the SQL the Cypher statement [spec] compiles to, its parameters bound as [query] binds them,
+     * with nothing run: Postgres's `EXPLAIN`, SQLite's `EXPLAIN QUERY PLAN`, each row's detail indented by its depth, and
+     * Oracle's `EXPLAIN PLAN`, as `DBMS_XPLAN.DISPLAY` gives it. A plan the database refuses, as Oracle and Postgres refuse to
+     * plan what a write compiles to, is none, with the database's message; a connection lost fails. SQL as it is is refused,
+     * as [explain] refuses it.
+     */
+    override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
+        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val cypher = cypherCompiled(given, typed = false)
+            ?: throw DrivineException("plan gives the plan of the SQL a Cypher statement compiles to, and this is SQL already.", spec = spec)
+        val finalizedSpec = given.withSql(cypher.sql, cypher.parameters)
+        val compiled = SpecCompiler(finalizedSpec).compile()
+        val parameters = applyParameterCoercers(finalizedSpec, compiled.parameters)
+        val positional = SqlParameters.positional(compiled.statement)
+        val statementId = "drivine-${System.nanoTime()}"
+        val explained = when (type) {
+            DatabaseType.POSTGRES -> "EXPLAIN ${positional.statement}"
+            DatabaseType.SQLITE -> "EXPLAIN QUERY PLAN ${positional.statement}"
+            DatabaseType.ORACLE -> "EXPLAIN PLAN SET STATEMENT_ID = '$statementId' FOR ${positional.statement}"
+            else -> throw DrivineException("$type isn't a SQL store this connection plans for.", spec = spec)
+        }
+        // On Postgres a statement that fails ends the transaction it's in: a plan refused inside one is rolled back to here.
+        val savepoint = if (type == DatabaseType.POSTGRES && !connection.autoCommit) connection.setSavepoint() else null
+        return try {
+            connection.prepareStatement(explained).use { statement ->
+                if (type == DatabaseType.ORACLE) statement.isPoolable = false
+                positional.names.forEachIndexed { index, name -> bind(statement, index + 1, parameters[name]) }
+                if (type == DatabaseType.ORACLE) {
+                    statement.execute()
+                    oraclePlan(statementId)
+                } else {
+                    statement.executeQuery().use { rows ->
+                        val read = mutableListOf<List<String?>>()
+                        while (rows.next()) read += (1..rows.metaData.columnCount).map { rows.getString(it) }
+                        org.drivine.query.QueryPlan(if (type == DatabaseType.SQLITE) sqlitePlan(read) else read.map { it.first().orEmpty() })
+                    }
+                }
+            }
+        } catch (e: java.sql.SQLException) {
+            // A connection lost isn't a plan refused: it fails as a statement's would.
+            if (e.sqlState.orEmpty().startsWith("08") || e is java.sql.SQLRecoverableException) throw e
+            savepoint?.let(connection::rollback)
+            org.drivine.query.QueryPlan.none("the database doesn't plan what it compiles to: ${e.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim() ?: e.javaClass.simpleName}")
+        } finally {
+            savepoint?.let { runCatching { connection.releaseSavepoint(it) } }
+        }
+    }
+
+    /** Oracle's plan of [statementId], as `DBMS_XPLAN.DISPLAY` gives it; its rows of `PLAN_TABLE` are deleted after. */
+    private fun oraclePlan(statementId: String): org.drivine.query.QueryPlan = try {
+        connection.prepareStatement("SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY(NULL, ?, 'TYPICAL'))").use { statement ->
+            statement.setString(1, statementId)
+            statement.executeQuery().use { rows ->
+                val lines = mutableListOf<String>()
+                while (rows.next()) lines += rows.getString(1).orEmpty()
+                org.drivine.query.QueryPlan(lines)
+            }
+        }
+    } finally {
+        // A plan read is still the plan: rows left behind, in the session's own PLAN_TABLE, cost nothing more.
+        try {
+            connection.prepareStatement("DELETE FROM plan_table WHERE statement_id = ?").use { it.setString(1, statementId); it.executeUpdate() }
+        } catch (e: java.sql.SQLException) {
+            logger.debug("Couldn't delete the rows of plan {} from PLAN_TABLE: {}", statementId, e.message)
+        }
+    }
+
+    /** SQLite's `EXPLAIN QUERY PLAN` rows, `id`, `parent`, `notused`, `detail`: each detail indented two spaces for each parent above it. */
+    private fun sqlitePlan(rows: List<List<String?>>): List<String> {
+        val parents = rows.associate { it[0] to it[1] }
+        fun depth(id: String?): Int = generateSequence(id) { parents[it] }.drop(1).takeWhile { it in parents }.count()
+        return rows.map { "  ".repeat(depth(it[0])) + it[3].orEmpty() }
+    }
+
     /** A statement [run] ran: the spec it ran as SQL, the Cypher it was compiled from, if any, its columns as the driver names them, and its rows. */
     private class Ran(val spec: QuerySpecification<*>, val cypher: CompiledCypher?, val columns: List<String>, val rows: List<JdbcRow>)
 

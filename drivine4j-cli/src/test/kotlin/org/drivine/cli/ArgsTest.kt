@@ -165,12 +165,18 @@ class ArgsTest {
     }
 
     @Test
-    fun `--explain is taken on a SQL store, and refused on a graph engine, before it connects`() {
-        assertEquals(true, run("--explain", "RETURN 1").check(mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")).explain)
+    fun `--explain takes sql or plan after =, and is taken on every store`() {
+        val env = mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")
+        assertEquals(Explain.SQL, run("--explain", "RETURN 1").check(env).explain)
+        assertEquals(Explain.SQL, run("--explain=sql", "RETURN 1").check(env).explain)
+        assertEquals(Explain.PLAN, run("--explain=plan", "RETURN 1").check(env).explain)
         listOf("neo4j://h:7687", "memgraph://h:7687", "falkordb://h:6379").forEach { address ->
-            val refused = assertFailsWith<BadInvocation> { run("--explain", "-a", address, "RETURN 1").check(emptyMap()) }.message!!
-            assertTrue("runs Cypher itself" in refused, refused)
+            assertEquals(Explain.SQL, run("--explain", "-a", address, "RETURN 1").check(emptyMap()).explain, address)
         }
-        assertEquals("drivine: --explain takes no value; see --help", refused("--explain=yes"))
+        assertEquals("drivine: --explain=yes isn't one: give --explain, --explain=sql or --explain=plan", refused("--explain=yes"))
+        // A value that isn't a word isn't printed back.
+        assertTrue("secret" !in refused("--explain=postgresql://u:secret@h/db"))
+        // `--explain plan` reads plan as the statement, not as --explain's value.
+        assertEquals(listOf("plan"), run("--explain", "plan").inputs)
     }
 }

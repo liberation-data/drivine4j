@@ -36,6 +36,7 @@ object SqlCypherFixtures {
 
         override fun queryResult(spec: QuerySpecification<*>): QueryResult = pm.queryResult(cypherOf(spec))
         override fun explain(spec: QuerySpecification<*>): String = pm.explain(cypherOf(spec))
+        override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan = pm.plan(cypherOf(spec))
 
         override fun <T : Any> getOne(spec: QuerySpecification<T>): T = pm.getOne(asCypher(spec))
 

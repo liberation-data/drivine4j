@@ -529,4 +529,94 @@ class JdbcConnectionTest {
         verify(statement).setString(1, "2")
         verify(read, never()).execute(Mockito.contains("RESET"))
     }
+
+    @Test
+    fun `on Postgres a plan the database refuses inside a transaction is none, rolled back to a savepoint so the transaction goes on`() {
+        val savepoint = Mockito.mock(java.sql.Savepoint::class.java)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        `when`(jdbc.setSavepoint()).thenReturn(savepoint)
+        `when`(statement.executeQuery()).thenThrow(SQLException("ERROR: syntax error at or near \"DO\"\n  Position: 9"))
+        val plan = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+            .plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        assertEquals(emptyList(), plan.lines)
+        assertEquals("the database doesn't plan what it compiles to: ERROR: syntax error at or near \"DO\"", plan.none)
+        val order = inOrder(jdbc)
+        order.verify(jdbc).setSavepoint()
+        order.verify(jdbc).rollback(savepoint)
+        order.verify(jdbc).releaseSavepoint(savepoint)
+        verify(jdbc, never()).rollback()
+    }
+
+    @Test
+    fun `on Postgres outside a transaction a plan takes no savepoint, and gives EXPLAIN's rows`() {
+        `when`(jdbc.autoCommit).thenReturn(true)
+        val meta = Mockito.mock(ResultSetMetaData::class.java)
+        `when`(meta.columnCount).thenReturn(1)
+        val rows = Mockito.mock(ResultSet::class.java)
+        `when`(rows.metaData).thenReturn(meta)
+        `when`(rows.next()).thenReturn(true, true, false)
+        `when`(rows.getString(1)).thenReturn("Seq Scan on drivine_node n", "  Filter: (labels @> '{}')")
+        `when`(statement.executeQuery()).thenReturn(rows)
+        val plan = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+            .plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        assertEquals(listOf("Seq Scan on drivine_node n", "  Filter: (labels @> '{}')"), plan.lines)
+        assertEquals(null, plan.none)
+        verify(jdbc, never()).setSavepoint()
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc).prepareStatement(prepared.capture())
+        assertTrue(prepared.value.startsWith("EXPLAIN "), prepared.value)
+    }
+
+    @Test
+    fun `on Oracle the plan's PLAN_TABLE rows are deleted after, though DBMS_XPLAN fails`() {
+        `when`(statement.execute()).thenReturn(false)
+        `when`(statement.executeQuery()).thenThrow(SQLException("ORA-00942: table or view does not exist"))
+        val plan = connection.plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        assertEquals("the database doesn't plan what it compiles to: ORA-00942: table or view does not exist", plan.none)
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc, Mockito.times(3)).prepareStatement(prepared.capture())
+        val id = Regex("STATEMENT_ID = '([^']+)'").find(prepared.allValues[0])!!.groupValues[1]
+        assertEquals("DELETE FROM plan_table WHERE statement_id = ?", prepared.allValues[2])
+        verify(statement, Mockito.times(2)).setString(1, id)
+        verify(statement).executeUpdate()
+    }
+
+    @Test
+    fun `on Oracle the plan is DBMS_XPLAN's lines of the statement EXPLAIN PLAN planned, not kept in the driver's cache, and its rows are deleted after`() {
+        `when`(statement.execute()).thenReturn(false)
+        val rows = Mockito.mock(ResultSet::class.java)
+        `when`(rows.next()).thenReturn(true, true, false)
+        `when`(rows.getString(1)).thenReturn("Plan hash value: 1", "| Id | Operation |")
+        `when`(statement.executeQuery()).thenReturn(rows)
+        val plan = connection.plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        assertEquals(listOf("Plan hash value: 1", "| Id | Operation |"), plan.lines)
+        assertEquals(null, plan.none)
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc, Mockito.times(3)).prepareStatement(prepared.capture())
+        val id = Regex("^EXPLAIN PLAN SET STATEMENT_ID = '([^']+)' FOR ").find(prepared.allValues[0])!!.groupValues[1]
+        assertContains(prepared.allValues[1], "DBMS_XPLAN.DISPLAY")
+        assertEquals("DELETE FROM plan_table WHERE statement_id = ?", prepared.allValues[2])
+        verify(statement, Mockito.times(2)).setString(1, id)
+        verify(statement).executeUpdate()
+        verify(statement, Mockito.atLeastOnce()).isPoolable = false
+    }
+
+    @Test
+    fun `a connection lost while planning fails, as a statement's would, rather than give no plan`() {
+        `when`(jdbc.autoCommit).thenReturn(true)
+        val lost = SQLException("An I/O error occurred while sending to the backend.", "08006")
+        `when`(statement.executeQuery()).thenThrow(lost)
+        val thrown = assertFailsWith<SQLException> {
+            JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+                .plan(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        }
+        assertSame(lost, thrown)
+    }
+
+    @Test
+    fun `a plan of SQL as it is is refused, as explain refuses it`() {
+        val refused = assertFailsWith<DrivineException> { connection.plan(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual"))) }
+        assertContains(refused.message!!, "this is SQL already")
+        verify(jdbc, never()).prepareStatement(anyString())
+    }
 }

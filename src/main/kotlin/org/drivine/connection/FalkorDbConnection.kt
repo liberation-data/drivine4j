@@ -44,6 +44,11 @@ class FalkorDbConnection(
     private val graph: Graph,
     private val resultMapper: ResultMapper,
     private val transactionMode: FalkorDbTransactionMode = FalkorDbTransactionMode.WARN,
+    /**
+     * The lines of `GRAPH.EXPLAIN` of a query, its parameters written into it as the client writes them: what [plan] gives.
+     * The client has no call for it, so the provider sends the command; null where none can, which refuses [plan].
+     */
+    private val explainCommand: ((String) -> List<String>)? = null,
 ) : Connection {
 
     private val logger = LoggerFactory.getLogger(FalkorDbConnection::class.java)
@@ -58,6 +63,16 @@ class FalkorDbConnection(
         @Suppress("UNCHECKED_CAST")
         if (schemaNames.isEmpty()) return emptyList<Any>() as List<T>
         return resultMapper.mapQueryResults(records, finalizedSpec)
+    }
+
+    /** FalkorDB's plan of the Cypher statement [spec], the lines of its `GRAPH.EXPLAIN`, which runs nothing. */
+    override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
+        val explain = explainCommand ?: return super.plan(spec)
+        val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
+        val compiled = SpecCompiler(finalizedSpec).compile()
+        val params = applyParameterCoercers(finalizedSpec, compiled.parameters)
+        val query = if (params.isEmpty()) compiled.statement else com.falkordb.impl.Utils.prepareQuery(compiled.statement, asClientParameters(params))
+        return org.drivine.query.QueryPlan(explain(query))
     }
 
     override fun queryResult(spec: QuerySpecification<*>): QueryResult {
