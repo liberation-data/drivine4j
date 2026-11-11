@@ -15,7 +15,6 @@ import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertSame
 
 /**
  * The search spec's runner, with no store: a held step must still fail, by an assertion or as the store fails; a hold
@@ -109,19 +108,21 @@ class SearchSpecTest {
     }
 
     @Test
-    fun `each store a search runs on but neo4j has one bar, and the corpus has a node for each id the ranking names`() {
+    fun `each store a search runs on has one bar, and the corpus has a node for each id the ranking names`() {
         val ranking = SearchSpec.spec.ranking
-        (SearchSpec.STORES - "neo4j").forEach { assertNotNull(ranking.bar(it), it) }
+        SearchSpec.STORES.forEach { assertNotNull(ranking.bar(it), it) }
         val ids = SearchSpec.corpus.map { it["id"] }.toSet()
         ranking.queries.flatMap { it.neo4j }.forEach { assertContains(ids, it) }
     }
 
     @Test
-    fun `a bar for neo4j holds it, and a bar naming no store, or a second bar for a store, fails at once`() {
-        // The spec holds Neo4j to a bar of its own since v0.41.0: left out here, so this one is the only one for neo4j.
-        val ranking = SearchSpec.spec.ranking.let { it.copy(bars = it.bars.filterNot { bar -> "neo4j" in bar.stores }) }
-        val neo4j = Bar(listOf("neo4j"), 21, 4.95)
-        assertSame(neo4j, ranking.copy(bars = ranking.bars + neo4j).bar("neo4j"))
+    fun `the spec's bar for neo4j holds it, and a bar naming no store, or a second bar for a store, fails at once`() {
+        val ranking = SearchSpec.spec.ranking
+        // Neo4j is held to full agreement with its own recording, so an image that has drifted from it fails.
+        val neo4j = assertNotNull(ranking.bar("neo4j"))
+        assertEquals(listOf("neo4j"), neo4j.stores)
+        assertEquals(ranking.queries.count { it.neo4j.isNotEmpty() }, neo4j.sameTop)
+        assertContains(assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("neo4j"), 1, 1.0)) }.message!!, "more than one bar")
         assertContains(assertThrows<IllegalArgumentException> { Bar(listOf("neptune"), 1, 1.0) }.message!!, "[neptune]")
         val twice = assertThrows<IllegalArgumentException> { ranking.copy(bars = ranking.bars + Bar(listOf("sql"), 1, 1.0)) }
         assertContains(twice.message!!, "more than one bar")
