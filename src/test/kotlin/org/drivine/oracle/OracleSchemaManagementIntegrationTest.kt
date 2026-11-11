@@ -1,17 +1,22 @@
 package org.drivine.oracle
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaVersionStore
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -95,40 +100,95 @@ class OracleSchemaManagementIntegrationTest {
 
     /**
      * The module makes an index over the node table with `IF NOT EXISTS`, and takes `ORA-00955`, its name taken
-     * meanwhile, as made (drivine-cypher-spec#150). That is safe only if a same-named index over something else is not
-     * then taken for the one asked for: [ensure] must not report it made, or matching, while what stands under the name
-     * enforces nothing of the spec.
+     * meanwhile, as made (drivine-cypher-spec#150). That is safe only because a same-named index over something else is
+     * told apart from the one asked for (#770, drivine-cypher-spec#186): the listing gives what stands under each name
+     * Drivine gives after the records, and an index of another expression, or of another uniqueness, is drift, never
+     * Created or matching, with a WARN that names it. A recreate drops it by its name, says so, and makes the item.
      */
-    private fun assertNameTakenIsNotMade(name: String, unrelated: String, ensure: () -> EnsureResult) {
+    private fun assertNameTakenIsDrift(
+        name: String,
+        unrelated: String,
+        reason: String,
+        spec: SchemaItemSpec,
+        logger: String,
+        ensure: () -> EnsureResult,
+        recreate: () -> EnsureResult,
+    ) {
         manager.indexes.run("DROP INDEX IF EXISTS $name")
         manager.indexes.run("CREATE INDEX $name ON schema_node (JSON_VALUE(props, '$.\"$unrelated\"'))")
-        val result = runCatching(ensure)
-        result.getOrNull()?.let {
-            assertFalse(it is EnsureResult.Created || it is EnsureResult.AlreadyMatching, "an index of another form under $name was taken as made: $it")
+        try {
+            val what = if (logger == "ConstraintManager") "Constraint" else "Index"
+            val listed = name.uppercase()
+            val (result, warned) = captured { ensure() }
+            assertTrue(result is EnsureResult.Drift, "an index of another form under $name must be drift, got $result")
+            assertEquals(listed, (result as EnsureResult.Drift).existing.name)
+            assertEquals(
+                listOf(
+                    listOf(
+                        "WARN", logger,
+                        "$what drift on ${spec.label}${spec.properties}: $listed, an index Drivine didn't make, stands under its name for the ${spec.kind}: " +
+                            "it is $reason, so it is not taken as made. Call recreate() to replace it (destructive).",
+                    ),
+                ),
+                warned.filter { it[0] == "WARN" },
+            )
+
+            val (recreated, said) = captured { recreate() }
+            assertTrue(recreated is EnsureResult.Recreated, "a recreate drops the other index and makes the item, got $recreated")
+            val dropped = "Dropped Oracle index $listed, an index Drivine didn't make under its name for ${spec.kind} on ${spec.label}${spec.properties}: it was $reason"
+            assertTrue(
+                said.any { it[1] == logger && it[2].startsWith(dropped) && it[0] == (if (logger == "ConstraintManager") "WARN" else "INFO") },
+                "the drop is said:\n${said.joinToString("\n")}",
+            )
+            assertTrue(ensure() is EnsureResult.AlreadyMatching, "the item made in its place is the item")
+        } finally {
+            manager.indexes.run("DROP INDEX IF EXISTS $name")
         }
-        manager.indexes.run("DROP INDEX IF EXISTS $name")
     }
 
-    @Disabled(
-        "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
-            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
-    )
+    /** What [run] gives, and the lines the index and constraint managers log at INFO and above while it runs. */
+    private fun <T> captured(run: () -> T): Pair<T, List<List<String>>> {
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val loggers = listOf("IndexManager", "ConstraintManager").map { LoggerFactory.getLogger("org.drivine.schema.$it") as Logger }
+        val levels = loggers.map { it.level }
+        loggers.forEach { it.addAppender(appender); it.level = Level.INFO }
+        val result = try {
+            run()
+        } finally {
+            loggers.forEachIndexed { i, logger -> logger.detachAppender(appender); logger.level = levels[i] }
+        }
+        return result to appender.list.filter { it.level.isGreaterOrEqual(Level.INFO) }
+            .map { listOf(it.level.toString(), it.loggerName.substringAfterLast('.'), it.formattedMessage) }
+    }
+
     @Test
-    fun `a uniqueness constraint whose index's name an index over something else has is not made or matching`() {
+    fun `a uniqueness constraint whose index's name an index over something else has is drift, and a recreate replaces it`() {
         val spec = UniquenessConstraintSpec("Voucher", "code")
-        assertNameTakenIsNotMade(OracleGraph("schema").objectName("uq", listOf("Voucher", "code")), "voucherRef") { manager.constraints.ensure(spec) }
-        runCatching { manager.constraints.drop(spec) }
+        try {
+            assertNameTakenIsDrift(
+                OracleGraph("schema").objectName("uq", listOf("Voucher", "code")), "voucherRef", "an index that is not unique", spec, "ConstraintManager",
+                { manager.constraints.ensure(spec) }, { manager.constraints.recreate(spec) },
+            )
+            execute("CREATE (:Voucher {code: 'v-1'})")
+            assertFailsWith<DrivineException>("the constraint made in the other index's place is enforced") { execute("CREATE (:Voucher {code: 'v-1'})") }
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
     }
 
-    @Disabled(
-        "Fails: Oracle's listing reads the catalog's record and that an index of the recorded name is there, not its " +
-            "expression, and CREATE INDEX IF NOT EXISTS passes over the name, so the spec is reported Created over the other index (#770)"
-    )
     @Test
-    fun `a range index whose name an index over something else has is not made or matching`() {
+    fun `a range index whose name an index over something else has is drift, and a recreate replaces it`() {
         val spec = RangeIndexSpec("Coupon", "serial")
-        assertNameTakenIsNotMade(OracleGraph("schema").objectName("ix", listOf("serial")), "couponRef") { manager.indexes.ensure(spec) }
-        runCatching { manager.indexes.drop(spec) }
+        try {
+            assertNameTakenIsDrift(
+                OracleGraph("schema").objectName("ix", listOf("serial")), "couponRef", "an index over [couponRef]", spec, "IndexManager",
+                { manager.indexes.ensure(spec) }, { manager.indexes.recreate(spec) },
+            )
+            val plan = plan("SELECT nid FROM schema_node n WHERE JSON_VALUE(n.props, '$.\"serial\"') = 'x'")
+            assertTrue("SCHEMA_IX_SERIAL" in plan, "the index made in the other's place is over the property:\n$plan")
+        } finally {
+            runCatching { manager.indexes.drop(spec) }
+        }
     }
 
     @Test
