@@ -33,10 +33,55 @@ import org.drivine.cypher.json.TextNode as CompilerText
 internal object JacksonEncoder : CypherEncoder {
 
     override fun tree(value: Any?): CompilerNode? =
-        if (value == null || holdsCompilerTree(value)) null else tree(Neo4jObjectMapper.instance.valueToTree(value))
+        if (value == null || holdsCompilerTree(value)) null else tree(Neo4jObjectMapper.instance.valueToTree(plain(value)))
 
     override fun text(value: Any?): String? =
-        if (holdsCompilerTree(value)) null else Neo4jObjectMapper.instance.writeValueAsString(value)
+        if (holdsCompilerTree(value)) null else Neo4jObjectMapper.instance.writeValueAsString(plain(value))
+
+    /**
+     * [value] with each list, set and map of Kotlin's own classes, at any depth, as a `java.util` one, in the same order,
+     * so that Jackson writes it as it would the copy: Jackson's Kotlin module asks kotlin-reflect of a Kotlin class it
+     * writes, as Kotlin's `EmptyList`, which `emptyList()` gives and the compiler's values hold, and in the drivine CLI's
+     * native image kotlin-reflect knows no such class, and fails. So in a native image ([native]) only what holds one is
+     * copied: a value with none, as most are, `listOf(a, b)` and `mapOf` being the JDK's, is [value] itself. On a JVM it
+     * is [value] itself always. A collection of the application's own class is left as it is, for Jackson to write as that
+     * class says.
+     */
+    internal fun plain(value: Any?, native: Boolean = NATIVE): Any? = if (native && holdsKotlin(value)) copied(value) else value
+
+    /**
+     * Whether this runs as a native image, as the drivine CLI's binary does: GraalVM sets the property to `runtime` there,
+     * as `ImageInfo.inImageRuntimeCode()` reads it, so drivine4j needs no GraalVM API. On a JVM, where kotlin-reflect reads
+     * every class, [plain] copies nothing, and a write pays nothing for it. Read when the object is first used, which the
+     * native image does when it runs: the CLI's build initializes no class of drivine4j's while it builds.
+     */
+    private val NATIVE: Boolean = System.getProperty("org.graalvm.nativeimage.imagecode") == "runtime"
+
+    /** Whether [value] is, or holds at any depth, a collection of Kotlin's own class: a walk that makes nothing. */
+    private fun holdsKotlin(value: Any?): Boolean = when (value) {
+        is Map<*, *> -> own(value) && (kotlin(value) || value.any { (k, v) -> holdsKotlin(k) || holdsKotlin(v) })
+        is Collection<*> -> own(value) && (kotlin(value) || value.any(::holdsKotlin))
+        is Array<*> -> value.any(::holdsKotlin)
+        else -> false
+    }
+
+    /**
+     * [value] with each list, set and map of the JDK's or Kotlin's own, and each array of objects, as a `java.util` list or
+     * map. A set is copied to a list, which Jackson writes alike, so that two of its items that are equal only as copies, as
+     * two arrays of the same items are, stay two; and a map's keys are kept as they are, which Jackson writes as their text.
+     */
+    private fun copied(value: Any?): Any? = when {
+        value is Map<*, *> && own(value) -> value.entries.associateTo(LinkedHashMap(value.size)) { (k, v) -> k to copied(v) }
+        value is Collection<*> && own(value) -> value.mapTo(ArrayList(value.size), ::copied)
+        value is Array<*> -> value.mapTo(ArrayList(value.size), ::copied)
+        else -> value
+    }
+
+    /** Whether [value]'s class is the JDK's or Kotlin's own, not the application's. */
+    private fun own(value: Any): Boolean = value.javaClass.name.let { it.startsWith("java.util.") || kotlin(value) }
+
+    /** Whether [value]'s class is Kotlin's own, which the native image's kotlin-reflect can't read. */
+    private fun kotlin(value: Any): Boolean = value.javaClass.name.startsWith("kotlin.")
 
     /** Whether [value] is, or holds at any depth, a tree of the compiler's, which Jackson knows nothing of. */
     private fun holdsCompilerTree(value: Any?): Boolean = when (value) {
@@ -65,6 +110,6 @@ internal object JacksonEncoder : CypherEncoder {
         }
         JsonNodeType.ARRAY -> CompilerArray().apply { node.forEach { add(tree(it)) } }
         JsonNodeType.OBJECT -> CompilerObject().apply { node.properties().forEach { (k, v) -> set<CompilerNode>(k, tree(v)) } }
-        JsonNodeType.POJO -> tree(Neo4jObjectMapper.instance.valueToTree((node as POJONode).pojo))
+        JsonNodeType.POJO -> tree(Neo4jObjectMapper.instance.valueToTree(plain((node as POJONode).pojo)))
     }
 }

@@ -40,6 +40,46 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `the store names the columns, RETURN star's too, and a result with no rows keeps them`() {
+        assertEquals("{\"columns\":[\"a\",\"b\"],\"rows\":[[1,2]]}\n", runCli(memory + listOf("--format", "json", "WITH 1 AS a, 2 AS b RETURN *")).stdout)
+        assertEquals("{\"columns\":[\"x\",\"n\"],\"rows\":[]}\n", runCli(memory + listOf("--format", "json", "MATCH (n:None) RETURN n.x AS x, n")).stdout)
+    }
+
+    @Test
+    fun `nodes and relationships in a list keep their labels and type, and a node with no labels prints its properties alone`() {
+        val cypher = "CREATE (n:P {l: [1, 2]})-[r:R]->(m {k: 1}) RETURN [n] AS ns, [r] AS rs, m"
+        assertEquals(CliRun(0, "ns, rs, m\n[(:P {l: [1, 2]})], [[:R]], ({k: 1})\n", ""), runCli(memory + listOf("--format", "plain", cypher)))
+        assertEquals(
+            "{\"columns\":[\"ns\",\"rs\",\"m\"],\"rows\":[[[{\"\$t\":\"node\",\"labels\":[\"P\"],\"properties\":{\"l\":[1,2]}}],[{\"\$t\":\"relationship\",\"type\":\"R\",\"properties\":{}}]," +
+                "{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"k\":1}}]]}\n",
+            runCli(memory + listOf("--format", "json", cypher)).stdout,
+        )
+    }
+
+    @Test
+    fun `a path, which a SQL store refuses, fails as a statement does, with 1`() {
+        val run = runCli(memory + listOf("--format", "json", "MATCH p = (a)-[:R]->(b) RETURN p"))
+        assertEquals(1, run.exit, run.stderr)
+        assertEquals("", run.stdout)
+        assertTrue("path" in run.stderr, run.stderr)
+    }
+
+    /**
+     * The compiler gives a node with no labels, an empty list and an empty map as Kotlin's own empty collections, which
+     * Jackson's Kotlin module asks kotlin-reflect about, and the native image's kotlin-reflect knows nothing of them: so
+     * they're written as plain ones (JacksonEncoder.plain). Run against the native binary, this is that.
+     */
+    @Test
+    fun `a node with no labels, an empty list and an empty map are written and read, in the native binary too`() {
+        val cypher = "CREATE (n {l: []}) RETURN n, [] AS l, {} AS m, labels(n) AS ls"
+        assertEquals(
+            CliRun(0, "{\"columns\":[\"n\",\"l\",\"m\",\"ls\"],\"rows\":[[{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"l\":[]}},[],{},[]]]}\n", ""),
+            runCli(memory + listOf("--format", "json", cypher)),
+        )
+        assertEquals(CliRun(0, "n, l, m\n({l: []}), [], {}\n", ""), runCli(memory + listOf("--format", "plain", "CREATE (n {l: []}) RETURN n, [] AS l, {} AS m")))
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

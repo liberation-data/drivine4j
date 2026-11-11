@@ -1,5 +1,8 @@
 package org.drivine.cli
 
+import org.drivine.query.GraphNode
+import org.drivine.query.GraphPath
+import org.drivine.query.GraphRelationship
 import org.junit.jupiter.api.Test
 import java.math.BigInteger
 import java.time.LocalDate
@@ -90,5 +93,63 @@ class RenderTest {
         assertEquals("\"a\\\"b\\c\"", plain("a\"b\\c"))
         assertEquals("\"a\n:exit\nb\"", plain("a\n:exit\nb"))
         assertEquals("\"é😀\"", plain("é😀"))
+    }
+
+    private val a = GraphNode(listOf("B", "A"), linkedMapOf("name" to "x", "n" to 1L))
+    private val b = GraphNode(listOf("B"), emptyMap())
+    private val c = GraphNode(listOf("C"), emptyMap())
+    private val r = GraphRelationship("R", mapOf("w" to 1L))
+    private val s = GraphRelationship("S", emptyMap())
+
+    @Test
+    fun `plain prints a node and a relationship as cypher-shell does, and no braces for no properties`() {
+        assertEquals("(:A:B {name: \"x\", n: 1})", plain(a))
+        assertEquals("(:B)", plain(b))
+        assertEquals("()", plain(GraphNode(emptyList(), emptyMap())))
+        assertEquals("({k: [1, {m: 2}]})", plain(GraphNode(emptyList(), mapOf("k" to listOf(1L, mapOf("m" to 2L))))))
+        assertEquals("[:R {w: 1}]", plain(r))
+        assertEquals("[:S]", plain(s))
+        assertEquals("[(:B), {k: [:S]}]", plain(listOf(b, mapOf("k" to s))))
+    }
+
+    @Test
+    fun `plain prints a path along and against each relationship's direction`() {
+        assertEquals("(:B)-[:R {w: 1}]->(:C)<-[:S]-(:B)", plain(GraphPath(listOf(b, c, b), listOf(r, s), listOf(true, false))))
+        assertEquals("(:B)<-[:S]-(:C)", plain(GraphPath(listOf(b, c), listOf(s), listOf(false))))
+        assertEquals("(:B)", plain(GraphPath(listOf(b), emptyList(), emptyList())))
+    }
+
+    @Test
+    fun `json writes a node, a relationship and a path as objects tagged with their kind, with no ids`() {
+        assertEquals("{\"\$t\":\"node\",\"labels\":[\"A\",\"B\"],\"properties\":{\"name\":\"x\",\"n\":1}}", json(a))
+        assertEquals("{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{}}", json(s))
+        assertEquals(
+            "{\"\$t\":\"path\",\"nodes\":[{\"\$t\":\"node\",\"labels\":[\"B\"],\"properties\":{}},{\"\$t\":\"node\",\"labels\":[\"C\"],\"properties\":{}}]," +
+                "\"relationships\":[{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{}}],\"forward\":[false]}",
+            json(GraphPath(listOf(b, c), listOf(s), listOf(false))),
+        )
+        assertEquals("{\"columns\":[\"n\"],\"rows\":[[{\"\$t\":\"node\",\"labels\":[\"B\"],\"properties\":{}}]]}\n", json(Result(listOf("n"), listOf(listOf(b)))))
+    }
+
+    @Test
+    fun `json writes a map with a key of $t inside a map tagged so, at any depth, and any other map as it is`() {
+        assertEquals("{\"\$t\":\"map\",\"v\":{\"\$t\":\"node\",\"labels\":[]}}", json(linkedMapOf("\$t" to "node", "labels" to emptyList<String>())))
+        assertEquals("[{\"k\":{\"\$t\":\"map\",\"v\":{\"\$t\":1,\"m\":{\"\$t\":\"map\",\"v\":{\"\$t\":2}}}}}]", json(listOf(mapOf("k" to linkedMapOf("\$t" to 1L, "m" to mapOf("\$t" to 2L))))))
+        assertEquals("{\"\$x\":1,\"t\":2}", json(linkedMapOf("\$x" to 1L, "t" to 2L)))
+        // A node's properties with a $t key are a map of the user's own too.
+        assertEquals("{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"\$t\":\"map\",\"v\":{\"\$t\":1}}}", json(GraphNode(emptyList(), mapOf("\$t" to 1L))))
+        // So are a relationship's, and a map in a list in a path's node.
+        assertEquals("{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{\"\$t\":\"map\",\"v\":{\"\$t\":1}}}", json(GraphRelationship("S", mapOf("\$t" to 1L))))
+        assertEquals(
+            "{\"\$t\":\"path\",\"nodes\":[{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"l\":[{\"\$t\":\"map\",\"v\":{\"\$t\":\"node\"}}]}}]," +
+                "\"relationships\":[],\"forward\":[]}",
+            json(GraphPath(listOf(GraphNode(emptyList(), mapOf("l" to listOf(mapOf("\$t" to "node"))))), emptyList(), emptyList())),
+        )
+    }
+
+    @Test
+    fun `json escapes a map by the keys it writes, so a key that isn't a String escapes it when it is written as $t, and no other`() {
+        assertEquals("{\"\$t\":\"map\",\"v\":{\"\$t\":1}}", json(mapOf(StringBuilder("\$t") to 1L)))
+        assertEquals("{\"1\":2}", json(sortedMapOf(1L to 2L)))
     }
 }

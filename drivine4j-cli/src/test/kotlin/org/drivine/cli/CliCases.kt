@@ -90,8 +90,6 @@ class CliCases(
             args.zipWithNext().any { (flag, value) -> flag == "--format" && value in Format.LATER } -> "--format table and csv come later"
             case["stdin"] != null && !statementGiven(args) -> "reading statements from stdin comes later"
             env.keys.any { it == "DRIVINE_DATABASE" || it == "DRIVINE_GRAPH" } -> "--database and --graph come later"
-            case["name"] in NEEDS_LABELS -> "a node, a relationship and a path print with their labels and types, " +
-                "which PersistenceManager.query doesn't give yet (the contract's \"On a SQL store, the CLI reads a node's labels\")"
             else -> null
         }
     }
@@ -153,13 +151,6 @@ class CliCases(
 
     companion object {
         private val GROUPS = mapOf("graph" to listOf("neo4j", "memgraph", "falkordb"), "sql" to listOf("postgres", "oracle", "sqlite"))
-
-        /** The cases that print a node, a relationship or a path. */
-        private val NEEDS_LABELS = setOf(
-            "plain prints a path along and against its relationships' directions",
-            "plain prints a node and a relationship as cypher-shell does",
-            "plain prints a text's characters as they are",
-        )
 
         @Suppress("UNCHECKED_CAST")
         fun cases(): List<Map<String, Any?>> {
