@@ -334,9 +334,10 @@ object Args {
         |                               else a profile's address.
         |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph.
         |  -d, --database DATABASE      The database (Neo4j, Memgraph, Postgres) or the service (Oracle), else
-        |                               DRIVINE_DATABASE: one the address names wins.
-        |  -g, --graph GRAPH            The graph (FalkorDB, Postgres, Oracle, SQLite), else DRIVINE_GRAPH.
-        |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER.
+        |                               DRIVINE_DATABASE, else the profile's: one the address names wins.
+        |  -g, --graph GRAPH            The graph (FalkorDB, Postgres, Oracle, SQLite), else DRIVINE_GRAPH, else
+        |                               the profile's.
+        |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER, else the profile's.
         |                               The password is DRIVINE_PASSWORD's, else the profile's, else asked for
         |                               where stdin is a terminal: never a flag's.
         |  --profile NAME               The profile of ~/.drivine.yml or ./.drivine.yml to connect with, else its

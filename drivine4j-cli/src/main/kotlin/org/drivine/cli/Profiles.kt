@@ -69,9 +69,14 @@ object Profiles {
     private fun read(file: File): Read {
         val root: JsonNode? = try {
             yaml.readTree(file)
-        } catch (e: Exception) {
+        } catch (e: com.fasterxml.jackson.core.JsonProcessingException) {
             // The parser's message may quote the file, which may hold a password: only where it failed is named.
             throw BadInvocation("drivine: can't read $file as profiles: it isn't YAML${e.location()}")
+        } catch (e: java.io.IOException) {
+            // One the CLI may not read, as one of mode 000: a file's error, not the YAML's.
+            throw BadInvocation("drivine: can't read $file: not a file this user can read")
+        } catch (e: RuntimeException) {
+            throw BadInvocation("drivine: can't read $file as profiles: it isn't YAML")
         }
         if (root == null || root.isMissingNode || root.isNull) return Read(null, emptyMap())
         if (!root.isObject) throw BadInvocation("drivine: $file holds no profiles: give default: and profiles:, as --help says")

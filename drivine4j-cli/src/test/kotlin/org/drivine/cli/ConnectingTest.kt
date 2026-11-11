@@ -132,6 +132,31 @@ class ConnectingTest {
     }
 
     @Test
+    fun `a working directory's file with no default keeps the home's`() {
+        profiles(home, "default: a\nprofiles:\n  a:\n    address: \"postgresql://home_a/db\"\n")
+        profiles(dir, "profiles:\n  b:\n    address: \"postgresql://dir_b/db\"\n")
+        assertEquals("home_a", plan().address.host)
+    }
+
+    @Test
+    fun `a user or a database the profile's address names is the address's, before DRIVINE_USER, -d and DRIVINE_DATABASE`() {
+        profiles(dir, "default: p\nprofiles:\n  p:\n    address: \"postgresql://addr@h/in_address\"\n    user: key\n    database: key\n")
+        val env = mapOf("DRIVINE_USER" to "env", "DRIVINE_DATABASE" to "env")
+        val plan = plan("-d", "flag", env = env)
+        assertEquals("addr" to "in_address", plan.user to plan.database)
+        assertEquals("flag", plan("-u", "flag", env = env).user)
+    }
+
+    @Test
+    fun `a profile file the user can't read is refused as one, not as bad YAML`() {
+        profiles(dir, "profiles:\n  p:\n    address: \"sqlite::memory:\"\n", mode = "000")
+        // Root reads any file: there, the mode refuses nothing.
+        if (File(dir, Profiles.FILE).canRead()) return
+        val refusal = refused("--profile", "p")
+        assertTrue("not a file this user can read" in refusal, refusal)
+    }
+
+    @Test
     fun `a profile's type names the store of a bolt address, and one the address contradicts is refused`() {
         profiles(dir, "profiles:\n  m:\n    address: \"bolt://h:7687\"\n    type: memgraph\n  bad:\n    address: \"bolt://h\"\n    type: mongo\n")
         assertEquals(StoreType.MEMGRAPH, plan("--profile", "m").address.store)
@@ -184,7 +209,10 @@ class ConnectingTest {
     private fun prompted(vararg args: String, env: Map<String, String> = emptyMap(), answer: String? = "typed"): Pair<List<String?>, Int> {
         val asked = mutableListOf<String?>()
         val err = StringWriter()
-        val exit = Cli(env, StringWriter(), err, stdinTerminal = true, dir = dir, askPassword = { user -> asked += user; answer }).run(args.toList())
+        val out = StringWriter()
+        val exit = Cli(env, out, err, stdinTerminal = true, dir = dir, askPassword = { user -> asked += user; answer }).run(args.toList())
+        // The password typed reaches neither stream, as #740 says.
+        assertTrue(answer == null || (answer !in out.toString() && answer !in err.toString()), "$out$err")
         return asked to exit
     }
 

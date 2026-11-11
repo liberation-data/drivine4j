@@ -129,7 +129,9 @@ profiles:
     address: "postgresql://localhost:5432/graphs"
     user: "drivine"
     graph: "people"
-``` `drivine --help` lists the flags. The exit code is 0 when everything ran,
+```
+
+`drivine --help` lists the flags. The exit code is 0 when everything ran,
 1 when a statement or a command failed, 2 for a bad invocation, a `-f` file that can't be read among them, and 3 when the store
 can't be reached or refuses the user. A
 result that can't be written, as on a full disk under `> file`, exits with 1 and says so on stderr; a reader that
