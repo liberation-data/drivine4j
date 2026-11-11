@@ -79,7 +79,7 @@ class CliCases(
     /**
      * Why [case] isn't run here, or null where it is. A case is run where it needs only what this build has: statements
      * given as the argument, with `-c`, in a `-f` file or on stdin, the commands `:exit` and `:quit`, a command the
-     * contract doesn't have, `--continue`, the address, the user, `--type` and the formats plain, json and auto.
+     * contract doesn't have, `--continue`, the address, the user, `--type`, `--database`, `--graph`, profiles and the formats.
      */
     fun skipped(case: Map<String, Any?>): String? {
         val args = args(case)
@@ -88,10 +88,8 @@ class CliCases(
             case["mode"] == "cypher-shell" -> "the cypher-shell mode is liberation-data/drivine4j#720's"
             case["store"] != false && !runsOn(case) -> "not a case for $store"
             (case["os"] as List<*>?)?.contains(os()) == false -> "not a case for ${os()}"
-            files(case).containsKey(".drivine.yml") -> "profiles come later"
             commands(case, args).isNotEmpty() -> "${commands(case, args).first()} comes later"
             args.any { it in Args.LATER } -> "${args.first { it in Args.LATER }} comes later"
-            env.keys.any { it == "DRIVINE_DATABASE" || it == "DRIVINE_GRAPH" } -> "--database and --graph come later"
             else -> null
         }
     }
@@ -103,19 +101,25 @@ class CliCases(
         }
         val args = (if (case["store"] == false) emptyList() else listOf("-a", address)) + args(case)
         val env = if (case["store"] == false) mutableMapOf() else credentials()
+        // HOME another empty directory, as the contract's runner gives it, so no .drivine.yml of the user's is read. Set
+        // before the case's variables, so a case that gives HOME as null runs with it unset.
+        val home = Files.createTempDirectory("drivine-home-").toFile()
+        env["HOME"] = home.path
         (case["env"] as Map<*, *>?)?.forEach { (name, value) ->
             if (value == null) env.remove(name as String) else env[name as String] = substituted(value as String)
         }
         // Each case in an empty working directory of its own, with its files written there.
         val dir = Files.createTempDirectory("drivine-case-").toFile()
         files(case).forEach { (name, file) ->
-            val written = File(dir, name).also { it.writeText(file.first, Charsets.UTF_8) }
+            // `$user` and `$password` stand for the store's in a file's text too, as the contract says.
+            val written = File(dir, name).also { it.writeText(substituted(file.first), Charsets.UTF_8) }
             Files.setPosixFilePermissions(written.toPath(), PosixFilePermissions.fromString(permissions(file.second ?: "644")))
         }
         val run = try {
             runCli(args, env, case["stdin"] as String?, dir)
         } finally {
             dir.deleteRecursively()
+            home.deleteRecursively()
         }
         val name = case["name"]
         // table's timing line varies from run to run, so it's taken out before stdout is compared, as the contract says.

@@ -4,7 +4,7 @@ The `drivine` command line: Cypher statements, from the argument, a file or stdi
 Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `table`, `plain`, `json` or `csv`. On Postgres, Oracle and SQLite,
 Drivine compiles the Cypher to SQL, as it does in an application. Its contract is drivine-cypher-spec's
 [`cli/README.md`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/cli) (liberation-data/drivine-cypher-spec#99).
-This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, `:use`,
+This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, `:use`,
 and `table`'s `--sample-rows` and `--wrap` come later.
 
 ## Build
@@ -87,7 +87,7 @@ ends the run with 1 before any statement runs. `:params` prints them, a text in 
 `:source FILE` runs a file's statements and commands in place, as though its text stood there, so a `:begin` or a
 `:commit` in it opens or ends the run's transaction; a file that is being read already, as one that sources itself,
 fails. One byte-order mark at the very start of a `-f` file, stdin or a `:source` file isn't part of its text. `:help`
-lists the commands. `:use` comes later, with `--database`. A command the contract doesn't have, as `:nope`, fails as a
+lists the commands. `:use` comes later. A command the contract doesn't have, as `:nope`, fails as a
 statement does too, with cypher-shell's line, `Could not find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
 statement's `;` on the same line is no command.
 
@@ -97,12 +97,12 @@ uses them, as `json` writes them, whatever the `--format`, and runs none. The SQ
 compiles to; the CLI's own output adds typed reads, so its SQL differs a little. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
 `:rollback` open and close nothing. On a graph engine, which runs Cypher itself, it's refused as a bad invocation.
 
-**cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
+**cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-d`/`--database`, `-f`/`--file`, `--format` (`auto`,
 `table`, `plain`, `json` and `csv`), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
-`--fail-at-end`), `--type` and `--explain` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
-`DRIVINE_PASSWORD`'s.
-The rest of the contract's flags, `-d`, profiles and `table`'s `--sample-rows` and `--wrap` among them, come
-later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
+`--fail-at-end`), `-g`/`--graph`, `--profile`, `--type` and `--explain` are drivine's own. cypher-shell's `-p`/`--password`
+is refused: the password is `DRIVINE_PASSWORD`'s, a profile's or the prompt's.
+The rest of the contract's flags, `table`'s `--sample-rows` and `--wrap` among them, come later, and are refused, said
+so, as are cypher-shell's that the contract doesn't take, as unknown flags.
 
 **Formats.** `table` prints each result as cypher-shell's `verbose` does: the table, its count of rows, the timing line,
 and the store's counts of what the statement wrote, as `Created 1 node, added 1 label`, on Neo4j and Memgraph; FalkorDB
@@ -110,8 +110,29 @@ and the SQL stores give no counts, so none print there. `csv` is RFC 4180, with 
 the default, is `table` where stdout is a terminal and `plain` where it isn't; Java can't ask that of stdout alone, so a
 run whose stdin isn't a terminal, as `cat x.cypher | drivine` at a terminal, prints `plain` too.
 
-The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
-password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
+The address is `-a`'s, else `DRIVINE_ADDRESS`'s, else the profile's; the type of a `bolt://` one `--type`'s, else
+the profile's; the user `-u`'s, else the address's, else
+`DRIVINE_USER`'s, else the profile's; the password `DRIVINE_PASSWORD`'s, else the profile's, else that of an address
+kept off the command line, else, where stdin is a terminal and the store takes one, asked for with no echo: never a
+flag's. The database (Neo4j's, Memgraph's or Postgres's) or the service (Oracle's) is the address's, else `-d`'s, else
+`DRIVINE_DATABASE`'s, else the profile's; the graph (FalkorDB's, or the SQL stores' Drivine graph) `-g`'s, else
+`DRIVINE_GRAPH`'s, else the profile's. A store that has no database, or no graph, refuses one however it's given.
+
+**Profiles.** `~/.drivine.yml` (`HOME`'s) and `./.drivine.yml` hold profiles by name, each with any of `address`, `type`,
+`database`, `graph`, `user` and `password`. `--profile NAME` picks one, else the file's `default:`. One in
+`./.drivine.yml` replaces the home's of the same name as a whole. A file that holds a password and that its group or
+others can read is refused: `chmod 600` it.
+
+```yaml
+default: local
+profiles:
+  local:
+    address: "postgresql://localhost:5432/graphs"
+    user: "drivine"
+    graph: "people"
+```
+
+`drivine --help` lists the flags. The exit code is 0 when everything ran,
 1 when a statement or a command failed, 2 for a bad invocation, a `-f` file that can't be read among them, and 3 when the store
 can't be reached or refuses the user. A
 result that can't be written, as on a full disk under `> file`, exits with 1 and says so on stderr; a reader that

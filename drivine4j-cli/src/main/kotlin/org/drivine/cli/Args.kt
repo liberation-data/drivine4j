@@ -78,15 +78,22 @@ data class Invocation(
     val parameters: List<Assignment> = emptyList(),
     /** `--explain`: print what each statement compiles to on a SQL store, and run none. */
     val explain: Boolean = false,
+    /** `-d`: the database, or Oracle's service. */
+    val database: String? = null,
+    /** `-g`: the graph. */
+    val graph: String? = null,
+    /** `--profile`: the profile of `.drivine.yml` to connect with. */
+    val profile: String? = null,
 ) {
     /**
-     * This invocation, checked in the contract's order once the flags have been read: the inputs, then the address, then
-     * the user and the password, which come from the flags, then [env]. Throws [BadInvocation] for the first that is wrong.
-     * A `-f` file is looked for in [dir], and must be one the CLI can read, as nothing runs where it can't. With no input
-     * given, the statements are stdin's, unless stdin is a terminal ([stdinTerminal]) and `--non-interactive` isn't given:
-     * that is the REPL's, which comes later.
+     * This invocation, checked in the contract's order once the flags have been read: the inputs, then the profile, then
+     * the address, the database and the graph, then the user and the password. Each comes from its flag, then [env], then
+     * the profile, as the contract's "Connecting" says. Throws [BadInvocation] for the first that is wrong. A `-f` file is
+     * looked for in [dir], and must be one the CLI can read, as nothing runs where it can't. With no input given, the
+     * statements are stdin's, unless stdin is a terminal ([stdinTerminal]) and `--non-interactive` isn't given: that is
+     * the REPL's, which comes later. The profiles are `.drivine.yml` in [home], then in [dir].
      */
-    fun check(env: Map<String, String>, dir: File = File("."), stdinTerminal: Boolean = false): Plan {
+    fun check(env: Map<String, String>, dir: File = File("."), stdinTerminal: Boolean = false, home: File? = null): Plan {
         if (inputs.size + files.size > 1) {
             throw BadInvocation("drivine: give one input, a statement as the argument or with -c, or -f FILE, not two; see --help")
         }
@@ -97,15 +104,40 @@ data class Invocation(
                 throw BadInvocation("drivine: give a statement, -f FILE, or statements on stdin; the REPL comes later. See --help")
             else -> Source.Stdin
         }
+        val chosen = Profiles.pick(profile, home, dir)
         val (text, fromCommandLine) = address?.let { it to true }
             ?: env[ENV_ADDRESS]?.let { it to false }
-            ?: throw BadInvocation("drivine: no address: give -a ADDRESS or $ENV_ADDRESS; see --help")
-        val parsed = Address.parse(text, type, fromCommandLine)
+            ?: chosen?.address?.let { it to false }
+            ?: throw BadInvocation("drivine: no address: give -a ADDRESS, $ENV_ADDRESS or a profile; see --help")
+        // The type: --type, then the profile's. DRIVINE_TYPE, which drivine-cypher-spec#128 proposes, isn't the
+        // contract's yet, which names the variables the CLI reads.
+        val storeType = type ?: chosen?.type?.let { named ->
+            StoreType.named(named) ?: throw BadInvocation("drivine: the profile ${chosen.name}'s type ${Args.shownValue(named)} isn't a store: give one of ${StoreType.entries.joinToString { it.flag }}")
+        }
+        val parsed = Address.parse(text, storeType, fromCommandLine)
         if (explain && parsed.store in GRAPH_ENGINES) {
             throw BadInvocation("drivine: --explain prints the SQL a statement compiles to, and ${parsed.store.flag} runs Cypher itself: there's no SQL to print")
         }
-        // The user: -u, then the address's, then DRIVINE_USER. The password: DRIVINE_PASSWORD, then the address's, which
-        // only an address kept off the command line may hold.
+        // The database: one the address names wins, then -d, DRIVINE_DATABASE and the profile's. The graph: -g, then
+        // DRIVINE_GRAPH and the profile's. Each is refused where the store has none, however it's given.
+        val givenDatabase = database ?: env[ENV_DATABASE] ?: chosen?.database
+        val givenGraph = graph ?: env[ENV_GRAPH] ?: chosen?.graph
+        if (givenDatabase != null && parsed.store !in DATABASES) {
+            throw BadInvocation(
+                "drivine: ${parsed.store.flag} takes no --database (-d, $ENV_DATABASE or a profile's database): " +
+                    if (parsed.store == StoreType.SQLITE) "-a sqlite:path names the file" else "--graph names the graph",
+            )
+        }
+        if (givenGraph != null && parsed.store !in GRAPHS) {
+            throw BadInvocation("drivine: ${parsed.store.flag} takes no --graph (-g, $ENV_GRAPH or a profile's graph): --database names the database")
+        }
+        val database = parsed.database?.takeIf { parsed.store != StoreType.SQLITE } ?: givenDatabase
+        if (database == null && parsed.store == StoreType.ORACLE) {
+            throw BadInvocation("drivine: give Oracle's service, in the address as oracle://host:port/FREEPDB1, or with -d")
+        }
+        // The user: -u, then the address's, then DRIVINE_USER, then the profile's. The password: DRIVINE_PASSWORD, then
+        // the profile's, then the address's, which only an address kept off the command line may hold, then the prompt,
+        // as drivine-cypher-spec#128 proposes.
         return Plan(
             address = parsed,
             source = source,
@@ -113,14 +145,23 @@ data class Invocation(
             continueOnFailure = continueOnFailure,
             parameters = parameters,
             explain = explain,
-            user = user ?: parsed.user ?: env[ENV_USER],
-            password = env[ENV_PASSWORD] ?: parsed.password,
+            user = user ?: parsed.user ?: env[ENV_USER] ?: chosen?.user,
+            password = env[ENV_PASSWORD] ?: chosen?.password ?: parsed.password,
+            database = database,
+            graph = givenGraph,
+            profile = chosen?.name,
         )
     }
 
     companion object {
         /** The stores that run Cypher themselves, where `--explain` has no SQL to print. */
         private val GRAPH_ENGINES = setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.FALKORDB)
+
+        /** The stores `--database` names a database or a service of: the contract's table, "The database and the graph". */
+        private val DATABASES = setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.POSTGRES, StoreType.ORACLE)
+
+        /** The stores `--graph` names a graph of. */
+        private val GRAPHS = setOf(StoreType.FALKORDB, StoreType.POSTGRES, StoreType.ORACLE, StoreType.SQLITE)
 
         /**
          * [path], from [dir] where it's relative, as a file the CLI can read: a bad invocation where it isn't, which names
@@ -135,6 +176,8 @@ data class Invocation(
         const val ENV_ADDRESS = "DRIVINE_ADDRESS"
         const val ENV_USER = "DRIVINE_USER"
         const val ENV_PASSWORD = "DRIVINE_PASSWORD"
+        const val ENV_DATABASE = "DRIVINE_DATABASE"
+        const val ENV_GRAPH = "DRIVINE_GRAPH"
     }
 }
 
@@ -157,10 +200,16 @@ data class Plan(
     val parameters: List<Assignment> = emptyList(),
     /** `--explain`: each statement's SQL printed, and none run. */
     val explain: Boolean = false,
+    /** The database, or Oracle's service: the address's, or else the one given. Null where neither names one. */
+    val database: String? = null,
+    /** The Drivine graph, or FalkorDB's: null for the store's default. */
+    val graph: String? = null,
+    /** The profile's name, where one was used. */
+    val profile: String? = null,
 ) {
     override fun toString(): String =
         "Plan(address=$address, source=$source, format=$format, user=$user, password=${password?.let { "***" }}, " +
-            "continueOnFailure=$continueOnFailure, parameters=$parameters, explain=$explain)"
+            "continueOnFailure=$continueOnFailure, parameters=$parameters, explain=$explain, database=$database, graph=$graph, profile=$profile)"
 }
 
 /**
@@ -193,7 +242,7 @@ object Args {
 
     /** The contract's flags that this build doesn't take yet: still a bad invocation, but said so, not called unknown. */
     internal val LATER = setOf(
-        "-d", "--database", "-g", "--graph", "--profile", "--sample-rows", "--wrap",
+        "--sample-rows", "--wrap",
         "--history", "--idle-timeout", "--transaction-timeout", "--log",
         "--driver-version",
     )
@@ -241,6 +290,9 @@ object Args {
                     invocation = invocation.copy(parameters = invocation.parameters + assignment)
                 }
                 "-u", "--user", "--username" -> invocation = invocation.copy(user = value())
+                "-d", "--database" -> invocation = invocation.copy(database = value())
+                "-g", "--graph" -> invocation = invocation.copy(graph = value())
+                "--profile" -> invocation = invocation.copy(profile = value())
                 "--type" -> {
                     val named = value()
                     val type = StoreType.named(named)
@@ -282,9 +334,19 @@ object Args {
         |                                 memgraph://host:port, falkordb://host:port,
         |                                 postgresql://host:port/database, oracle://host:port/service,
         |                                 sqlite:path or sqlite::memory:
-        |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph.
-        |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER.
-        |                               The password is DRIVINE_PASSWORD's, never a flag's.
+        |                               else a profile's address.
+        |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph, else
+        |                               the profile's.
+        |  -d, --database DATABASE      The database (Neo4j, Memgraph, Postgres) or the service (Oracle), else
+        |                               DRIVINE_DATABASE, else the profile's: one the address names wins.
+        |  -g, --graph GRAPH            The graph (FalkorDB, Postgres, Oracle, SQLite), else DRIVINE_GRAPH, else
+        |                               the profile's.
+        |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER, else the profile's.
+        |                               The password is DRIVINE_PASSWORD's, else the profile's, else that of an
+        |                               address not given with -a, else asked for where stdin is a terminal:
+        |                               never a flag's.
+        |  --profile NAME               The profile of ~/.drivine.yml or ./.drivine.yml to connect with, else its
+        |                               default:. Flags and DRIVINE_ variables override its keys.
         |  --format FORMAT              auto (the default: table where stdout is a terminal, plain where it isn't),
         |                               table, plain, json or csv. table's --sample-rows and --wrap come later.
         |  -v, --version                Prints drivine's version.

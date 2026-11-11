@@ -97,10 +97,6 @@ data class Address(
             if (database != null && store !in setOf(StoreType.POSTGRES, StoreType.ORACLE)) {
                 throw BadInvocation("drivine: a ${store.flag} address names no database: $shown")
             }
-            // The contract lets -d name the service where the address doesn't: until -d is here, the address must.
-            if (database == null && store == StoreType.ORACLE) {
-                throw BadInvocation("drivine: give Oracle's service in the address, as oracle://host:port/FREEPDB1; -d comes later")
-            }
             return Address(
                 store = store,
                 protocol = protocol,

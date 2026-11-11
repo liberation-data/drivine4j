@@ -33,7 +33,22 @@ fun main(args: Array<String>) {
     val out = OutputStreamWriter(FileOutputStream(FileDescriptor.out), Charsets.UTF_8)
     val err = OutputStreamWriter(FileOutputStream(FileDescriptor.err), Charsets.UTF_8)
     // Cli.run flushes both streams.
-    exitProcess(Cli(System.getenv(), out, err, stdin = { InputStreamReader(System.`in`, Charsets.UTF_8) }, stdinTerminal = terminal(), stdoutTerminal = terminal()).run(args.toList()))
+    val terminal = terminal()
+    exitProcess(
+        Cli(
+            System.getenv(), out, err, stdin = { InputStreamReader(System.`in`, Charsets.UTF_8) },
+            stdinTerminal = terminal, stdoutTerminal = terminal, askPassword = ::askPassword,
+        ).run(args.toList()),
+    )
+}
+
+/**
+ * Asks the terminal for the password of [user], with no echo, as cypher-shell and psql do: on the console, not stdout,
+ * which a script may read. Null where there's no console, or the terminal's input ends (Ctrl-D).
+ */
+private fun askPassword(user: String?): String? {
+    val console = System.console() ?: return null
+    return console.readPassword(if (user.isNullOrEmpty()) "Password: " else "Password for %s: ", user)?.let(::String)
 }
 
 /**
@@ -67,7 +82,18 @@ class Cli(
     /** Whether stdout is a terminal, where `auto` prints `table`. */
     private val stdoutTerminal: Boolean = false,
     private val dir: File = File("."),
+    /**
+     * Asks for the password of a user, where stdin is a terminal and nothing gives one: see [password]. Null where the
+     * answer can't be had. In process, as in the tests, nothing is asked.
+     */
+    private val askPassword: (String?) -> String? = { null },
 ) {
+
+    /**
+     * The home directory, whose `.drivine.yml` holds profiles: `HOME`, as the contract's runner sets it, else Windows'
+     * `USERPROFILE`. The process's own `user.home` isn't read, so a run given an environment reads only the home it names.
+     */
+    private val home: File? = (env["HOME"] ?: env["USERPROFILE"])?.ifEmpty { null }?.let(::File)
 
     /** Runs [args] and gives the exit code: see [ExitCode]. */
     fun run(args: List<String>): Int {
@@ -75,7 +101,7 @@ class Cli(
             when (val parsed = Args.parse(args)) {
                 Parsed.Help -> exit(print { it.write(Args.USAGE) })
                 Parsed.Version -> exit(print { it.write("drivine $VERSION\n") })
-                is Parsed.Run -> run(parsed.invocation.check(env, dir, stdinTerminal))
+                is Parsed.Run -> run(password(parsed.invocation.check(env, dir, stdinTerminal, home)))
             }
         } catch (e: BadInvocation) {
             fail(ExitCode.BAD_INVOCATION, e.message.orEmpty())
@@ -87,6 +113,14 @@ class Cli(
         }
         return code
     }
+
+    /**
+     * [plan], with the password asked for where none was given, stdin is a terminal and the store takes one: SQLite
+     * takes none. Asked only once the invocation is checked, so a bad one asks nothing.
+     */
+    private fun password(plan: Plan): Plan =
+        if (plan.password != null || !stdinTerminal || plan.address.store == StoreType.SQLITE) plan
+        else plan.copy(password = askPassword(plan.user))
 
     /**
      * Runs [plan]'s statements in order, given its `-P` parameters, each in its own transaction but between `:begin` and
