@@ -107,7 +107,8 @@ class CliCases(
         // Each case in an empty working directory of its own, with its files written there.
         val dir = Files.createTempDirectory("drivine-case-").toFile()
         files(case).forEach { (name, file) ->
-            val written = File(dir, name).also { it.writeText(file.first, Charsets.UTF_8) }
+            // `$user` and `$password` stand for the store's in a file's text too, as the contract says.
+            val written = File(dir, name).also { it.writeText(substituted(file.first), Charsets.UTF_8) }
             Files.setPosixFilePermissions(written.toPath(), PosixFilePermissions.fromString(permissions(file.second ?: "644")))
         }
         // HOME another empty directory, as the contract's runner gives it, so no .drivine.yml of the user's is read.
