@@ -331,6 +331,13 @@ class CliSqliteTest {
             val selfFile = runCli(db + listOf("-f", "self.cypher"), dir = dir)
             assertEquals(CliRun(1, "one\n1\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), selfFile)
             assertEquals(CliRun(1, "", "drivine: :source takes a file\n"), runCli(db, stdin = ":source\n", dir = dir))
+            // A run that ends inside a source file, by its :exit or its failure, ends the input that named it too.
+            java.io.File(dir, "exit.cypher").writeText("RETURN 1 AS a;\n:exit\nRETURN 2 AS b;\n")
+            assertEquals(CliRun(0, "a\n1\n", ""), runCli(db, stdin = ":source exit.cypher\nRETURN 3 AS c;\n", dir = dir))
+            java.io.File(dir, "fail.cypher").writeText("RETURN 1 AS a;\nRETURN 1/0;\nRETURN 2 AS b;\n")
+            val fail = runCli(db, stdin = ":source fail.cypher\nRETURN 3 AS c;\n", dir = dir)
+            assertEquals(1, fail.exit)
+            assertEquals("a\n1\n", fail.stdout)
         } finally {
             dir.deleteRecursively()
         }

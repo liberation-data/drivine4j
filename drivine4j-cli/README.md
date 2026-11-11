@@ -100,7 +100,7 @@ later, and are refused, said so, as are cypher-shell's that the contract doesn't
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
-1 when a statement failed, 2 for a bad invocation, a `-f` file that can't be read among them, and 3 when the store
+1 when a statement or a command failed, 2 for a bad invocation, a `-f` file that can't be read among them, and 3 when the store
 can't be reached or refuses the user. A
 result that can't be written, as on a full disk under `> file`, exits with 1 and says so on stderr; a reader that
 closes the pipe, as `| head` does, isn't a failure, and the run exits with 0.

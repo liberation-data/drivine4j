@@ -281,6 +281,6 @@ object Args {
         |  -v, --version                Prints drivine's version.
         |  -h, --help                   Prints this.
         |
-        |Exit codes: 0 everything ran, 1 a statement failed, 2 a bad invocation, 3 the store can't be reached or refused the user.
+        |Exit codes: 0 everything ran, 1 a statement or a command failed, 2 a bad invocation, 3 the store can't be reached or refused the user.
         |""".trimMargin()
 }
