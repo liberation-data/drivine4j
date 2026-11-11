@@ -160,7 +160,7 @@ class SchemaLockUnitTest {
             "the lock wasn't had" to { statement -> if ("FOR UPDATE" in statement) SQLException("ORA-30006: resource busy", "61000", 30006) else null },
         )
         for ((case, fails) in cases) {
-            val provider = PlanProvider("gate_$case".replace(' ', '_').replace("'", ""), fails)
+            val provider = PlanProvider("gate_$case".replace(' ', '_').replace("'", ""), fails = fails)
             val gate = assertNotNull(SchemaLock.gate(provider))
             val driver = SchemaPlanDriver(SchemaExecutor(provider), provider.schemaGrammar, { null })
 
@@ -174,6 +174,31 @@ class SchemaLockUnitTest {
             assertTrue(locks.single().gated, "$case: the lock is taken inside the gate")
             assertEquals(provider.connected, provider.releasedCount, "$case: every connection is given back")
             assertEquals(listOf(true), provider.lockReleased, "$case: the lock's is given back before the gate is freed")
+            assertTrue(!gate.isLocked, "$case: the gate is freed")
+        }
+    }
+
+    @Test
+    fun `a plan whose pool can't spare the lock a connection runs its DDL unlocked in the gate, or throws another error, and frees the gate`() {
+        val timedOut = java.sql.SQLTransientConnectionException("drivine-plan - Connection is not available, request timed out after 250ms")
+        val refused = SQLException("ORA-01017: invalid username/password; logon denied", "72000", 1017)
+        for ((case, error) in listOf("timed out" to timedOut, "refused" to refused)) {
+            val provider = PlanProvider("gate_connect_${case.replace(' ', '_')}", lockConnectFails = error) { _ -> null }
+            val gate = assertNotNull(SchemaLock.gate(provider))
+            val driver = SchemaPlanDriver(SchemaExecutor(provider), provider.schemaGrammar, { null })
+
+            val outcome = runCatching { driver.item(org.drivine.cypher.store.plan.ItemCall.ENSURE, RangeIndexSpec("Spared", "k")) }
+
+            assertTrue(provider.ran.none { "FOR UPDATE" in it.statement }, "$case: no lock is taken: ${provider.ran}")
+            val ddl = provider.ran.filter { it.statement.trimStart().startsWith("DECLARE") }
+            if (error === timedOut) {
+                assertTrue(outcome.isSuccess, "$case: ${outcome.exceptionOrNull()}")
+                assertTrue(ddl.isNotEmpty() && ddl.all { it.gated }, "$case: the DDL ran, unlocked, inside the gate: ${provider.ran}")
+            } else {
+                assertTrue(outcome.isFailure, "$case: the error is thrown")
+                assertTrue(ddl.isEmpty(), "$case: no DDL ran: ${provider.ran}")
+            }
+            assertEquals(provider.connected, provider.releasedCount, "$case: every connection is given back")
             assertTrue(!gate.isLocked, "$case: the gate is freed")
         }
     }
@@ -321,7 +346,12 @@ class SchemaLockUnitTest {
      * whether its thread held the provider's gate, and answered with no rows, or thrown what [fails] gives for it.
      * [lockReleased] keeps, for each lock's connection given back, whether its thread still held the gate.
      */
-    private class PlanProvider(override val graphName: String, private val fails: (String) -> Exception?) : ConnectionProvider {
+    private class PlanProvider(
+        override val graphName: String,
+        /** What the first connection asked for inside the gate, the lock's, throws, as a pool that can't spare one; null where it's given. */
+        private val lockConnectFails: Exception? = null,
+        private val fails: (String) -> Exception?,
+    ) : ConnectionProvider {
         class Ran(val statement: String, val gated: Boolean) {
             override fun toString() = "$statement${if (gated) " (gated)" else ""}"
         }
@@ -338,7 +368,10 @@ class SchemaLockUnitTest {
 
         private fun gated() = SchemaLock.gate(this)!!.isHeldByCurrentThread
 
+        private var gatedConnects = 0
+
         override fun connect(): Connection {
+            if (lockConnectFails != null && gated() && synchronized(this) { gatedConnects++ } == 0) throw lockConnectFails
             synchronized(this) { connected++ }
             return object : Connection {
                 override fun sessionId() = "plan"

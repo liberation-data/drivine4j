@@ -77,7 +77,7 @@ internal class SchemaLock private constructor(private val connection: Connection
          * connections, the one holding the row has none for its DDL, and waits out the pool's timeout. Gated, at most
          * one plan of a provider holds the lock's connection, and needs one more. A provider is one pool, of one store
          * and graph; plans on other pools of the same graph take turns through the lock itself. A queued plan has no
-         * wait of its own: it waits until the holder's plan ends, whose wait for the lock is [WAIT_SECONDS] at most.
+         * wait of its own: it waits until the holder's plan ends, whose wait for the lock is the pool's timeout for its connection and [WAIT_SECONDS] for its row at most.
          */
         fun gate(provider: ConnectionProvider): ReentrantLock? =
             if (provider.type != DatabaseType.ORACLE || provider.graphName == null) null
