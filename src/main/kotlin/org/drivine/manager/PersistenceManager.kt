@@ -134,6 +134,16 @@ interface PersistenceManager {
         throw UnsupportedOperationException("${this::class.simpleName} gives no SQL: it runs Cypher as it is.")
 
     /**
+     * The store's plan of the statement [spec], which runs nothing: on Postgres, Oracle and SQLite, the database's plan of
+     * the SQL a Cypher statement compiles to, and on Neo4j, Memgraph and FalkorDB, the store's plan of the Cypher. Where the
+     * store can't plan what the statement compiles to, as Oracle and Postgres can't plan what a write compiles to, the plan
+     * says why, with no lines. It is for a caller that shows a plan, as the drivine CLI's `--explain=plan` does. A manager
+     * written before this call was added refuses it.
+     */
+    fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no plan.")
+
+    /**
      * Execute a statement and disregard any results that are returned.
      * @param spec
      */

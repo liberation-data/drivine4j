@@ -91,11 +91,17 @@ lists the commands. `:use` comes later. A command the contract doesn't have, as 
 statement does too, with cypher-shell's line, `Could not find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
 statement's `;` on the same line is no command.
 
-**`--explain`**, on Postgres, Oracle and SQLite, prints for each statement the SQL it compiles to
-(`PersistenceManager.explain`), then `-- parameters: ` and the parameters it uses, by their names, in the order it first
-uses them, as `json` writes them, whatever the `--format`, and runs none. The SQL is what an application's query
-compiles to; the CLI's own output adds typed reads, so its SQL differs a little. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
-`:rollback` open and close nothing. On a graph engine, which runs Cypher itself, it's refused as a bad invocation.
+**`--explain`** prints for each statement what the store would run, and runs none. On Postgres, Oracle and SQLite
+that's the SQL it compiles to (`PersistenceManager.explain`); `--explain=plan` adds the database's plan of it
+(`PersistenceManager.plan`): Postgres's `EXPLAIN`, Oracle's `EXPLAIN PLAN` as `DBMS_XPLAN.DISPLAY` gives it, and SQLite's
+`EXPLAIN QUERY PLAN`. On Neo4j, Memgraph and FalkorDB, which run Cypher themselves, it's the store's plan, `--explain`
+or `--explain=plan`. A plan prints as `-- plan:`, then its lines each after `-- `, or as `-- plan: none (…)` where the
+store can't plan what the statement compiles to, as Oracle and Postgres can't plan what a write compiles to. Then
+`-- parameters: ` and the parameters it uses, by their names, in the order it first uses them, as `json` writes them,
+whatever the `--format`. A statement that starts with `EXPLAIN` is explained as `--explain=plan` explains it, and not
+run, while the statements around it run. The SQL is what an application's query compiles to; the CLI's own output adds
+typed reads, so its SQL differs a little. A `:source` file's statements are explained in place. `-P` and `:param` still
+run, as the store evaluates their expressions, and `:begin`, `:commit` and `:rollback` open and close nothing.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-d`/`--database`, `-f`/`--file`, `--format` (`auto`,
 `table`, `plain`, `json` and `csv`), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's

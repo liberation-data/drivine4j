@@ -108,6 +108,15 @@ class TransactionalPersistenceManager(
         }
     }
 
+    override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
+        val connection = currentTransactionOrThrow().getOrCreateConnection(database, contextHolder)
+        return try {
+            connection.plan(spec)
+        } catch (e: Exception) {
+            throw DrivineException.withRootCause(e, spec)
+        }
+    }
+
     override fun execute(spec: QuerySpecification<*>) {
         if (SchemaCommands.refusedInTransaction(type, spec)) return
         val txObject = currentTransactionOrThrow()

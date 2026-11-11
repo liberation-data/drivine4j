@@ -74,6 +74,8 @@ class DelegatingPersistenceManager(
 
     override fun explain(spec: QuerySpecification<*>): String = persistenceManager().explain(spec)
 
+    override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan = persistenceManager().plan(spec)
+
     override fun execute(spec: QuerySpecification<*>) {
         return persistenceManager().execute(spec)
     }

@@ -46,6 +46,31 @@ class Neo4jConnection(
             QueryResult(result.keys(), rows, counts(result.consume().counters()))
         }
 
+    /**
+     * The store's plan of the Cypher statement [spec], run with `EXPLAIN` before it, which runs nothing. On Neo4j it is the
+     * driver's plan: one operator a line, its name without the planner's `@neo4j`, then its details after two spaces, each
+     * level below the first indented by two spaces more. Memgraph gives its plan as the rows of its `EXPLAIN`, which are the
+     * lines as they are.
+     */
+    override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
+        val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
+        val explained = QuerySpecification.withStatement(org.drivine.query.CypherStatement("EXPLAIN ${finalizedSpec.statement!!.text}"))
+            .bind(finalizedSpec.parameters)
+            .finalizedCopy(QueryLanguage.CYPHER)
+        return run(spec, explained) { result ->
+            val rows = result.list().map { record -> record.values().joinToString(" ") { if (it.isNull) "" else it.asObject().toString() } }
+            val summary = result.consume()
+            org.drivine.query.QueryPlan(if (summary.hasPlan()) planLines(summary.plan(), 0) else rows)
+        }
+    }
+
+    /** [plan] and the operators below it, a line each, as [plan] (the call) says. */
+    private fun planLines(plan: org.neo4j.driver.summary.Plan, depth: Int): List<String> {
+        val details = plan.arguments()["Details"]?.takeUnless { it.isNull }?.asString()?.ifBlank { null }
+        val line = "  ".repeat(depth) + plan.operatorType().substringBefore('@') + (details?.let { "  $it" } ?: "")
+        return listOf(line) + plan.children().flatMap { planLines(it, depth + 1) }
+    }
+
     /** Runs [finalizedSpec], made of [spec], in the transaction where there is one, and gives what [read] reads of its result. */
     private fun <R> run(spec: QuerySpecification<*>, finalizedSpec: QuerySpecification<*>, read: (Result) -> R): R {
         val compiledSpec = SpecCompiler(finalizedSpec).compile()

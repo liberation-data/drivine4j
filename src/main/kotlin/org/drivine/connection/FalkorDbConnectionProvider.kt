@@ -39,7 +39,9 @@ class FalkorDbConnectionProvider(
 
     override fun connect(): Connection {
         val graph = driver.graph(graphName)
-        return FalkorDbConnection(graph, FalkorDbResultMapper(subtypeRegistry), transactionMode)
+        return FalkorDbConnection(graph, FalkorDbResultMapper(subtypeRegistry), transactionMode) { query ->
+            (executeNativeSchemaCommand(listOf("GRAPH.EXPLAIN", SchemaStatement.Native.GRAPH_NAME, query)) as List<*>).map { it.toString() }
+        }
     }
 
     override fun end() {

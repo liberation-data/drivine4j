@@ -51,6 +51,15 @@ enum class StoreType(val flag: String) {
     }
 }
 
+/**
+ * What `--explain` prints, as the contract's "Explaining" says: [SQL], the SQL a statement compiles to on a SQL store and
+ * the store's plan on a graph engine, and [PLAN], the SQL and the store's plan of it.
+ */
+enum class Explain(val flag: String) {
+    SQL("sql"),
+    PLAN("plan"),
+}
+
 /** What the flags asked for, read before anything else is checked: see [Args.parse]. */
 sealed interface Parsed {
     data object Help : Parsed
@@ -76,8 +85,8 @@ data class Invocation(
     val nonInteractive: Boolean = false,
     /** Each `-P`, in the order given: a later one of the same name replaces an earlier. */
     val parameters: List<Assignment> = emptyList(),
-    /** `--explain`: print what each statement compiles to on a SQL store, and run none. */
-    val explain: Boolean = false,
+    /** `--explain`: print what each statement would run, and run none. */
+    val explain: Explain? = null,
     /** `-d`: the database, or Oracle's service. */
     val database: String? = null,
     /** `-g`: the graph. */
@@ -115,9 +124,6 @@ data class Invocation(
             StoreType.named(named) ?: throw BadInvocation("drivine: the profile ${chosen.name}'s type ${Args.shownValue(named)} isn't a store: give one of ${StoreType.entries.joinToString { it.flag }}")
         }
         val parsed = Address.parse(text, storeType, fromCommandLine)
-        if (explain && parsed.store in GRAPH_ENGINES) {
-            throw BadInvocation("drivine: --explain prints the SQL a statement compiles to, and ${parsed.store.flag} runs Cypher itself: there's no SQL to print")
-        }
         // The database: one the address names wins, then -d, DRIVINE_DATABASE and the profile's. The graph: -g, then
         // DRIVINE_GRAPH and the profile's. Each is refused where the store has none, however it's given.
         val givenDatabase = database ?: env[ENV_DATABASE] ?: chosen?.database
@@ -154,8 +160,6 @@ data class Invocation(
     }
 
     companion object {
-        /** The stores that run Cypher themselves, where `--explain` has no SQL to print. */
-        private val GRAPH_ENGINES = setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.FALKORDB)
 
         /** The stores `--database` names a database or a service of: the contract's table, "The database and the graph". */
         private val DATABASES = setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.POSTGRES, StoreType.ORACLE)
@@ -198,8 +202,8 @@ data class Plan(
     val continueOnFailure: Boolean = false,
     /** The `-P` parameters, evaluated on the store before any statement runs. */
     val parameters: List<Assignment> = emptyList(),
-    /** `--explain`: each statement's SQL printed, and none run. */
-    val explain: Boolean = false,
+    /** `--explain`: what each statement would run printed, and none run. */
+    val explain: Explain? = null,
     /** The database, or Oracle's service: the address's, or else the one given. Null where neither names one. */
     val database: String? = null,
     /** The Drivine graph, or FalkorDB's: null for the store's default. */
@@ -282,7 +286,12 @@ object Args {
                 "-f", "--file" -> invocation = invocation.copy(files = invocation.files + value())
                 "--continue" -> { noValue(); invocation = invocation.copy(continueOnFailure = true) }
                 "--non-interactive" -> { noValue(); invocation = invocation.copy(nonInteractive = true) }
-                "--explain" -> { noValue(); invocation = invocation.copy(explain = true) }
+                "--explain" -> {
+                    // Its value only after `=`: `--explain plan` would read `plan` as the statement.
+                    val mode = if (inline == null) Explain.SQL else Explain.entries.find { it.flag == inline }
+                        ?: throw BadInvocation("drivine: --explain=${shownValue(inline)} isn't one: give --explain, --explain=sql or --explain=plan")
+                    invocation = invocation.copy(explain = mode)
+                }
                 "-P", "--param" -> {
                     // The value isn't named back: a parameter may hold what a script would rather not print.
                     val assignment = Assignment.parse(value())
@@ -324,8 +333,11 @@ object Args {
         |  -f, --file FILE              The file's statements. With no cypher, -c or -f, stdin's.
         |  --non-interactive            Read stdin even where it's a terminal.
         |  --continue                   Run every statement, reporting each failure, rather than stop at the first.
-        |  --explain                    On Postgres, Oracle or SQLite: print the SQL each statement compiles to, then
-        |                               -- parameters: and its parameters as JSON, and run none. -P and :param still run.
+        |  --explain[=sql|plan]         Print what each statement would run, and run none. -P and :param still run.
+        |                               On Postgres, Oracle or SQLite, the SQL it compiles to, and with =plan the
+        |                               store's plan of it; on Neo4j, Memgraph or FalkorDB, the store's plan. Then
+        |                               -- parameters: and the parameters it uses as JSON. A statement that starts
+        |                               with EXPLAIN is explained so, with =plan, whatever the flags.
         |  -P, --param PARAM            A parameter, NAME => EXPRESSION, NAME=EXPRESSION or {NAME: EXPRESSION, …}:
         |                               the expression is Cypher, which the store evaluates. Given more than once,
         |                               a later one replaces an earlier one of the same name.

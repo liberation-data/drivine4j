@@ -56,6 +56,19 @@ class Store private constructor(private val drivine: Drivine, private val scratc
     }
 
     /**
+     * The store's plan of [cypher], given [parameters], with nothing run: see [PersistenceManager.plan]. Its lines are the
+     * store's, or none and why, where the store can't plan what the statement compiles to.
+     */
+    fun plan(cypher: String, parameters: Map<String, Any?> = emptyMap()): org.drivine.query.QueryPlan = try {
+        manager.plan(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+    } catch (e: Exception) {
+        throw if (Failures.unreachable(e)) Unreachable(e) else e
+    }
+
+    /** Whether this store runs Cypher itself, as Neo4j, Memgraph and FalkorDB do, so has no SQL to show. */
+    val runsCypher: Boolean get() = type in setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.FALKORDB)
+
+    /**
      * Runs [block] in one transaction, which [run] joins: committed where [block] returns, and rolled back where it throws,
      * the throw then [block]'s. Where the store can't be reached as it begins or ends, that is [Unreachable].
      */

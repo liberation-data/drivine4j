@@ -130,4 +130,14 @@ class StatementsTest {
         )
         assertEquals(listOf("u"), parametersUsed("RETURN \$u, 'never closed \$v"))
     }
+
+    @Test
+    fun `a statement that starts with EXPLAIN gives what follows it, after blank space and comments, in any case`() {
+        assertEquals(" RETURN 1", explainedStatement("EXPLAIN RETURN 1"))
+        assertEquals("\nMATCH (n) RETURN n", explainedStatement("  // why\n/* a */ explain\nMATCH (n) RETURN n"))
+        assertEquals("/*x*/RETURN 1", explainedStatement("Explain/*x*/RETURN 1"))
+        assertEquals(null, explainedStatement("EXPLAINED RETURN 1"))
+        assertEquals(null, explainedStatement("RETURN 'EXPLAIN'"))
+        assertEquals(null, explainedStatement("PROFILE RETURN 1"))
+    }
 }

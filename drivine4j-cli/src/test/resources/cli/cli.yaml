@@ -730,11 +730,39 @@ cases:
     stdoutLines: ['^-- parameters: \{\}$']
     exit: 0
 
-  - name: "--explain is refused on a graph engine"
+  - name: "--explain prints a graph engine's plan, then the parameters a statement uses"
     only: [graph]
-    args: ["--explain", "RETURN 1"]
+    args: ["--explain", "-P", "x => 1", "MATCH (n:Explained) WHERE n.x = $x RETURN n"]
+    stdoutLines: ["^-- plan:$", "^-- .", '^-- parameters: \{"x":1\}$']
+    exit: 0
+
+  - name: "--explain=plan prints the SQL, then the store's plan of it, then the parameters"
+    only: [sql]
+    args: ["--explain=plan", "-P", "x => 1", "MATCH (n:Explained) WHERE n.x = $x RETURN n"]
+    stdoutLines: ["^(?!-- )\\S", "^-- plan:$", "^-- .", '^-- parameters: \{"x":1\}$']
+    exit: 0
+
+  - name: "--explain=sql prints what --explain prints"
+    only: [sql]
+    args: ["--explain=sql", "RETURN 1 AS n"]
+    stdoutLines: ["^(?!-- )\\S", '^-- parameters: \{\}$']
+    exit: 0
+
+  - name: "--explain takes no value but sql or plan"
+    args: ["--explain=nope", "RETURN 1"]
     stdout: ""
     exit: 2
+
+  - name: "A statement that starts with EXPLAIN prints its plan, isn't run, and those around it run"
+    args: ["--format", "plain", "EXPLAIN CREATE (n:Explained {x: 1}); MATCH (n:Explained) RETURN count(n) AS c"]
+    stdoutLines: ["^-- plan:", '^-- parameters: \{\}$', "^c$", "^0$"]
+    exit: 0
+    note: "The count is 0: the CREATE was explained, not run. Its plan may be the one line -- plan: none (…), where the store can't plan what a write compiles to."
+
+  - name: "EXPLAIN after a comment is still EXPLAIN"
+    args: ["--format", "plain", "// why\nexplain RETURN 1 AS n"]
+    stdoutLines: ["^-- plan:$", '^-- parameters: \{\}$']
+    exit: 0
 
   - name: "--encryption is refused on a SQL store"
     mode: cypher-shell
