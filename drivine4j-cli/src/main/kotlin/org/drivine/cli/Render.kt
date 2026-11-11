@@ -56,8 +56,9 @@ object JsonRenderer : Renderer {
             is GraphPath -> tagged(
                 "path", listOf("nodes" to value.nodes, "relationships" to value.relationships, "forward" to value.forward), out,
             )
-            is Map<*, *> -> if (TAG in value) tagged("map", listOf("v" to Untagged(value)), out) else entries(value.entries.map { (k, v) -> k.toString() to v }, out)
-            is Untagged -> entries(value.map.entries.map { (k, v) -> k.toString() to v }, out)
+            // Escaped by the keys as they are written, so that a key that isn't a String, but is written as $t, escapes it too.
+            is Map<*, *> -> if (value.keys.any { it.toString() == TAG }) tagged("map", listOf("v" to Untagged(value)), out) else entries(value, out)
+            is Untagged -> entries(value.map, out)
             is Iterable<*> -> {
                 out.append('[')
                 value.forEachIndexed { i, item ->
@@ -82,6 +83,9 @@ object JsonRenderer : Renderer {
     /** An object whose first key is [TAG], naming its [kind], then [entries]. */
     private fun tagged(kind: String, entries: List<Pair<String, Any?>>, out: Appendable) =
         entries(listOf(TAG to kind) + entries, out)
+
+    /** An object of [map]'s entries, each key written as its text. */
+    private fun entries(map: Map<*, *>, out: Appendable) = entries(map.entries.map { (k, v) -> k.toString() to v }, out)
 
     private fun entries(entries: List<Pair<String, Any?>>, out: Appendable) {
         out.append('{')

@@ -138,5 +138,18 @@ class RenderTest {
         assertEquals("{\"\$x\":1,\"t\":2}", json(linkedMapOf("\$x" to 1L, "t" to 2L)))
         // A node's properties with a $t key are a map of the user's own too.
         assertEquals("{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"\$t\":\"map\",\"v\":{\"\$t\":1}}}", json(GraphNode(emptyList(), mapOf("\$t" to 1L))))
+        // So are a relationship's, and a map in a list in a path's node.
+        assertEquals("{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{\"\$t\":\"map\",\"v\":{\"\$t\":1}}}", json(GraphRelationship("S", mapOf("\$t" to 1L))))
+        assertEquals(
+            "{\"\$t\":\"path\",\"nodes\":[{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"l\":[{\"\$t\":\"map\",\"v\":{\"\$t\":\"node\"}}]}}]," +
+                "\"relationships\":[],\"forward\":[]}",
+            json(GraphPath(listOf(GraphNode(emptyList(), mapOf("l" to listOf(mapOf("\$t" to "node"))))), emptyList(), emptyList())),
+        )
+    }
+
+    @Test
+    fun `json escapes a map by the keys it writes, so a key that isn't a String escapes it when it is written as $t, and no other`() {
+        assertEquals("{\"\$t\":\"map\",\"v\":{\"\$t\":1}}", json(mapOf(StringBuilder("\$t") to 1L)))
+        assertEquals("{\"1\":2}", json(sortedMapOf(1L to 2L)))
     }
 }
