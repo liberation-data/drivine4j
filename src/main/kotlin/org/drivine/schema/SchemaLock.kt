@@ -7,6 +7,9 @@ import org.drivine.cypher.store.ddl.OracleDdl
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
+import java.util.Collections
+import java.util.WeakHashMap
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * The lock that serialises the schema DDL of the managers of one Oracle graph, across processes, while one of them runs
@@ -26,13 +29,20 @@ import java.sql.SQLException
  */
 internal class SchemaLock private constructor(private val connection: Connection) : AutoCloseable {
 
-    /** Ends the transaction that holds the row, which frees it, and gives the connection back. */
+    /**
+     * Ends the transaction that holds the row, which frees it, and gives the connection back. A rollback that fails, as on
+     * a session Oracle has ended (which frees the row itself), gives the connection back with its error and throws
+     * nothing: it's closed as a plan ends, and would hide the plan's own error.
+     */
     override fun close() {
         try {
             connection.rollbackTransaction()
-        } finally {
-            connection.release()
+        } catch (e: Exception) {
+            logger.debug("Freeing a schema lock failed; its session's end frees it: {}", e.message)
+            connection.release(e)
+            return
         }
+        connection.release()
     }
 
     companion object {
@@ -52,6 +62,22 @@ internal class SchemaLock private constructor(private val connection: Connection
 
         /** `ORA-00942: table or view does not exist`: a store made before layout 2, with no lock table. */
         private const val NO_TABLE = 942
+
+        /** The gate of each provider, made as it's first asked for; weakly held, so an ended provider's goes with it. */
+        private val gates: MutableMap<ConnectionProvider, ReentrantLock> = Collections.synchronizedMap(WeakHashMap())
+
+        /**
+         * The gate that [provider]'s schema DDL in this process passes one plan at a time, held from before the plan
+         * takes the lock until it frees it, where the lock is taken: on Oracle, for a graph. Without it each plan
+         * waiting for the row holds a connection of the pool while it waits, and with as many waiting as the pool has
+         * connections, the one holding the row has none for its DDL, and waits out the pool's timeout. Gated, at most
+         * one plan of a provider holds the lock's connection, and needs one more. A provider is one pool, of one store
+         * and graph; plans on other pools of the same graph take turns through the lock itself. A queued plan has no
+         * wait of its own: the gate's holder is done once its lock is had, or [WAIT_SECONDS] are out.
+         */
+        fun gate(provider: ConnectionProvider): ReentrantLock? =
+            if (provider.type != DatabaseType.ORACLE || provider.graphName == null) null
+            else gates.getOrPut(provider) { ReentrantLock() }
 
         /** The statement that takes the row of [graph]'s lock table, waiting up to [WAIT_SECONDS] for it. */
         internal fun statement(graph: String): String = OracleDdl(graph).let { ddl ->

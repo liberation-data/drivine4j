@@ -180,7 +180,7 @@ A statement is read as DDL only where it opens with one of these keyword sequenc
 
 `CREATE` follows Neo4j: over an item of the same kind, label and properties that is there already, `IF NOT EXISTS` does nothing but add the alias (and leaves an item of another shape as it is, with a warning), and without it the statement fails. A name another item goes by, by the API's name or an alias, is refused, with `IF NOT EXISTS` or without. A `DROP` of a name no item goes by fails, and does nothing with `IF EXISTS`; `DROP INDEX` of a constraint's name fails, as does `DROP CONSTRAINT` of an index's.
 
-**Transactions.** DDL is refused inside an open transaction (the transactional manager, or the delegating one within `@Transactional`), save `db.awaitIndexes`, which does nothing there: Drivine applies schema on connections of its own, committed as they go, which the transaction's rollback would not undo. Run it outside the transaction. Each command borrows one such connection, which its catalog reads, its DDL and its marker's writes all run on, and gives it back as it ends. A batch (`executeBatch`) of one schema command runs it; a batch of more that holds one is refused, since a batch is one transaction.
+**Transactions.** DDL is refused inside an open transaction (the transactional manager, or the delegating one within `@Transactional`), save `db.awaitIndexes`, which does nothing there: Drivine applies schema on connections of its own, committed as they go, which the transaction's rollback would not undo. Run it outside the transaction. Each command borrows one such connection, which its catalog reads, its DDL and its marker's writes all run on, and gives it back as it ends. On Oracle a command that runs DDL borrows a second while it does, which holds the graph's schema lock (see Oracle, below). A batch (`executeBatch`) of one schema command runs it; a batch of more that holds one is refused, since a batch is one transaction.
 
 ### Version-triggered rebuild
 
@@ -257,6 +257,8 @@ order, is what drivine4j wrote.
 | Item names | Yes | Vector only | No |
 
 **Oracle.** Every item is an index over an expression, since a property is a path into a JSON column, and what Drivine made is recorded in the table `<graph>_schema`, which `ensure` and drift detection read. An item whose index or table was dropped by hand is made again by the next `ensure`.
+
+Managers that make one graph's schema at once, as replicas starting together do, take turns: Oracle's DDL doesn't wait for another session's, and two that make the same index together can deadlock on its library-cache lock for some nine seconds. A command that runs DDL first takes a row lock of the graph's lock table (`<graph>_lock2`, made with the graph), on a connection of its own, waiting up to ten seconds for it, and holds it until the command ends. Within one process, the commands of one connection pool take the lock one at a time, so commands waiting for it never hold every connection of the pool, leaving none for the DDL of the one that has it. A lock not had within the wait, as when another manager holds it that long, is gone without: the DDL runs unlocked, as it did before, in either schema mode, and a warning says so once for each graph in a process. A graph made before its tables had the lock table runs its DDL unlocked too.
 
 | | Oracle |
 |---|---|

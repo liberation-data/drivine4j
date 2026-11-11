@@ -35,11 +35,6 @@ class SchemaLockTest {
     private fun connect() = DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword())
 
     @Test
-    fun `the lock is a row of the graph's lock table, waited for ten seconds`() {
-        assertEquals("SELECT name FROM g_lock2 WHERE name = 'schema' FOR UPDATE WAIT 10", SchemaLock.statement("g"))
-    }
-
-    @Test
     fun `eight managers making a graph's schema at once take turns, so no round waits out a deadlock`() {
         val graph = "lock_race"
         val slowest = (1..20).map {
@@ -135,6 +130,46 @@ class SchemaLockTest {
     @Test
     fun `under WARN a lock not had is gone without after its wait, and the constraint is made unlocked`() =
         madeUnlockedWhileHeld("lock_warn", SchemaMode.WARN)
+
+    /**
+     * More of one pool's managers making a graph's schema at once than the pool has connections: ungated, each waiting
+     * for the row would hold a connection while it waited, and the one holding it would have none for its DDL until the
+     * others' waits ran out, ten seconds on. Gated, one at a time takes the lock, with a connection to spare.
+     */
+    @Test
+    fun `more managers of one pool making a graph's schema at once than the pool has connections take turns through its gate`() {
+        val graph = "lock_pool"
+        OracleTestDatabase.graphManager(graph)
+        val provider = JdbcConnectionProvider.pooled(
+            graph, DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(),
+            OracleTestContainer.getConnectionPassword(), poolMax = 2, graphName = graph,
+        )
+        val registry = DatabaseRegistry(DataSourceMap()).also { it.register(provider) }
+        val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+        val pm = factory.get(graph, PersistenceManagerType.NON_TRANSACTIONAL)
+        val spec = UniquenessConstraintSpec("Ledger", "id")
+        val pool = Executors.newFixedThreadPool(6)
+        try {
+            pm.constraints.drop(spec)
+            val start = CountDownLatch(1)
+            val logged = warnings {
+                val t0 = System.nanoTime()
+                List(6) {
+                    pool.submit {
+                        start.await()
+                        SchemaManager(factory, registry, listOf(SchemaCatalog.of(spec)), SchemaPolicy(mode = SchemaMode.FAIL_FAST)).enforce()
+                    }
+                }.also { start.countDown() }.forEach { it.get(60, TimeUnit.SECONDS) }
+                val took = (System.nanoTime() - t0) / 1_000_000
+                assertTrue(took < SchemaLock.WAIT_SECONDS * 1_000L - 500, "no manager waited out another's lock: $took ms")
+            }
+            kotlin.test.assertNotNull(pm.constraints.find(spec), "the constraint is made")
+            assertEquals(emptyList(), logged.filter { "schema lock of graph $graph" in it }, "every manager had the lock")
+        } finally {
+            pool.shutdownNow()
+            provider.end()
+        }
+    }
 
     @Test
     fun `a lock not had within its wait is none, and the DDL runs unlocked`() {

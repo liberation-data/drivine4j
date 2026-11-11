@@ -24,9 +24,12 @@ class SchemaExecutor internal constructor(
 
     /**
      * The lock that serialises the schema DDL of this graph's managers, held until it's closed: on Oracle, where the graph
-     * has its lock table, and null elsewhere. See [SchemaLock].
+     * has its lock table; null elsewhere, and where it isn't had within its wait, when the DDL runs unlocked. See [SchemaLock].
      */
     internal fun schemaLock(): SchemaLock? = SchemaLock.take(connectionProvider)
+
+    /** The gate this provider's plans pass, one at a time, around taking [schemaLock] and running their DDL. See [SchemaLock.gate]. */
+    internal fun schemaGate(): java.util.concurrent.locks.ReentrantLock? = SchemaLock.gate(connectionProvider)
 
     /** Runs an introspection query and returns its raw rows (maps, positional lists, or scalars). */
     fun query(statement: String): List<Any?> = query(statement, emptyMap())

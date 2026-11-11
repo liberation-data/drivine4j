@@ -182,17 +182,26 @@ internal class SchemaPlanDriver(
         private var lock: SchemaLock? = null
         private var locked = false
 
-        /** Takes the lock, once, before the plan's first DDL: a plan with no DDL takes none. */
+        /** The provider's gate, held from before the lock is taken until it's freed: see [SchemaLock.gate]. */
+        private var gate: java.util.concurrent.locks.ReentrantLock? = null
+
+        /** Passes the gate and takes the lock, once, before the plan's first DDL: a plan with no DDL takes neither. */
         private fun lockForDdl() {
             if (locked) return
             locked = true
+            gate = executor.schemaGate()?.also { it.lock() }
             lock = executor.schemaLock()
         }
 
-        /** Frees the lock, where the plan took it. */
+        /** Frees the lock, then the gate, where the plan took them. */
         fun unlock() {
-            lock?.close()
-            lock = null
+            try {
+                lock?.close()
+            } finally {
+                lock = null
+                gate?.unlock()
+                gate = null
+            }
         }
 
         /** Runs [actions] in order, stopping at the first that fails, and gives what came of each. */
