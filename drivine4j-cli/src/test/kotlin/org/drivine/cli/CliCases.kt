@@ -91,7 +91,6 @@ class CliCases(
             files(case).containsKey(".drivine.yml") -> "profiles come later"
             commands(case, args).isNotEmpty() -> "${commands(case, args).first()} comes later"
             args.any { it in Args.LATER } -> "${args.first { it in Args.LATER }} comes later"
-            args.zipWithNext().any { (flag, value) -> flag == "--format" && value in Format.LATER } -> "--format table and csv come later"
             env.keys.any { it == "DRIVINE_DATABASE" || it == "DRIVINE_GRAPH" } -> "--database and --graph come later"
             else -> null
         }
@@ -119,7 +118,10 @@ class CliCases(
             dir.deleteRecursively()
         }
         val name = case["name"]
-        (case["stdout"] as String?)?.let { assertEquals(it, run.stdout, "$name: stdout (stderr: ${run.stderr})") }
+        // table's timing line varies from run to run, so it's taken out before stdout is compared, as the contract says.
+        // Taken out of the text as it is, so a value's own \r, as csv writes it, isn't read as a line's end.
+        val stdout = TIMING.replace(run.stdout, "")
+        (case["stdout"] as String?)?.let { assertEquals(it, stdout, "$name: stdout (stderr: ${run.stderr})") }
         (case["stdoutLines"] as List<*>?)?.let { patterns -> matchLines(patterns.map { Regex(it as String) }, run.stdout, name) }
         (case["stderr"] as String?)?.let { assertTrue(it in run.stderr, "$name: stderr is ${run.stderr}, not holding $it") }
         assertEquals(case["exit"], run.exit, "$name: the exit code (stdout: ${run.stdout}, stderr: ${run.stderr})")
@@ -182,6 +184,9 @@ class CliCases(
     }.joinToString("")
 
     companion object {
+        /** `table`'s timing line, as the contract's "Output" gives it. */
+        private val TIMING = Regex("(?m)^ready to start consuming query after \\d+ ms, results consumed after another \\d+ ms\n")
+
         private val GROUPS = mapOf("graph" to listOf("neo4j", "memgraph", "falkordb"), "sql" to listOf("postgres", "oracle", "sqlite"))
 
         @Suppress("UNCHECKED_CAST")

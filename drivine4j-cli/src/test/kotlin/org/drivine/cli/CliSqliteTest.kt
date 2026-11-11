@@ -128,6 +128,15 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `auto prints a table where stdout is a terminal, and plain where it isn't`() {
+        fun auto(stdoutTerminal: Boolean) = java.io.StringWriter().also { out ->
+            assertEquals(0, Cli(emptyMap(), out, java.io.StringWriter(), stdoutTerminal = stdoutTerminal).run(memory + listOf("RETURN 1 AS one")))
+        }.toString()
+        assertEquals("+-----+\n| one |\n+-----+\n| 1   |\n+-----+\n\n1 row\n", auto(true).replace(Regex("ready to start .*\n"), ""))
+        assertEquals("one\n1\n", auto(false))
+    }
+
+    @Test
     fun `an unknown command fails as cypher-shell says, and one of the contract's that comes later says so`() {
         val nope = runCli(memory + listOf("--format", "plain"), stdin = ":nope\nRETURN 1 AS a;\n")
         assertEquals(CliRun(1, "", "Could not find command :nope, use :help to see available commands\n"), nope)

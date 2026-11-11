@@ -1,11 +1,11 @@
 # drivine4j-cli
 
 The `drivine` command line: Cypher statements, from the argument, a file or stdin, against any store Drivine reaches,
-Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `plain` or `json`. On Postgres, Oracle and SQLite,
+Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `table`, `plain`, `json` or `csv`. On Postgres, Oracle and SQLite,
 Drivine compiles the Cypher to SQL, as it does in an application. Its contract is drivine-cypher-spec's
 [`cli/README.md`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/cli) (liberation-data/drivine-cypher-spec#99).
 This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, `:use`, `--explain`,
-`table` and `csv` come later.
+and `table`'s `--sample-rows` and `--wrap` come later.
 
 ## Build
 
@@ -92,11 +92,17 @@ statement does too, with cypher-shell's line, `Could not find command :nope, use
 statement's `;` on the same line is no command.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
-`plain` and `json` for now), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
+`table`, `plain`, `json` and `csv`), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
 `--fail-at-end`) and `--type` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
 `DRIVINE_PASSWORD`'s.
-The rest of the contract's flags, `-d`, `--explain`, profiles and the formats `table` and `csv` among them, come
+The rest of the contract's flags, `-d`, `--explain`, profiles and `table`'s `--sample-rows` and `--wrap` among them, come
 later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
+
+**Formats.** `table` prints each result as cypher-shell's `verbose` does: the table, its count of rows, the timing line,
+and the store's counts of what the statement wrote, as `Created 1 node, added 1 label`, on Neo4j and Memgraph; FalkorDB
+and the SQL stores give no counts, so none print there. `csv` is RFC 4180, with one empty line between results. `auto`,
+the default, is `table` where stdout is a terminal and `plain` where it isn't; Java can't ask that of stdout alone, so a
+run whose stdin isn't a terminal, as `cat x.cypher | drivine` at a terminal, prints `plain` too.
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,

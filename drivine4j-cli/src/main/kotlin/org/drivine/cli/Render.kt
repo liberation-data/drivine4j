@@ -12,10 +12,14 @@ fun interface Renderer {
     fun render(result: Result, out: Appendable)
 
     companion object {
-        fun of(format: Format): Renderer = when (format) {
-            // auto is table on a terminal; until table is here, it is plain, as it is where stdout isn't a terminal.
-            Format.AUTO, Format.PLAIN -> PlainRenderer
+        /** [format]'s renderer for one run: `auto` is `table` where stdout is a [terminal], `plain` where it isn't. */
+        fun of(format: Format, terminal: Boolean = false): Renderer = when (format) {
+            Format.AUTO -> if (terminal) TableRenderer else PlainRenderer
+            Format.TABLE -> TableRenderer
+            Format.PLAIN -> PlainRenderer
             Format.JSON -> JsonRenderer
+            // Of its own for each run, as it separates a run's results.
+            Format.CSV -> CsvRenderer()
         }
     }
 }
@@ -227,4 +231,86 @@ object PlainRenderer : Renderer {
         }
         out.append("}\n")
     }
+}
+
+/**
+ * `table`: each result as cypher-shell's `verbose` prints it. A border as wide as the header, the columns' names, a border,
+ * a line a row, a border; each column as wide as its widest value or its name, a value as `plain` prints it, a space each
+ * side. Then an empty line, the count of rows (`1 row`, `3 rows`), the timing line, and the store's counts of what it wrote,
+ * where it gave any. A result with no columns, as a write with no `RETURN`, prints no table: its count of rows, the timing
+ * line and its counts.
+ */
+object TableRenderer : Renderer {
+
+    override fun render(result: Result, out: Appendable) {
+        if (result.columns.isNotEmpty()) {
+            val cells = result.rows.map { row -> row.map { value -> StringBuilder().also { PlainRenderer.write(value, it) }.toString() } }
+            val widths = result.columns.indices.map { i -> (listOf(result.columns[i]) + cells.map { it[i] }).maxOf { it.length } }
+            fun line(values: List<String>) = values.indices.joinToString(" | ", "| ", " |") { values[it].padEnd(widths[it]) }
+            val header = line(result.columns)
+            val border = "+" + "-".repeat(header.length - 2) + "+"
+            out.append(border).append('\n').append(header).append('\n').append(border).append('\n')
+            cells.forEach { out.append(line(it)).append('\n') }
+            out.append(border).append('\n').append('\n')
+        }
+        out.append("${result.rows.size} ${if (result.rows.size == 1) "row" else "rows"}\n")
+        out.append("ready to start consuming query after ${result.millis} ms, results consumed after another 0 ms\n")
+        counts(result.counts)?.let { out.append(it).append('\n') }
+    }
+
+    /**
+     * [counts] as cypher-shell prints them, as `Created 1 node, deleted 1 node, added 1 label`: each that isn't 0, in the
+     * contract's order, the first word capitalised; null where there are none.
+     */
+    internal fun counts(counts: Map<String, Int>): String? {
+        val words = WORDS.mapNotNull { (name, word) ->
+            counts[name]?.takeIf { it != 0 }?.let { n -> "${word.first} $n ${if (n == 1) word.second else word.third}" }
+        }
+        return if (words.isEmpty()) null else words.joinToString(", ").replaceFirstChar { it.uppercase() }
+    }
+
+    /** Each count's verb and noun, one and many, as cypher-shell words them, in the order it prints them. */
+    private val WORDS = mapOf(
+        "nodesCreated" to Triple("created", "node", "nodes"),
+        "nodesDeleted" to Triple("deleted", "node", "nodes"),
+        "relationshipsCreated" to Triple("created", "relationship", "relationships"),
+        "relationshipsDeleted" to Triple("deleted", "relationship", "relationships"),
+        "propertiesSet" to Triple("set", "property", "properties"),
+        "labelsAdded" to Triple("added", "label", "labels"),
+        "labelsRemoved" to Triple("removed", "label", "labels"),
+        "indexesAdded" to Triple("added", "index", "indexes"),
+        "indexesRemoved" to Triple("removed", "index", "indexes"),
+        "constraintsAdded" to Triple("added", "constraint", "constraints"),
+        "constraintsRemoved" to Triple("removed", "constraint", "constraints"),
+    )
+}
+
+/**
+ * `csv`: each result as RFC 4180 CSV, a header row, then a row each, lines ending in `\n`. A text and a temporal value are
+ * their own characters, null an empty field, and any other value its compact JSON, as `json` writes it. A field is in
+ * `"…"`, its `"` doubled, only where it holds a `,`, a `"` or a line break. One empty line comes between results; a result
+ * with no columns, as a write with no `RETURN`, prints nothing, not even that. One of its own for each run, as the empty
+ * line between results is the run's.
+ */
+class CsvRenderer : Renderer {
+
+    private var printed = false
+
+    override fun render(result: Result, out: Appendable) {
+        if (result.columns.isEmpty()) return
+        if (printed) out.append('\n')
+        printed = true
+        out.append(result.columns.joinToString(",", transform = ::field)).append('\n')
+        result.rows.forEach { row -> out.append(row.joinToString(",") { field(text(it)) }).append('\n') }
+    }
+
+    private fun text(value: Any?): String = when (value) {
+        null -> ""
+        is CharSequence -> value.toString()
+        is TemporalAccessor -> value.toString()
+        else -> StringBuilder().also { JsonRenderer.write(value, it) }.toString()
+    }
+
+    private fun field(text: String): String =
+        if (text.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + text.replace("\"", "\"\"") + "\"" else text
 }

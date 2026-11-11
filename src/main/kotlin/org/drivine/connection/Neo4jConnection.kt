@@ -42,7 +42,8 @@ class Neo4jConnection(
     override fun queryResult(spec: QuerySpecification<*>): QueryResult =
         run(spec, spec.finalizedCopy(QueryLanguage.CYPHER)) { result ->
             // The driver names the columns before the first record, so a result with no rows has them too.
-            QueryResult(result.keys(), result.list().map { record -> record.values().map(Neo4jTypedValues::typed) })
+            val rows = result.list().map { record -> record.values().map(Neo4jTypedValues::typed) }
+            QueryResult(result.keys(), rows, counts(result.consume().counters()))
         }
 
     /** Runs [finalizedSpec], made of [spec], in the transaction where there is one, and gives what [read] reads of its result. */
@@ -64,6 +65,15 @@ class Neo4jConnection(
             throw e
         }
     }
+
+    /** The driver's [counters] that aren't 0, by [QueryResult.COUNTS]' names, in that order. */
+    private fun counts(counters: org.neo4j.driver.summary.SummaryCounters): Map<String, Int> = linkedMapOf(
+        "nodesCreated" to counters.nodesCreated(), "nodesDeleted" to counters.nodesDeleted(),
+        "relationshipsCreated" to counters.relationshipsCreated(), "relationshipsDeleted" to counters.relationshipsDeleted(),
+        "propertiesSet" to counters.propertiesSet(), "labelsAdded" to counters.labelsAdded(), "labelsRemoved" to counters.labelsRemoved(),
+        "indexesAdded" to counters.indexesAdded(), "indexesRemoved" to counters.indexesRemoved(),
+        "constraintsAdded" to counters.constraintsAdded(), "constraintsRemoved" to counters.constraintsRemoved(),
+    ).filterValues { it != 0 }
 
 //    suspend fun <T> openCursor(spec: CursorSpecification<T>): Neo4jCursor<T> {
 //        return Neo4jCursor(sessionId(), spec.finalizedCopy("CYPHER"), this)

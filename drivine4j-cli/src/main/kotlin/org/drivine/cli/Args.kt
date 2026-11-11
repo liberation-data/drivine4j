@@ -23,19 +23,14 @@ object ExitCode {
 class BadInvocation(message: String) : Exception(message)
 
 /**
- * The output formats. The contract has five: `table` and `csv` come later, so [Args] refuses them for now, and [AUTO],
- * which is `table` on a terminal, is [PLAIN] until `table` is here.
+ * The output formats of the contract's "Output". [AUTO] is [TABLE] where stdout is a terminal, and [PLAIN] where it isn't.
  */
 enum class Format(val flag: String) {
     AUTO("auto"),
+    TABLE("table"),
     PLAIN("plain"),
     JSON("json"),
-    ;
-
-    companion object {
-        /** The contract's formats that this build doesn't print yet. */
-        val LATER = setOf("table", "csv")
-    }
+    CSV("csv"),
 }
 
 /**
@@ -242,9 +237,8 @@ object Args {
                 }
                 "--format" -> {
                     val named = value()
-                    if (named in Format.LATER) throw BadInvocation("drivine: --format ${shownValue(named)} comes later; give auto, plain or json")
                     val format = Format.entries.find { it.flag == named }
-                        ?: throw BadInvocation("drivine: --format ${shownValue(named)} isn't a format: give auto, plain or json")
+                        ?: throw BadInvocation("drivine: --format ${shownValue(named)} isn't a format: give auto, table, plain, json or csv")
                     invocation = invocation.copy(format = format)
                 }
                 in LATER -> throw BadInvocation("drivine: $flag comes later, and this build doesn't take it; see --help")
@@ -277,7 +271,8 @@ object Args {
         |  --type TYPE                  The store of a bolt:// address: neo4j (the default) or memgraph.
         |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER.
         |                               The password is DRIVINE_PASSWORD's, never a flag's.
-        |  --format FORMAT              auto (the default), plain or json.
+        |  --format FORMAT              auto (the default: table where stdout is a terminal, plain where it isn't),
+        |                               table, plain, json or csv. table's --sample-rows and --wrap come later.
         |  -v, --version                Prints drivine's version.
         |  -h, --help                   Prints this.
         |

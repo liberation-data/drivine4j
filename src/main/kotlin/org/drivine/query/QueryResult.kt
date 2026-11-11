@@ -16,17 +16,40 @@ package org.drivine.query
  *
  * Not a data class, so a property can be added later without breaking code compiled against it.
  */
-class QueryResult(columns: List<String>, rows: List<List<Any?>>) {
+class QueryResult(columns: List<String>, rows: List<List<Any?>>, counts: Map<String, Int>) {
+
+    /** A result with no [counts], as a store that gives none gives it. */
+    constructor(columns: List<String>, rows: List<List<Any?>>) : this(columns, rows, emptyMap())
 
     val columns: List<String> = columns.toList()
 
     val rows: List<List<Any?>> = rows.map { it.toList() }
 
+    /**
+     * What the statement wrote, as the store counts it, where it does: each count of [COUNTS] that isn't 0, by its name,
+     * in that order. Neo4j and Memgraph give them; FalkorDB and the SQL stores give none yet, and this is empty there.
+     * cypher-shell prints them after a table, as the drivine CLI does.
+     */
+    val counts: Map<String, Int> = LinkedHashMap(counts)
+
+    /**
+     * Whether [other] has the same [columns] and [rows]. Its [counts] don't take part, so the same statement's result is
+     * equal on a store that counts what it wrote and on one that doesn't, as it was before results held counts.
+     */
     override fun equals(other: Any?): Boolean = other is QueryResult && columns == other.columns && rows == other.rows
 
     override fun hashCode(): Int = 31 * columns.hashCode() + rows.hashCode()
 
-    override fun toString(): String = "QueryResult(columns=$columns, rows=$rows)"
+    override fun toString(): String = "QueryResult(columns=$columns, rows=$rows" + (if (counts.isEmpty()) "" else ", counts=$counts") + ")"
+
+    companion object {
+        /** The names of the counts a result may hold, in the order a store's counts are given, as cypher-shell prints them. */
+        @JvmField
+        val COUNTS: List<String> = listOf(
+            "nodesCreated", "nodesDeleted", "relationshipsCreated", "relationshipsDeleted", "propertiesSet",
+            "labelsAdded", "labelsRemoved", "indexesAdded", "indexesRemoved", "constraintsAdded", "constraintsRemoved",
+        )
+    }
 }
 
 /**
