@@ -93,7 +93,7 @@ internal class SchemaLock private constructor(private val connection: Connection
          * The lock of [provider]'s graph, held: on Oracle only, as Postgres serialises its own DDL with a lock of the
          * graph's and SQLite has one writer. Null on another store, where the graph has no lock table, and where the lock
          * isn't had within [WAIT_SECONDS], or the connection is a transaction's Drivine didn't begin: then the DDL runs unlocked.
-         * So it does where the pool can't spare the lock a connection: a pool of one, whose one connection the DDL needs, and
+         * So it does where the pool can't spare the lock a connection: a HikariCP pool of one, whose one connection the DDL needs, and
          * one that gave none within its timeout. Each of these but the joined connection and the missing table warns,
          * once for each graph in a process.
          */

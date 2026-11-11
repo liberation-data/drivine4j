@@ -24,7 +24,8 @@ class SchemaExecutor internal constructor(
 
     /**
      * The lock that serialises the schema DDL of this graph's managers, held until it's closed: on Oracle, where the graph
-     * has its lock table; null elsewhere, and where it isn't had within its wait, when the DDL runs unlocked. See [SchemaLock].
+     * has its lock table; null elsewhere, and where it isn't had within its wait or the pool can't spare it a connection, when the DDL runs
+     * unlocked. See [SchemaLock].
      */
     internal fun schemaLock(): SchemaLock? = SchemaLock.take(connectionProvider)
 
