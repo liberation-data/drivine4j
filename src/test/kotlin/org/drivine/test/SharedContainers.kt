@@ -11,8 +11,9 @@ import org.testcontainers.utility.DockerImageName
 import java.time.Duration
 
 /**
- * A container of [image] started for [SharedFalkorDb] or [SharedMemgraph], with the longer wait and
- * the second attempt a start on a busy machine needs: one that fails takes every class with it.
+ * A container of [image] started for [SharedFalkorDb] or [SharedMemgraph], or for a class that needs one of its own,
+ * with the longer wait and the second attempt a start on a busy machine needs: one that fails takes every class with it.
+ * It isn't stopped: Testcontainers' Ryuk removes it when the JVM ends.
  */
 internal fun sharedContainer(image: String, port: Int): GenericContainer<*> =
     GenericContainer(DockerImageName.parse(image))

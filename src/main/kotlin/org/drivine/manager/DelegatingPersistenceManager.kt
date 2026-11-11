@@ -68,6 +68,10 @@ class DelegatingPersistenceManager(
         return persistenceManager().query(spec)
     }
 
+    override fun queryResult(spec: QuerySpecification<*>): org.drivine.query.QueryResult {
+        return persistenceManager().queryResult(spec)
+    }
+
     override fun execute(spec: QuerySpecification<*>) {
         return persistenceManager().execute(spec)
     }

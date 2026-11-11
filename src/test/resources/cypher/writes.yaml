@@ -83,6 +83,10 @@ cases:
       - cypher: "MERGE (t:CyWrite {id: $task.id}) SET t += $task RETURN properties(t)"
         parameters: {task: {id: "t1", title: "Written", done: true}}
         rows: [{id: "t1", title: "Written", tags: ["a"], done: true}]
+      # Read on its own, the node the MERGE updated in place: Oracle keeps it as OSON version 2, which a thin driver reads
+      # only where the host asks for oracleReencodeJson (#165).
+      - cypher: "MATCH (t:CyWrite) RETURN properties(t)"
+        rows: [{id: "t1", title: "Written", tags: ["a"], done: true}]
       - cypher: "MATCH (t:CyWrite) RETURN count(t)"
         rows: [1]
 

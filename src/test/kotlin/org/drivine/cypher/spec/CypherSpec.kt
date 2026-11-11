@@ -43,6 +43,8 @@ data class CypherSpec(
         val unorderedLists: Boolean = false,
         /** Each map in the rows has its keys in the order expected. */
         val keyOrder: Boolean = false,
+        /** In `results.yaml`, the result's column names, which its runner checks. */
+        val columns: List<String>? = null,
     ) {
         fun runsOn(store: String): Boolean {
             fun named(names: List<String>) = names.any { it == store || GROUPS[it]?.contains(store) == true }
@@ -181,7 +183,14 @@ data class CypherSpec(
             val entries = value.mapValues { (_, item) -> canonical(item, step) }
             if (step.keyOrder) entries.toList() else entries
         }
-        is List<*> -> value.map { canonical(it, step) }.let { items -> if (sorted) items.sortedBy { it.toString() } else items }
+        is List<*> -> value.map { canonical(it, step) }.let { items -> if (sorted) items.sortedBy(::sortKey) else items }
         else -> value
+    }
+
+    /** [value]'s text with each map's keys in order, so items that are equal maps sort the same whatever order their keys are in. */
+    private fun sortKey(value: Any?): String = when (value) {
+        is Map<*, *> -> value.entries.map { (key, item) -> "$key=${sortKey(item)}" }.sorted().joinToString(prefix = "{", postfix = "}")
+        is List<*> -> value.joinToString(prefix = "[", postfix = "]", transform = ::sortKey)
+        else -> value.toString()
     }
 }

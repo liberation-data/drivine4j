@@ -15,16 +15,19 @@ import org.drivine.cypher.sql.SqliteCypherCompiler
  * It is the boundary between the two. The parameters are written as drivine4j's mapper writes them ([JacksonEncoder]), and
  * the compiler's refusal, a [CompilerException], comes out as the [DrivineException] drivine4j has always thrown for it: the
  * same message, causes and stack trace, so a caller that catches DrivineException catches it as before.
+ *
+ * With `typed`, a statement is compiled for [org.drivine.query.QueryResult]: its nodes and relationships tagged with their
+ * labels and type (see [org.drivine.cypher.sql.ColumnKind]), which [org.drivine.mapper.JdbcTypedValues] reads.
  */
 internal object CypherCompile {
 
-    fun postgres(graph: String, cypher: String, parameters: Map<String, Any?>): CompiledCypher = refusing {
-        PostgresCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters))
+    fun postgres(graph: String, cypher: String, parameters: Map<String, Any?>, typed: Boolean = false): CompiledCypher = refusing {
+        PostgresCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters), typed)
     }
 
     /** Its text values are JSON: see JdbcResultMapper.sqliteRows. */
-    fun sqlite(graph: String, cypher: String, parameters: Map<String, Any?>): CompiledCypher = refusing {
-        SqliteCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters)).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
+    fun sqlite(graph: String, cypher: String, parameters: Map<String, Any?>, typed: Boolean = false): CompiledCypher = refusing {
+        SqliteCypherCompiler(graph, JacksonEncoder).compile(cypher, drained(parameters), typed).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
     }
 
     /**
@@ -38,14 +41,15 @@ internal object CypherCompile {
         parameters: Map<String, Any?>,
         nullsEqualStored: () -> Boolean,
         eraStored: () -> Boolean,
+        typed: Boolean = false,
     ): CompiledCypher = refusing {
         val values = drained(parameters)
         val compiler = OracleCypherCompiler(graph, nullsEqualStored = true, eraStored = true, indexedProperties = emptySet(), encoder = JacksonEncoder)
-        val compiled = compiler.compile(cypher, values)
+        val compiled = compiler.compile(cypher, values, typed)
         // Each is asked of apart: a store an earlier version made may have the one and not the others.
         val nullsEqual = !compiler.callsStoredNullsEqual || nullsEqualStored()
         val era = !compiler.callsStoredEra || eraStored()
-        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, values)
+        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, values, typed)
     }
 
     /**

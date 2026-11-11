@@ -3,6 +3,7 @@ package org.drivine.test
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.CypherStatement
 import org.drivine.query.QueryLanguage
+import org.drivine.query.QueryResult
 import org.drivine.query.QuerySpecification
 import java.util.Optional
 
@@ -32,6 +33,8 @@ object SqlCypherFixtures {
         override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> = pm.queryBatch(specs.map(::cypherOf))
 
         override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = pm.query(asCypher(spec))
+
+        override fun queryResult(spec: QuerySpecification<*>): QueryResult = pm.queryResult(cypherOf(spec))
 
         override fun <T : Any> getOne(spec: QuerySpecification<T>): T = pm.getOne(asCypher(spec))
 

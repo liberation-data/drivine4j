@@ -12,6 +12,7 @@ These files say what a statement in Drivine's flavour of Cypher gives on each st
 - `plans.yaml`: the schema plan: what a schema manager runs on each store, round by round, for an enforce, a recreate, an ensure or a remove, what the store answers, and what the manager reports, its log lines among it. Read with no store. See [The schema plan](#the-schema-plan).
 - `host.yaml`: what each library's own code does with the values compiled SQL hands it: the functions it registers on SQLite, and how it reads a column of a statement's rows. Read with no store. See [Host functions and readers](#host-functions-and-readers).
 - `search.yaml`: full-text search: the nodes a search finds on each store, over the graph the file's `graph` writes, and how closely each other store ranks a corpus, `search/docs-corpus.json`, as Neo4j's full-text index ranks it. See [Full-text search](#full-text-search).
+- `results.yaml`: a statement's columns, and its values with their kinds kept, a node with its labels and a relationship with its type, as each library's call that gives them reads them (drivine4j#741), over the graph the file's `graph` writes. See [Columns and typed values](#columns-and-typed-values).
 - `cli/`: the `drivine` CLI's contract, which runs Cypher on every store and prints its results as cypher-shell does, and `cli.yaml`, the cases each build of it runs. See `cli/README.md`.
 - `model/`: the model file each library writes of an application's fragments, views and how they are stored, which Drivine Studio reads. See `model/README.md`.
 
@@ -55,6 +56,19 @@ On Neo4j a statement runs in the database's default language, Cypher 25 on Neo4j
 - Any other map is the map it is, even one keyed with `$`, such as `{$numberDouble: "1"}`.
 - Quote every string. A YAML 1.1 parser, such as SnakeYAML or PyYAML, reads a bare `y`, `yes`, `no` or `on` as a boolean.
 - `writes.yaml` binds and expects a whole number beyond 2^53. A library whose language reads YAML numbers as doubles skips those steps, named in its own runner. Otherwise a library skips nothing: a store that differs says so with `except` here.
+
+## Columns and typed values
+
+`results.yaml` is run through each library's call that gives a result's columns and its values with their kinds kept, not through `PersistenceManager.query`. A library that has no such call yet doesn't run it. Its cases are as `queries.yaml`'s, and each step has `columns` too: the result's column names, in order, as a graph engine names them, given for a result with no rows too, and empty for a statement that returns nothing. A row of one column is still its value, and a row of several a list of them.
+
+In its rows:
+
+- `{$t: "node", labels: […], properties: {…}}` is a node, with its labels in any order;
+- `{$t: "relationship", type: "…", properties: {…}}` is a relationship;
+- `{$t: "path", nodes: […], relationships: […]}` is a path, its nodes and relationships in the order it walks them;
+- `{$map: {…}}` is the map it holds, for a map with a `$t` key of its own.
+
+On a SQL store, the compiler gives the columns, and compiled typed (`typed`) it tags each node and relationship as above in the columns that hold them: see the compiler's README. It is opt-in, and untyped every statement compiles as before.
 
 ## Schema commands
 

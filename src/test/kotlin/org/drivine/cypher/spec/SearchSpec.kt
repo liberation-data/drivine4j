@@ -6,7 +6,6 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.junit.jupiter.api.DynamicTest
-import org.testcontainers.DockerClientFactory
 import kotlin.test.assertEquals
 import kotlin.test.fail
 
@@ -58,7 +57,7 @@ data class SearchSpec(
         fun runsOn(store: String) = (only == null || named(only, store)) && !named(except, store)
     }
 
-    /** Neo4j's own ranking of a corpus, and the bars each other store's must reach. */
+    /** Neo4j's own ranking of a corpus, and the bar each store's must reach, Neo4j's own included. */
     data class Ranking(
         /** The corpus, beside search.yaml: a node each, `{id, title, body}`. */
         val corpus: String,
@@ -100,7 +99,7 @@ data class SearchSpec(
 
         data class Query(val query: String, val neo4j: List<String>)
 
-        /** The bar [store] is held to, if one is: `neo4j` too, where the file gives it one. */
+        /** The bar [store] is held to, if one is: the file gives every store one, `neo4j` too, against its own recording. */
         fun bar(store: String): Bar? = bars.singleOrNull { bar -> named(bar.stores, store) }
 
         /** How closely [ranked], each query's best [top] hits on a store, agrees with Neo4j's. */
@@ -222,11 +221,6 @@ data class SearchSpec(
         private const val GRAPH_ENGINES = "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"
         private const val FALKORDB = "liberation-data/drivine4j#666"
         private const val MEMGRAPH = "liberation-data/drivine4j#762"
-        /**
-         * Where Docker runs arm64 builds of the stores' images: the Docker host's architecture, which Docker pulls for, asked of
-         * Docker rather than read from the JVM's `os.arch`, which differs under Rosetta or with a remote `DOCKER_HOST`.
-         */
-        private val ARM64 = Where("on arm64") { DockerClientFactory.instance().info.architecture in setOf("aarch64", "arm64") }
         private const val ORACLE_TEXT = "liberation-data/drivine4j#763"
 
         /**
@@ -258,10 +252,10 @@ data class SearchSpec(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 4)),
                 Hold("liberation-data/drivine4j#761", listOf("sql"), listOf(2, 3, 4)),
             ),
-            // Seen on the arm64 test box: there drivine4j's search finds a word in the first property of the index alone,
-            // while CI's amd64 runs find it in every property, as Neo4j does. Memgraph 3.14.0's arm64 build asked directly
-            // searches every property, so the cause is under investigation (#762). Held where Docker's host is arm64 meanwhile.
-            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3), ARM64), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
+            // Memgraph 3.14.0 indexes only the first property of a text index over several when another text index was made
+            // before it, as search.yaml's Doc index is (memgraph/memgraph#5353, #762). On a container of its own, as
+            // MemgraphSearchSpecTest runs, that's every run, on arm64 and amd64 alike.
+            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3)), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
             "Escapes" to listOf(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 5, 6)),
                 Hold("liberation-data/drivine4j#765", listOf("sql", "memgraph"), listOf(6)),
