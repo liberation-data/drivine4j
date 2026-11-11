@@ -3,6 +3,7 @@ package org.drivine.schema
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnection
 import org.drivine.cypher.store.ddl.OracleDdl
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
@@ -88,12 +89,18 @@ internal class SchemaLock private constructor(private val connection: Connection
         /**
          * The lock of [provider]'s graph, held: on Oracle only, as Postgres serialises its own DDL with a lock of the
          * graph's and SQLite has one writer. Null on another store, where the graph has no lock table, and where the lock
-         * isn't had within [WAIT_SECONDS]: then the DDL runs unlocked.
+         * isn't had within [WAIT_SECONDS], or the connection is a transaction's Drivine didn't begin: then the DDL runs unlocked.
          */
         fun take(provider: ConnectionProvider): SchemaLock? {
             if (provider.type != DatabaseType.ORACLE) return null
             val graph = provider.graphName ?: return null
             val connection = provider.connect()
+            // A Spring or JTA transaction's connection (#724): the row would be that transaction's, which the DDL on its
+            // session commits, and the lock's rollback would mark it to roll back at its end. Its DDL runs unlocked.
+            if ((connection as? JdbcConnection)?.joined == true) {
+                connection.release()
+                return null
+            }
             val started = System.nanoTime()
             try {
                 connection.startTransaction()

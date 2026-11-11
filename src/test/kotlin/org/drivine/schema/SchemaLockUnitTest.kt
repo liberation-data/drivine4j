@@ -91,6 +91,28 @@ class SchemaLockUnitTest {
     }
 
     @Test
+    fun `a connection that joins a transaction Drivine didn't begin takes no lock, so its end marks nothing of the application's to roll back`() {
+        // A Spring or JTA transaction's connection: a lock taken on it is the application's transaction's, which the DDL
+        // on its session commits, and the lock's rollback would mark it to roll back at its end (#724).
+        val jdbc = org.mockito.Mockito.mock(java.sql.Connection::class.java)
+        val joined = org.drivine.connection.JdbcConnection(jdbc, org.drivine.mapper.JdbcResultMapper()).also { it.joined = true }
+        val provider = object : ConnectionProvider {
+            override val name = "joined"
+            override val type = DatabaseType.ORACLE
+            override val graphName = "joined"
+            override val subtypeRegistry: SubtypeRegistry? = null
+            override fun connect(): Connection = joined
+            override fun end() {}
+        }
+
+        val warned = warnings { assertNull(SchemaLock.take(provider)) }
+
+        assertEquals(emptyList(), warned, "nothing is marked, nor warned of")
+        org.mockito.Mockito.verify(jdbc, org.mockito.Mockito.never()).prepareStatement(org.mockito.ArgumentMatchers.anyString())
+        org.mockito.Mockito.verify(jdbc).close()
+    }
+
+    @Test
     fun `a graph with no lock table runs its DDL unlocked, without a warning`() {
         val provider = FakeProvider("no_table", fails = DrivineException("wrapped", SQLException("ORA-00942: table or view does not exist", "42000", 942)))
 
