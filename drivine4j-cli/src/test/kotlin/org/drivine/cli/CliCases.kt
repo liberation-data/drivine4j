@@ -172,7 +172,7 @@ class CliCases(
         }
         return texts.flatMap { text -> Statements(StringReader(text)).asSequence().filterIsInstance<Input.Command>().toList() }
             .map { it.name }
-            .filter { it in Cli.LATER_COMMANDS }
+            .filter { it in Session.LATER }
     }
 
     /** An octal mode, as `644`, as the POSIX permissions it gives, as `rw-r--r--`. */

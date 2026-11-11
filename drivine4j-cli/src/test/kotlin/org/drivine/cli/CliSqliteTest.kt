@@ -111,9 +111,9 @@ class CliSqliteTest {
         }
         assertEquals(CliRun(0, "n\n1\nm\n2\n", ""), runCli(memory + listOf("--format", "plain"), stdin = "RETURN 1 AS n;\nRETURN 2 AS m"))
         // A command this build doesn't run yet fails as a statement does.
-        val later = runCli(memory + listOf("--format", "json"), stdin = ":begin\nRETURN 1 AS n;")
+        val later = runCli(memory + listOf("--format", "json"), stdin = ":use other\nRETURN 1 AS n;")
         assertEquals(1, later.exit)
-        assertTrue(":begin comes later" in later.stderr, later.stderr)
+        assertTrue(":use comes later" in later.stderr, later.stderr)
     }
 
     @Test
@@ -131,7 +131,7 @@ class CliSqliteTest {
     fun `an unknown command fails as cypher-shell says, and one of the contract's that comes later says so`() {
         val nope = runCli(memory + listOf("--format", "plain"), stdin = ":nope\nRETURN 1 AS a;\n")
         assertEquals(CliRun(1, "", "Could not find command :nope, use :help to see available commands\n"), nope)
-        assertTrue(":source comes later" in runCli(memory, stdin = ":source x.cypher\n").stderr)
+        assertTrue(":use comes later" in runCli(memory, stdin = ":use x\n").stderr)
     }
 
     @Test
@@ -218,6 +218,51 @@ class CliSqliteTest {
         assertEquals("drivine: can't read the statements: Input/output error\n", err.toString())
         val missing = runCli(memory + listOf("-f", "nope.cypher"), dir = dir.toFile())
         assertEquals(CliRun(2, "", "drivine: can't read -f nope.cypher: no such file, or not one this user can read\n"), missing)
+    }
+
+    @Test
+    fun `under --continue a failure inside a transaction rolls it back, the statements after it run on their own, and commit then fails`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Gone);\nRETURN 1/0;\nCREATE (:Kept);\n:commit\nMATCH (n) RETURN labels(n)[0] AS l;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("l\n\"Kept\"\n", run.stdout)
+            assertTrue("no transaction is open" in run.stderr, run.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a second begin fails, exit inside a transaction rolls it back, and a source file runs in the transaction open`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val twice = runCli(db, stdin = ":begin\n:begin\n")
+            assertEquals(1, twice.exit)
+            assertTrue("open already" in twice.stderr, twice.stderr)
+            assertEquals(0, runCli(db, stdin = ":begin\nCREATE (:Gone);\n:exit\n:commit\n").exit)
+            java.io.File(dir, "s.cypher").writeText("CREATE (:Sourced);\n:rollback\n")
+            assertEquals(CliRun(0, "c\n0\n", ""), runCli(db, stdin = ":begin\n:source s.cypher\nMATCH (n) RETURN count(n) AS c;\n", dir = dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `params prints none as an empty map and a text in single quotes, and a parameter set later replaces one, in its place`() {
+        assertEquals(CliRun(0, "{}\n", ""), runCli(memory, stdin = ":params\n"))
+        assertEquals(
+            CliRun(0, "{\n  a: 'it\\'s',\n  b: [1, 'x'],\n  c: TRUE\n}\n", ""),
+            runCli(memory, stdin = ":param a => 1\n:param b => [1, 'x']\n:param c => true\n:param a => \"it's\"\n:params\n"),
+        )
+        val bad = runCli(memory, stdin = ":param nope\n")
+        assertEquals(1, bad.exit)
+        assertTrue(":param takes" in bad.stderr, bad.stderr)
+        // A parameter's expression may use one set before it.
+        assertEquals(CliRun(0, "b\n3\n", ""), runCli(memory + listOf("--format", "plain", "-P", "a => 1", "-P", "b => \$a + 2", "RETURN \$b AS b")))
+        assertTrue(":help" in runCli(memory, stdin = ":help\n").stdout)
     }
 
     @Test

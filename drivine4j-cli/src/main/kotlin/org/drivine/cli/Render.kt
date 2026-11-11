@@ -149,63 +149,82 @@ object PlainRenderer : Renderer {
      * its `"` escaped, `[1, "b"]`, `{k: 2}`, a node as `(:A:B {k: 2})`, a relationship as `[:R {k: 2}]`, a path as
      * `(:A)-[:R]->(:B)<-[:S]-(:C)`, along or against each relationship's direction, and a temporal value as its ISO 8601
      * text, unquoted. A node or a relationship with no properties prints none: `(:A)`, `[:R]`, and a node with no labels
-     * prints its properties alone: `({k: 2})`.
+     * prints its properties alone: `({k: 2})`. [quote] is a text's quote, `"` but where `:params` gives `'`: each it
+     * holds is escaped.
      */
-    fun write(value: Any?, out: Appendable) {
+    fun write(value: Any?, out: Appendable, quote: Char = '"') {
         when (value) {
             null -> out.append("NULL")
             is Boolean -> out.append(if (value) "TRUE" else "FALSE")
-            is CharSequence -> out.append('"').append(value.toString().replace("\"", "\\\"")).append('"')
+            is CharSequence -> out.append(quote).append(value.toString().replace(quote.toString(), "\\$quote")).append(quote)
             is GraphNode -> {
                 out.append('(')
                 value.labels.forEach { out.append(':').append(it) }
                 // As cypher-shell joins a node's labels and properties: a space between them only where it has both.
-                if (value.labels.isNotEmpty()) properties(value.properties, out) else if (value.properties.isNotEmpty()) map(value.properties, out)
+                if (value.labels.isNotEmpty()) properties(value.properties, out, quote) else if (value.properties.isNotEmpty()) map(value.properties, out, quote)
                 out.append(')')
             }
             is GraphRelationship -> {
                 out.append("[:").append(value.type)
-                properties(value.properties, out)
+                properties(value.properties, out, quote)
                 out.append(']')
             }
             is GraphPath -> {
-                write(value.nodes.first(), out)
+                write(value.nodes.first(), out, quote)
                 value.relationships.forEachIndexed { i, relationship ->
                     out.append(if (value.forward[i]) "-" else "<-")
-                    write(relationship, out)
+                    write(relationship, out, quote)
                     out.append(if (value.forward[i]) "->" else "-")
-                    write(value.nodes[i + 1], out)
+                    write(value.nodes[i + 1], out, quote)
                 }
             }
-            is Map<*, *> -> map(value, out)
+            is Map<*, *> -> map(value, out, quote)
             is Iterable<*> -> {
                 out.append('[')
                 value.forEachIndexed { i, item ->
                     if (i > 0) out.append(", ")
-                    write(item, out)
+                    write(item, out, quote)
                 }
                 out.append(']')
             }
-            is Array<*> -> write(value.asList(), out)
+            is Array<*> -> write(value.asList(), out, quote)
             // Double, Float, the whole numbers and a temporal value print as their toString does.
             else -> out.append(value.toString())
         }
     }
 
-    private fun map(value: Map<*, *>, out: Appendable) {
+    private fun map(value: Map<*, *>, out: Appendable, quote: Char) {
         out.append('{')
         value.entries.forEachIndexed { i, (key, item) ->
             if (i > 0) out.append(", ")
             out.append(key.toString()).append(": ")
-            write(item, out)
+            write(item, out, quote)
         }
         out.append('}')
     }
 
     /** A node's or a relationship's [properties], after a space, as a map prints; nothing where it has none. */
-    private fun properties(properties: Map<String, Any?>, out: Appendable) {
+    private fun properties(properties: Map<String, Any?>, out: Appendable, quote: Char) {
         if (properties.isEmpty()) return
         out.append(' ')
-        map(properties, out)
+        map(properties, out, quote)
+    }
+
+    /**
+     * The parameters as `:params` prints them: `{`, then each `name: value` on a line of its own, indented two spaces,
+     * with `,` after each but the last, then `}`; a text in `'…'`. With none, `{}`.
+     */
+    fun parameters(parameters: Map<String, Any?>, out: Appendable) {
+        if (parameters.isEmpty()) {
+            out.append("{}\n")
+            return
+        }
+        out.append("{\n")
+        parameters.entries.forEachIndexed { i, (name, value) ->
+            out.append("  ").append(name).append(": ")
+            write(value, out, '\'')
+            out.append(if (i < parameters.size - 1) ",\n" else "\n")
+        }
+        out.append("}\n")
     }
 }

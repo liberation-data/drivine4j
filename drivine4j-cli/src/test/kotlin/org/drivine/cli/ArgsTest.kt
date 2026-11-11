@@ -68,7 +68,7 @@ class ArgsTest {
     @Test
     fun `an unknown flag, or one of the contract's that comes later, is named`() {
         assertTrue("--change-password" in refused("--change-password"))
-        assertTrue("-P" in refused("-P", "x => 1"))
+        assertTrue("--explain" in refused("--explain"))
         assertTrue("comes later" in refused("--profile", "p"))
     }
 
