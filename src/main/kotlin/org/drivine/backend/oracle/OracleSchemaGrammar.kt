@@ -6,6 +6,7 @@ import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.backend.sql.SqlGraph
 import org.drivine.cypher.store.ddl.OracleDdl
 import org.drivine.cypher.store.ddl.OracleSideTable
+import org.drivine.cypher.store.schema.OracleSchema
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
@@ -14,7 +15,6 @@ import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.SchemaStatement
-import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.VersionMarkerStatements
 import org.drivine.schema.catalogItem
@@ -52,6 +52,9 @@ import java.sql.SQLException
  * telling a violation from another failure, and sampling the keys a constraint would refuse.
  */
 internal class OracleSchemaGrammar(internal val graph: OracleGraph) : SchemaGrammar, SchemaAliases {
+
+    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives. */
+    private val schema = OracleSchema(graph.store)
 
     override val engine = OracleDdl.ENGINE
     override val supportsIfNotExists = true
@@ -116,20 +119,11 @@ internal class OracleSchemaGrammar(internal val graph: OracleGraph) : SchemaGram
 
     override fun listConstraintsQuery(): String = graph.store.listConstraintsQuery()
 
-    override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
-        val map = row as? Map<*, *> ?: return@mapNotNull null
-        val details = map["details"] as? Map<*, *>
-        SchemaItemInfo(
-            kind = SchemaItemKind.valueOf(map["kind"] as String),
-            label = map["label"] as String,
-            properties = (map["properties"] as List<*>).map { it.toString() },
-            name = map["name"] as? String,
-            dimensions = (details?.get("dimensions") as? Number)?.toInt(),
-            similarity = (details?.get("similarity") as? String)?.let(SimilarityFunction::valueOf),
-            analyzer = details?.get("analyzer") as? String,
-            status = map["status"] as? String,
-        )
-    }
+    /**
+     * The records among [rows], read by the module's [OracleSchema]: the rows its listings give after the records, one for each
+     * object under a name Drivine gives (an `object` row), are what the planner reads an item's form from, and no item.
+     */
+    override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = schema.parseIndexRows(rows)
 
     override fun parseConstraintRows(rows: List<Any?>): List<SchemaItemInfo> = parseIndexRows(rows)
 
