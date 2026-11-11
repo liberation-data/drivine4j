@@ -192,7 +192,7 @@ class JdbcConnection(
             }
         } catch (e: java.sql.SQLException) {
             savepoint?.let(connection::rollback)
-            org.drivine.query.QueryPlan.none("the database doesn't plan what it compiles to: ${e.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()}")
+            org.drivine.query.QueryPlan.none("the database doesn't plan what it compiles to: ${e.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim() ?: e.javaClass.simpleName}")
         } finally {
             savepoint?.let { runCatching { connection.releaseSavepoint(it) } }
         }
@@ -209,7 +209,12 @@ class JdbcConnection(
             }
         }
     } finally {
-        connection.prepareStatement("DELETE FROM plan_table WHERE statement_id = ?").use { it.setString(1, statementId); it.executeUpdate() }
+        // A plan read is still the plan: rows left behind, in the session's own PLAN_TABLE, cost nothing more.
+        try {
+            connection.prepareStatement("DELETE FROM plan_table WHERE statement_id = ?").use { it.setString(1, statementId); it.executeUpdate() }
+        } catch (e: java.sql.SQLException) {
+            logger.debug("Couldn't delete the rows of plan {} from PLAN_TABLE: {}", statementId, e.message)
+        }
     }
 
     /** SQLite's `EXPLAIN QUERY PLAN` rows, `id`, `parent`, `notused`, `detail`: each detail indented two spaces for each parent above it. */

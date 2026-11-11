@@ -53,10 +53,9 @@ class Neo4jConnection(
      * lines as they are.
      */
     override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
-        val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
-        val explained = QuerySpecification.withStatement(org.drivine.query.CypherStatement("EXPLAIN ${finalizedSpec.statement!!.text}"))
-            .bind(finalizedSpec.parameters)
-            .finalizedCopy(QueryLanguage.CYPHER)
+        // The spec as [query] would run it, its templates, paging and coercers kept, with EXPLAIN before its statement.
+        val explained = spec.finalizedCopy(QueryLanguage.CYPHER)
+        explained.statement = org.drivine.query.CypherStatement("EXPLAIN ${explained.statement!!.text}")
         return run(spec, explained) { result ->
             val rows = result.list().map { record -> record.values().joinToString(" ") { if (it.isNull) "" else it.asObject().toString() } }
             val summary = result.consume()

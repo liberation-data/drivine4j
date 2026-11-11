@@ -428,6 +428,26 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `an EXPLAIN statement inside a transaction plans in it and leaves it open, and one that fails under --continue doesn't stop the run`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val kept = runCli(db, stdin = ":begin\nCREATE (:Kept);\nEXPLAIN MATCH (n:Kept) RETURN n;\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(0, kept.exit, kept.stderr)
+            assertTrue(Regex("(?m)^-- plan:$").containsMatchIn(kept.stdout), kept.stdout)
+            assertTrue(kept.stdout.endsWith("-- parameters: {}\nc\n1\n"), kept.stdout)
+
+            // A path, which SQLite refuses, fails as the statement would, and --continue runs the next.
+            val went = runCli(db + listOf("--continue"), stdin = "EXPLAIN MATCH p = ()-->() RETURN p;\nRETURN 1 AS a;\n")
+            assertEquals(1, went.exit, went.stderr)
+            assertEquals("a\n1\n", went.stdout)
+            assertTrue(went.stderr.isNotBlank())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `--explain prints the same in every format, explains a source file's statements, and prints nothing for no statement`() {
         val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
         try {

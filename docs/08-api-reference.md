@@ -12,6 +12,7 @@ interface PersistenceManager {
     fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>>      // the same, returning each statement's rows
     fun queryResult(spec: QuerySpecification<*>): QueryResult                 // the columns and rows as they are, nodes with their labels
     fun explain(spec: QuerySpecification<*>): String                          // the SQL a Cypher statement compiles to, nothing run
+    fun plan(spec: QuerySpecification<*>): QueryPlan                          // the store's plan of a statement, nothing run
     val atomicBatches: Boolean                                                // whether a batch of several statements is applied whole
 }
 ```
@@ -21,6 +22,8 @@ interface PersistenceManager {
 `queryResult` gives a statement's result for showing rather than mapping, its columns, its rows and, on Neo4j and Memgraph, its `counts` of what it wrote: see [Results as they are](07-core-features.md#results-as-they-are-queryresult). A `PersistenceManager` or `Connection` you implement refuses it with `UnsupportedOperationException` unless it overrides it.
 
 `explain` gives the SQL a Cypher statement compiles to on Postgres, Oracle or SQLite, with nothing run: what the store would run for it, its parameters bound apart. A graph engine, which runs Cypher itself, refuses it, as a `PersistenceManager` or `Connection` you implement does unless it overrides it. The drivine CLI's `--explain` prints it.
+
+`plan` gives the store's plan of a statement, with nothing run: on Postgres, Oracle and SQLite, the database's plan of the SQL a Cypher statement compiles to (Postgres's `EXPLAIN`, Oracle's `EXPLAIN PLAN` as `DBMS_XPLAN.DISPLAY` gives it, SQLite's `EXPLAIN QUERY PLAN`), and on Neo4j, Memgraph and FalkorDB, the store's plan of the Cypher. A `QueryPlan` holds its `lines` as the store gives them, which change with its version and its data, or, where the store can't plan what the statement compiles to, as Oracle and Postgres can't plan what a write compiles to, no lines and why (`none`). A `PersistenceManager` or `Connection` you implement refuses it unless it overrides it. The drivine CLI's `--explain=plan` prints it.
 
 ### QuerySpecification
 

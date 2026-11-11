@@ -35,6 +35,8 @@ class SqlCypherFixturesTest {
                 "executeBatch" -> (arguments[0] as List<*>).forEach(::record).let { null }
                 "queryBatch" -> (arguments[0] as List<*>).onEach(::record).map { listOf("row") }
                 "queryResult" -> record(arguments[0]).let { QueryResult(listOf("x"), listOf(listOf("row"))) }
+                "explain" -> record(arguments[0]).let { "SELECT 1" }
+                "plan" -> record(arguments[0]).let { org.drivine.query.QueryPlan(listOf("SCAN")) }
                 else -> throw UnsupportedOperationException(method.name)
             }
         } as PersistenceManager
@@ -53,13 +55,15 @@ class SqlCypherFixturesTest {
         fixtures.executeBatch(listOf(statement("RETURN 1")))
         fixtures.queryBatch(listOf(statement("MATCH (h) RETURN h")))
         fixtures.queryResult(statement("MATCH (h:Human) RETURN h"))
+        fixtures.explain(statement("MATCH (h:Human) RETURN h"))
+        fixtures.plan(statement("MATCH (h:Human) RETURN h"))
         // SQL has no `//` comment, so one that opens with it is Cypher, whatever follows.
         fixtures.query(statement("// the names\nWITH ['ada'] AS names UNWIND names AS n RETURN n"))
         // A pattern named as a path opens with its name: no SQL statement opens so.
         fixtures.query(statement("MATCH p = (h:Human)-->() RETURN p"))
         fixtures.execute(statement("CREATE p=(:Human)-[:KNOWS]->(:Human)"))
 
-        assertEquals(List(11) { QueryLanguage.CYPHER }, sent.map { it.first })
+        assertEquals(List(13) { QueryLanguage.CYPHER }, sent.map { it.first })
     }
 
     @Test
