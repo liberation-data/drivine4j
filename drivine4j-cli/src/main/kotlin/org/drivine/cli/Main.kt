@@ -7,6 +7,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.io.PushbackReader
 import java.io.Reader
 import java.io.StringReader
 import java.io.Writer
@@ -84,8 +85,8 @@ class Cli(
     }
 
     /**
-     * Runs [plan]'s statements in order, each in its own transaction, on one connection to its store, and prints each
-     * result as it comes. A statement that fails prints its message on stderr, and the run stops there with
+     * Runs [plan]'s statements in order, given its `-P` parameters, each in its own transaction but between `:begin` and
+     * `:commit`, on one connection to its store, and prints each result as it comes: see [Session]. A statement that fails prints its message on stderr, and the run stops there with
      * [ExitCode.STATEMENT_FAILED], or goes on with `--continue` and ends with it. A store that can't be reached ends the run
      * with [ExitCode.UNREACHABLE] at once, as nothing after could run.
      */
@@ -97,7 +98,10 @@ class Cli(
         }
         return store.use {
             try {
-                reader(plan.source).use { reader -> runAll(plan, store, Statements(reader)) }
+                reader(plan.source).use { reader ->
+                    Session(store, Renderer.of(plan.format), output, dir, plan.continueOnFailure) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
+                        .run(plan.parameters, Statements(reader), (plan.source as? Source.File)?.file)
+                }
             } catch (e: IOException) {
                 // The input couldn't be read to its end, as a file removed under the run or stdin's pipe broken.
                 trace(e)
@@ -106,58 +110,33 @@ class Cli(
         }
     }
 
-    private fun runAll(plan: Plan, store: Store, inputs: Iterator<Input>): Int {
-        val renderer = Renderer.of(plan.format)
-        var failed = false
-        for (input in inputs) {
-            val code = when (input) {
-                is Input.Statement -> statement(plan, store, renderer, input.cypher)
-                is Input.Command -> when (val name = input.name) {
-                    ":exit", ":quit" -> break
-                    in LATER_COMMANDS -> fail(ExitCode.STATEMENT_FAILED, "drivine: $name comes later, and this build doesn't run it")
-                    else -> fail(ExitCode.STATEMENT_FAILED, "Could not find command $name, use :help to see available commands")
-                }
-            }
-            when (code) {
-                ExitCode.OK -> {}
-                ExitCode.STATEMENT_FAILED -> {
-                    failed = true
-                    if (!plan.continueOnFailure) return code
-                }
-                Done -> break
-                else -> return code
-            }
-        }
-        return if (failed) ExitCode.STATEMENT_FAILED else ExitCode.OK
-    }
+    /** [code] as the run's exit code: [DONE], stdout closed by its reader, is [ExitCode.OK]. */
+    private fun exit(code: Int): Int = if (code == DONE) ExitCode.OK else code
 
-    /** Runs one statement and prints what it gives: [ExitCode.OK], or the code it failed with, or [Done] where stdout was closed. */
-    private fun statement(plan: Plan, store: Store, renderer: Renderer, cypher: String): Int {
-        val result = try {
-            store.run(cypher)
-        } catch (e: Unreachable) {
-            return unreachable(plan, e)
-        } catch (e: Exception) {
-            trace(e)
-            // The store's message, or the compiler's refusal: a statement that failed prints nothing to stdout.
-            return fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
+    /** The run's stdout and stderr, as its [Session] writes to them. */
+    private val output = object : Output {
+        override fun print(write: (Appendable) -> Unit): Int = this@Cli.print { write(it) }
+        override fun fail(code: Int, message: String): Int = this@Cli.fail(code, message)
+        override fun warn(message: String) {
+            this@Cli.fail(ExitCode.OK, message)
         }
-        return print { renderer.render(result, it) }
+        override fun trace(e: Throwable) = this@Cli.trace(e)
     }
-
-    /** [code] as the run's exit code: [Done], stdout closed by its reader, is [ExitCode.OK]. */
-    private fun exit(code: Int): Int = if (code == Done) ExitCode.OK else code
 
     private fun unreachable(plan: Plan, e: Unreachable): Int {
         trace(e)
         return fail(ExitCode.UNREACHABLE, "drivine: can't connect to the ${plan.address.store.flag} store: ${e.message}")
     }
 
-    /** The statements' text, read as it comes: the command line's, the file's in UTF-8, or stdin's. */
+    /**
+     * The statements' text, read as it comes: the command line's, the file's in UTF-8, or stdin's. A file's or stdin's
+     * one byte-order mark at its very start isn't part of its text, as the contract's "Files" says: an editor on Windows
+     * may write one, and a command on the first line is still a command.
+     */
     private fun reader(source: Source): Reader = when (source) {
         is Source.Text -> StringReader(source.cypher)
-        is Source.File -> source.file.bufferedReader(Charsets.UTF_8)
-        Source.Stdin -> BufferedReader(stdin())
+        is Source.File -> withoutMark(source.file.bufferedReader(Charsets.UTF_8))
+        Source.Stdin -> withoutMark(BufferedReader(stdin()))
     }
 
     /**
@@ -171,7 +150,7 @@ class Cli(
             out.flush()
             ExitCode.OK
         } catch (e: IOException) {
-            if (closedPipe(e)) Done
+            if (closedPipe(e)) DONE
             else fail(ExitCode.STATEMENT_FAILED, "drivine: can't write the result: ${e.message ?: e.javaClass.name}")
         }
 
@@ -202,12 +181,9 @@ class Cli(
         /**
          * Not an exit code: stdout's reader closed it, so no more is to be run or printed, and the run ends with
          * [ExitCode.OK], or with [ExitCode.STATEMENT_FAILED] where a statement failed before it under `--continue`. Only
-         * [print] and the statement loop see it.
+         * [print] and the [Session] see it.
          */
-        private const val Done = -1
-
-        /** The contract's commands, but `:exit` and `:quit`, which this build doesn't run yet: each fails as a statement does. */
-        internal val LATER_COMMANDS = setOf(":begin", ":commit", ":rollback", ":param", ":params", ":use", ":source", ":help")
+        internal const val DONE = -1
 
         /**
          * Whether [e] is a write to a pipe its reader closed. The JDK's FileOutputStream, and so the native image, which
@@ -216,6 +192,16 @@ class Cli(
          */
         internal fun closedPipe(e: IOException): Boolean =
             e.message.orEmpty().let { it.equals("Broken pipe", ignoreCase = true) || it.equals("Stream closed", ignoreCase = true) }
+
+        /** [reader] past one byte-order mark (U+FEFF) at its very start, where it has one; any other is its text's. */
+        internal fun withoutMark(reader: Reader): Reader {
+            val pushback = PushbackReader(reader, 1)
+            val first = pushback.read()
+            if (first != -1 && first != BYTE_ORDER_MARK) pushback.unread(first)
+            return pushback
+        }
+
+        private const val BYTE_ORDER_MARK = 0xFEFF
 
         /** This build's version, which the build writes into the CLI's resources. */
         val VERSION: String by lazy {

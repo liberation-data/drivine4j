@@ -111,9 +111,9 @@ class CliSqliteTest {
         }
         assertEquals(CliRun(0, "n\n1\nm\n2\n", ""), runCli(memory + listOf("--format", "plain"), stdin = "RETURN 1 AS n;\nRETURN 2 AS m"))
         // A command this build doesn't run yet fails as a statement does.
-        val later = runCli(memory + listOf("--format", "json"), stdin = ":begin\nRETURN 1 AS n;")
+        val later = runCli(memory + listOf("--format", "json"), stdin = ":use other\nRETURN 1 AS n;")
         assertEquals(1, later.exit)
-        assertTrue(":begin comes later" in later.stderr, later.stderr)
+        assertTrue(":use comes later" in later.stderr, later.stderr)
     }
 
     @Test
@@ -131,7 +131,7 @@ class CliSqliteTest {
     fun `an unknown command fails as cypher-shell says, and one of the contract's that comes later says so`() {
         val nope = runCli(memory + listOf("--format", "plain"), stdin = ":nope\nRETURN 1 AS a;\n")
         assertEquals(CliRun(1, "", "Could not find command :nope, use :help to see available commands\n"), nope)
-        assertTrue(":source comes later" in runCli(memory, stdin = ":source x.cypher\n").stderr)
+        assertTrue(":use comes later" in runCli(memory, stdin = ":use x\n").stderr)
     }
 
     @Test
@@ -216,8 +216,159 @@ class CliSqliteTest {
         assertEquals(1, Cli(emptyMap(), out, err, stdin = { broken }).run(memory + listOf("--format", "json")))
         assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.toString())
         assertEquals("drivine: can't read the statements: Input/output error\n", err.toString())
+        // Inside a transaction too, under --continue: the input can't be read on, so the run ends, rolled back, as it would outside one.
+        val inTransaction = object : java.io.Reader() {
+            val text = ":begin\nRETURN 1 AS a;\n"
+            var at = 0
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int {
+                if (at >= text.length) throw java.io.IOException("Input/output error")
+                cbuf[off] = text[at++]
+                return 1
+            }
+            override fun close() {}
+        }
+        val err2 = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), java.io.StringWriter(), err2, stdin = { inTransaction }).run(memory + listOf("--format", "json", "--continue")))
+        assertEquals("drivine: can't read the statements: Input/output error\n", err2.toString())
         val missing = runCli(memory + listOf("-f", "nope.cypher"), dir = dir.toFile())
         assertEquals(CliRun(2, "", "drivine: can't read -f nope.cypher: no such file, or not one this user can read\n"), missing)
+    }
+
+    @Test
+    fun `under --continue a failure inside a transaction rolls it back, the statements after it run on their own, and commit then fails`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Gone);\nRETURN 1/0;\nCREATE (:Kept);\n:commit\nMATCH (n) RETURN labels(n)[0] AS l;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("l\n\"Kept\"\n", run.stdout)
+            assertTrue("no transaction is open" in run.stderr, run.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `under --continue a command that fails inside a transaction leaves it open, so commit keeps what it wrote`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:nope\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("c\n1\n", run.stdout)
+            assertTrue("Could not find command :nope" in run.stderr, run.stderr)
+            assertTrue("no transaction is open" !in run.stderr, run.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `under --continue a param of none of the forms inside a transaction leaves it open, as it reaches no store`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:param nope\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("c\n1\n", run.stdout)
+            assertTrue(":param takes" in run.stderr, run.stderr)
+            assertTrue("no transaction is open" !in run.stderr, run.stderr)
+            // Nor does a map form whose value the store gives, but isn't a map: the store evaluated it, and is as it was.
+            val notMap = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:param {a: 1}['a']\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals("c\n2\n", notMap.stdout, notMap.stderr)
+            assertTrue("a parameter map is a map" in notMap.stderr, notMap.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a store that can't be reached as a transaction begins, or as a -P is evaluated, exits with 3`() {
+        // Port 1 on this machine refuses the connection, so no store is needed, and none is started.
+        val begin = runCli(listOf("-a", "bolt://localhost:1", "--continue"), mapOf("DRIVINE_USER" to "u", "DRIVINE_PASSWORD" to "p"), stdin = ":begin\nRETURN 1 AS a;\n")
+        assertEquals(3, begin.exit, begin.stderr)
+        assertEquals("", begin.stdout)
+        assertTrue("can't connect" in begin.stderr, begin.stderr)
+        val parameter = runCli(listOf("-a", "bolt://localhost:1", "-P", "a => 1", "RETURN 1"), mapOf("DRIVINE_USER" to "u", "DRIVINE_PASSWORD" to "p"))
+        assertEquals(3, parameter.exit, parameter.stderr)
+        assertTrue("can't connect" in parameter.stderr, parameter.stderr)
+    }
+
+    @Test
+    fun `a second begin fails, exit inside a transaction rolls it back, and a source file runs in the transaction open`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val twice = runCli(db, stdin = ":begin\n:begin\n")
+            assertEquals(1, twice.exit)
+            assertTrue("open already" in twice.stderr, twice.stderr)
+            assertEquals(0, runCli(db, stdin = ":begin\nCREATE (:Gone);\n:exit\n:commit\n").exit)
+            java.io.File(dir, "s.cypher").writeText("CREATE (:Sourced);\n:rollback\n")
+            assertEquals(CliRun(0, "c\n0\n", ""), runCli(db, stdin = ":begin\n:source s.cypher\nMATCH (n) RETURN count(n) AS c;\n", dir = dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a source file's inputs run in place, so its begin and commit are the run's, and one that sources itself fails`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            // The statement after the file's :commit runs too, outside the transaction.
+            java.io.File(dir, "commit.cypher").writeText("CREATE (:A);\n:commit\nCREATE (:B);\n")
+            assertEquals(CliRun(0, "c\n2\n", ""), runCli(db, stdin = ":begin\n:source commit.cypher\nMATCH (n) RETURN count(n) AS c;\n", dir = dir))
+            // A transaction the file opens stays open after it, for the input that named it to commit.
+            java.io.File(dir, "begin.cypher").writeText(":begin\nCREATE (:C);\n")
+            assertEquals(CliRun(0, "c\n1\n", ""), runCli(db, stdin = ":source begin.cypher\n:commit\nMATCH (n:C) RETURN count(n) AS c;\n", dir = dir))
+            // One byte-order mark at the start of a :source file isn't part of its text, as the contract's "Files" says.
+            java.io.File(dir, "mark.cypher").writeText("\uFEFF:param x => 1\nRETURN \$x AS x;\n")
+            assertEquals(CliRun(0, "x\n1\n", ""), runCli(db, stdin = ":source mark.cypher\n", dir = dir))
+            java.io.File(dir, "self.cypher").writeText("RETURN 1 AS one;\n:source ./self.cypher\n")
+            val self = runCli(db + listOf("--continue"), stdin = ":source self.cypher\nRETURN 2 AS two;\n", dir = dir)
+            assertEquals(CliRun(1, "one\n1\ntwo\n2\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), self)
+            // The -f file is being read too, so one that sources itself fails as well.
+            val selfFile = runCli(db + listOf("-f", "self.cypher"), dir = dir)
+            assertEquals(CliRun(1, "one\n1\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), selfFile)
+            assertEquals(CliRun(1, "", "drivine: :source takes a file\n"), runCli(db, stdin = ":source\n", dir = dir))
+            // A run that ends inside a source file, by its :exit or its failure, ends the input that named it too.
+            java.io.File(dir, "exit.cypher").writeText("RETURN 1 AS a;\n:exit\nRETURN 2 AS b;\n")
+            assertEquals(CliRun(0, "a\n1\n", ""), runCli(db, stdin = ":source exit.cypher\nRETURN 3 AS c;\n", dir = dir))
+            java.io.File(dir, "fail.cypher").writeText("RETURN 1 AS a;\nRETURN 1/0;\nRETURN 2 AS b;\n")
+            val fail = runCli(db, stdin = ":source fail.cypher\nRETURN 3 AS c;\n", dir = dir)
+            assertEquals(1, fail.exit)
+            assertEquals("a\n1\n", fail.stdout)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `every statement is given the parameters, one that doesn't use them too, and a -P that fails runs nothing, under --continue too`() {
+        assertEquals(CliRun(0, "b\n2\n", ""), runCli(memory + listOf("--format", "plain", "-P", "a => 1", "RETURN 2 AS b")))
+        val failed = runCli(memory + listOf("--format", "plain", "--continue", "-P", "a => 1/0", "-P", "b => 2", "RETURN 3 AS c"))
+        assertEquals(1, failed.exit)
+        assertEquals("", failed.stdout)
+        val notMap = runCli(memory, stdin = ":param {a: 1}\n:param [1]\n")
+        assertEquals(CliRun(1, "", "drivine: :param takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}\n"), notMap)
+        assertEquals(CliRun(1, "", "drivine: a parameter map is a map, as in {limit: 10}\n"), runCli(memory, stdin = ":param {a: 1}\n:param {a: 1}['a']\n"))
+        assertEquals(CliRun(1, "", "drivine: :params takes nothing, or clear\n"), runCli(memory, stdin = ":params all\n"))
+        assertEquals(CliRun(1, "", "drivine: no transaction is open: :begin opens one\n"), runCli(memory, stdin = ":rollback\n"))
+    }
+
+    @Test
+    fun `params prints none as an empty map and a text in single quotes, and a parameter set later replaces one, in its place`() {
+        assertEquals(CliRun(0, "{}\n", ""), runCli(memory, stdin = ":params\n"))
+        assertEquals(
+            CliRun(0, "{\n  a: 'it\\'s',\n  b: [1, 'x'],\n  c: TRUE\n}\n", ""),
+            runCli(memory, stdin = ":param a => 1\n:param b => [1, 'x']\n:param c => true\n:param a => \"it's\"\n:params\n"),
+        )
+        val bad = runCli(memory, stdin = ":param nope\n")
+        assertEquals(1, bad.exit)
+        assertTrue(":param takes" in bad.stderr, bad.stderr)
+        // A parameter's expression may use one set before it.
+        assertEquals(CliRun(0, "b\n3\n", ""), runCli(memory + listOf("--format", "plain", "-P", "a => 1", "-P", "b => \$a + 2", "RETURN \$b AS b")))
+        assertTrue(":help" in runCli(memory, stdin = ":help\n").stdout)
     }
 
     @Test

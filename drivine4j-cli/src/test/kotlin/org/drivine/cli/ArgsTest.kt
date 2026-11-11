@@ -68,7 +68,7 @@ class ArgsTest {
     @Test
     fun `an unknown flag, or one of the contract's that comes later, is named`() {
         assertTrue("--change-password" in refused("--change-password"))
-        assertTrue("-P" in refused("-P", "x => 1"))
+        assertTrue("--explain" in refused("--explain"))
         assertTrue("comes later" in refused("--profile", "p"))
     }
 
@@ -140,6 +140,15 @@ class ArgsTest {
         val kept = mapOf("DRIVINE_ADDRESS" to "postgresql://addr:kept@h/db")
         assertEquals("kept", run("RETURN 1").check(kept).password)
         assertEquals("secret", run("RETURN 1").check(kept + ("DRIVINE_PASSWORD" to "secret")).password)
+    }
+
+    @Test
+    fun `each -P is kept in order, attached or after a long flag's equals sign, and neither a bad one's refusal nor the plan prints its expression`() {
+        val parameters = run("-P", "a => 1", "-Pb=2", "--param={c: 3}", "RETURN 1").parameters
+        assertEquals(listOf(Assignment.Named("a", "1"), Assignment.Named("b", "2"), Assignment.Map("{c: 3}")), parameters)
+        assertEquals("drivine: -P takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}; see --help", refused("-P", "secret"))
+        val plan = run("-a", "sqlite::memory:", "-P", "pw => 'secret'", "-P", "{key: 'secret'}", "RETURN 1").check(emptyMap())
+        assertTrue("secret" !in plan.toString(), plan.toString())
     }
 
     @Test

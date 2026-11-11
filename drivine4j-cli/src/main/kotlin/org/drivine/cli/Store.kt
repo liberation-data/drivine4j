@@ -21,23 +21,37 @@ class Unreachable(cause: Throwable) : Exception(cause.message ?: cause.javaClass
  * the [PersistenceManager] that makes. So a statement runs as it would in an application, and on Postgres, Oracle and
  * SQLite Drivine compiles it to SQL over the graph's tables, which the provider makes when the store has none.
  */
-class Store private constructor(private val drivine: Drivine, private val scratch: Scratch?) : AutoCloseable {
+class Store private constructor(private val drivine: Drivine, private val scratch: Scratch?, val type: StoreType) : AutoCloseable {
 
     private val manager: PersistenceManager = drivine.persistenceManager(NAME)
 
+    /** Whether the store has multi-statement transactions, as all but FalkorDB have: there `:begin` opens none. */
+    val transactions: Boolean get() = type != StoreType.FALKORDB
+
     /**
-     * Runs [cypher] in a transaction of its own and gives its columns, as the store names them, and its rows, with each
+     * Runs [cypher], given [parameters], in a transaction of its own, or in the one [transaction] has open, and gives its
+     * columns, as the store names them, and its rows, with each
      * node, relationship and path in them as a [org.drivine.query.GraphNode], [org.drivine.query.GraphRelationship] and
      * [org.drivine.query.GraphPath], as [PersistenceManager.queryResult] gives them, on every store. A failure the store
      * gave because it couldn't be reached is thrown as [Unreachable]; any other is the statement's, and is thrown as it is.
      */
-    fun run(cypher: String): Result {
+    fun run(cypher: String, parameters: Map<String, Any?> = emptyMap()): Result {
         val result = try {
-            manager.queryResult(QuerySpecification.withStatement(CypherStatement(cypher)))
+            manager.queryResult(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
         } catch (e: Exception) {
             throw if (Failures.unreachable(e)) Unreachable(e) else e
         }
         return Result(result.columns, result.rows)
+    }
+
+    /**
+     * Runs [block] in one transaction, which [run] joins: committed where [block] returns, and rolled back where it throws,
+     * the throw then [block]'s. Where the store can't be reached as it begins or ends, that is [Unreachable].
+     */
+    fun <T> transaction(block: () -> T): T = try {
+        drivine.transaction { block() }
+    } catch (e: Exception) {
+        throw if (e !is Unreachable && Failures.unreachable(e)) Unreachable(e) else e
     }
 
     override fun close() {
@@ -84,7 +98,7 @@ class Store private constructor(private val drivine: Drivine, private val scratc
             val scratch = if (plan.address.inMemory) Scratch.create() else null
             val properties = properties(plan, scratch?.dir?.resolve("memory.db")?.toString())
             return try {
-                Store(Drivine(DataSourceMap(mapOf(NAME to properties))), scratch)
+                Store(Drivine(DataSourceMap(mapOf(NAME to properties))), scratch, plan.address.store)
             } catch (e: Exception) {
                 scratch?.delete()
                 throw Unreachable(e)

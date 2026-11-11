@@ -79,6 +79,8 @@ data class Invocation(
     val continueOnFailure: Boolean = false,
     /** `--non-interactive`: read stdin, even where it's a terminal. */
     val nonInteractive: Boolean = false,
+    /** Each `-P`, in the order given: a later one of the same name replaces an earlier. */
+    val parameters: List<Assignment> = emptyList(),
 ) {
     /**
      * This invocation, checked in the contract's order once the flags have been read: the inputs, then the address, then
@@ -109,6 +111,7 @@ data class Invocation(
             source = source,
             format = format,
             continueOnFailure = continueOnFailure,
+            parameters = parameters,
             user = user ?: parsed.user ?: env[ENV_USER],
             password = env[ENV_PASSWORD] ?: parsed.password,
         )
@@ -146,9 +149,12 @@ data class Plan(
     val user: String?,
     val password: String?,
     val continueOnFailure: Boolean = false,
+    /** The `-P` parameters, evaluated on the store before any statement runs. */
+    val parameters: List<Assignment> = emptyList(),
 ) {
     override fun toString(): String =
-        "Plan(address=$address, source=$source, format=$format, user=$user, password=${password?.let { "***" }}, continueOnFailure=$continueOnFailure)"
+        "Plan(address=$address, source=$source, format=$format, user=$user, password=${password?.let { "***" }}, " +
+            "continueOnFailure=$continueOnFailure, parameters=$parameters)"
 }
 
 /**
@@ -181,7 +187,7 @@ object Args {
 
     /** The contract's flags that this build doesn't take yet: still a bad invocation, but said so, not called unknown. */
     internal val LATER = setOf(
-        "-d", "--database", "-g", "--graph", "--profile", "-P", "--param", "--sample-rows", "--wrap",
+        "-d", "--database", "-g", "--graph", "--profile", "--sample-rows", "--wrap",
         "--explain", "--history", "--idle-timeout", "--transaction-timeout", "--log",
         "--driver-version",
     )
@@ -221,6 +227,12 @@ object Args {
                 "-f", "--file" -> invocation = invocation.copy(files = invocation.files + value())
                 "--continue" -> { noValue(); invocation = invocation.copy(continueOnFailure = true) }
                 "--non-interactive" -> { noValue(); invocation = invocation.copy(nonInteractive = true) }
+                "-P", "--param" -> {
+                    // The value isn't named back: a parameter may hold what a script would rather not print.
+                    val assignment = Assignment.parse(value())
+                        ?: throw BadInvocation("drivine: $flag takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}; see --help")
+                    invocation = invocation.copy(parameters = invocation.parameters + assignment)
+                }
                 "-u", "--user", "--username" -> invocation = invocation.copy(user = value())
                 "--type" -> {
                     val named = value()
@@ -247,12 +259,16 @@ object Args {
         |Usage: drivine [flags] [cypher]
         |
         |Runs Cypher statements against a store and exits. On Postgres, Oracle and SQLite, Drivine compiles them to SQL.
-        |Statements are split on ;, each runs in its own transaction, and each result is printed as it comes.
+        |Statements are split on ;, each runs in its own transaction, unless it falls between :begin and :commit, and
+        |each result is printed as it comes. A line that starts with : is a command: :help lists them.
         |
         |  cypher, -c CYPHER            The statements to run.
         |  -f, --file FILE              The file's statements. With no cypher, -c or -f, stdin's.
         |  --non-interactive            Read stdin even where it's a terminal.
         |  --continue                   Run every statement, reporting each failure, rather than stop at the first.
+        |  -P, --param PARAM            A parameter, NAME => EXPRESSION, NAME=EXPRESSION or {NAME: EXPRESSION, …}:
+        |                               the expression is Cypher, which the store evaluates. Given more than once,
+        |                               a later one replaces an earlier one of the same name.
         |  -a, --address ADDRESS        The store, else DRIVINE_ADDRESS:
         |                                 neo4j://host:port, bolt://host:port (and their +s and +ssc forms),
         |                                 memgraph://host:port, falkordb://host:port,
@@ -265,6 +281,6 @@ object Args {
         |  -v, --version                Prints drivine's version.
         |  -h, --help                   Prints this.
         |
-        |Exit codes: 0 everything ran, 1 a statement failed, 2 a bad invocation, 3 the store can't be reached or refused the user.
+        |Exit codes: 0 everything ran, 1 a statement or a command failed, 2 a bad invocation, 3 the store can't be reached or refused the user.
         |""".trimMargin()
 }
