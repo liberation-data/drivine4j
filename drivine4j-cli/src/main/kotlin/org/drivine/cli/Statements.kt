@@ -194,13 +194,42 @@ internal fun parametersUsed(cypher: String): List<String> {
             }
             c == '$' -> {
                 val start = i + 1
-                var end = start
-                while (end < cypher.length && (cypher[end].isLetterOrDigit() || cypher[end] == '_')) end++
+                val end = when {
+                    start < cypher.length && cypher[start] in '0'..'9' -> {
+                        var end = start
+                        while (end < cypher.length && cypher[end] in '0'..'9') end++
+                        end
+                    }
+                    startsName(cypher, start) -> nameEnd(cypher, start)
+                    else -> start
+                }
                 if (end > start) used += cypher.substring(start, end)
                 i = end
             }
+            // A name, which may hold a `$`, as `a$b` does, and so starts no parameter.
+            startsName(cypher, i) -> i = nameEnd(cypher, i)
             else -> i++
         }
     }
     return used.toList()
+}
+
+/** Whether a name starts at [at] in [cypher], as the grammar's `IdentifierStart` does: a Unicode `ID_Start` or a `Pc`. */
+private fun startsName(cypher: String, at: Int): Boolean {
+    if (at >= cypher.length) return false
+    val c = cypher.codePointAt(at)
+    return Character.isUnicodeIdentifierStart(c) || Character.getType(c) == Character.CONNECTOR_PUNCTUATION.toInt()
+}
+
+/** Where the name that starts at [from] in [cypher] ends, as the grammar's `IdentifierPart` reads it: `ID_Continue` or an `Sc`. */
+private fun nameEnd(cypher: String, from: Int): Int {
+    var end = from
+    while (end < cypher.length) {
+        val c = cypher.codePointAt(end)
+        val part = Character.isUnicodeIdentifierPart(c) && !Character.isIdentifierIgnorable(c) ||
+            Character.getType(c) == Character.CURRENCY_SYMBOL.toInt()
+        if (!part) break
+        end += Character.charCount(c)
+    }
+    return end
 }
