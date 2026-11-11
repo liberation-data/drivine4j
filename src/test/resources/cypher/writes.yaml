@@ -602,6 +602,24 @@ cases:
         only: [neo4j, sql]
         rows: [8]
 
+  - name: "An item of a node's labels by its place"
+    description: "labels() of a node of one label gives its label at index 0 and at -1, as head() does, and null at an index past its end, whether the index is written, a parameter or a variable, and through a WITH."
+    steps:
+      - cypher: "CREATE (:CyWrite)"
+      - cypher: "MATCH (n:CyWrite) RETURN [labels(n)[0], labels(n)[-1], head(labels(n)), labels(n)[5]]"
+        rows: [["CyWrite", "CyWrite", "CyWrite", null]]
+      - cypher: "MATCH (n:CyWrite) RETURN labels(n)[0] AS first"
+        rows: ["CyWrite"]
+      - cypher: "MATCH (n:CyWrite) RETURN labels(n)[5]"
+        rows: [null]
+      - cypher: "MATCH (n:CyWrite) WITH labels(n) AS ls RETURN [ls[0], ls[5]]"
+        rows: [["CyWrite", null]]
+      - cypher: "MATCH (n:CyWrite) RETURN labels(n)[$i]"
+        parameters: {i: 0}
+        rows: ["CyWrite"]
+      - cypher: "MATCH (n:CyWrite) WITH n, 0 AS i RETURN labels(n)[i]"
+        rows: ["CyWrite"]
+
   - name: "Writing through lists"
     description: "A list of nodes or relationships refers to them, so writing to an item writes to the node."
     steps:
