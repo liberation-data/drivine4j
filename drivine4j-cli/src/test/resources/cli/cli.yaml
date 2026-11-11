@@ -141,6 +141,14 @@ cases:
     exit: 0
     note: "Read as text, the mark would make :exit part of a statement, which fails."
 
+  - name: "Only one byte-order mark at the start of a file isn't part of its text"
+    args: ["--format", "json", "-f", "b.cypher"]
+    files:
+      b.cypher: "\uFEFF\uFEFF:exit\nRETURN 1 AS n;\n"
+    stdout: ""
+    exit: 1
+    note: "The second mark is a character of the text, so :exit is part of a statement, which fails."
+
   - name: "A byte-order mark at the start of a :source file isn't part of its text"
     args: ["--format", "json", "-f", "a.cypher"]
     files:

@@ -85,8 +85,8 @@ class Cli(
     }
 
     /**
-     * Runs [plan]'s statements in order, each in its own transaction, on one connection to its store, and prints each
-     * result as it comes. A statement that fails prints its message on stderr, and the run stops there with
+     * Runs [plan]'s statements in order, given its `-P` parameters, each in its own transaction but between `:begin` and
+     * `:commit`, on one connection to its store, and prints each result as it comes: see [Session]. A statement that fails prints its message on stderr, and the run stops there with
      * [ExitCode.STATEMENT_FAILED], or goes on with `--continue` and ends with it. A store that can't be reached ends the run
      * with [ExitCode.UNREACHABLE] at once, as nothing after could run.
      */

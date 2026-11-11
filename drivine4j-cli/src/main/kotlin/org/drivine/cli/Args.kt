@@ -259,7 +259,8 @@ object Args {
         |Usage: drivine [flags] [cypher]
         |
         |Runs Cypher statements against a store and exits. On Postgres, Oracle and SQLite, Drivine compiles them to SQL.
-        |Statements are split on ;, each runs in its own transaction, and each result is printed as it comes.
+        |Statements are split on ;, each runs in its own transaction, unless it falls between :begin and :commit, and
+        |each result is printed as it comes. A line that starts with : is a command: :help lists them.
         |
         |  cypher, -c CYPHER            The statements to run.
         |  -f, --file FILE              The file's statements. With no cypher, -c or -f, stdin's.

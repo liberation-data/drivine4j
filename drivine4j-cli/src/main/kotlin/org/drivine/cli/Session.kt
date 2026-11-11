@@ -120,7 +120,7 @@ internal class Session(
     private fun inputs(inputs: Sources, transaction: Boolean): Outcome {
         for (input in inputs) {
             val outcome = when (input) {
-                is Input.Statement -> handled(statement(input.cypher), transaction)
+                is Input.Statement -> handled(statement(input.cypher), transaction, statement = true)
                 is Input.Command -> command(input, inputs, transaction)
             }
             if (outcome != null) return outcome
@@ -156,6 +156,7 @@ internal class Session(
                 Assignment.parse(rest)?.let(::assign)
                     ?: out.fail(ExitCode.STATEMENT_FAILED, "drivine: :param takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}"),
                 transaction,
+                statement = true,
             )
             ":params" -> handled(
                 when (rest) {
@@ -191,6 +192,9 @@ internal class Session(
         }
     } catch (e: Unreachable) {
         Outcome.Stopped(unreachable(e))
+    } catch (e: IOException) {
+        // The input couldn't be read on: the transaction is rolled back, and the run ends as it would outside one.
+        throw e
     } catch (e: Exception) {
         // The store refused to begin or to commit it.
         out.trace(e)
@@ -252,14 +256,20 @@ internal class Session(
         return out.print { renderer.render(result, it) }
     }
 
-    /** What [code], a statement's or a command's, does to the run: null where it goes on. */
-    private fun handled(code: Int, transaction: Boolean): Outcome? = when (code) {
+    /**
+     * What [code], a statement's or a command's, does to the run: null where it goes on. Under `--continue`, a failed
+     * [statement] (a `:param` is one, as the store evaluates it) rolls back the transaction open, and a failed command
+     * leaves it open.
+     */
+    private fun handled(code: Int, transaction: Boolean, statement: Boolean = false): Outcome? = when (code) {
         ExitCode.OK -> null
         ExitCode.STATEMENT_FAILED -> {
             failed = true
             when {
                 !continueOnFailure -> Outcome.Stopped(code)
-                transaction -> Outcome.Aborted
+                // A statement that failed, or a :param whose expression did, may leave the store's transaction unusable,
+                // as Postgres's is after a failure; a command that fails reaches no store, and leaves it as it is.
+                transaction && statement -> Outcome.Aborted
                 else -> null
             }
         }

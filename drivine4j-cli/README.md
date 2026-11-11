@@ -77,8 +77,9 @@ reading.
 
 **Commands and parameters.** `:begin` opens a transaction that the statements after it run in, until `:commit` commits
 it or `:rollback` rolls it back; an input that ends inside one rolls it back, and doesn't fail for it. Under
-`--continue`, a statement that fails inside one rolls it back too, and the statements after it run on their own, so a
-`:commit` after them fails, as no transaction is open. On FalkorDB, which has no multi-statement transactions, `:begin`
+`--continue`, a statement that fails inside one, or a `:param` whose expression does, rolls it back too, and the
+statements after it run on their own, so a `:commit` after them fails, as no transaction is open; a command that fails,
+as `:nope`, leaves it open. On FalkorDB, which has no multi-statement transactions, `:begin`
 warns on stderr and each statement commits as it runs; `:commit` does nothing, and `:rollback` fails. `-P` (or
 `--param`) and `:param` take `NAME => EXPRESSION`, `NAME=EXPRESSION` or a map, `{NAME: EXPRESSION, …}`: the store
 evaluates the expression, as `RETURN expression`, and every statement after is given it. A `-P` whose expression fails

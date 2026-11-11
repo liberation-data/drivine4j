@@ -216,6 +216,20 @@ class CliSqliteTest {
         assertEquals(1, Cli(emptyMap(), out, err, stdin = { broken }).run(memory + listOf("--format", "json")))
         assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.toString())
         assertEquals("drivine: can't read the statements: Input/output error\n", err.toString())
+        // Inside a transaction too, under --continue: the input can't be read on, so the run ends, rolled back, as it would outside one.
+        val inTransaction = object : java.io.Reader() {
+            val text = ":begin\nRETURN 1 AS a;\n"
+            var at = 0
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int {
+                if (at >= text.length) throw java.io.IOException("Input/output error")
+                cbuf[off] = text[at++]
+                return 1
+            }
+            override fun close() {}
+        }
+        val err2 = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), java.io.StringWriter(), err2, stdin = { inTransaction }).run(memory + listOf("--format", "json", "--continue")))
+        assertEquals("drivine: can't read the statements: Input/output error\n", err2.toString())
         val missing = runCli(memory + listOf("-f", "nope.cypher"), dir = dir.toFile())
         assertEquals(CliRun(2, "", "drivine: can't read -f nope.cypher: no such file, or not one this user can read\n"), missing)
     }
@@ -229,6 +243,21 @@ class CliSqliteTest {
             assertEquals(1, run.exit, run.stderr)
             assertEquals("l\n\"Kept\"\n", run.stdout)
             assertTrue("no transaction is open" in run.stderr, run.stderr)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `under --continue a command that fails inside a transaction leaves it open, so commit keeps what it wrote`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            val run = runCli(db + listOf("--continue"), stdin = ":begin\nCREATE (:Kept);\n:nope\n:commit\nMATCH (n:Kept) RETURN count(n) AS c;\n")
+            assertEquals(1, run.exit, run.stderr)
+            assertEquals("c\n1\n", run.stdout)
+            assertTrue("Could not find command :nope" in run.stderr, run.stderr)
+            assertTrue("no transaction is open" !in run.stderr, run.stderr)
         } finally {
             dir.deleteRecursively()
         }
