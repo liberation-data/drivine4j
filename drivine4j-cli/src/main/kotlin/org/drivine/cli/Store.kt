@@ -137,13 +137,17 @@ class Store private constructor(private val drivine: Drivine, private val scratc
                 userName = if (address.store in setOf(StoreType.FALKORDB, StoreType.SQLITE)) null else plan.user.orEmpty(),
                 password = if (address.store == StoreType.SQLITE) null else plan.password,
                 protocol = address.protocol,
+                // A database or service the address names wins, as Invocation.check says. FalkorDB's graph is
+                // its database, as Drivine names it; the SQL stores' is the graph's path.
                 databaseName = when (address.store) {
                     StoreType.SQLITE -> file ?: address.database
                     // As libpq does, a Postgres address that names no database names the user's.
-                    StoreType.POSTGRES -> address.database ?: plan.user?.ifEmpty { null } ?: "postgres"
-                    StoreType.ORACLE -> address.database
-                    else -> null
+                    StoreType.POSTGRES -> address.database ?: plan.database ?: plan.user?.ifEmpty { null } ?: "postgres"
+                    StoreType.ORACLE -> address.database ?: plan.database
+                    StoreType.NEO4J, StoreType.MEMGRAPH -> plan.database
+                    StoreType.FALKORDB -> plan.graph
                 },
+                defaultGraphPath = plan.graph?.takeIf { address.store in setOf(StoreType.POSTGRES, StoreType.ORACLE, StoreType.SQLITE) },
                 // One statement runs at a time. SQLite's provider makes the graph's tables on a connection of its own.
                 poolMax = 2,
             )

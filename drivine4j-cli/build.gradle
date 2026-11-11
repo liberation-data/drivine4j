@@ -29,6 +29,9 @@ application {
 dependencies {
     // Drivine itself, which brings the Neo4j driver (Neo4j and Memgraph), FalkorDB's client and HikariCP
     implementation project(':')
+    // .drivine.yml, the profiles, is YAML: read as a tree, with the Jackson the core brings
+    implementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
 
     // The JDBC drivers, which the core leaves to the application: the versions the root build's tests run
     runtimeOnly 'org.postgresql:postgresql:42.7.8'

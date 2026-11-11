@@ -105,7 +105,6 @@ class AddressTest {
         assertTrue("names no database" in refused("neo4j://h/db"))
         assertTrue("names no database" in refused("memgraph://h/db"))
         assertTrue("names no database" in refused("falkordb://h/graph"))
-        assertTrue("Oracle's service" in refused("oracle://h:1521"))
         // A port no store can listen on is a bad value, refused before connecting.
         assertTrue("out of range" in refused("postgresql://h:99999/db"))
         assertTrue("out of range" in refused("neo4j://neo4j_db:0"))
