@@ -199,6 +199,28 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `stdin that breaks mid-run fails the run with 1, past the results before it, and a -f file that can't be read is 2`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        // A pipe that gives one statement and then fails, as a broken pipe on stdin does.
+        val broken = object : java.io.Reader() {
+            val text = "RETURN 1 AS a;\n"
+            var at = 0
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int {
+                if (at >= text.length) throw java.io.IOException("Input/output error")
+                cbuf[off] = text[at++]
+                return 1
+            }
+            override fun close() {}
+        }
+        val out = java.io.StringWriter()
+        val err = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), out, err, stdin = { broken }).run(memory + listOf("--format", "json")))
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.toString())
+        assertEquals("drivine: can't read the statements: Input/output error\n", err.toString())
+        val missing = runCli(memory + listOf("-f", "nope.cypher"), dir = dir.toFile())
+        assertEquals(CliRun(2, "", "drivine: can't read -f nope.cypher: no such file, or not one this user can read\n"), missing)
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

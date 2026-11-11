@@ -29,4 +29,16 @@ class MetadataTest {
     fun `the resource --version reads is kept`() {
         assertTrue("org/drivine/cli/drivine-cli.properties" in metadata)
     }
+
+    /**
+     * `Console.isTerminal`, which the CLI calls by reflection to tell a pipe on stdin from a terminal, is registered: a
+     * native image without it would take a pipe for a terminal wherever a console is there, and refuse stdin's statements.
+     */
+    @Test
+    fun `Console's isTerminal, which the CLI calls by reflection, is kept`() {
+        val console = com.fasterxml.jackson.databind.ObjectMapper().readTree(metadata)["reflection"]
+            .firstOrNull { it["type"]?.asText() == "java.io.Console" }
+        assertNotNull(console, "java.io.Console isn't registered")
+        assertTrue(console["methods"].any { it["name"].asText() == "isTerminal" && it["parameterTypes"].isEmpty })
+    }
 }
