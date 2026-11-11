@@ -251,6 +251,42 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `a source file's inputs run in place, so its begin and commit are the run's, and one that sources itself fails`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}", "--format", "plain")
+            // The statement after the file's :commit runs too, outside the transaction.
+            java.io.File(dir, "commit.cypher").writeText("CREATE (:A);\n:commit\nCREATE (:B);\n")
+            assertEquals(CliRun(0, "c\n2\n", ""), runCli(db, stdin = ":begin\n:source commit.cypher\nMATCH (n) RETURN count(n) AS c;\n", dir = dir))
+            // A transaction the file opens stays open after it, for the input that named it to commit.
+            java.io.File(dir, "begin.cypher").writeText(":begin\nCREATE (:C);\n")
+            assertEquals(CliRun(0, "c\n1\n", ""), runCli(db, stdin = ":source begin.cypher\n:commit\nMATCH (n:C) RETURN count(n) AS c;\n", dir = dir))
+            // One byte-order mark at the start of a :source file isn't part of its text, as the contract's "Files" says.
+            java.io.File(dir, "mark.cypher").writeText("\uFEFF:param x => 1\nRETURN \$x AS x;\n")
+            assertEquals(CliRun(0, "x\n1\n", ""), runCli(db, stdin = ":source mark.cypher\n", dir = dir))
+            java.io.File(dir, "self.cypher").writeText("RETURN 1 AS one;\n:source ./self.cypher\n")
+            val self = runCli(db + listOf("--continue"), stdin = ":source self.cypher\nRETURN 2 AS two;\n", dir = dir)
+            assertEquals(CliRun(1, "one\n1\ntwo\n2\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), self)
+            assertEquals(CliRun(1, "", "drivine: :source takes a file\n"), runCli(db, stdin = ":source\n", dir = dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `every statement is given the parameters, one that doesn't use them too, and a -P that fails runs nothing, under --continue too`() {
+        assertEquals(CliRun(0, "b\n2\n", ""), runCli(memory + listOf("--format", "plain", "-P", "a => 1", "RETURN 2 AS b")))
+        val failed = runCli(memory + listOf("--format", "plain", "--continue", "-P", "a => 1/0", "-P", "b => 2", "RETURN 3 AS c"))
+        assertEquals(1, failed.exit)
+        assertEquals("", failed.stdout)
+        val notMap = runCli(memory, stdin = ":param {a: 1}\n:param [1]\n")
+        assertEquals(CliRun(1, "", "drivine: :param takes NAME => EXPRESSION, NAME=EXPRESSION or a map, {NAME: EXPRESSION}\n"), notMap)
+        assertEquals(CliRun(1, "", "drivine: a parameter map is a map, as in {limit: 10}\n"), runCli(memory, stdin = ":param {a: 1}\n:param {a: 1}['a']\n"))
+        assertEquals(CliRun(1, "", "drivine: :params takes nothing, or clear\n"), runCli(memory, stdin = ":params all\n"))
+        assertEquals(CliRun(1, "", "drivine: no transaction is open: :begin opens one\n"), runCli(memory, stdin = ":rollback\n"))
+    }
+
+    @Test
     fun `params prints none as an empty map and a text in single quotes, and a parameter set later replaces one, in its place`() {
         assertEquals(CliRun(0, "{}\n", ""), runCli(memory, stdin = ":params\n"))
         assertEquals(

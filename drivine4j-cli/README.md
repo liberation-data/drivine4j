@@ -4,13 +4,8 @@ The `drivine` command line: Cypher statements, from the argument, a file or stdi
 Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `plain` or `json`. On Postgres, Oracle and SQLite,
 Drivine compiles the Cypher to SQL, as it does in an application. Its contract is drivine-cypher-spec's
 [`cli/README.md`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/cli) (liberation-data/drivine-cypher-spec#99).
-<<<<<<< HEAD
 This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, `:use`, `--explain`,
 `table` and `csv` come later.
-=======
-This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, the `:commands` but `:exit`
-and `:quit`, `-P`, `--explain`, `table` and `csv` come later.
->>>>>>> origin/main
 
 ## Build
 
@@ -78,7 +73,6 @@ statements on `;`, but not on one inside a string, a backticked name or a commen
 each statement runs in a transaction of its own as it's read, its result printed as it comes. So a file larger than
 memory, as an export may be, runs as it's read. The first statement that fails stops the run, with the results before
 it printed; `--continue` runs the rest, reports each failure on stderr, and exits with 1. `:exit` and `:quit` stop
-<<<<<<< HEAD
 reading.
 
 **Commands and parameters.** `:begin` opens a transaction that the statements after it run in, until `:commit` commits
@@ -89,27 +83,18 @@ warns on stderr and each statement commits as it runs; `:commit` does nothing, a
 `--param`) and `:param` take `NAME => EXPRESSION`, `NAME=EXPRESSION` or a map, `{NAME: EXPRESSION, …}`: the store
 evaluates the expression, as `RETURN expression`, and every statement after is given it. A `-P` whose expression fails
 ends the run with 1 before any statement runs. `:params` prints them, a text in `'…'`, and `:params clear` clears them.
-`:source FILE` runs a file's statements in place, in the transaction open; `:help` lists the commands. `:use` comes
-later, with `--database`. A command the contract doesn't have, as `:nope`, fails as a statement does too, with cypher-shell's line, `Could not
-=======
-reading. The contract's other commands, `:begin`, `:param` and the rest, come later, and fail as a statement does for
-now. A command the contract doesn't have, as `:nope`, fails as a statement does too, with cypher-shell's line, `Could not
->>>>>>> origin/main
-find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
+`:source FILE` runs a file's statements and commands in place, as though its text stood there, so a `:begin` or a
+`:commit` in it opens or ends the run's transaction; a file that is being read already, as one that sources itself,
+fails. One byte-order mark at the very start of a `-f` file, stdin or a `:source` file isn't part of its text. `:help`
+lists the commands. `:use` comes later, with `--database`. A command the contract doesn't have, as `:nope`, fails as a
+statement does too, with cypher-shell's line, `Could not find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
 statement's `;` on the same line is no command.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
-<<<<<<< HEAD
 `plain` and `json` for now), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
 `--fail-at-end`) and `--type` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
 `DRIVINE_PASSWORD`'s.
 The rest of the contract's flags, `-d`, `--explain`, profiles and the formats `table` and `csv` among them, come
-=======
-`plain` and `json` for now), `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
-`--fail-at-end`) and `--type` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
-`DRIVINE_PASSWORD`'s.
-The rest of the contract's flags, `-d`, `-P`, `--explain`, profiles and the formats `table` and `csv` among them, come
->>>>>>> origin/main
 later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the

@@ -8,12 +8,18 @@ sealed interface Assignment {
     /** The Cypher the store runs to evaluate it, as `RETURN expression AS value`. */
     val cypher: String
 
+    /** `NAME => EXPRESSION`. Its [toString] doesn't print the expression, which may hold a secret, as `Plan`'s prints it. */
     data class Named(val name: String, val expression: String) : Assignment {
         override val cypher: String get() = "RETURN $expression AS value"
+
+        override fun toString(): String = "Named(name=$name, expression=***)"
     }
 
+    /** `{NAME: EXPRESSION, …}`. Its [toString] doesn't print the expression, which may hold a secret, as `Plan`'s prints it. */
     data class Map(val expression: String) : Assignment {
         override val cypher: String get() = "RETURN $expression AS value"
+
+        override fun toString(): String = "Map(expression=***)"
     }
 
     companion object {

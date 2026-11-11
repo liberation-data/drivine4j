@@ -141,6 +141,15 @@ cases:
     exit: 0
     note: "Read as text, the mark would make :exit part of a statement, which fails."
 
+  - name: "A byte-order mark at the start of a :source file isn't part of its text"
+    args: ["--format", "json", "-f", "a.cypher"]
+    files:
+      a.cypher: ":source b.cypher\n"
+      b.cypher: "\uFEFF:param x => 1\nRETURN $x AS x;\n"
+    stdout: "{\"columns\":[\"x\"],\"rows\":[[1]]}\n"
+    exit: 0
+    note: "Read as text, the mark would make :param part of a statement, which fails."
+
   - name: "A byte-order mark at the start of stdin isn't part of its text, and one elsewhere is"
     stdin: "\uFEFFRETURN 1 AS n;\nRETURN '\uFEFF' AS s;\n"
     args: ["--format", "json"]

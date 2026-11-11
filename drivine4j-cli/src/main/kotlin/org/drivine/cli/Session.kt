@@ -2,6 +2,7 @@ package org.drivine.cli
 
 import java.io.File
 import java.io.IOException
+import java.io.Reader
 
 /** How a [Session] prints: the [Cli]'s stdout and stderr, and its exit codes, so a session writes as a run does. */
 internal interface Output {
@@ -30,7 +31,7 @@ internal class Session(
     private val dir: File,
     private val continueOnFailure: Boolean,
     /** Opens a `:source` file's text as the run reads a `-f` file's, its byte-order mark left out. */
-    private val open: (File) -> java.io.Reader,
+    private val open: (File) -> Reader,
 ) {
     private val parameters = LinkedHashMap<String, Any?>()
     private var failed = false
@@ -68,16 +69,55 @@ internal class Session(
             val code = assign(assignment)
             if (code != ExitCode.OK) return code
         }
-        return when (val outcome = inputs(inputs, transaction = false)) {
-            is Outcome.Stopped -> if (outcome.code == Cli.DONE) finished() else outcome.code
-            else -> finished()
+        return Sources(inputs).use { sources ->
+            when (val outcome = inputs(sources, transaction = false)) {
+                is Outcome.Stopped -> if (outcome.code == Cli.DONE) finished() else outcome.code
+                else -> finished()
+            }
+        }
+    }
+
+    /**
+     * The inputs the run reads: the run's own, and before them each `:source` file being read, the one named last first.
+     * So a file's inputs run in place, as though its text stood where `:source` names it: a `:begin` in it opens a
+     * transaction that the inputs after the file run in, and a `:commit` in it commits the one open. A file is closed at
+     * its end, and those still open when the run ends are closed then.
+     */
+    private class Sources(run: Iterator<Input>) : Iterator<Input>, AutoCloseable {
+        private class Source(val file: File?, val inputs: Iterator<Input>, val reader: Reader?)
+
+        private val open = ArrayDeque(listOf(Source(null, run, null)))
+
+        override fun hasNext(): Boolean {
+            while (!open.last().inputs.hasNext()) {
+                if (open.size == 1) return false
+                open.removeLast().reader?.close()
+            }
+            return true
+        }
+
+        override fun next(): Input {
+            if (!hasNext()) throw NoSuchElementException()
+            return open.last().inputs.next()
+        }
+
+        /** Whether [file], canonical, is being read, so that reading it again from inside itself would never end. */
+        fun reading(file: File): Boolean = open.any { it.file == file }
+
+        /** Reads [file], canonical, from [reader] before the rest. */
+        fun push(file: File, reader: Reader) {
+            open.addLast(Source(file, Statements(reader), reader))
+        }
+
+        override fun close() {
+            while (open.size > 1) open.removeLast().reader?.close()
         }
     }
 
     private fun finished(): Int = if (failed) ExitCode.STATEMENT_FAILED else ExitCode.OK
 
     /** Runs [inputs] until they end or something ends them; [transaction] says whether one is open. */
-    private fun inputs(inputs: Iterator<Input>, transaction: Boolean): Outcome {
+    private fun inputs(inputs: Sources, transaction: Boolean): Outcome {
         for (input in inputs) {
             val outcome = when (input) {
                 is Input.Statement -> handled(statement(input.cypher), transaction)
@@ -89,7 +129,7 @@ internal class Session(
     }
 
     /** Runs [command], which may read on in [inputs], as `:begin` does: null where the run goes on. */
-    private fun command(command: Input.Command, inputs: Iterator<Input>, transaction: Boolean): Outcome? {
+    private fun command(command: Input.Command, inputs: Sources, transaction: Boolean): Outcome? {
         val rest = command.line.trim().removePrefix(command.name).trim()
         return when (command.name) {
             ":exit", ":quit" -> Outcome.Exited
@@ -125,7 +165,7 @@ internal class Session(
                 },
                 transaction,
             )
-            ":source" -> source(rest, transaction)
+            ":source" -> source(rest, inputs, transaction)
             ":help" -> handled(out.print { it.append(HELP) }, transaction)
             in LATER -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: ${command.name} comes later, and this build doesn't run it"), transaction)
             else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "Could not find command ${command.name}, use :help to see available commands"), transaction)
@@ -137,7 +177,7 @@ internal class Session(
      * which roll it back. Null where the run goes on after it: after `:commit` or `:rollback`, and, under `--continue`,
      * after a failure, with the statements after it run on their own, as no transaction is open then.
      */
-    private fun begin(inputs: Iterator<Input>): Outcome? = try {
+    private fun begin(inputs: Sources): Outcome? = try {
         store.transaction {
             val outcome = inputs(inputs, transaction = true)
             if (outcome != Outcome.Committed) throw Rollback(outcome)
@@ -157,23 +197,25 @@ internal class Session(
         handled(out.fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name), transaction = false)
     }
 
-    /** Runs the inputs of the file at [path], from the working directory where it's relative, in place. */
-    private fun source(path: String, transaction: Boolean): Outcome? {
+    /**
+     * Reads the inputs of the file at [path], from the working directory where it's relative, before the rest of
+     * [inputs], so they run in place. A file that is being read already, as one that sources itself, fails, as it would
+     * never end.
+     */
+    private fun source(path: String, inputs: Sources, transaction: Boolean): Outcome? {
         if (path.isEmpty()) return handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: :source takes a file"), transaction)
         val file = File(path).let { if (it.isAbsolute) it else File(dir, path) }
-        val reader = try {
+        try {
             if (!file.isFile) throw IOException("no such file")
-            open(file)
+            val canonical = file.canonicalFile
+            if (inputs.reading(canonical)) {
+                return handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: :source $path is being read already, so it would never end"), transaction)
+            }
+            inputs.push(canonical, open(file))
         } catch (e: IOException) {
             return handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: can't read :source $path: ${e.message}"), transaction)
         }
-        return reader.use {
-            // Its end is only its own: the input that named it reads on.
-            when (val outcome = inputs(Statements(it), transaction)) {
-                Outcome.Ended -> null
-                else -> outcome
-            }
-        }
+        return null
     }
 
     /** Evaluates [assignment] on the store, as `RETURN expression`, and sets what it names: [ExitCode.OK], or the code it failed with. */
