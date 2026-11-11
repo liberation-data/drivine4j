@@ -26,18 +26,18 @@ class Store private constructor(private val drivine: Drivine, private val scratc
     private val manager: PersistenceManager = drivine.persistenceManager(NAME)
 
     /**
-     * Runs [cypher] in a transaction of its own and gives its rows. A failure the store gave because it couldn't be
-     * reached is thrown as [Unreachable]; any other is the statement's, and is thrown as it is.
+     * Runs [cypher] in a transaction of its own and gives its columns, as the store names them, and its rows, with each
+     * node, relationship and path in them as a [org.drivine.query.GraphNode], [org.drivine.query.GraphRelationship] and
+     * [org.drivine.query.GraphPath], as [PersistenceManager.queryResult] gives them, on every store. A failure the store
+     * gave because it couldn't be reached is thrown as [Unreachable]; any other is the statement's, and is thrown as it is.
      */
     fun run(cypher: String): Result {
-        val columns = Columns.of(cypher)
-        val rows = try {
-            manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        val result = try {
+            manager.queryResult(QuerySpecification.withStatement(CypherStatement(cypher)))
         } catch (e: Exception) {
             throw if (Failures.unreachable(e)) Unreachable(e) else e
         }
-        val names = columns ?: Columns.guessed(rows)
-        return Result(names, rows.map { row -> Columns.split(row, names.size) })
+        return Result(result.columns, result.rows)
     }
 
     override fun close() {

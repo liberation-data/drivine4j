@@ -1,5 +1,8 @@
 package org.drivine.cli
 
+import org.drivine.query.GraphNode
+import org.drivine.query.GraphPath
+import org.drivine.query.GraphRelationship
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.temporal.TemporalAccessor
@@ -22,7 +25,9 @@ fun interface Renderer {
  * spec's files write them, so a program reads a result as the spec's cases are read. A float keeps its fraction, as
  * Java's `Double.toString` writes it (`2.0`, `1.0E10`), where a JSON writer would make `2` of it, a whole number; NaN and
  * the infinities, which JSON has no number for, are `{"$float":"NaN"}` and the others. A whole number is written exactly,
- * past 2^53 too. A text is escaped only where JSON requires it.
+ * past 2^53 too. A text is escaped only where JSON requires it. A node is `{"labels":[…],"properties":{…}}`, a
+ * relationship `{"type":…,"properties":{…}}` and a path `{"nodes":[…],"relationships":[…]}`, with no store's ids
+ * (liberation-data/drivine-cypher-spec#128).
  */
 object JsonRenderer : Renderer {
 
@@ -43,6 +48,9 @@ object JsonRenderer : Renderer {
             is Long, is Int, is Short, is Byte, is BigInteger -> out.append(value.toString())
             is BigDecimal -> out.append(value.toString())
             is CharSequence -> string(value, out)
+            is GraphNode -> write(mapOf("labels" to value.labels, "properties" to value.properties), out)
+            is GraphRelationship -> write(mapOf("type" to value.type, "properties" to value.properties), out)
+            is GraphPath -> write(mapOf("nodes" to value.nodes, "relationships" to value.relationships), out)
             is Map<*, *> -> {
                 out.append('{')
                 value.entries.forEachIndexed { i, (key, item) ->
@@ -116,22 +124,36 @@ object PlainRenderer : Renderer {
 
     /**
      * [value] as cypher-shell prints it: `NULL`, `TRUE`, a float as `Double.toString` writes it, a text in `"…"` with only
-     * its `"` escaped, `[1, "b"]`, `{k: 2}`, and a temporal value as its ISO 8601 text, unquoted.
+     * its `"` escaped, `[1, "b"]`, `{k: 2}`, a node as `(:A:B {k: 2})`, a relationship as `[:R {k: 2}]`, a path as
+     * `(:A)-[:R]->(:B)<-[:S]-(:C)`, along or against each relationship's direction, and a temporal value as its ISO 8601
+     * text, unquoted. A node or a relationship with no properties prints none: `(:A)`, `[:R]`.
      */
     fun write(value: Any?, out: Appendable) {
         when (value) {
             null -> out.append("NULL")
             is Boolean -> out.append(if (value) "TRUE" else "FALSE")
             is CharSequence -> out.append('"').append(value.toString().replace("\"", "\\\"")).append('"')
-            is Map<*, *> -> {
-                out.append('{')
-                value.entries.forEachIndexed { i, (key, item) ->
-                    if (i > 0) out.append(", ")
-                    out.append(key.toString()).append(": ")
-                    write(item, out)
-                }
-                out.append('}')
+            is GraphNode -> {
+                out.append('(')
+                value.labels.forEach { out.append(':').append(it) }
+                properties(value.properties, out)
+                out.append(')')
             }
+            is GraphRelationship -> {
+                out.append("[:").append(value.type)
+                properties(value.properties, out)
+                out.append(']')
+            }
+            is GraphPath -> {
+                write(value.nodes.first(), out)
+                value.relationships.forEachIndexed { i, relationship ->
+                    out.append(if (value.forward[i]) "-" else "<-")
+                    write(relationship, out)
+                    out.append(if (value.forward[i]) "->" else "-")
+                    write(value.nodes[i + 1], out)
+                }
+            }
+            is Map<*, *> -> map(value, out)
             is Iterable<*> -> {
                 out.append('[')
                 value.forEachIndexed { i, item ->
@@ -144,5 +166,22 @@ object PlainRenderer : Renderer {
             // Double, Float, the whole numbers and a temporal value print as their toString does.
             else -> out.append(value.toString())
         }
+    }
+
+    private fun map(value: Map<*, *>, out: Appendable) {
+        out.append('{')
+        value.entries.forEachIndexed { i, (key, item) ->
+            if (i > 0) out.append(", ")
+            out.append(key.toString()).append(": ")
+            write(item, out)
+        }
+        out.append('}')
+    }
+
+    /** A node's or a relationship's [properties], after a space, as a map prints; nothing where it has none. */
+    private fun properties(properties: Map<String, Any?>, out: Appendable) {
+        if (properties.isEmpty()) return
+        out.append(' ')
+        map(properties, out)
     }
 }

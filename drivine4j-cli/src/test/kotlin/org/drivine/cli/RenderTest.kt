@@ -1,5 +1,8 @@
 package org.drivine.cli
 
+import org.drivine.query.GraphNode
+import org.drivine.query.GraphPath
+import org.drivine.query.GraphRelationship
 import org.junit.jupiter.api.Test
 import java.math.BigInteger
 import java.time.LocalDate
@@ -90,5 +93,40 @@ class RenderTest {
         assertEquals("\"a\\\"b\\c\"", plain("a\"b\\c"))
         assertEquals("\"a\n:exit\nb\"", plain("a\n:exit\nb"))
         assertEquals("\"é😀\"", plain("é😀"))
+    }
+
+    private val a = GraphNode(listOf("B", "A"), linkedMapOf("name" to "x", "n" to 1L))
+    private val b = GraphNode(listOf("B"), emptyMap())
+    private val c = GraphNode(listOf("C"), emptyMap())
+    private val r = GraphRelationship("R", mapOf("w" to 1L))
+    private val s = GraphRelationship("S", emptyMap())
+
+    @Test
+    fun `plain prints a node and a relationship as cypher-shell does, and no braces for no properties`() {
+        assertEquals("(:A:B {name: \"x\", n: 1})", plain(a))
+        assertEquals("(:B)", plain(b))
+        assertEquals("()", plain(GraphNode(emptyList(), emptyMap())))
+        assertEquals("[:R {w: 1}]", plain(r))
+        assertEquals("[:S]", plain(s))
+        assertEquals("[(:B), {k: [:S]}]", plain(listOf(b, mapOf("k" to s))))
+    }
+
+    @Test
+    fun `plain prints a path along and against each relationship's direction`() {
+        assertEquals("(:B)-[:R {w: 1}]->(:C)<-[:S]-(:B)", plain(GraphPath(listOf(b, c, b), listOf(r, s), listOf(true, false))))
+        assertEquals("(:B)<-[:S]-(:C)", plain(GraphPath(listOf(b, c), listOf(s), listOf(false))))
+        assertEquals("(:B)", plain(GraphPath(listOf(b), emptyList(), emptyList())))
+    }
+
+    @Test
+    fun `json writes a node, a relationship and a path as objects, with no ids`() {
+        assertEquals("{\"labels\":[\"A\",\"B\"],\"properties\":{\"name\":\"x\",\"n\":1}}", json(a))
+        assertEquals("{\"type\":\"S\",\"properties\":{}}", json(s))
+        assertEquals(
+            "{\"nodes\":[{\"labels\":[\"B\"],\"properties\":{}},{\"labels\":[\"C\"],\"properties\":{}}]," +
+                "\"relationships\":[{\"type\":\"S\",\"properties\":{}}]}",
+            json(GraphPath(listOf(b, c), listOf(s), listOf(false))),
+        )
+        assertEquals("{\"columns\":[\"n\"],\"rows\":[[{\"labels\":[\"B\"],\"properties\":{}}]]}\n", json(Result(listOf("n"), listOf(listOf(b)))))
     }
 }
