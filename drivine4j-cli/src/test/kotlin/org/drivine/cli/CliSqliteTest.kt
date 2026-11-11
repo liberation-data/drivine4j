@@ -296,6 +296,9 @@ class CliSqliteTest {
             java.io.File(dir, "self.cypher").writeText("RETURN 1 AS one;\n:source ./self.cypher\n")
             val self = runCli(db + listOf("--continue"), stdin = ":source self.cypher\nRETURN 2 AS two;\n", dir = dir)
             assertEquals(CliRun(1, "one\n1\ntwo\n2\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), self)
+            // The -f file is being read too, so one that sources itself fails as well.
+            val selfFile = runCli(db + listOf("-f", "self.cypher"), dir = dir)
+            assertEquals(CliRun(1, "one\n1\n", "drivine: :source ./self.cypher is being read already, so it would never end\n"), selfFile)
             assertEquals(CliRun(1, "", "drivine: :source takes a file\n"), runCli(db, stdin = ":source\n", dir = dir))
         } finally {
             dir.deleteRecursively()

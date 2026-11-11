@@ -63,13 +63,15 @@ internal class Session(
     /**
      * Evaluates [assignments], the `-P` parameters, then runs [inputs], and gives the run's exit code. A `-P` that fails
      * ends the run with [ExitCode.STATEMENT_FAILED] before any statement runs, with `--continue` too: they'd run without it.
+     * [file] is the `-f` file that [inputs] are read from, where they are, so that a `:source` of it fails as one of a
+     * file being read does.
      */
-    fun run(assignments: List<Assignment>, inputs: Iterator<Input>): Int {
+    fun run(assignments: List<Assignment>, inputs: Iterator<Input>, file: File? = null): Int {
         for (assignment in assignments) {
             val code = assign(assignment)
             if (code != ExitCode.OK) return code
         }
-        return Sources(inputs).use { sources ->
+        return Sources(inputs, file?.canonicalFile).use { sources ->
             when (val outcome = inputs(sources, transaction = false)) {
                 is Outcome.Stopped -> if (outcome.code == Cli.DONE) finished() else outcome.code
                 else -> finished()
@@ -78,15 +80,16 @@ internal class Session(
     }
 
     /**
-     * The inputs the run reads: the run's own, and before them each `:source` file being read, the one named last first.
+     * The inputs the run reads: the run's own, from [file] where they are a `-f` file's, and before them each `:source`
+     * file being read, the one named last first.
      * So a file's inputs run in place, as though its text stood where `:source` names it: a `:begin` in it opens a
      * transaction that the inputs after the file run in, and a `:commit` in it commits the one open. A file is closed at
      * its end, and those still open when the run ends are closed then.
      */
-    private class Sources(run: Iterator<Input>) : Iterator<Input>, AutoCloseable {
+    private class Sources(run: Iterator<Input>, file: File?) : Iterator<Input>, AutoCloseable {
         private class Source(val file: File?, val inputs: Iterator<Input>, val reader: Reader?)
 
-        private val open = ArrayDeque(listOf(Source(null, run, null)))
+        private val open = ArrayDeque(listOf(Source(file, run, null)))
 
         override fun hasNext(): Boolean {
             while (!open.last().inputs.hasNext()) {

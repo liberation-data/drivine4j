@@ -100,7 +100,7 @@ class Cli(
             try {
                 reader(plan.source).use { reader ->
                     Session(store, Renderer.of(plan.format), output, dir, plan.continueOnFailure) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
-                        .run(plan.parameters, Statements(reader))
+                        .run(plan.parameters, Statements(reader), (plan.source as? Source.File)?.file)
                 }
             } catch (e: IOException) {
                 // The input couldn't be read to its end, as a file removed under the run or stdin's pipe broken.
