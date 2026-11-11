@@ -6,7 +6,6 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.junit.jupiter.api.DynamicTest
-import org.testcontainers.DockerClientFactory
 import kotlin.test.assertEquals
 import kotlin.test.fail
 
@@ -222,11 +221,6 @@ data class SearchSpec(
         private const val GRAPH_ENGINES = "liberation-data/drivine-cypher-spec#100: the graph engines are given the query as it is"
         private const val FALKORDB = "liberation-data/drivine4j#666"
         private const val MEMGRAPH = "liberation-data/drivine4j#762"
-        /**
-         * Where Docker runs arm64 builds of the stores' images: the Docker host's architecture, which Docker pulls for, asked of
-         * Docker rather than read from the JVM's `os.arch`, which differs under Rosetta or with a remote `DOCKER_HOST`.
-         */
-        private val ARM64 = Where("on arm64") { DockerClientFactory.instance().info.architecture in setOf("aarch64", "arm64") }
         private const val ORACLE_TEXT = "liberation-data/drivine4j#763"
 
         /**
@@ -258,10 +252,10 @@ data class SearchSpec(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 4)),
                 Hold("liberation-data/drivine4j#761", listOf("sql"), listOf(2, 3, 4)),
             ),
-            // Memgraph 3.14.0's arm64 build indexes only the first property of a text index over several when another text
-            // index was made before it, as search.yaml's Doc index is (memgraph/memgraph#5353, #762). Its amd64 build, CI's,
-            // searches every property, as Neo4j does. Held where Docker's host is arm64.
-            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3), ARM64), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
+            // Memgraph 3.14.0 indexes only the first property of a text index over several when another text index was made
+            // before it, as search.yaml's Doc index is (memgraph/memgraph#5353, #762). On a container of its own, as
+            // MemgraphSearchSpecTest runs, that's every run, on arm64 and amd64 alike.
+            "Several properties" to listOf(Hold(MEMGRAPH, listOf("memgraph"), listOf(1, 2, 3)), Hold(FALKORDB, listOf("falkordb"), listOf(3))),
             "Escapes" to listOf(
                 Hold(FALKORDB, listOf("falkordb"), listOf(1, 2, 3, 5, 6)),
                 Hold("liberation-data/drivine4j#765", listOf("sql", "memgraph"), listOf(6)),
