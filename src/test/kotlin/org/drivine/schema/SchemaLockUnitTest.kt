@@ -55,6 +55,23 @@ class SchemaLockUnitTest {
     }
 
     @Test
+    fun `plans asking for a provider's gate at once, as replicas' first plans do, are given the one gate`() {
+        val threads = 16
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        try {
+            repeat(300) { round ->
+                val provider = FakeProvider("gate_race_$round")
+                val start = java.util.concurrent.CyclicBarrier(threads)
+                val gates = List(threads) { pool.submit<Any?> { start.await(); SchemaLock.gate(provider) } }
+                    .map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+                assertEquals(1, gates.map { System.identityHashCode(it) }.toSet().size, "round $round: one gate for the provider")
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun `the lock had holds its connection in a transaction until closed, which rolls back and gives it back`() {
         val provider = FakeProvider("held_ok")
 

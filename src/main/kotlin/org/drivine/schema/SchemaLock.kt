@@ -77,7 +77,8 @@ internal class SchemaLock private constructor(private val connection: Connection
          */
         fun gate(provider: ConnectionProvider): ReentrantLock? =
             if (provider.type != DatabaseType.ORACLE || provider.graphName == null) null
-            else gates.getOrPut(provider) { ReentrantLock() }
+            // getOrPut is a get and a put: plans starting together would each make a gate of their own without the map's lock.
+            else synchronized(gates) { gates.getOrPut(provider) { ReentrantLock() } }
 
         /** The statement that takes the row of [graph]'s lock table, waiting up to [WAIT_SECONDS] for it. */
         internal fun statement(graph: String): String = OracleDdl(graph).let { ddl ->
