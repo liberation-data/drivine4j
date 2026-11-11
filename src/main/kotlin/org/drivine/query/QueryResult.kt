@@ -32,9 +32,13 @@ class QueryResult(columns: List<String>, rows: List<List<Any?>>, counts: Map<Str
      */
     val counts: Map<String, Int> = LinkedHashMap(counts)
 
-    override fun equals(other: Any?): Boolean = other is QueryResult && columns == other.columns && rows == other.rows && counts == other.counts
+    /**
+     * Whether [other] has the same [columns] and [rows]. Its [counts] don't take part, so the same statement's result is
+     * equal on a store that counts what it wrote and on one that doesn't, as it was before results held counts.
+     */
+    override fun equals(other: Any?): Boolean = other is QueryResult && columns == other.columns && rows == other.rows
 
-    override fun hashCode(): Int = (31 * columns.hashCode() + rows.hashCode()) * 31 + counts.hashCode()
+    override fun hashCode(): Int = 31 * columns.hashCode() + rows.hashCode()
 
     override fun toString(): String = "QueryResult(columns=$columns, rows=$rows" + (if (counts.isEmpty()) "" else ", counts=$counts") + ")"
 

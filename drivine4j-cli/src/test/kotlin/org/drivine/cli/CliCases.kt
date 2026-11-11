@@ -119,7 +119,8 @@ class CliCases(
         }
         val name = case["name"]
         // table's timing line varies from run to run, so it's taken out before stdout is compared, as the contract says.
-        val stdout = run.stdout.lines().filterNot { TIMING.matches(it) }.joinToString("\n")
+        // Taken out of the text as it is, so a value's own \r, as csv writes it, isn't read as a line's end.
+        val stdout = TIMING.replace(run.stdout, "")
         (case["stdout"] as String?)?.let { assertEquals(it, stdout, "$name: stdout (stderr: ${run.stderr})") }
         (case["stdoutLines"] as List<*>?)?.let { patterns -> matchLines(patterns.map { Regex(it as String) }, run.stdout, name) }
         (case["stderr"] as String?)?.let { assertTrue(it in run.stderr, "$name: stderr is ${run.stderr}, not holding $it") }
@@ -184,7 +185,7 @@ class CliCases(
 
     companion object {
         /** `table`'s timing line, as the contract's "Output" gives it. */
-        private val TIMING = Regex("ready to start consuming query after \\d+ ms, results consumed after another \\d+ ms")
+        private val TIMING = Regex("(?m)^ready to start consuming query after \\d+ ms, results consumed after another \\d+ ms\n")
 
         private val GROUPS = mapOf("graph" to listOf("neo4j", "memgraph", "falkordb"), "sql" to listOf("postgres", "oracle", "sqlite"))
 

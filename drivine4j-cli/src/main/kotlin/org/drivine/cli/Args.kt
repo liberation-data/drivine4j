@@ -272,7 +272,7 @@ object Args {
         |  -u, --user, --username USER  The user, else the address's, else DRIVINE_USER.
         |                               The password is DRIVINE_PASSWORD's, never a flag's.
         |  --format FORMAT              auto (the default: table where stdout is a terminal, plain where it isn't),
-        |                               table, plain, json or csv.
+        |                               table, plain, json or csv. table's --sample-rows and --wrap come later.
         |  -v, --version                Prints drivine's version.
         |  -h, --help                   Prints this.
         |

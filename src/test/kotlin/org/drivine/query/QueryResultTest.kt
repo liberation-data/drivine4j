@@ -152,13 +152,15 @@ class QueryResultTest {
     }
 
     @Test
-    fun `a result's counts are its own copy, and one made without them has none and equals one made with none`() {
+    fun `a result's counts are its own copy, one made without them has none, and counts don't take part in equality`() {
         val counts = linkedMapOf("nodesCreated" to 1)
         val result = QueryResult(listOf("n"), emptyList(), counts)
         counts["nodesDeleted"] = 2
         assertEquals(mapOf("nodesCreated" to 1), result.counts)
         assertEquals(QueryResult(listOf("n"), emptyList()), QueryResult(listOf("n"), emptyList(), emptyMap()))
-        assertNotEquals(QueryResult(listOf("n"), emptyList()), result)
+        // A store that counts and one that doesn't give equal results for the same statement, as they did before counts.
+        assertEquals(QueryResult(listOf("n"), emptyList()), result)
+        assertEquals(QueryResult(listOf("n"), emptyList()).hashCode(), result.hashCode())
         assertEquals("QueryResult(columns=[n], rows=[], counts={nodesCreated=1})", result.toString())
         assertEquals("QueryResult(columns=[n], rows=[])", QueryResult(listOf("n"), emptyList()).toString())
     }

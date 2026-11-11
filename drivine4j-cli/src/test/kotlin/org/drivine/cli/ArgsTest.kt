@@ -79,6 +79,9 @@ class ArgsTest {
         assertTrue("xml" in refused("--format", "xml"))
         assertTrue("verbose" in refused("--format", "verbose"))
         assertTrue("give auto, table, plain, json or csv" in refused("--format", "xml"))
+        // table's own flags come later: refused, and said so.
+        assertTrue("--sample-rows comes later" in refused("--format", "table", "--sample-rows", "10", "RETURN 1"))
+        assertTrue("--wrap comes later" in refused("--format", "table", "--wrap", "false", "RETURN 1"))
         assertTrue("isn't a store" in refused("--type", "neptune"))
         assertTrue("takes no value" in refused("--help=yes"))
         // A short flag with something attached is named as itself, not as an unknown flag.

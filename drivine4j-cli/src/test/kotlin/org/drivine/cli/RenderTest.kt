@@ -190,11 +190,11 @@ class RenderTest {
     fun `csv quotes a field only where it needs it, writes texts and temporals as they are, and parts results by one empty line`() {
         val csv = CsvRenderer()
         val out = StringBuilder()
-        csv.render(Result(listOf("t", "d", "l", "z", "q"), listOf(listOf("a\nb", LocalDate.of(2024, 1, 2), listOf(1L, "x"), null, "it's"))), out)
+        csv.render(Result(listOf("t", "d", "l", "z", "q", "r"), listOf(listOf("a\nb", LocalDate.of(2024, 1, 2), listOf(1L, "x"), null, "it's", "a\rb"))), out)
         // A result with no columns prints nothing, not even its separator.
         csv.render(Result(emptyList(), emptyList()), out)
         csv.render(Result(listOf("n"), listOf(listOf(2.0))), out)
-        assertEquals("t,d,l,z,q\n\"a\nb\",2024-01-02,\"[1,\"\"x\"\"]\",,it's\n\nn\n2.0\n", out.toString())
+        assertEquals("t,d,l,z,q,r\n\"a\nb\",2024-01-02,\"[1,\"\"x\"\"]\",,it's,\"a\rb\"\n\nn\n2.0\n", out.toString())
         // A run's own: another run starts with no separator.
         assertEquals("n\n1\n", StringBuilder().also { CsvRenderer().render(Result(listOf("n"), listOf(listOf(1L))), it) }.toString())
     }

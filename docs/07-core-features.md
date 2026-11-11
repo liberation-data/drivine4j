@@ -283,6 +283,7 @@ result.columns                       // ["p", "k", "friend"], and still there wh
 val (p, k, friend) = result.rows[0]  // one value per column
 (p as GraphNode).labels              // ["Person"], sorted; p.properties is a map of its properties
 (k as GraphRelationship).type        // "KNOWS"
+result.counts                        // what a write wrote, as {nodesCreated=1, labelsAdded=1}; empty for a read
 ```
 
 A node, a relationship and a path, at any depth in a list or a map, are a `GraphNode`, a `GraphRelationship` and a
@@ -292,4 +293,10 @@ them, has no columns. On Postgres, Oracle and SQLite a Cypher statement's column
 SQL statement's as the driver does. A list of nodes or relationships there (`collect(n)`) gives each as one, but a path,
 and a node held in a map the statement builds, aren't given yet: a path is refused, and such a node is its properties. A spec that maps
 its results (`transform`, `filter`, `map`) is refused: use `query` for that.
+
+`counts` holds what the statement wrote, as the store counts it: each of `QueryResult.COUNTS` (`nodesCreated`,
+`nodesDeleted`, `relationshipsCreated`, `relationshipsDeleted`, `propertiesSet`, `labelsAdded`, `labelsRemoved`,
+`indexesAdded`, `indexesRemoved`, `constraintsAdded`, `constraintsRemoved`) that isn't 0, in that order. Neo4j and
+Memgraph give them; FalkorDB and the SQL stores give none yet, and it is empty there. Two results are equal where their
+columns and rows are, whatever their counts.
 
