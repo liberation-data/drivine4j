@@ -68,7 +68,7 @@ class ArgsTest {
     @Test
     fun `an unknown flag, or one of the contract's that comes later, is named`() {
         assertTrue("--change-password" in refused("--change-password"))
-        assertTrue("--explain" in refused("--explain"))
+        assertTrue("--log" in refused("--log", "debug"))
         assertTrue("comes later" in refused("--profile", "p"))
     }
 
@@ -162,5 +162,15 @@ class ArgsTest {
     fun `every format of the contract is taken`() {
         val env = mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")
         Format.entries.forEach { format -> assertEquals(format, run("--format", format.flag, "RETURN 1").check(env).format, format.flag) }
+    }
+
+    @Test
+    fun `--explain is taken on a SQL store, and refused on a graph engine, before it connects`() {
+        assertEquals(true, run("--explain", "RETURN 1").check(mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")).explain)
+        listOf("neo4j://h:7687", "memgraph://h:7687", "falkordb://h:6379").forEach { address ->
+            val refused = assertFailsWith<BadInvocation> { run("--explain", "-a", address, "RETURN 1").check(emptyMap()) }.message!!
+            assertTrue("runs Cypher itself" in refused, refused)
+        }
+        assertEquals("drivine: --explain takes no value; see --help", refused("--explain=yes"))
     }
 }

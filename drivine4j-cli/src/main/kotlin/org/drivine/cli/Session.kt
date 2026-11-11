@@ -30,6 +30,8 @@ internal class Session(
     private val out: Output,
     private val dir: File,
     private val continueOnFailure: Boolean,
+    /** `--explain`: each statement's SQL printed, and none run; `:begin`, `:commit` and `:rollback` open and close nothing. */
+    private val explain: Boolean = false,
     /** Opens a `:source` file's text as the run reads a `-f` file's, its byte-order mark left out. */
     private val open: (File) -> Reader,
 ) {
@@ -123,7 +125,7 @@ internal class Session(
     private fun inputs(inputs: Sources, transaction: Boolean): Outcome {
         for (input in inputs) {
             val outcome = when (input) {
-                is Input.Statement -> handled(statement(input.cypher), transaction, statement = true)
+                is Input.Statement -> handled(if (explain) explained(input.cypher) else statement(input.cypher), transaction, statement = true)
                 is Input.Command -> command(input, inputs, transaction)
             }
             if (outcome != null) return outcome
@@ -137,6 +139,8 @@ internal class Session(
         return when (command.name) {
             ":exit", ":quit" -> Outcome.Exited
             ":begin" -> when {
+                // Under --explain nothing runs, so there's no transaction to open or end.
+                explain -> null
                 !store.transactions -> {
                     out.warn(FALKORDB_BEGIN)
                     null
@@ -145,12 +149,14 @@ internal class Session(
                 else -> begin(inputs)
             }
             ":commit" -> when {
+                explain -> null
                 transaction -> Outcome.Committed
                 // FalkorDB's statements have each committed already, so there's nothing to commit and nothing fails.
                 !store.transactions -> null
                 else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: no transaction is open: :begin opens one"), transaction)
             }
             ":rollback" -> when {
+                explain -> null
                 transaction -> Outcome.RolledBack
                 !store.transactions -> handled(out.fail(ExitCode.STATEMENT_FAILED, FALKORDB_ROLLBACK), transaction)
                 else -> handled(out.fail(ExitCode.STATEMENT_FAILED, "drivine: no transaction is open: :begin opens one"), transaction)
@@ -248,6 +254,26 @@ internal class Session(
             }
         }
         return ExitCode.OK to false
+    }
+
+    /**
+     * Under `--explain`, [cypher]'s SQL, then `-- parameters: ` and the parameters the statement is given, by their names,
+     * as compact JSON, as `json` writes values: what it would run, with nothing run.
+     */
+    private fun explained(cypher: String): Int {
+        val sql = try {
+            store.explain(cypher, parameters)
+        } catch (e: Unreachable) {
+            return unreachable(e)
+        } catch (e: Exception) {
+            out.trace(e)
+            return out.fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
+        }
+        return out.print {
+            it.append(sql.trimEnd()).append('\n').append("-- parameters: ")
+            JsonRenderer.write(parameters, it)
+            it.append('\n')
+        }
     }
 
     /** Runs one statement and prints what it gives: [ExitCode.OK], or the code it failed with, or [Cli.DONE] where stdout was closed. */

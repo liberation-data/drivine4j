@@ -4,7 +4,7 @@ The `drivine` command line: Cypher statements, from the argument, a file or stdi
 Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `table`, `plain`, `json` or `csv`. On Postgres, Oracle and SQLite,
 Drivine compiles the Cypher to SQL, as it does in an application. Its contract is drivine-cypher-spec's
 [`cli/README.md`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/cli) (liberation-data/drivine-cypher-spec#99).
-This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, `:use`, `--explain`,
+This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, `:use`,
 and `table`'s `--sample-rows` and `--wrap` come later.
 
 ## Build
@@ -91,11 +91,16 @@ lists the commands. `:use` comes later, with `--database`. A command the contrac
 statement does too, with cypher-shell's line, `Could not find command :nope, use :help to see available commands`. A command is a line that starts with `:`, so a `:` after a
 statement's `;` on the same line is no command.
 
+**`--explain`**, on Postgres, Oracle and SQLite, prints for each statement the SQL it compiles to
+(`PersistenceManager.explain`), then `-- parameters: ` and the parameters it's given, by their names, as `json` writes
+them, whatever the `--format`, and runs none. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
+`:rollback` open and close nothing. On a graph engine, which runs Cypher itself, it's refused as a bad invocation.
+
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
 `table`, `plain`, `json` and `csv`), `-P`/`--param`, `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
-`--fail-at-end`) and `--type` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
+`--fail-at-end`), `--type` and `--explain` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
 `DRIVINE_PASSWORD`'s.
-The rest of the contract's flags, `-d`, `--explain`, profiles and `table`'s `--sample-rows` and `--wrap` among them, come
+The rest of the contract's flags, `-d`, profiles and `table`'s `--sample-rows` and `--wrap` among them, come
 later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
 
 **Formats.** `table` prints each result as cypher-shell's `verbose` does: the table, its count of rows, the timing line,

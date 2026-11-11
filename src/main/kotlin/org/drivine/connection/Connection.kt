@@ -17,6 +17,13 @@ interface Connection {
     fun queryResult(spec: QuerySpecification<*>): QueryResult =
         throw UnsupportedOperationException("${this::class.simpleName} gives no QueryResult: use query.")
 
+    /**
+     * The SQL the Cypher statement [spec] compiles to on this store, which runs nothing: on Postgres, Oracle and SQLite. A
+     * graph engine, which runs Cypher itself, refuses it, as does a connection written before this call was added.
+     */
+    fun explain(spec: QuerySpecification<*>): String =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no SQL: it runs Cypher as it is.")
+
 //    fun <T> openCursor(cursorSpec: CursorSpecification<T>): Cursor<T>
 
     /**

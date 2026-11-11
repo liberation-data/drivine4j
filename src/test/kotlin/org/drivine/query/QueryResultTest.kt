@@ -164,4 +164,36 @@ class QueryResultTest {
         assertEquals("QueryResult(columns=[n], rows=[], counts={nodesCreated=1})", result.toString())
         assertEquals("QueryResult(columns=[n], rows=[])", QueryResult(listOf("n"), emptyList()).toString())
     }
+
+    @Test
+    fun `explain gives the SQL a Cypher statement compiles to and runs nothing, refuses SQL as it is, and runs in a transaction too`() {
+        val graph = "explained"
+        val pm = SqliteTestDatabase.graphManager(graph)
+        SqlCypherFixtures.clear(pm)
+        val cypher = QuerySpecification.withStatement(CypherStatement("CREATE (n:Explained {x: \$x}) RETURN n")).bind(mapOf("x" to 1L))
+        val sql = pm.explain(cypher)
+        assertContains(sql, "${graph}_node")
+        assertEquals(QueryResult(listOf("c"), listOf(listOf(0L))), pm.queryResult(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN count(n) AS c"))))
+        assertContains(assertThrows<DrivineException> { pm.explain(QuerySpecification.withStatement("SELECT 1")) }.message!!, "SQL already")
+        val registry = DatabaseRegistry(DataSourceMap()).also {
+            it.register(JdbcConnectionProvider(graph, DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph))
+        }
+        val holder = TransactionContextHolder(registry)
+        val tpm = PersistenceManagerFactory(registry, holder).get(graph, PersistenceManagerType.TRANSACTIONAL)
+        assertEquals(sql, Transactions(holder).transaction(rollback = true) { tpm.explain(cypher) })
+        assertEquals(sql, PersistenceManagerFactory(registry, holder).get(graph).explain(cypher))
+    }
+
+    @Test
+    fun `a connection written before explain refuses it`() {
+        val connection = object : Connection {
+            override fun sessionId() = "old"
+            override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = emptyList()
+            override fun startTransaction() {}
+            override fun commitTransaction() {}
+            override fun rollbackTransaction() {}
+            override fun release(err: Throwable?) {}
+        }
+        assertContains(assertThrows<UnsupportedOperationException> { connection.explain(QuerySpecification.withStatement("RETURN 1")) }.message!!, "gives no SQL")
+    }
 }

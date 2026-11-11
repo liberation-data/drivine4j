@@ -72,6 +72,8 @@ class DelegatingPersistenceManager(
         return persistenceManager().queryResult(spec)
     }
 
+    override fun explain(spec: QuerySpecification<*>): String = persistenceManager().explain(spec)
+
     override fun execute(spec: QuerySpecification<*>) {
         return persistenceManager().execute(spec)
     }
