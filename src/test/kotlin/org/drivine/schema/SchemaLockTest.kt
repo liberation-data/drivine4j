@@ -171,6 +171,46 @@ class SchemaLockTest {
         }
     }
 
+    /**
+     * A pool of one connection, which a schema command's DDL needs: the lock would hold it, and the DDL wait out the
+     * pool's timeout for another, so no lock is taken, and the schema is made unlocked, with one warning for the graph.
+     * Both a manager's plan, whose statements each borrow the connection, and a Cypher schema command, which holds it for
+     * its length, make what they're asked for.
+     */
+    @Test
+    fun `a pool of one connection makes the schema unlocked, with one warning`() {
+        val graph = "lock_one"
+        OracleTestDatabase.graphManager(graph)
+        val provider = JdbcConnectionProvider.pooled(
+            graph, DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(),
+            OracleTestContainer.getConnectionPassword(), poolMax = 1, graphName = graph,
+        )
+        val registry = DatabaseRegistry(DataSourceMap()).also { it.register(provider) }
+        val factory = PersistenceManagerFactory(registry, TransactionContextHolder(registry))
+        val pm = factory.get(graph, PersistenceManagerType.NON_TRANSACTIONAL)
+        val spec = UniquenessConstraintSpec("Ledger", "id")
+        val other = RangeIndexSpec("Ledger", "name")
+        try {
+            pm.constraints.drop(spec)
+            pm.indexes.drop(other)
+            val started = System.nanoTime()
+            val logged = warnings {
+                SchemaManager(factory, registry, listOf(SchemaCatalog.of(spec)), SchemaPolicy(mode = SchemaMode.FAIL_FAST)).enforce()
+                pm.execute(org.drivine.query.QuerySpecification.withStatement(org.drivine.query.CypherStatement("CREATE INDEX ledger_name IF NOT EXISTS FOR (l:Ledger) ON (l.name)")))
+            }
+            val took = (System.nanoTime() - started) / 1_000_000
+            assertTrue(took < SchemaLock.WAIT_SECONDS * 1_000L, "nothing waited out the pool's timeout: $took ms")
+            kotlin.test.assertNotNull(pm.constraints.find(spec), "the constraint is made, unlocked")
+            kotlin.test.assertNotNull(pm.indexes.find(other), "and so is the index of the Cypher command")
+            val lockWarnings = logged.filter { "schema lock of graph $graph" in it }
+            assertEquals(1, lockWarnings.size, "warned of once for the graph: $logged")
+            assertTrue("pool holds 1 connection" in lockWarnings.single(), lockWarnings.single())
+        } finally {
+            pm.indexes.drop(other)
+            provider.end()
+        }
+    }
+
     @Test
     fun `a lock not had within its wait is none, and the DDL runs unlocked`() {
         val graph = "lock_held"

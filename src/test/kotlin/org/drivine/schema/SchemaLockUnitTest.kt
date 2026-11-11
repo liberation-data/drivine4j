@@ -235,6 +235,38 @@ class SchemaLockUnitTest {
         if (withError) assertTrue(calls.last().startsWith("release:"), "$calls") else assertEquals("release", calls.last(), "$calls")
     }
 
+    @Test
+    fun `a pool of one, whose one connection the DDL needs, takes no lock, borrows nothing for it, and warns once`() {
+        // A pool HikariCP makes only as it's first asked for a connection, so one asked for none never connects.
+        val pool = com.zaxxer.hikari.HikariDataSource().apply { jdbcUrl = "jdbc:oracle:thin:@//nowhere.invalid:1521/none"; maximumPoolSize = 1 }
+        val provider = org.drivine.connection.JdbcConnectionProvider("one", DatabaseType.ORACLE, pool, graphName = "pool_one")
+
+        val warned = warnings { repeat(2) { assertNull(SchemaLock.take(provider)) } }
+
+        assertEquals(1, warned.size, "once for the graph: $warned")
+        assertTrue("schema lock of graph pool_one" in warned.single() && "pool holds 1 connection" in warned.single(), warned.single())
+        assertTrue(pool.hikariPoolMXBean == null, "the pool was never started, so no connection was asked for")
+    }
+
+    @Test
+    fun `a pool that gives the lock no connection within its timeout leaves the DDL unlocked, and warns once`() {
+        val timedOut = DrivineException("wrapped", java.sql.SQLTransientConnectionException("Connection is not available, request timed out after 30000ms"))
+        val provider = FakeProvider("pool_timeout", connectFails = timedOut)
+
+        val warned = warnings { repeat(2) { assertNull(SchemaLock.take(provider)) } }
+
+        assertEquals(1, warned.size, "once for the graph: $warned")
+        assertTrue("schema lock of graph pool_timeout" in warned.single() && Regex("in \\d+ ms").containsMatchIn(warned.single()), warned.single())
+    }
+
+    @Test
+    fun `a connection the lock can't have for another reason is thrown`() {
+        val refused = DrivineException("wrapped", SQLException("ORA-01017: invalid username/password; logon denied", "72000", 1017))
+        val provider = FakeProvider("connect_refused", connectFails = refused)
+
+        assertSame(refused, assertFailsWith<DrivineException> { SchemaLock.take(provider) })
+    }
+
     /** The warnings [SchemaLock] logs while [block] runs. */
     private fun warnings(block: () -> Unit): List<String> {
         val logger = LoggerFactory.getLogger(SchemaLock::class.java) as ch.qos.logback.classic.Logger
@@ -254,11 +286,13 @@ class SchemaLockUnitTest {
         override val type: DatabaseType = DatabaseType.ORACLE,
         private val fails: Exception? = null,
         private val failRollback: Boolean = false,
+        /** What [connect] throws, as a pool that gives no connection within its timeout does; null where it gives one. */
+        private val connectFails: Exception? = null,
     ) : ConnectionProvider {
         val made = mutableListOf<FakeConnection>()
         override val name = "fake"
         override val subtypeRegistry: SubtypeRegistry? = null
-        override fun connect(): Connection = FakeConnection(fails, failRollback).also { made += it }
+        override fun connect(): Connection = connectFails?.let { throw it } ?: FakeConnection(fails, failRollback).also { made += it }
         override fun end() {}
     }
 

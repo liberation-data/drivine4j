@@ -186,6 +186,12 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             }
     }
 
+    /**
+     * How many connections [dataSource]'s pool holds at most, where it is HikariCP's; null for another data source. The
+     * schema lock reads it, as it needs a connection beside the one its DDL runs on (drivine4j#777).
+     */
+    internal val poolMax: Int? get() = hikari?.maximumPoolSize
+
     /** The HikariCP pool [dataSource] is, or wraps; null where it is another, which has no way to close a session for good. */
     private val hikari: HikariDataSource? by lazy {
         runCatching { if (dataSource.isWrapperFor(HikariDataSource::class.java)) dataSource.unwrap(HikariDataSource::class.java) else null }.getOrNull()

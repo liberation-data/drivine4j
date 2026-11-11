@@ -4,10 +4,12 @@ import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnection
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.cypher.store.ddl.OracleDdl
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
+import java.sql.SQLTransientConnectionException
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.locks.ReentrantLock
@@ -90,11 +92,27 @@ internal class SchemaLock private constructor(private val connection: Connection
          * The lock of [provider]'s graph, held: on Oracle only, as Postgres serialises its own DDL with a lock of the
          * graph's and SQLite has one writer. Null on another store, where the graph has no lock table, and where the lock
          * isn't had within [WAIT_SECONDS], or the connection is a transaction's Drivine didn't begin: then the DDL runs unlocked.
+         * So it does where the pool can't spare the lock a connection: a pool of one, whose one connection the DDL needs, and
+         * one that gave none within its timeout. Each of these but the joined connection and the missing table warns,
+         * once for each graph in a process.
          */
         fun take(provider: ConnectionProvider): SchemaLock? {
             if (provider.type != DatabaseType.ORACLE) return null
             val graph = provider.graphName ?: return null
-            val connection = provider.connect()
+            val poolMax = (provider as? JdbcConnectionProvider)?.poolMax
+            if (poolMax != null && poolMax < 2) {
+                // Held, the lock would have the pool's one connection, and the DDL would wait out the pool's timeout for another.
+                warnUnlocked(graph, "its pool holds $poolMax connection, which its DDL needs")
+                return null
+            }
+            val asked = System.nanoTime()
+            val connection = try {
+                provider.connect()
+            } catch (e: Exception) {
+                if (generateSequence<Throwable>(e) { it.cause }.none { it is SQLTransientConnectionException }) throw e
+                warnUnlocked(graph, "its pool gave no connection for the lock in ${(System.nanoTime() - asked) / 1_000_000} ms")
+                return null
+            }
             // A Spring or JTA transaction's connection (#724): the row would be that transaction's, which the DDL on its
             // session commits, and the lock's rollback would mark it to roll back at its end. Its DDL runs unlocked.
             if ((connection as? JdbcConnection)?.joined == true) {
@@ -128,18 +146,22 @@ internal class SchemaLock private constructor(private val connection: Connection
                         return null
                     }
                     in WAIT_EXPIRED -> {
-                        if (warned.add(graph)) {
-                            logger.warn(
-                                "Couldn't take the schema lock of graph {} in {} ms: another Drivine holds it. Making its schema " +
-                                    "unlocked, which may wait out a contention of Oracle's (drivine4j#777).",
-                                graph, (System.nanoTime() - started) / 1_000_000,
-                            )
-                        }
+                        warnUnlocked(graph, "another Drivine held it, and it wasn't had in ${(System.nanoTime() - started) / 1_000_000} ms")
                         return null
                     }
                     else -> throw e
                 }
             }
+        }
+
+        /** Warns that [graph]'s schema is made unlocked, and [why], the first time this process makes it so. */
+        private fun warnUnlocked(graph: String, why: String) {
+            if (!warned.add(graph)) return
+            logger.warn(
+                "Couldn't take the schema lock of graph {}: {}. Making its schema unlocked, which may wait out a contention " +
+                    "of Oracle's (drivine4j#777).",
+                graph, why,
+            )
         }
 
         /** The Oracle error code of [e] or a cause of it, as ORA-30006 is 30006; null where none is an Oracle error. */
