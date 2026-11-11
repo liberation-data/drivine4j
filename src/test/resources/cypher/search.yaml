@@ -33,11 +33,13 @@ graph: |
          (:Paper {id: 'p1', title: 'kiwi', body: 'a fruit'}),
          (:Paper {id: 'p2', title: 'fruit', body: 'kiwi pie'}),
          (:Paper {id: 'p3', body: 'nothing here'}),
-         (:Paper {id: 'p4', title: 'kiwi'})
+         (:Paper {id: 'p4', title: 'kiwi'}),
+         (:`It's \label` {id: 'odd', body: 'kiwi tart'})
 
 indexes:
   - {kind: "FULLTEXT_INDEX", label: "Doc", properties: ["body"]}
   - {kind: "FULLTEXT_INDEX", label: "Paper", properties: ["title", "body"]}
+  - {kind: "FULLTEXT_INDEX", label: "It's \\label", properties: ["body"]}
 
 cases:
   - name: "Words are ORed"
@@ -224,6 +226,9 @@ cases:
   - name: "Several properties"
     description: "An index over several properties finds a word in any of them; a node that lacks one is searched by the rest."
     steps:
+      # Memgraph's three below: Memgraph 3.14.0 indexes only the first property of a text index over several when another
+      # text index was made before it, as this file's Doc index is (memgraph/memgraph#5353, liberation-data/drivine4j#762),
+      # on every architecture. A runner whose store has made a text index of several properties first may pass them.
       - search: {label: "Paper", properties: ["title", "body"], query: "kiwi", topK: 50}
         ids: ["p1", "p2", "p4"]
         today: [{stores: ["memgraph"], ids: ["p1", "p4"], issue: "liberation-data/drivine4j#762"}]
@@ -235,6 +240,12 @@ cases:
         today:
           - {stores: ["memgraph"], ids: ["p1", "p4"], issue: "liberation-data/drivine4j#762"}
           - {stores: ["falkordb"], ids: ["p2"], issue: "liberation-data/drivine4j#666"}
+
+  - name: "A name that needs escaping"
+    description: "A label with a quote and a backslash in it, and so the index named after it, is searched as any other: each engine is given the name as a string (liberation-data/drivine4j#767). FalkorDB reads no escaped backtick in a label, so a backtick is left to the unit tests."
+    steps:
+      - search: {label: "It's \\label", properties: ["body"], query: "kiwi", topK: 50}
+        ids: ["odd"]
 
   - name: "Escapes"
     description: "A backslash before a character of the syntax makes it text: a sign, a star, a quote; and before a space, it joins two words into one term, which Lucene's analyzer splits again into words that are ORed."
