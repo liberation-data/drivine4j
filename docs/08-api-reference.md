@@ -43,7 +43,7 @@ data class ConnectionProperties(
     val host: String = "",                   // not read on SQLite, a file
     val port: Int? = null,                   // the engine's own when null: 1521 on Oracle, 5432 on Postgres
     val userName: String? = null,
-    val password: String? = null,
+    val password: String? = null,            // printed as *** by toString, so logging the properties doesn't show it
     val idleTimeout: Int? = null,
     val connectionTimeout: Int? = null,
     val poolMax: Int? = null,
