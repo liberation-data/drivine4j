@@ -134,7 +134,8 @@ data class Invocation(
             throw BadInvocation("drivine: give Oracle's service, in the address as oracle://host:port/FREEPDB1, or with -d")
         }
         // The user: -u, then the address's, then DRIVINE_USER, then the profile's. The password: DRIVINE_PASSWORD, then
-        // the address's, which only an address kept off the command line may hold, then the profile's, then the prompt.
+        // the profile's, then the address's, which only an address kept off the command line may hold, then the prompt,
+        // as drivine-cypher-spec#128 proposes.
         return Plan(
             address = parsed,
             source = source,
@@ -143,7 +144,7 @@ data class Invocation(
             parameters = parameters,
             explain = explain,
             user = user ?: parsed.user ?: env[ENV_USER] ?: chosen?.user,
-            password = env[ENV_PASSWORD] ?: parsed.password ?: chosen?.password,
+            password = env[ENV_PASSWORD] ?: chosen?.password ?: parsed.password,
             database = database,
             graph = givenGraph,
             profile = chosen?.name,

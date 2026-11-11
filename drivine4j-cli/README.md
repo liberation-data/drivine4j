@@ -111,8 +111,8 @@ the default, is `table` where stdout is a terminal and `plain` where it isn't; J
 run whose stdin isn't a terminal, as `cat x.cypher | drivine` at a terminal, prints `plain` too.
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s, else the profile's; the user `-u`'s, else the address's, else
-`DRIVINE_USER`'s, else the profile's; the password `DRIVINE_PASSWORD`'s, else that of an address kept off the command
-line, else the profile's, else, where stdin is a terminal and the store takes one, asked for with no echo: never a
+`DRIVINE_USER`'s, else the profile's; the password `DRIVINE_PASSWORD`'s, else the profile's, else that of an address
+kept off the command line, else, where stdin is a terminal and the store takes one, asked for with no echo: never a
 flag's. The database (Neo4j's, Memgraph's or Postgres's) or the service (Oracle's) is the address's, else `-d`'s, else
 `DRIVINE_DATABASE`'s, else the profile's; the graph (FalkorDB's, or the SQL stores' Drivine graph) `-g`'s, else
 `DRIVINE_GRAPH`'s, else the profile's. A store that has no database, or no graph, refuses one however it's given.

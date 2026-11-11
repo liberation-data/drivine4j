@@ -107,11 +107,12 @@ class ConnectingTest {
     }
 
     @Test
-    fun `the password comes from DRIVINE_PASSWORD, then an address kept off the command line, then the profile`() {
-        profiles(dir, "default: p\nprofiles:\n  p:\n    password: from_profile\n")
+    fun `the password comes from DRIVINE_PASSWORD, then the profile, then an address kept off the command line`() {
         val env = mapOf("DRIVINE_ADDRESS" to "postgresql://u:in_address@h/db")
-        assertEquals("env", plan(env = env + ("DRIVINE_PASSWORD" to "env")).password)
         assertEquals("in_address", plan(env = env).password)
+        profiles(dir, "default: p\nprofiles:\n  p:\n    password: from_profile\n")
+        assertEquals("env", plan(env = env + ("DRIVINE_PASSWORD" to "env")).password)
+        assertEquals("from_profile", plan(env = env).password)
         assertEquals("from_profile", plan("-a", "postgresql://u@h/db").password)
     }
 
