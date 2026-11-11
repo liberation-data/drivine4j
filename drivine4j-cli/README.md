@@ -79,8 +79,9 @@ find command :nope, use :help to see available commands`. A command is a line th
 statement's `;` on the same line is no command.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
-`plain` and `json` for now) and `--non-interactive`, and `-c`, `--continue` (cypher-shell's `--fail-at-end`), `--type`,
-`-v` and `-h`, which are its own. cypher-shell's `-p`/`--password` is refused: the password is `DRIVINE_PASSWORD`'s.
+`plain` and `json` for now), `--non-interactive`, `-v`/`--version` and `-h`/`--help`. `-c`, `--continue` (cypher-shell's
+`--fail-at-end`) and `--type` are drivine's own. cypher-shell's `-p`/`--password` is refused: the password is
+`DRIVINE_PASSWORD`'s.
 The rest of the contract's flags, `-d`, `-P`, `--explain`, profiles and the formats `table` and `csv` among them, come
 later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
 
