@@ -1,11 +1,11 @@
 # drivine4j-cli
 
-The `drivine` command line: one Cypher statement against any store Drivine reaches, Neo4j, Memgraph, FalkorDB,
-Postgres, Oracle or SQLite, printed as `plain` or `json`. On Postgres, Oracle and SQLite, Drivine compiles the Cypher to
-SQL, as it does in an application. Its contract is drivine-cypher-spec's
+The `drivine` command line: Cypher statements, from the argument, a file or stdin, against any store Drivine reaches,
+Neo4j, Memgraph, FalkorDB, Postgres, Oracle or SQLite, printed as `plain` or `json`. On Postgres, Oracle and SQLite,
+Drivine compiles the Cypher to SQL, as it does in an application. Its contract is drivine-cypher-spec's
 [`cli/README.md`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/cli) (liberation-data/drivine-cypher-spec#99).
-This is the first skeleton of it, for liberation-data/drivine4j#706: files, stdin, the REPL, profiles, `:commands`,
-`-P`, `--explain`, `table` and `csv` come later.
+This build has part of it, for liberation-data/drivine4j#706 and #709: the REPL, profiles, the `:commands` but `:exit`
+and `:quit`, `-P`, `--explain`, `table` and `csv` come later.
 
 ## Build
 

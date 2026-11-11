@@ -135,6 +135,37 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `under --continue each failure reaches stderr as it comes, before the next result, and the quit command stops reading`() {
+        // Each stream as a process sees it: what was written reaches the shared log only when it's flushed.
+        val log = StringBuilder()
+        fun stream(tag: String) = object : java.io.Writer() {
+            val pending = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                pending.append(cbuf, off, len)
+            }
+            override fun flush() {
+                if (pending.isNotEmpty()) log.append("$tag:$pending")
+                pending.setLength(0)
+            }
+            override fun close() {}
+        }
+        val stdin = "RETURN 1 AS a;\nRETURN 1/0;\n:nope\nRETURN 2 AS c;\n:quit\nRETURN 3 AS d;\n"
+        val run = Cli(emptyMap(), stream("out"), stream("err"), stdin = { java.io.StringReader(stdin) })
+            .run(memory + listOf("--format", "json", "--continue"))
+        assertEquals(1, run)
+        val order = Regex("(out|err):").findAll(log).map { it.value }.toList()
+        assertEquals(listOf("out:", "err:", "err:", "out:"), order, log.toString())
+        assertTrue("Could not find command :nope" in log, log.toString())
+        assertTrue("\"d\"" !in log, log.toString())
+    }
+
+    @Test
+    fun `a -f file is read where its name is attached to -f`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        java.nio.file.Files.writeString(dir.resolve("a.cypher"), "RETURN 1 AS n;")
+        assertEquals(CliRun(0, "n\n1\n", ""), runCli(memory + listOf("--format", "plain", "-fa.cypher"), dir = dir.toFile()))
+    }
+
+    @Test
     fun `a reader that closes stdout after a failure under --continue still leaves the run failed`() {
         val out = object : java.io.Writer() {
             val taken = StringBuilder()

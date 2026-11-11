@@ -183,9 +183,18 @@ class Cli(
         if (env["DRIVINE_TRACE_ERRORS"] == "true") err.write(e.stackTraceToString())
     }
 
+    /**
+     * Prints [message] on stderr and gives [code]. stderr is flushed at once, so that under `--continue` each failure is
+     * reported as it comes, before the results after it, and not when the run ends.
+     */
     private fun fail(code: Int, message: String): Int {
-        err.write(message.trimEnd())
-        err.write("\n")
+        try {
+            err.write(message.trimEnd())
+            err.write("\n")
+            err.flush()
+        } catch (e: IOException) {
+            // stderr closed by its reader: there's nothing left to tell it, and the code still says how the run went.
+        }
         return code
     }
 
