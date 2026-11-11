@@ -38,7 +38,8 @@ class ConnectionPropertiesTest {
         val missing = ConnectionProperties::class.java.declaredFields
             .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
             .map { it.name }
-            .filter { "$it=" !in printed }
+            // As `(name=` or `, name=`: a bare `name=` is also found in `databaseName=`.
+            .filter { "($it=" !in printed && ", $it=" !in printed }
         assertEquals(emptyList(), missing, printed)
     }
 
