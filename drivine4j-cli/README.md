@@ -62,11 +62,29 @@ drivine -a sqlite::memory: --format json 'RETURN 1 AS n'
 {"columns":["n"],"rows":[[1]]}
 
 DRIVINE_PASSWORD=… drivine -a postgresql://localhost:5432/graphs -u drivine --format plain 'MATCH (n) RETURN count(n) AS c'
+
+drivine -a sqlite:graph.db -f export.cypher
+drivine -a sqlite:graph.db --continue < statements.cypher
 ```
+
+The statements are the argument's, `-c`'s, a `-f` file's, or, with none of those, stdin's. Stdin is read only where it
+isn't a terminal or `--non-interactive` is given: on a terminal, that's the REPL, which comes later. Each is split into
+statements on `;`, but not on one inside a string, a backticked name or a comment, as the contract's "Files" says, and
+each statement runs in a transaction of its own as it's read, its result printed as it comes. So a file larger than
+memory, as an export may be, runs as it's read. The first statement that fails stops the run, with the results before
+it printed; `--continue` runs the rest, reports each failure on stderr, and exits with 1. `:exit` and `:quit` stop
+reading. The other commands, `:begin`, `:param` and the rest, come later, and fail as a statement does for now.
+
+**cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
+`plain` and `json` for now) and `--non-interactive`, and `-c`, `--continue` (cypher-shell's `--fail-at-end`), `--type`,
+`-v` and `-h`, which are its own. cypher-shell's `-p`/`--password` is refused: the password is `DRIVINE_PASSWORD`'s.
+The rest of the contract's flags, `-d`, `-P`, `--explain`, profiles and the formats `table` and `csv` among them, come
+later, and are refused, said so, as are cypher-shell's that the contract doesn't take, as unknown flags.
 
 The address is `-a`'s, else `DRIVINE_ADDRESS`'s; the user `-u`'s, else the address's, else `DRIVINE_USER`'s; the
 password `DRIVINE_PASSWORD`'s, never a flag's. `drivine --help` lists the flags. The exit code is 0 when everything ran,
-1 when the statement failed, 2 for a bad invocation and 3 when the store can't be reached or refuses the user. A
+1 when a statement failed, 2 for a bad invocation, a `-f` file that can't be read among them, and 3 when the store
+can't be reached or refuses the user. A
 result that can't be written, as on a full disk under `> file`, exits with 1 and says so on stderr; a reader that
 closes the pipe, as `| head` does, isn't a failure, and the run exits with 0.
 

@@ -1,15 +1,21 @@
 package org.drivine.cli
 
+import java.io.BufferedReader
+import java.io.File
 import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.io.Reader
+import java.io.StringReader
 import java.io.Writer
 import java.util.Properties
 import kotlin.system.exitProcess
 
 /**
- * The `drivine` command: one Cypher statement against one store, printed, and an exit code that says how it went.
+ * The `drivine` command: Cypher statements against one store, each result printed as it comes, and an exit code that says
+ * how it went.
  *
  * The CLI is thin: it reads the arguments, makes connection properties of the address, runs the statement through
  * Drivine as an application would ([Store]), and prints what it gives. Its contract, flags, output and exit codes, is
@@ -26,22 +32,45 @@ fun main(args: Array<String>) {
     val out = OutputStreamWriter(FileOutputStream(FileDescriptor.out), Charsets.UTF_8)
     val err = OutputStreamWriter(FileOutputStream(FileDescriptor.err), Charsets.UTF_8)
     // Cli.run flushes both streams.
-    exitProcess(Cli(System.getenv(), out, err).run(args.toList()))
+    exitProcess(Cli(System.getenv(), out, err, stdin = { InputStreamReader(System.`in`, Charsets.UTF_8) }, stdinTerminal = stdinTerminal()).run(args.toList()))
 }
 
 /**
- * One run of the CLI, given its environment and its two streams rather than the process's, so a test runs it in
- * process as the binary runs. Both streams are UTF-8, and each line ends in `\n`.
+ * Whether stdin is a terminal, where with no input given the REPL would run. On JDK 21, which the CLI compiles against,
+ * the console is there only where stdin and stdout both are terminals. From JDK 22, as the native image's GraalVM 25 is,
+ * it's there where they aren't too, and `Console.isTerminal` says: called by reflection, as JDK 21 has no such method,
+ * which the native image's metadata registers (`java.io.Console`). A pipe or a file on stdin is never a terminal here.
  */
-class Cli(private val env: Map<String, String>, private val out: Writer, private val err: Writer) {
+private fun stdinTerminal(): Boolean = System.console()?.let { console ->
+    try {
+        java.io.Console::class.java.getMethod("isTerminal").invoke(console) as Boolean
+    } catch (e: NoSuchMethodException) {
+        // JDK 21: the console is there only where both are terminals.
+        true
+    }
+} ?: false
+
+/**
+ * One run of the CLI, given its environment, its streams and its working directory rather than the process's, so a test
+ * runs it in process as the binary runs. Its output streams are UTF-8, and each line ends in `\n`. [stdin] is opened only
+ * where the statements are stdin's, and [stdinTerminal] says whether it's a terminal, where the REPL would run.
+ */
+class Cli(
+    private val env: Map<String, String>,
+    private val out: Writer,
+    private val err: Writer,
+    private val stdin: () -> Reader = { StringReader("") },
+    private val stdinTerminal: Boolean = false,
+    private val dir: File = File("."),
+) {
 
     /** Runs [args] and gives the exit code: see [ExitCode]. */
     fun run(args: List<String>): Int {
         val code = try {
             when (val parsed = Args.parse(args)) {
-                Parsed.Help -> print { it.write(Args.USAGE) }
-                Parsed.Version -> print { it.write("drivine $VERSION\n") }
-                is Parsed.Run -> run(parsed.invocation.check(env))
+                Parsed.Help -> exit(print { it.write(Args.USAGE) })
+                Parsed.Version -> exit(print { it.write("drivine $VERSION\n") })
+                is Parsed.Run -> run(parsed.invocation.check(env, dir, stdinTerminal))
             }
         } catch (e: BadInvocation) {
             fail(ExitCode.BAD_INVOCATION, e.message.orEmpty())
@@ -54,18 +83,80 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
         return code
     }
 
+    /**
+     * Runs [plan]'s statements in order, each in its own transaction, on one connection to its store, and prints each
+     * result as it comes. A statement that fails prints its message on stderr, and the run stops there with
+     * [ExitCode.STATEMENT_FAILED], or goes on with `--continue` and ends with it. A store that can't be reached ends the run
+     * with [ExitCode.UNREACHABLE] at once, as nothing after could run.
+     */
     private fun run(plan: Plan): Int {
-        val result = try {
-            Store.open(plan).use { store -> store.run(plan.cypher) }
+        val store = try {
+            Store.open(plan)
         } catch (e: Unreachable) {
-            trace(e)
-            return fail(ExitCode.UNREACHABLE, "drivine: can't connect to the ${plan.address.store.flag} store: ${e.message}")
+            return unreachable(plan, e)
+        }
+        return store.use {
+            try {
+                reader(plan.source).use { reader -> runAll(plan, store, Statements(reader)) }
+            } catch (e: IOException) {
+                // The input couldn't be read to its end, as a file removed under the run or stdin's pipe broken.
+                trace(e)
+                fail(ExitCode.STATEMENT_FAILED, "drivine: can't read the statements: ${e.message ?: e.javaClass.name}")
+            }
+        }
+    }
+
+    private fun runAll(plan: Plan, store: Store, inputs: Iterator<Input>): Int {
+        val renderer = Renderer.of(plan.format)
+        var failed = false
+        for (input in inputs) {
+            val code = when (input) {
+                is Input.Statement -> statement(plan, store, renderer, input.cypher)
+                is Input.Command -> when (input.line.trim().substringBefore(' ')) {
+                    ":exit", ":quit" -> break
+                    else -> fail(ExitCode.STATEMENT_FAILED, "drivine: ${input.line.trim().substringBefore(' ')} comes later, and this build doesn't run it")
+                }
+            }
+            when (code) {
+                ExitCode.OK -> {}
+                ExitCode.STATEMENT_FAILED -> {
+                    failed = true
+                    if (!plan.continueOnFailure) return code
+                }
+                Done -> return ExitCode.OK
+                else -> return code
+            }
+        }
+        return if (failed) ExitCode.STATEMENT_FAILED else ExitCode.OK
+    }
+
+    /** Runs one statement and prints what it gives: [ExitCode.OK], or the code it failed with, or [Done] where stdout was closed. */
+    private fun statement(plan: Plan, store: Store, renderer: Renderer, cypher: String): Int {
+        val result = try {
+            store.run(cypher)
+        } catch (e: Unreachable) {
+            return unreachable(plan, e)
         } catch (e: Exception) {
             trace(e)
             // The store's message, or the compiler's refusal: a statement that failed prints nothing to stdout.
             return fail(ExitCode.STATEMENT_FAILED, e.message ?: e.javaClass.name)
         }
-        return print { Renderer.of(plan.format).render(result, it) }
+        return print { renderer.render(result, it) }
+    }
+
+    /** [code] as the run's exit code: [Done], stdout closed by its reader, is [ExitCode.OK]. */
+    private fun exit(code: Int): Int = if (code == Done) ExitCode.OK else code
+
+    private fun unreachable(plan: Plan, e: Unreachable): Int {
+        trace(e)
+        return fail(ExitCode.UNREACHABLE, "drivine: can't connect to the ${plan.address.store.flag} store: ${e.message}")
+    }
+
+    /** The statements' text, read as it comes: the command line's, the file's in UTF-8, or stdin's. */
+    private fun reader(source: Source): Reader = when (source) {
+        is Source.Text -> StringReader(source.cypher)
+        is Source.File -> source.file.bufferedReader(Charsets.UTF_8)
+        Source.Stdin -> BufferedReader(stdin())
     }
 
     /**
@@ -79,7 +170,7 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
             out.flush()
             ExitCode.OK
         } catch (e: IOException) {
-            if (closedPipe(e)) ExitCode.OK
+            if (closedPipe(e)) Done
             else fail(ExitCode.STATEMENT_FAILED, "drivine: can't write the result: ${e.message ?: e.javaClass.name}")
         }
 
@@ -98,6 +189,12 @@ class Cli(private val env: Map<String, String>, private val out: Writer, private
     }
 
     companion object {
+        /**
+         * Not an exit code: stdout's reader closed it, so no more is to be run or printed, and the run ends with
+         * [ExitCode.OK]. Only [print] and the statement loop see it.
+         */
+        private const val Done = -1
+
         /**
          * Whether [e] is a write to a pipe its reader closed. The JDK's FileOutputStream, and so the native image, which
          * links the same code, gives EPIPE's text, "Broken pipe" on Linux and macOS alike, and "Stream closed" (or

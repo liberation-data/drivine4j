@@ -80,6 +80,43 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `statements run in order, each printed as it comes, and the first that fails stops the run, unless --continue`() {
+        val text = "RETURN 1 AS a; RETURN 1/0 AS b; RETURN 3 AS c"
+        val stopped = runCli(memory + listOf("--format", "json", text))
+        assertEquals(1, stopped.exit)
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", stopped.stdout)
+        val went = runCli(memory + listOf("--format", "json", "--continue", text))
+        assertEquals(1, went.exit)
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n{\"columns\":[\"c\"],\"rows\":[[3]]}\n", went.stdout)
+        assertTrue(went.stderr.isNotBlank())
+        // Each statement runs in a transaction of its own, so a later failure leaves an earlier write.
+        val file = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(file, "g.db")}")
+            assertEquals(1, runCli(db + listOf("CREATE (:Kept); RETURN 1/0")).exit)
+            assertEquals("{\"columns\":[\"n\"],\"rows\":[[1]]}\n", runCli(db + listOf("--format", "json", "MATCH (k:Kept) RETURN count(k) AS n")).stdout)
+        } finally {
+            file.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `statements come from a -f file or stdin, and the exit command stops reading`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            java.io.File(dir, "a.cypher").writeText("RETURN 1 AS n;\n:exit\nRETURN 2 AS n;\n")
+            assertEquals(CliRun(0, "{\"columns\":[\"n\"],\"rows\":[[1]]}\n", ""), runCli(memory + listOf("--format", "json", "-f", "a.cypher"), dir = dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+        assertEquals(CliRun(0, "n\n1\nm\n2\n", ""), runCli(memory + listOf("--format", "plain"), stdin = "RETURN 1 AS n;\nRETURN 2 AS m"))
+        // A command this build doesn't run yet fails as a statement does.
+        val later = runCli(memory + listOf("--format", "json"), stdin = ":begin\nRETURN 1 AS n;")
+        assertEquals(1, later.exit)
+        assertTrue(":begin comes later" in later.stderr, later.stderr)
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }
