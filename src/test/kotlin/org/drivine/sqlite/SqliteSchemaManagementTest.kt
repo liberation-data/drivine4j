@@ -173,6 +173,27 @@ class SqliteSchemaManagementTest {
     }
 
     @Test
+    fun `an index over something else under Drivine's name is drift, not made, and a recreate replaces it`() {
+        // CREATE INDEX IF NOT EXISTS passes over the name, so only the listing's object rows tell it apart (drivine4j#770).
+        val spec = RangeIndexSpec("Coupon", "serial")
+        val name = org.drivine.backend.sqlite.SqliteGraph("schema").objectName("ix", listOf("Coupon", "serial"))
+        manager.indexes.run("CREATE INDEX $name ON schema_node (${property("", "couponRef")})")
+        try {
+            val drift = manager.indexes.ensure(spec)
+            assertTrue(drift is EnsureResult.Drift, "got $drift")
+            assertEquals(name, drift.existing.name)
+
+            assertTrue(manager.indexes.recreate(spec) is EnsureResult.Recreated)
+            assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+            val plan = plan("SELECT nid FROM schema_node n WHERE ${property("n", "serial")} = 'x' AND ${label("n", "Coupon")}")
+            assertTrue("USING INDEX $name" in plan, plan)
+        } finally {
+            manager.indexes.run("DROP INDEX IF EXISTS $name")
+            runCatching { manager.indexes.drop(spec) }
+        }
+    }
+
+    @Test
     fun `schema version marker round-trips, with its inventory`() {
         val store = SchemaVersionStore(manager)
         store.clear()

@@ -167,7 +167,7 @@ class SchemaStatementGoldenTest {
     @Test
     fun `the tests rewritten or added since the golden was recorded are named, each with its reason, and only the recorded classes are checked`() {
         assertEquals(3, SchemaStatementGolden.UNCHECKED.values.count { it.startsWith("rewritten: ") })
-        assertEquals(1, SchemaStatementGolden.UNCHECKED.values.count { it.startsWith("added after the recording: ") })
+        assertEquals(2, SchemaStatementGolden.UNCHECKED.values.count { it.startsWith("added after the recording: ") })
         val recorded = java.io.File(SchemaStatementGolden.DEFAULT_GOLDEN, SchemaStatementGolden.CLASSES).readLines().filter { it.isNotBlank() }.toSet()
         SchemaStatementGolden.UNCHECKED.keys.forEach { key ->
             assertTrue(key.substringAfter("[class:").substringBefore("]") in recorded, key)

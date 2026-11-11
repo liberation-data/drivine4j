@@ -251,6 +251,8 @@ internal object SchemaStatementGolden {
             "rewritten: its second ensure went through an IndexManager with IndexBuild and a handler, which are gone; it now applies an owner under WARN, which writes the owner's marker and clears it",
         "[class:org.drivine.store.StatelessStoreIdentityOracleTest]/[method:concurrent first boots without the constraint agree on one identity over a full node table on Oracle()]" to
             "added after the recording: it came with the merge of main (#755, drivine4j#517), after the golden was first taken, so the managers' record has nothing of it (the forms' recording has its lines, kept as recorded)",
+        "[class:org.drivine.sqlite.SqliteSchemaManagementTest]/[method:an index over something else under Drivine's name is drift, not made, and a recreate replaces it()]" to
+            "added after the recording: it came with the forms (drivine4j#770, drivine-cypher-spec#186), after the SQL stores' golden was recorded again, so neither record has it",
     )
 
     /**

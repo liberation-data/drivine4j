@@ -87,11 +87,13 @@ through compiled DDL, among them) fails nothing. Within them, the tests below ar
 (`SchemaStatementGolden.UNCHECKED` names each, with the reason), and their lines, where they have any, are kept as
 recorded.
 
-Added after the golden was first recorded, so the managers' record has nothing of it:
+Added after the golden was first recorded, so the managers' record has nothing of them:
 
 - `StatelessStoreIdentityOracleTest`, "concurrent first boots without the constraint agree on one identity over a full
   node table on Oracle": it came with the merge of main (#755, for drivine4j#517). The forms' recording has its lines,
   which are kept as recorded and not checked.
+- `SqliteSchemaManagementTest`, "an index over something else under Drivine's name is drift, not made, and a recreate
+  replaces it": it came with the forms (drivine4j#770), after the SQL stores' files were recorded again.
 
 Three tests were rewritten when schema management became a driver over the planner, because they used the internal
 `IndexBuild`, which is gone. What they run now is not what was recorded:
