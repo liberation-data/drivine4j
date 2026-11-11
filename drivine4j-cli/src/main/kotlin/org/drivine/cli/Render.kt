@@ -25,10 +25,12 @@ fun interface Renderer {
  * spec's files write them, so a program reads a result as the spec's cases are read. A float keeps its fraction, as
  * Java's `Double.toString` writes it (`2.0`, `1.0E10`), where a JSON writer would make `2` of it, a whole number; NaN and
  * the infinities, which JSON has no number for, are `{"$float":"NaN"}` and the others. A whole number is written exactly,
- * past 2^53 too. A text is escaped only where JSON requires it. A node is `{"labels":[…],"properties":{…}}`, a
- * relationship `{"type":…,"properties":{…}}` and a path `{"nodes":[…],"relationships":[…],"forward":[…]}`, where
- * `forward[i]` says whether `relationships[i]` goes from `nodes[i]` to `nodes[i + 1]`, all with no store's ids
- * (liberation-data/drivine-cypher-spec#128).
+ * past 2^53 too. A text is escaped only where JSON requires it. A node is `{"$t":"node","labels":[…],"properties":{…}}`,
+ * a relationship `{"$t":"relationship","type":…,"properties":{…}}` and a path
+ * `{"$t":"path","nodes":[…],"relationships":[…],"forward":[…]}`, where `forward[i]` says whether `relationships[i]` goes
+ * from `nodes[i]` to `nodes[i + 1]`, all with no store's ids (liberation-data/drivine-cypher-spec#128). `$t` is the kind,
+ * as the spec's typed output names it, so that a program tells a node from a map: a map of the user's own that has a
+ * `$t` key is written inside one, `{"$t":"map","v":{…}}`, so it can't pass for a node.
  */
 object JsonRenderer : Renderer {
 
@@ -49,19 +51,13 @@ object JsonRenderer : Renderer {
             is Long, is Int, is Short, is Byte, is BigInteger -> out.append(value.toString())
             is BigDecimal -> out.append(value.toString())
             is CharSequence -> string(value, out)
-            is GraphNode -> write(mapOf("labels" to value.labels, "properties" to value.properties), out)
-            is GraphRelationship -> write(mapOf("type" to value.type, "properties" to value.properties), out)
-            is GraphPath -> write(mapOf("nodes" to value.nodes, "relationships" to value.relationships, "forward" to value.forward), out)
-            is Map<*, *> -> {
-                out.append('{')
-                value.entries.forEachIndexed { i, (key, item) ->
-                    if (i > 0) out.append(',')
-                    string(key.toString(), out)
-                    out.append(':')
-                    write(item, out)
-                }
-                out.append('}')
-            }
+            is GraphNode -> tagged("node", listOf("labels" to value.labels, "properties" to value.properties), out)
+            is GraphRelationship -> tagged("relationship", listOf("type" to value.type, "properties" to value.properties), out)
+            is GraphPath -> tagged(
+                "path", listOf("nodes" to value.nodes, "relationships" to value.relationships, "forward" to value.forward), out,
+            )
+            is Map<*, *> -> if (TAG in value) tagged("map", listOf("v" to Untagged(value)), out) else entries(value.entries.map { (k, v) -> k.toString() to v }, out)
+            is Untagged -> entries(value.map.entries.map { (k, v) -> k.toString() to v }, out)
             is Iterable<*> -> {
                 out.append('[')
                 value.forEachIndexed { i, item ->
@@ -75,6 +71,27 @@ object JsonRenderer : Renderer {
             is TemporalAccessor -> string(value.toString(), out)
             else -> string(value.toString(), out)
         }
+    }
+
+    /** The key that names a value's kind, as the spec's typed output names it. */
+    private const val TAG = "\$t"
+
+    /** A map of the user's own that has a [TAG] key, written as it is inside the `{"$t":"map","v":…}` that holds it. */
+    private class Untagged(val map: Map<*, *>)
+
+    /** An object whose first key is [TAG], naming its [kind], then [entries]. */
+    private fun tagged(kind: String, entries: List<Pair<String, Any?>>, out: Appendable) =
+        entries(listOf(TAG to kind) + entries, out)
+
+    private fun entries(entries: List<Pair<String, Any?>>, out: Appendable) {
+        out.append('{')
+        entries.forEachIndexed { i, (key, item) ->
+            if (i > 0) out.append(',')
+            string(key, out)
+            out.append(':')
+            write(item, out)
+        }
+        out.append('}')
     }
 
     private fun float(value: Double, text: String, out: Appendable) {

@@ -631,17 +631,23 @@ cases:
     stdout: "{\"columns\":[\"m\",\"t\"],\"rows\":[[{\"k\":\"é😀\"},\"é😀\\n\"]]}\n"
     exit: 0
 
-  - name: "json writes a node, its labels sorted, and a relationship as objects, with no store's ids"
+  - name: "json writes a node, its labels sorted, and a relationship as objects tagged $t, with no store's ids"
     args: ["--format", "json", "CREATE (n:Q:P {name: 'x'})-[r:K {w: 1}]->(m:Q) RETURN n, r, m"]
-    stdout: "{\"columns\":[\"n\",\"r\",\"m\"],\"rows\":[[{\"labels\":[\"P\",\"Q\"],\"properties\":{\"name\":\"x\"}},{\"type\":\"K\",\"properties\":{\"w\":1}},{\"labels\":[\"Q\"],\"properties\":{}}]]}\n"
+    stdout: "{\"columns\":[\"n\",\"r\",\"m\"],\"rows\":[[{\"$t\":\"node\",\"labels\":[\"P\",\"Q\"],\"properties\":{\"name\":\"x\"}},{\"$t\":\"relationship\",\"type\":\"K\",\"properties\":{\"w\":1}},{\"$t\":\"node\",\"labels\":[\"Q\"],\"properties\":{}}]]}\n"
     exit: 0
 
-  - name: "json writes a path as its nodes and relationships, in the order it walks them, and which way it walks each"
+  - name: "json writes a path, tagged $t, as its nodes and relationships, in the order it walks them, and which way it walks each"
     except: [sql]
     args: ["--format", "json", "CREATE (a:A)-[:R]->(:B)<-[:S]-(:C) WITH a MATCH p = (a)-[:R]->(:B)<-[:S]-(:C) RETURN p"]
-    stdout: "{\"columns\":[\"p\"],\"rows\":[[{\"nodes\":[{\"labels\":[\"A\"],\"properties\":{}},{\"labels\":[\"B\"],\"properties\":{}},{\"labels\":[\"C\"],\"properties\":{}}],\"relationships\":[{\"type\":\"R\",\"properties\":{}},{\"type\":\"S\",\"properties\":{}}],\"forward\":[true,false]}]]}\n"
+    stdout: "{\"columns\":[\"p\"],\"rows\":[[{\"$t\":\"path\",\"nodes\":[{\"$t\":\"node\",\"labels\":[\"A\"],\"properties\":{}},{\"$t\":\"node\",\"labels\":[\"B\"],\"properties\":{}},{\"$t\":\"node\",\"labels\":[\"C\"],\"properties\":{}}],\"relationships\":[{\"$t\":\"relationship\",\"type\":\"R\",\"properties\":{}},{\"$t\":\"relationship\",\"type\":\"S\",\"properties\":{}}],\"forward\":[true,false]}]]}\n"
     exit: 0
     note: "A SQL store refuses a path: liberation-data/drivine-cypher-spec#163."
+
+  - name: "json writes a map of the user's own that has a $t key inside a $t map, so it can't pass for a node"
+    args: ["--format", "json", "RETURN {`$t`: 'node'} AS m, {k: 1} AS p"]
+    stdout: "{\"columns\":[\"m\",\"p\"],\"rows\":[[{\"$t\":\"map\",\"v\":{\"$t\":\"node\"}},{\"k\":1}]]}\n"
+    exit: 0
+    note: "A map with no $t key is written as it is. The escape is typed output's (#161)."
 
   - name: "json writes a temporal value as its ISO 8601 text, a string"
     only: [neo4j, sql]
@@ -657,7 +663,7 @@ cases:
 
   - name: "csv writes a node and a relationship as their compact JSON, in \"…\""
     args: ["--format", "csv", "CREATE (n:P {name: 'x'})-[r:K {w: 1}]->(:Q) RETURN n, r"]
-    stdout: "n,r\n\"{\"\"labels\"\":[\"\"P\"\"],\"\"properties\"\":{\"\"name\"\":\"\"x\"\"}}\",\"{\"\"type\"\":\"\"K\"\",\"\"properties\"\":{\"\"w\"\":1}}\"\n"
+    stdout: "n,r\n\"{\"\"$t\"\":\"\"node\"\",\"\"labels\"\":[\"\"P\"\"],\"\"properties\"\":{\"\"name\"\":\"\"x\"\"}}\",\"{\"\"$t\"\":\"\"relationship\"\",\"\"type\"\":\"\"K\"\",\"\"properties\"\":{\"\"w\"\":1}}\"\n"
     exit: 0
 
   - name: "csv separates results with one empty line"

@@ -50,8 +50,8 @@ class CliSqliteTest {
         val cypher = "CREATE (n:P {l: [1, 2]})-[r:R]->(m {k: 1}) RETURN [n] AS ns, [r] AS rs, m"
         assertEquals(CliRun(0, "ns, rs, m\n[(:P {l: [1, 2]})], [[:R]], ({k: 1})\n", ""), runCli(memory + listOf("--format", "plain", cypher)))
         assertEquals(
-            "{\"columns\":[\"ns\",\"rs\",\"m\"],\"rows\":[[[{\"labels\":[\"P\"],\"properties\":{\"l\":[1,2]}}],[{\"type\":\"R\",\"properties\":{}}]," +
-                "{\"labels\":[],\"properties\":{\"k\":1}}]]}\n",
+            "{\"columns\":[\"ns\",\"rs\",\"m\"],\"rows\":[[[{\"\$t\":\"node\",\"labels\":[\"P\"],\"properties\":{\"l\":[1,2]}}],[{\"\$t\":\"relationship\",\"type\":\"R\",\"properties\":{}}]," +
+                "{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"k\":1}}]]}\n",
             runCli(memory + listOf("--format", "json", cypher)).stdout,
         )
     }

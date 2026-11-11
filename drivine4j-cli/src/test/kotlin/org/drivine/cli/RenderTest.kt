@@ -120,14 +120,23 @@ class RenderTest {
     }
 
     @Test
-    fun `json writes a node, a relationship and a path as objects, with no ids`() {
-        assertEquals("{\"labels\":[\"A\",\"B\"],\"properties\":{\"name\":\"x\",\"n\":1}}", json(a))
-        assertEquals("{\"type\":\"S\",\"properties\":{}}", json(s))
+    fun `json writes a node, a relationship and a path as objects tagged with their kind, with no ids`() {
+        assertEquals("{\"\$t\":\"node\",\"labels\":[\"A\",\"B\"],\"properties\":{\"name\":\"x\",\"n\":1}}", json(a))
+        assertEquals("{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{}}", json(s))
         assertEquals(
-            "{\"nodes\":[{\"labels\":[\"B\"],\"properties\":{}},{\"labels\":[\"C\"],\"properties\":{}}]," +
-                "\"relationships\":[{\"type\":\"S\",\"properties\":{}}],\"forward\":[false]}",
+            "{\"\$t\":\"path\",\"nodes\":[{\"\$t\":\"node\",\"labels\":[\"B\"],\"properties\":{}},{\"\$t\":\"node\",\"labels\":[\"C\"],\"properties\":{}}]," +
+                "\"relationships\":[{\"\$t\":\"relationship\",\"type\":\"S\",\"properties\":{}}],\"forward\":[false]}",
             json(GraphPath(listOf(b, c), listOf(s), listOf(false))),
         )
-        assertEquals("{\"columns\":[\"n\"],\"rows\":[[{\"labels\":[\"B\"],\"properties\":{}}]]}\n", json(Result(listOf("n"), listOf(listOf(b)))))
+        assertEquals("{\"columns\":[\"n\"],\"rows\":[[{\"\$t\":\"node\",\"labels\":[\"B\"],\"properties\":{}}]]}\n", json(Result(listOf("n"), listOf(listOf(b)))))
+    }
+
+    @Test
+    fun `json writes a map with a key of $t inside a map tagged so, at any depth, and any other map as it is`() {
+        assertEquals("{\"\$t\":\"map\",\"v\":{\"\$t\":\"node\",\"labels\":[]}}", json(linkedMapOf("\$t" to "node", "labels" to emptyList<String>())))
+        assertEquals("[{\"k\":{\"\$t\":\"map\",\"v\":{\"\$t\":1,\"m\":{\"\$t\":\"map\",\"v\":{\"\$t\":2}}}}}]", json(listOf(mapOf("k" to linkedMapOf("\$t" to 1L, "m" to mapOf("\$t" to 2L))))))
+        assertEquals("{\"\$x\":1,\"t\":2}", json(linkedMapOf("\$x" to 1L, "t" to 2L)))
+        // A node's properties with a $t key are a map of the user's own too.
+        assertEquals("{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"\$t\":\"map\",\"v\":{\"\$t\":1}}}", json(GraphNode(emptyList(), mapOf("\$t" to 1L))))
     }
 }
