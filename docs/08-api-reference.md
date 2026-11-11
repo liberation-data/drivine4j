@@ -11,6 +11,7 @@ interface PersistenceManager {
     fun executeBatch(specs: List<QuerySpecification<*>>)                      // several statements, one transaction
     fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>>      // the same, returning each statement's rows
     fun queryResult(spec: QuerySpecification<*>): QueryResult                 // the columns and rows as they are, nodes with their labels
+    fun explain(spec: QuerySpecification<*>): String                          // the SQL a Cypher statement compiles to, nothing run
     val atomicBatches: Boolean                                                // whether a batch of several statements is applied whole
 }
 ```
@@ -18,6 +19,8 @@ interface PersistenceManager {
 `executeBatch` and `queryBatch` run their statements in one transaction on the managers Drivine provides, or in the transaction they are called in. FalkorDB has no transactions: there each statement commits by itself, `atomicBatches` is false, a batch of one statement runs with no transaction, and a batch of more runs statement by statement (`WARN`) or is refused with `NonAtomicBatchException` before any of it runs (`STRICT`). The interface's own defaults run each statement on its own, so a `PersistenceManager` you implement must override both to make a batch atomic; `saveAll` calls `queryBatch`.
 
 `queryResult` gives a statement's result for showing rather than mapping, its columns, its rows and, on Neo4j and Memgraph, its `counts` of what it wrote: see [Results as they are](07-core-features.md#results-as-they-are-queryresult). A `PersistenceManager` or `Connection` you implement refuses it with `UnsupportedOperationException` unless it overrides it.
+
+`explain` gives the SQL a Cypher statement compiles to on Postgres, Oracle or SQLite, with nothing run: what the store would run for it, its parameters bound apart. A graph engine, which runs Cypher itself, refuses it, as a `PersistenceManager` or `Connection` you implement does unless it overrides it. The drivine CLI's `--explain` prints it.
 
 ### QuerySpecification
 

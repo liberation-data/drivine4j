@@ -99,6 +99,15 @@ class TransactionalPersistenceManager(
         }
     }
 
+    override fun explain(spec: QuerySpecification<*>): String {
+        val connection = currentTransactionOrThrow().getOrCreateConnection(database, contextHolder)
+        return try {
+            connection.explain(spec)
+        } catch (e: Exception) {
+            throw DrivineException.withRootCause(e, spec)
+        }
+    }
+
     override fun execute(spec: QuerySpecification<*>) {
         if (SchemaCommands.refusedInTransaction(type, spec)) return
         val txObject = currentTransactionOrThrow()

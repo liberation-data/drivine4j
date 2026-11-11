@@ -76,6 +76,8 @@ data class Invocation(
     val nonInteractive: Boolean = false,
     /** Each `-P`, in the order given: a later one of the same name replaces an earlier. */
     val parameters: List<Assignment> = emptyList(),
+    /** `--explain`: print what each statement compiles to on a SQL store, and run none. */
+    val explain: Boolean = false,
 ) {
     /**
      * This invocation, checked in the contract's order once the flags have been read: the inputs, then the address, then
@@ -99,6 +101,9 @@ data class Invocation(
             ?: env[ENV_ADDRESS]?.let { it to false }
             ?: throw BadInvocation("drivine: no address: give -a ADDRESS or $ENV_ADDRESS; see --help")
         val parsed = Address.parse(text, type, fromCommandLine)
+        if (explain && parsed.store in GRAPH_ENGINES) {
+            throw BadInvocation("drivine: --explain prints the SQL a statement compiles to, and ${parsed.store.flag} runs Cypher itself: there's no SQL to print")
+        }
         // The user: -u, then the address's, then DRIVINE_USER. The password: DRIVINE_PASSWORD, then the address's, which
         // only an address kept off the command line may hold.
         return Plan(
@@ -107,12 +112,16 @@ data class Invocation(
             format = format,
             continueOnFailure = continueOnFailure,
             parameters = parameters,
+            explain = explain,
             user = user ?: parsed.user ?: env[ENV_USER],
             password = env[ENV_PASSWORD] ?: parsed.password,
         )
     }
 
     companion object {
+        /** The stores that run Cypher themselves, where `--explain` has no SQL to print. */
+        private val GRAPH_ENGINES = setOf(StoreType.NEO4J, StoreType.MEMGRAPH, StoreType.FALKORDB)
+
         /**
          * [path], from [dir] where it's relative, as a file the CLI can read: a bad invocation where it isn't, which names
          * the path as given, as a `-f` value holds no secret.
@@ -146,10 +155,12 @@ data class Plan(
     val continueOnFailure: Boolean = false,
     /** The `-P` parameters, evaluated on the store before any statement runs. */
     val parameters: List<Assignment> = emptyList(),
+    /** `--explain`: each statement's SQL printed, and none run. */
+    val explain: Boolean = false,
 ) {
     override fun toString(): String =
         "Plan(address=$address, source=$source, format=$format, user=$user, password=${password?.let { "***" }}, " +
-            "continueOnFailure=$continueOnFailure, parameters=$parameters)"
+            "continueOnFailure=$continueOnFailure, parameters=$parameters, explain=$explain)"
 }
 
 /**
@@ -183,7 +194,7 @@ object Args {
     /** The contract's flags that this build doesn't take yet: still a bad invocation, but said so, not called unknown. */
     internal val LATER = setOf(
         "-d", "--database", "-g", "--graph", "--profile", "--sample-rows", "--wrap",
-        "--explain", "--history", "--idle-timeout", "--transaction-timeout", "--log",
+        "--history", "--idle-timeout", "--transaction-timeout", "--log",
         "--driver-version",
     )
 
@@ -222,6 +233,7 @@ object Args {
                 "-f", "--file" -> invocation = invocation.copy(files = invocation.files + value())
                 "--continue" -> { noValue(); invocation = invocation.copy(continueOnFailure = true) }
                 "--non-interactive" -> { noValue(); invocation = invocation.copy(nonInteractive = true) }
+                "--explain" -> { noValue(); invocation = invocation.copy(explain = true) }
                 "-P", "--param" -> {
                     // The value isn't named back: a parameter may hold what a script would rather not print.
                     val assignment = Assignment.parse(value())
@@ -260,6 +272,8 @@ object Args {
         |  -f, --file FILE              The file's statements. With no cypher, -c or -f, stdin's.
         |  --non-interactive            Read stdin even where it's a terminal.
         |  --continue                   Run every statement, reporting each failure, rather than stop at the first.
+        |  --explain                    On Postgres, Oracle or SQLite: print the SQL each statement compiles to, then
+        |                               -- parameters: and its parameters as JSON, and run none. -P and :param still run.
         |  -P, --param PARAM            A parameter, NAME => EXPRESSION, NAME=EXPRESSION or {NAME: EXPRESSION, …}:
         |                               the expression is Cypher, which the store evaluates. Given more than once,
         |                               a later one replaces an earlier one of the same name.

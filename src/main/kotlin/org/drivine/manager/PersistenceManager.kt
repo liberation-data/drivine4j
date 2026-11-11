@@ -126,6 +126,14 @@ interface PersistenceManager {
         throw UnsupportedOperationException("${this::class.simpleName} gives no QueryResult: use query.")
 
     /**
+     * The SQL the Cypher statement [spec] compiles to, which runs nothing: what Postgres, Oracle and SQLite would run for
+     * it, its parameters bound apart. A graph engine runs Cypher as it is, and refuses it, as does a manager written before
+     * this call was added. It is for a caller that shows what a statement compiles to, as the drivine CLI's `--explain` does.
+     */
+    fun explain(spec: QuerySpecification<*>): String =
+        throw UnsupportedOperationException("${this::class.simpleName} gives no SQL: it runs Cypher as it is.")
+
+    /**
      * Execute a statement and disregard any results that are returned.
      * @param spec
      */

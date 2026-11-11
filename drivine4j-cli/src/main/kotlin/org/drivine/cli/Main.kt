@@ -103,7 +103,7 @@ class Cli(
         return store.use {
             try {
                 reader(plan.source).use { reader ->
-                    Session(store, Renderer.of(plan.format, stdoutTerminal), output, dir, plan.continueOnFailure) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
+                    Session(store, Renderer.of(plan.format, stdoutTerminal), output, dir, plan.continueOnFailure, plan.explain) { withoutMark(it.bufferedReader(Charsets.UTF_8)) }
                         .run(plan.parameters, Statements(reader), (plan.source as? Source.File)?.file)
                 }
             } catch (e: IOException) {

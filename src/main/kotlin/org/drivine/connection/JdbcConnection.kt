@@ -145,6 +145,13 @@ class JdbcConnection(
         return JdbcTypedValues.result(compiled.columns, ran.rows.map { it.values.single() })
     }
 
+    /** The SQL the Cypher statement [spec] compiles to, as [query] would run it, with nothing run. SQL as it is is refused. */
+    override fun explain(spec: QuerySpecification<*>): String {
+        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        return cypherCompiled(given, typed = false)?.sql
+            ?: throw DrivineException("explain gives the SQL a Cypher statement compiles to, and this is SQL already.", spec = spec)
+    }
+
     /** A statement [run] ran: the spec it ran as SQL, the Cypher it was compiled from, if any, its columns as the driver names them, and its rows. */
     private class Ran(val spec: QuerySpecification<*>, val cypher: CompiledCypher?, val columns: List<String>, val rows: List<JdbcRow>)
 

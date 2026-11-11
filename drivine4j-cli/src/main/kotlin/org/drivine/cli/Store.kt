@@ -48,6 +48,13 @@ class Store private constructor(private val drivine: Drivine, private val scratc
         return Result(result.columns, result.rows, result.counts, (System.nanoTime() - started) / 1_000_000)
     }
 
+    /** The SQL [cypher] compiles to on this store, given [parameters], with nothing run: see [PersistenceManager.explain]. */
+    fun explain(cypher: String, parameters: Map<String, Any?> = emptyMap()): String = try {
+        manager.explain(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+    } catch (e: Exception) {
+        throw if (Failures.unreachable(e)) Unreachable(e) else e
+    }
+
     /**
      * Runs [block] in one transaction, which [run] joins: committed where [block] returns, and rolled back where it throws,
      * the throw then [block]'s. Where the store can't be reached as it begins or ends, that is [Unreachable].

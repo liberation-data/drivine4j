@@ -381,6 +381,29 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `--explain prints each statement's SQL and its parameters, runs none, and still evaluates a parameter on the store`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(dir, "g.db")}")
+            val run = runCli(db + listOf("--explain", "-P", "x => 1 + 1"), stdin = ":begin\nCREATE (:Explained {x: \$x});\n:param y => 'a'\nMATCH (n) RETURN n;\n:commit\n")
+            assertEquals(0, run.exit, run.stderr)
+            val parts = run.stdout.split(Regex("(?m)^-- parameters: .*\n"))
+            assertEquals(3, parts.size, run.stdout)
+            assertTrue(parts[0].isNotBlank() && parts[1].isNotBlank(), run.stdout)
+            val parameters = Regex("(?m)^-- parameters: (.*)$").findAll(run.stdout).map { it.groupValues[1] }.toList()
+            assertEquals(listOf("{\"x\":2}", "{\"x\":2,\"y\":\"a\"}"), parameters)
+            // Nothing ran: the store holds no node.
+            assertEquals("{\"columns\":[\"c\"],\"rows\":[[0]]}\n", runCli(db + listOf("--format", "json", "MATCH (n) RETURN count(n) AS c")).stdout)
+            // A statement the compiler refuses fails as it would run.
+            val refused = runCli(db + listOf("--explain", "MATCH p = (a)-->(b) RETURN p"))
+            assertEquals(1, refused.exit)
+            assertEquals("", refused.stdout)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

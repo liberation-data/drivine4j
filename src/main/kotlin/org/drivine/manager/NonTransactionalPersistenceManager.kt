@@ -83,6 +83,8 @@ class NonTransactionalPersistenceManager(
         return onConnection(spec) { it.queryResult(spec) }
     }
 
+    override fun explain(spec: QuerySpecification<*>): String = onConnection(spec) { it.explain(spec) }
+
     /** Runs [spec] by [run] on the connection a schema command holds, where one does: see SchemaCommands. */
     private fun <R> onConnection(spec: QuerySpecification<*>, run: (Connection) -> R): R = try {
         PinnedConnections.on(connectionProvider, run)
