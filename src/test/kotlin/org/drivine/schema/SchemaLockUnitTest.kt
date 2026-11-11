@@ -22,7 +22,8 @@ import kotlin.test.assertTrue
 /**
  * [SchemaLock] without a store (liberation-data/drivine4j#777): which errors of the lock's statement leave the DDL to run
  * unlocked, which are thrown, that the lock's connection is given back on every path, and that the warning of a lock not
- * had is given once for each graph. SchemaLockTest drives it on Oracle.
+ * had is given once for each graph; and that a plan takes the lock within its provider's gate, frees both on every path,
+ * and queues at the gate while another plan of the provider holds it. SchemaLockTest drives it on Oracle.
  */
 class SchemaLockUnitTest {
 
@@ -110,6 +111,66 @@ class SchemaLockUnitTest {
         assertReleasedWithError(provider)
     }
 
+    @Test
+    fun `a plan's DDL runs with the gate and the lock held, and frees the lock and then the gate however the plan ends`() {
+        val denied = SQLException("ORA-01031: insufficient privileges", "42000", 1031)
+        val cases = listOf<Pair<String, (String) -> Exception?>>(
+            "made" to { _ -> null },
+            "the DDL failed" to { statement -> if (statement.trimStart().startsWith("DECLARE")) RuntimeException("refused") else null },
+            "the lock's statement failed" to { statement -> if ("FOR UPDATE" in statement) denied else null },
+        )
+        for ((case, fails) in cases) {
+            val provider = PlanProvider("gate_$case".replace(' ', '_').replace("'", ""), fails)
+            val gate = assertNotNull(SchemaLock.gate(provider))
+            val driver = SchemaPlanDriver(SchemaExecutor(provider), provider.schemaGrammar, { null })
+
+            runCatching { driver.item(org.drivine.cypher.store.plan.ItemCall.ENSURE, RangeIndexSpec("Gated", "k")) }
+
+            val ddl = provider.ran.filter { it.statement.trimStart().startsWith("DECLARE") }
+            assertTrue(ddl.isNotEmpty() || case == "the lock's statement failed", "$case: ${provider.ran}")
+            ddl.forEach { assertTrue(it.gated, "$case: the DDL ran inside the gate") }
+            val locks = provider.ran.filter { "FOR UPDATE" in it.statement }
+            assertEquals(1, locks.size, "$case: the lock is taken once, before the first DDL: ${provider.ran}")
+            assertTrue(locks.single().gated, "$case: the lock is taken inside the gate")
+            assertEquals(provider.connected, provider.releasedCount, "$case: every connection is given back")
+            assertEquals(listOf(true), provider.lockReleased, "$case: the lock's is given back before the gate is freed")
+            assertTrue(!gate.isLocked, "$case: the gate is freed")
+        }
+    }
+
+    @Test
+    fun `a plan of a provider waits at its gate, holding no connection for its lock, while another plan of it holds it`() {
+        val inDdl = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        val provider = PlanProvider("gate_queue") { statement ->
+            if (statement.trimStart().startsWith("DECLARE") && inDdl.count > 0) {
+                inDdl.countDown()
+                finish.await()
+            }
+            null
+        }
+        val gate = assertNotNull(SchemaLock.gate(provider))
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val plan = { SchemaPlanDriver(SchemaExecutor(provider), provider.schemaGrammar, { null }).item(org.drivine.cypher.store.plan.ItemCall.ENSURE, RangeIndexSpec("Queued", "k")) }
+            val first = pool.submit(plan)
+            assertTrue(inDdl.await(10, java.util.concurrent.TimeUnit.SECONDS), "the first plan runs its DDL")
+            val second = pool.submit(plan)
+            val deadline = System.nanoTime() + 10_000_000_000
+            while (!gate.hasQueuedThreads() && System.nanoTime() < deadline) Thread.onSpinWait()
+            assertTrue(gate.hasQueuedThreads(), "the second plan waits at the gate")
+            assertEquals(1, provider.ran.count { "FOR UPDATE" in it.statement }, "and has taken no lock: ${provider.ran}")
+            finish.countDown()
+            first.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            second.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(2, provider.ran.count { "FOR UPDATE" in it.statement }, "each took the lock in turn")
+            assertTrue(!gate.isLocked)
+        } finally {
+            finish.countDown()
+            pool.shutdownNow()
+        }
+    }
+
     private fun assertReleasedWithError(provider: FakeProvider) {
         val calls = provider.made.single().calls
         assertEquals("rollback", calls[calls.size - 2], "$calls")
@@ -140,6 +201,56 @@ class SchemaLockUnitTest {
         override val name = "fake"
         override val subtypeRegistry: SubtypeRegistry? = null
         override fun connect(): Connection = FakeConnection(fails, failRollback).also { made += it }
+        override fun end() {}
+    }
+
+    /**
+     * An Oracle graph [graphName]'s provider for a plan: each statement on any of its connections is kept in [ran], with
+     * whether its thread held the provider's gate, and answered with no rows, or thrown what [fails] gives for it.
+     * [lockReleased] keeps, for each lock's connection given back, whether its thread still held the gate.
+     */
+    private class PlanProvider(override val graphName: String, private val fails: (String) -> Exception?) : ConnectionProvider {
+        class Ran(val statement: String, val gated: Boolean) {
+            override fun toString() = "$statement${if (gated) " (gated)" else ""}"
+        }
+
+        val ran: MutableList<Ran> = java.util.Collections.synchronizedList(mutableListOf())
+        val lockReleased: MutableList<Boolean> = java.util.Collections.synchronizedList(mutableListOf())
+        var connected = 0
+        var releasedCount = 0
+        override val name = "plan"
+        override val type = DatabaseType.ORACLE
+        override val subtypeRegistry: SubtypeRegistry? = null
+        override val schemaGrammar: org.drivine.schema.SchemaGrammar =
+            org.drivine.backend.oracle.OracleSchemaGrammar(org.drivine.backend.oracle.OracleGraph(graphName))
+
+        private fun gated() = SchemaLock.gate(this)!!.isHeldByCurrentThread
+
+        override fun connect(): Connection {
+            synchronized(this) { connected++ }
+            return object : Connection {
+                override fun sessionId() = "plan"
+
+                override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
+                    val text = spec.statement!!.text
+                    ran += Ran(text, gated())
+                    if ("FOR UPDATE" in text) locking = true
+                    fails(text)?.let { throw it }
+                    return emptyList()
+                }
+
+                override fun startTransaction() = Unit
+                override fun commitTransaction() = Unit
+                override fun rollbackTransaction() = Unit
+                override fun release(err: Throwable?) {
+                    synchronized(this@PlanProvider) { releasedCount++ }
+                    if (locking) lockReleased += gated()
+                }
+
+                private var locking = false
+            }
+        }
+
         override fun end() {}
     }
 
