@@ -100,7 +100,7 @@ data class SearchSpec(
 
         data class Query(val query: String, val neo4j: List<String>)
 
-        /** The bar [store] is held to, if one is: `neo4j` too, where the file gives it one. */
+        /** The bar [store] is held to, if one is: the file gives every store one, `neo4j` too, against its own recording. */
         fun bar(store: String): Bar? = bars.singleOrNull { bar -> named(bar.stores, store) }
 
         /** How closely [ranked], each query's best [top] hits on a store, agrees with Neo4j's. */
