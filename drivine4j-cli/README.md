@@ -92,8 +92,9 @@ statement does too, with cypher-shell's line, `Could not find command :nope, use
 statement's `;` on the same line is no command.
 
 **`--explain`**, on Postgres, Oracle and SQLite, prints for each statement the SQL it compiles to
-(`PersistenceManager.explain`), then `-- parameters: ` and the parameters it's given, by their names, as `json` writes
-them, whatever the `--format`, and runs none. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
+(`PersistenceManager.explain`), then `-- parameters: ` and the parameters it uses, by their names, in the order it first
+uses them, as `json` writes them, whatever the `--format`, and runs none. The SQL is what an application's query
+compiles to; the CLI's own output adds typed reads, so its SQL differs a little. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
 `:rollback` open and close nothing. On a graph engine, which runs Cypher itself, it's refused as a bad invocation.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,

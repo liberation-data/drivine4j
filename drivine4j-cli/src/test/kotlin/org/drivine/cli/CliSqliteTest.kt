@@ -391,7 +391,8 @@ class CliSqliteTest {
             assertEquals(3, parts.size, run.stdout)
             assertTrue(parts[0].isNotBlank() && parts[1].isNotBlank(), run.stdout)
             val parameters = Regex("(?m)^-- parameters: (.*)$").findAll(run.stdout).map { it.groupValues[1] }.toList()
-            assertEquals(listOf("{\"x\":2}", "{\"x\":2,\"y\":\"a\"}"), parameters)
+            // Each statement's own: the first uses x; the second uses none, though x and y are set.
+            assertEquals(listOf("{\"x\":2}", "{}"), parameters)
             // Nothing ran: the store holds no node.
             assertEquals("{\"columns\":[\"c\"],\"rows\":[[0]]}\n", runCli(db + listOf("--format", "json", "MATCH (n) RETURN count(n) AS c")).stdout)
             // A statement the compiler refuses fails as it would run.

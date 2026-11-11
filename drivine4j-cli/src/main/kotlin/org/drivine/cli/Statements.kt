@@ -155,3 +155,81 @@ class Statements(private val reader: Reader) : Iterator<Input> {
         }
     }
 }
+
+/**
+ * The parameters [cypher] uses, by their names, in the order it first uses each: every `$name` or `` $`a name` `` outside a
+ * string, a backticked name and a comment, read with the rules [Statements] splits by. A name repeated is given once.
+ */
+internal fun parametersUsed(cypher: String): List<String> {
+    val used = LinkedHashSet<String>()
+    var i = 0
+    fun skipQuoted(quote: Char) {
+        i++
+        while (i < cypher.length) {
+            val c = cypher[i]
+            if (c == '\\' && quote != '`') { i += 2; continue }
+            i++
+            if (c == quote) return
+        }
+    }
+    while (i < cypher.length) {
+        val c = cypher[i]
+        when {
+            c == '\'' || c == '"' || c == '`' -> skipQuoted(c)
+            c == '/' && cypher.getOrNull(i + 1) == '/' -> { i = cypher.indexOf('\n', i).let { if (it < 0) cypher.length else it } }
+            c == '/' && cypher.getOrNull(i + 1) == '*' -> { i = cypher.indexOf("*/", i + 2).let { if (it < 0) cypher.length else it + 2 } }
+            c == '$' && cypher.getOrNull(i + 1) == '`' -> {
+                val start = i + 2
+                var end = start
+                val name = StringBuilder()
+                while (end < cypher.length) {
+                    if (cypher[end] == '`') {
+                        if (cypher.getOrNull(end + 1) == '`') { name.append('`'); end += 2; continue }
+                        break
+                    }
+                    name.append(cypher[end]); end++
+                }
+                if (name.isNotEmpty()) used += name.toString()
+                i = end + 1
+            }
+            c == '$' -> {
+                val start = i + 1
+                val end = when {
+                    start < cypher.length && cypher[start] in '0'..'9' -> {
+                        var end = start
+                        while (end < cypher.length && cypher[end] in '0'..'9') end++
+                        end
+                    }
+                    startsName(cypher, start) -> nameEnd(cypher, start)
+                    else -> start
+                }
+                if (end > start) used += cypher.substring(start, end)
+                i = end
+            }
+            // A name, which may hold a `$`, as `a$b` does, and so starts no parameter.
+            startsName(cypher, i) -> i = nameEnd(cypher, i)
+            else -> i++
+        }
+    }
+    return used.toList()
+}
+
+/** Whether a name starts at [at] in [cypher], as the grammar's `IdentifierStart` does: a Unicode `ID_Start` or a `Pc`. */
+private fun startsName(cypher: String, at: Int): Boolean {
+    if (at >= cypher.length) return false
+    val c = cypher.codePointAt(at)
+    return Character.isUnicodeIdentifierStart(c) || Character.getType(c) == Character.CONNECTOR_PUNCTUATION.toInt()
+}
+
+/** Where the name that starts at [from] in [cypher] ends, as the grammar's `IdentifierPart` reads it: `ID_Continue` or an `Sc`. */
+private fun nameEnd(cypher: String, from: Int): Int {
+    var end = from
+    while (end < cypher.length) {
+        val c = cypher.codePointAt(end)
+        val part = Character.isUnicodeIdentifierPart(c) && !Character.isIdentifierIgnorable(c) ||
+            Character.getType(c) == Character.CURRENCY_SYMBOL.toInt()
+        if (!part) break
+        end += Character.charCount(c)
+    }
+    return end
+}

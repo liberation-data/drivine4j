@@ -107,4 +107,27 @@ class StatementsTest {
         assertEquals(Input.Statement("RETURN 1"), inputs.next())
         assertEquals("RETURN 1;".length, read)
     }
+
+    @Test
+    fun `the parameters a statement uses are each named once, in the order it first uses them, and none in a string, a name or a comment`() {
+        assertEquals(listOf("b", "a"), parametersUsed("RETURN \$b AS x, \$a AS y, \$b AS z"))
+        assertEquals(listOf("limit", "a b", "x1", "_y"), parametersUsed("MATCH (n) WHERE n.k = \$limit OR n.j = \$`a b` RETURN \$x1, \$_y"))
+        assertEquals(emptyList(), parametersUsed("RETURN '\$a', \"\$b\", 1 AS `\$c` // \$d\n/* \$e */"))
+        assertEquals(listOf("f"), parametersUsed("RETURN 'it\\'s \$a' AS t, \$f"))
+        assertEquals(listOf("a`b"), parametersUsed("RETURN \$`a``b`"))
+        assertEquals(emptyList(), parametersUsed("RETURN 1 AS n, '\$'"))
+    }
+
+    @Test
+    fun `a parameter's name is read as Cypher reads a name, or a number, and a name holding a dollar sign is no parameter`() {
+        // A name goes on through a currency sign, a combining mark and a letter outside the BMP, as the grammar's names do.
+        assertEquals(listOf("a\$b", "é", "𝑥"), parametersUsed("RETURN \$a\$b, \$é, \$𝑥"))
+        assertEquals(emptyList(), parametersUsed("WITH 1 AS a\$b RETURN a\$b"))
+        assertEquals(listOf("0", "p", "q"), parametersUsed("RETURN \$0, \$p.x, \$q[0], \$ AS n, \$\$"))
+        assertEquals(
+            listOf("m", "xs", "s"),
+            parametersUsed("MATCH (n:`\$l`) RETURN n {.a, k: \$m}, [x IN \$xs WHERE x > 1 | x] /* ** \$c * */, \$s // \$t"),
+        )
+        assertEquals(listOf("u"), parametersUsed("RETURN \$u, 'never closed \$v"))
+    }
 }
