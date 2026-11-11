@@ -404,6 +404,24 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `--explain prints the same in every format, explains a source file's statements, and prints nothing for no statement`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            java.io.File(dir, "s.cypher").writeText("CREATE (:Sourced);\n")
+            val explained = runCli(memory + listOf("--explain"), stdin = ":source s.cypher\n", dir = dir)
+            assertEquals(0, explained.exit, explained.stderr)
+            assertTrue(explained.stdout.endsWith("\n-- parameters: {}\n"), explained.stdout)
+            assertEquals(explained.stdout, runCli(memory + listOf("--explain"), stdin = "CREATE (:Sourced);\n").stdout)
+            listOf("json", "csv", "plain", "table").forEach { format ->
+                assertEquals(explained, runCli(memory + listOf("--explain", "--format", format), stdin = ":source s.cypher\n", dir = dir), format)
+            }
+            assertEquals(CliRun(0, "", ""), runCli(memory + listOf("--explain"), stdin = ""))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

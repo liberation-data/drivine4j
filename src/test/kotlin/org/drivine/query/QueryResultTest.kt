@@ -185,7 +185,7 @@ class QueryResultTest {
     }
 
     @Test
-    fun `a connection or a manager written before explain refuses it`() {
+    fun `a connection written before explain refuses it`() {
         val connection = object : Connection {
             override fun sessionId() = "old"
             override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = emptyList()

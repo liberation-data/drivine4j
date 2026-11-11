@@ -93,7 +93,7 @@ statement's `;` on the same line is no command.
 
 **`--explain`**, on Postgres, Oracle and SQLite, prints for each statement the SQL it compiles to
 (`PersistenceManager.explain`), then `-- parameters: ` and the parameters it's given, by their names, as `json` writes
-them, and runs none. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
+them, whatever the `--format`, and runs none. A `:source` file's statements are explained in place. `-P` and `:param` still run, as the store evaluates their expressions, and `:begin`, `:commit` and
 `:rollback` open and close nothing. On a graph engine, which runs Cypher itself, it's refused as a bad invocation.
 
 **cypher-shell's flags that `drivine` takes:** `-a`/`--address`, `-u`/`--username`, `-f`/`--file`, `--format` (`auto`,
