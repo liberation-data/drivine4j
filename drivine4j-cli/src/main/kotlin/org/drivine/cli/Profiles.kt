@@ -80,7 +80,8 @@ object Profiles {
         }
         if (root == null || root.isMissingNode || root.isNull) return Read(null, emptyMap())
         if (!root.isObject) throw BadInvocation("drivine: $file holds no profiles: give default: and profiles:, as --help says")
-        val default = root.get("default")?.let { text(file, "default", it) }
+        // An empty default:, as `default:` or `default: ~`, gives none, as though the key weren't there.
+        val default = root.get("default")?.takeUnless { it.isNull }?.let { text(file, "default", it) }
         val section = root.get("profiles")
         if (section != null && !section.isNull && !section.isObject) {
             throw BadInvocation("drivine: profiles: in $file isn't a map of profiles by name")
@@ -100,8 +101,16 @@ object Profiles {
             fun key(key: String) = body.get(key)?.takeUnless { it.isNull }?.let { text(file, "$name.$key", it) }
             profiles[name] = Profile(name, key("address"), key("type"), key("database"), key("graph"), key("user"), key("password"))
         }
-        if (profiles.values.any { it.password != null }) readableOnlyByOwner(file)
+        // A password in a profile's address is a password the file holds too.
+        if (profiles.values.any { it.password != null || it.address?.let(::holdsPassword) == true }) readableOnlyByOwner(file)
         return Read(default, profiles)
+    }
+
+    /** Whether [address] holds a password, as `postgresql://u:secret@h/db` does: a `:` in what comes before its last `@`. */
+    private fun holdsPassword(address: String): Boolean {
+        val afterScheme = address.substringAfter("://", address.substringAfter(':'))
+        val credentials = afterScheme.substringBeforeLast('@', "")
+        return ':' in credentials
     }
 
     /** A key's value, which is text: a number or a boolean is taken as YAML writes it, a list or a map is refused. */

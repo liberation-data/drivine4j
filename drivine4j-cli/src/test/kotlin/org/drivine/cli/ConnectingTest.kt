@@ -197,6 +197,25 @@ class ConnectingTest {
     }
 
     @Test
+    fun `an empty default gives no default, and keeps the home's`() {
+        profiles(home, "default: h\nprofiles:\n  h:\n    address: \"postgresql://home/db\"\n")
+        profiles(dir, "default:\nprofiles:\n  d:\n    address: \"postgresql://dir/db\"\n")
+        assertEquals("home", plan().address.host)
+        profiles(dir, "default: ~\n")
+        assertEquals("home", plan().address.host)
+    }
+
+    @Test
+    fun `a file whose profile's address holds a password is refused where others can read it`() {
+        profiles(dir, "profiles:\n  p:\n    address: \"postgresql://u:secret@h/db\"\n", mode = "644")
+        val refusal = refused("--profile", "p")
+        assertTrue("chmod 600" in refusal && "secret" !in refusal, refusal)
+        // A user and no password in the address is no password.
+        profiles(dir, "profiles:\n  p:\n    address: \"postgresql://u@h/db\"\n", mode = "644")
+        assertEquals("u", plan("--profile", "p").user)
+    }
+
+    @Test
     fun `nothing prints a password a profile gives`() {
         profiles(dir, "default: p\nprofiles:\n  p:\n    address: \"postgresql://u:in_address@h/db\"\n    password: in_profile\n")
         val plan = plan()
