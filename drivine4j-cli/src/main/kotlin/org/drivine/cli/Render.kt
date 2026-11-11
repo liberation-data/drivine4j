@@ -127,7 +127,8 @@ object PlainRenderer : Renderer {
      * [value] as cypher-shell prints it: `NULL`, `TRUE`, a float as `Double.toString` writes it, a text in `"…"` with only
      * its `"` escaped, `[1, "b"]`, `{k: 2}`, a node as `(:A:B {k: 2})`, a relationship as `[:R {k: 2}]`, a path as
      * `(:A)-[:R]->(:B)<-[:S]-(:C)`, along or against each relationship's direction, and a temporal value as its ISO 8601
-     * text, unquoted. A node or a relationship with no properties prints none: `(:A)`, `[:R]`.
+     * text, unquoted. A node or a relationship with no properties prints none: `(:A)`, `[:R]`, and a node with no labels
+     * prints its properties alone: `({k: 2})`.
      */
     fun write(value: Any?, out: Appendable) {
         when (value) {
@@ -137,7 +138,8 @@ object PlainRenderer : Renderer {
             is GraphNode -> {
                 out.append('(')
                 value.labels.forEach { out.append(':').append(it) }
-                properties(value.properties, out)
+                // As cypher-shell joins a node's labels and properties: a space between them only where it has both.
+                if (value.labels.isNotEmpty()) properties(value.properties, out) else if (value.properties.isNotEmpty()) map(value.properties, out)
                 out.append(')')
             }
             is GraphRelationship -> {

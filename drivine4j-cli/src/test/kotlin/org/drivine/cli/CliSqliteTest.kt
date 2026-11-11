@@ -40,6 +40,31 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `the store names the columns, RETURN star's too, and a result with no rows keeps them`() {
+        assertEquals("{\"columns\":[\"a\",\"b\"],\"rows\":[[1,2]]}\n", runCli(memory + listOf("--format", "json", "WITH 1 AS a, 2 AS b RETURN *")).stdout)
+        assertEquals("{\"columns\":[\"x\",\"n\"],\"rows\":[]}\n", runCli(memory + listOf("--format", "json", "MATCH (n:None) RETURN n.x AS x, n")).stdout)
+    }
+
+    @Test
+    fun `nodes and relationships in a list keep their labels and type, and a node with no labels prints its properties alone`() {
+        val cypher = "CREATE (n:P {l: [1, 2]})-[r:R]->(m {k: 1}) RETURN [n] AS ns, [r] AS rs, m"
+        assertEquals(CliRun(0, "ns, rs, m\n[(:P {l: [1, 2]})], [[:R]], ({k: 1})\n", ""), runCli(memory + listOf("--format", "plain", cypher)))
+        assertEquals(
+            "{\"columns\":[\"ns\",\"rs\",\"m\"],\"rows\":[[[{\"labels\":[\"P\"],\"properties\":{\"l\":[1,2]}}],[{\"type\":\"R\",\"properties\":{}}]," +
+                "{\"labels\":[],\"properties\":{\"k\":1}}]]}\n",
+            runCli(memory + listOf("--format", "json", cypher)).stdout,
+        )
+    }
+
+    @Test
+    fun `a path, which a SQL store refuses, fails as a statement does, with 1`() {
+        val run = runCli(memory + listOf("--format", "json", "MATCH p = (a)-[:R]->(b) RETURN p"))
+        assertEquals(1, run.exit, run.stderr)
+        assertEquals("", run.stdout)
+        assertTrue("path" in run.stderr, run.stderr)
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

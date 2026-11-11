@@ -106,6 +106,7 @@ class RenderTest {
         assertEquals("(:A:B {name: \"x\", n: 1})", plain(a))
         assertEquals("(:B)", plain(b))
         assertEquals("()", plain(GraphNode(emptyList(), emptyMap())))
+        assertEquals("({k: [1, {m: 2}]})", plain(GraphNode(emptyList(), mapOf("k" to listOf(1L, mapOf("m" to 2L))))))
         assertEquals("[:R {w: 1}]", plain(r))
         assertEquals("[:S]", plain(s))
         assertEquals("[(:B), {k: [:S]}]", plain(listOf(b, mapOf("k" to s))))
