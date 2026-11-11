@@ -13,6 +13,7 @@ import java.time.ZonedDateTime
 import java.util.Date
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 /**
  * [JacksonEncoder] gives the compiler each value as drivine4j's Jackson mapper writes it: its tree, written by the
@@ -59,5 +60,36 @@ class JacksonEncoderTest {
             assertNull(JacksonEncoder.text(value), "$value")
         }
         assertNull(JacksonEncoder.tree(null))
+    }
+
+    /** Every class [value] holds, at any depth, itself included. */
+    private fun classes(value: Any?): List<Class<*>> = when (value) {
+        null -> emptyList()
+        is Map<*, *> -> listOf(value.javaClass) + value.flatMap { (k, v) -> classes(k) + classes(v) }
+        is Collection<*> -> listOf(value.javaClass) + value.flatMap(::classes)
+        else -> listOf(value.javaClass)
+    }
+
+    @Test
+    fun `Kotlin's own collections reach Jackson as plain java_util ones, in the same order, and are written alike`() {
+        val kotlins = listOf<Any>(
+            emptyList<Any>(), emptySet<Any>(), emptyMap<String, Any>(), listOf("a"), setOf(2, 1), mapOf("b" to 1, "a" to 2),
+            buildList { add(1); add(emptyList<Any>()) }, buildMap { put("l", emptyList<Any>()); put("m", emptyMap<String, Any>()) },
+            listOf(1, 2).asReversed(), arrayOf<Any>(emptyList<Any>(), "x"), mapOf("labels" to emptyList<String>(), "props" to mapOf("k" to 1)),
+        )
+        for (value in kotlins) {
+            val plain = JacksonEncoder.plain(value)
+            val kotlin = classes(plain).filter { it.name.startsWith("kotlin.") }
+            assertEquals(emptyList(), kotlin, "$value gives Jackson Kotlin's own classes")
+            assertEquals(Neo4jObjectMapper.instance.writeValueAsString(value), JacksonEncoder.text(value), "$value")
+            assertEquals(Neo4jObjectMapper.instance.writeValueAsString(Neo4jObjectMapper.instance.valueToTree(value)), CypherJson.writeValueAsString(JacksonEncoder.tree(value)), "$value")
+        }
+        assertEquals(listOf("b", "a"), (JacksonEncoder.plain(mapOf("b" to 1, "a" to 2)) as Map<*, *>).keys.toList())
+        // A collection of the application's own class is left for Jackson to write as that class says.
+        val own = object : AbstractList<Int>() {
+            override val size = 1
+            override fun get(index: Int) = 1
+        }
+        assertSame(own, JacksonEncoder.plain(own))
     }
 }

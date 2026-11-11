@@ -64,6 +64,21 @@ class CliSqliteTest {
         assertTrue("path" in run.stderr, run.stderr)
     }
 
+    /**
+     * The compiler gives a node with no labels, an empty list and an empty map as Kotlin's own empty collections, which
+     * Jackson's Kotlin module asks kotlin-reflect about, and the native image's kotlin-reflect knows nothing of them: so
+     * they're written as plain ones (JacksonEncoder.plain). Run against the native binary, this is that.
+     */
+    @Test
+    fun `a node with no labels, an empty list and an empty map are written and read, in the native binary too`() {
+        val cypher = "CREATE (n {l: []}) RETURN n, [] AS l, {} AS m, labels(n) AS ls"
+        assertEquals(
+            CliRun(0, "{\"columns\":[\"n\",\"l\",\"m\",\"ls\"],\"rows\":[[{\"\$t\":\"node\",\"labels\":[],\"properties\":{\"l\":[]}},[],{},[]]]}\n", ""),
+            runCli(memory + listOf("--format", "json", cypher)),
+        )
+        assertEquals(CliRun(0, "n, l, m\n({l: []}), [], {}\n", ""), runCli(memory + listOf("--format", "plain", "CREATE (n {l: []}) RETURN n, [] AS l, {} AS m")))
+    }
+
     @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)

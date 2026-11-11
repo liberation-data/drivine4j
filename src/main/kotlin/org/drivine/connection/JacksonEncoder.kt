@@ -33,10 +33,28 @@ import org.drivine.cypher.json.TextNode as CompilerText
 internal object JacksonEncoder : CypherEncoder {
 
     override fun tree(value: Any?): CompilerNode? =
-        if (value == null || holdsCompilerTree(value)) null else tree(Neo4jObjectMapper.instance.valueToTree(value))
+        if (value == null || holdsCompilerTree(value)) null else tree(Neo4jObjectMapper.instance.valueToTree(plain(value)))
 
     override fun text(value: Any?): String? =
-        if (holdsCompilerTree(value)) null else Neo4jObjectMapper.instance.writeValueAsString(value)
+        if (holdsCompilerTree(value)) null else Neo4jObjectMapper.instance.writeValueAsString(plain(value))
+
+    /**
+     * [value] with each list, set and map of the JDK's or Kotlin's own, and each array of objects, at any depth, copied to
+     * a `java.util` one, in the same order, so that Jackson writes it as it would the copy: Jackson's Kotlin module asks
+     * kotlin-reflect of a Kotlin class it writes, as Kotlin's own `EmptyList`, which `emptyList()` and `listOf()` give and
+     * the compiler's values hold, and in the drivine CLI's native image kotlin-reflect knows no such class, and fails.
+     * A collection of the application's own class is left as it is, for Jackson to write as that class says.
+     */
+    internal fun plain(value: Any?): Any? = when {
+        value is Map<*, *> && own(value) -> value.entries.associateTo(LinkedHashMap()) { (k, v) -> plain(k) to plain(v) }
+        value is Set<*> && own(value) -> value.mapTo(LinkedHashSet(), ::plain)
+        value is Collection<*> && own(value) -> value.mapTo(ArrayList(value.size), ::plain)
+        value is Array<*> -> value.mapTo(ArrayList(value.size), ::plain)
+        else -> value
+    }
+
+    /** Whether [value]'s class is the JDK's or Kotlin's own, not the application's. */
+    private fun own(value: Any): Boolean = value.javaClass.name.let { it.startsWith("java.util.") || it.startsWith("kotlin.") }
 
     /** Whether [value] is, or holds at any depth, a tree of the compiler's, which Jackson knows nothing of. */
     private fun holdsCompilerTree(value: Any?): Boolean = when (value) {
