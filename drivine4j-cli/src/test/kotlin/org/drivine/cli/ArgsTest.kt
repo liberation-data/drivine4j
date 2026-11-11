@@ -68,7 +68,7 @@ class ArgsTest {
     @Test
     fun `an unknown flag, or one of the contract's that comes later, is named`() {
         assertTrue("--change-password" in refused("--change-password"))
-        assertTrue("-f" in refused("-f", "x.cypher"))
+        assertTrue("-P" in refused("-P", "x => 1"))
         assertTrue("comes later" in refused("--profile", "p"))
     }
 
@@ -85,14 +85,41 @@ class ArgsTest {
         // A short flag with something attached is named as itself, not as an unknown flag.
         assertEquals("drivine: -v takes no value; see --help", refused("-vx"))
         assertEquals("drivine: -h takes no value; see --help", refused("-h=x"))
-        assertEquals("drivine: -f comes later, and this build doesn't take it; see --help", refused("-fx.cypher"))
+        assertEquals("drivine: --continue takes no value; see --help", refused("--continue=yes"))
+        assertEquals("drivine: -f needs a value; see --help", refused("-f"))
     }
 
     @Test
-    fun `after the flags, two inputs, no input and no address are refused in that order`() {
-        assertTrue("one statement" in assertFailsWith<BadInvocation> { run("RETURN 1", "RETURN 2").check(emptyMap()) }.message!!)
-        assertTrue("give a statement" in assertFailsWith<BadInvocation> { run().check(emptyMap()) }.message!!)
-        assertTrue("DRIVINE_ADDRESS" in assertFailsWith<BadInvocation> { run("RETURN 1").check(emptyMap()) }.message!!)
+    fun `after the flags, two inputs, a file that can't be read, no input on a terminal and no address are refused in that order`() {
+        fun refusedAfter(vararg args: String, terminal: Boolean = false) =
+            assertFailsWith<BadInvocation> { run(*args).check(emptyMap(), stdinTerminal = terminal) }.message!!
+        assertTrue("not two" in refusedAfter("RETURN 1", "RETURN 2"))
+        assertTrue("not two" in refusedAfter("-c", "RETURN 1", "-f", "x.cypher"))
+        assertTrue("not two" in refusedAfter("-f", "x.cypher", "-f", "y.cypher"))
+        // A file that can't be read is checked before the address: nothing could run.
+        assertEquals("drivine: can't read -f nope.cypher: no such file, or not one this user can read", refusedAfter("-f", "nope.cypher"))
+        assertTrue("the REPL comes later" in refusedAfter(terminal = true))
+        assertTrue("DRIVINE_ADDRESS" in refusedAfter("RETURN 1"))
+    }
+
+    @Test
+    fun `the statements are the text's, a file's, or stdin's where none is given, unless it's a terminal`() {
+        val env = mapOf("DRIVINE_ADDRESS" to "sqlite::memory:")
+        assertEquals(Source.Text("RETURN 1"), run("RETURN 1").check(env).source)
+        assertEquals(Source.Text("RETURN 2"), run("-c", "RETURN 2").check(env).source)
+        val dir = kotlin.io.path.createTempDirectory("drivine-args-").toFile()
+        try {
+            java.io.File(dir, "a.cypher").writeText("RETURN 1;")
+            assertEquals(Source.File(java.io.File(dir, "a.cypher")), run("-f", "a.cypher").check(env, dir).source)
+            assertEquals(Source.File(java.io.File(dir, "a.cypher")), run("--file=a.cypher").check(env, dir).source)
+            // A directory is no file to read.
+            assertFailsWith<BadInvocation> { run("-f", ".").check(env, dir) }
+        } finally {
+            dir.deleteRecursively()
+        }
+        assertEquals(Source.Stdin, run().check(env).source)
+        assertEquals(Source.Stdin, run("--non-interactive").check(env, stdinTerminal = true).source)
+        assertEquals(true, run("--continue", "RETURN 1").check(env).continueOnFailure)
     }
 
     @Test

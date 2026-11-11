@@ -80,6 +80,147 @@ class CliSqliteTest {
     }
 
     @Test
+    fun `statements run in order, each printed as it comes, and the first that fails stops the run, unless --continue`() {
+        val text = "RETURN 1 AS a; RETURN 1/0 AS b; RETURN 3 AS c"
+        val stopped = runCli(memory + listOf("--format", "json", text))
+        assertEquals(1, stopped.exit)
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", stopped.stdout)
+        val went = runCli(memory + listOf("--format", "json", "--continue", text))
+        assertEquals(1, went.exit)
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n{\"columns\":[\"c\"],\"rows\":[[3]]}\n", went.stdout)
+        assertTrue(went.stderr.isNotBlank())
+        // Each statement runs in a transaction of its own, so a later failure leaves an earlier write.
+        val file = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            val db = listOf("-a", "sqlite:${java.io.File(file, "g.db")}")
+            assertEquals(1, runCli(db + listOf("CREATE (:Kept); RETURN 1/0")).exit)
+            assertEquals("{\"columns\":[\"n\"],\"rows\":[[1]]}\n", runCli(db + listOf("--format", "json", "MATCH (k:Kept) RETURN count(k) AS n")).stdout)
+        } finally {
+            file.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `statements come from a -f file or stdin, and the exit command stops reading`() {
+        val dir = kotlin.io.path.createTempDirectory("drivine-cli-").toFile()
+        try {
+            java.io.File(dir, "a.cypher").writeText("RETURN 1 AS n;\n:exit\nRETURN 2 AS n;\n")
+            assertEquals(CliRun(0, "{\"columns\":[\"n\"],\"rows\":[[1]]}\n", ""), runCli(memory + listOf("--format", "json", "-f", "a.cypher"), dir = dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+        assertEquals(CliRun(0, "n\n1\nm\n2\n", ""), runCli(memory + listOf("--format", "plain"), stdin = "RETURN 1 AS n;\nRETURN 2 AS m"))
+        // A command this build doesn't run yet fails as a statement does.
+        val later = runCli(memory + listOf("--format", "json"), stdin = ":begin\nRETURN 1 AS n;")
+        assertEquals(1, later.exit)
+        assertTrue(":begin comes later" in later.stderr, later.stderr)
+    }
+
+    @Test
+    fun `given a text, stdin isn't read, and an empty -f file runs nothing`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        val out = java.io.StringWriter()
+        val err = java.io.StringWriter()
+        val cli = Cli(emptyMap(), out, err, stdin = { throw AssertionError("stdin read") }, stdinTerminal = false)
+        assertEquals(0, cli.run(memory + listOf("--format", "plain", "--non-interactive", "RETURN 1 AS one")), err.toString())
+        assertEquals("one\n1\n", out.toString())
+        java.nio.file.Files.writeString(dir.resolve("empty.cypher"), "")
+        assertEquals(CliRun(0, "", ""), runCli(memory + listOf("-f", "empty.cypher"), dir = dir.toFile()))
+    }
+
+    @Test
+    fun `an unknown command fails as cypher-shell says, and one of the contract's that comes later says so`() {
+        val nope = runCli(memory + listOf("--format", "plain"), stdin = ":nope\nRETURN 1 AS a;\n")
+        assertEquals(CliRun(1, "", "Could not find command :nope, use :help to see available commands\n"), nope)
+        assertTrue(":source comes later" in runCli(memory, stdin = ":source x.cypher\n").stderr)
+    }
+
+    @Test
+    fun `under --continue each failure reaches stderr as it comes, before the next result, and the quit command stops reading`() {
+        // Each stream as a process sees it: what was written reaches the shared log only when it's flushed.
+        val log = StringBuilder()
+        fun stream(tag: String) = object : java.io.Writer() {
+            val pending = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                pending.append(cbuf, off, len)
+            }
+            override fun flush() {
+                if (pending.isNotEmpty()) log.append("$tag:$pending")
+                pending.setLength(0)
+            }
+            override fun close() {}
+        }
+        val stdin = "RETURN 1 AS a;\nRETURN 1/0;\n:nope\nRETURN 2 AS c;\n:quit\nRETURN 3 AS d;\n"
+        val run = Cli(emptyMap(), stream("out"), stream("err"), stdin = { java.io.StringReader(stdin) })
+            .run(memory + listOf("--format", "json", "--continue"))
+        assertEquals(1, run)
+        val order = Regex("(out|err):").findAll(log).map { it.value }.toList()
+        assertEquals(listOf("out:", "err:", "err:", "out:"), order, log.toString())
+        assertTrue("Could not find command :nope" in log, log.toString())
+        assertTrue("\"d\"" !in log, log.toString())
+    }
+
+    @Test
+    fun `a -f file is read where its name is attached to -f`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        java.nio.file.Files.writeString(dir.resolve("a.cypher"), "RETURN 1 AS n;")
+        assertEquals(CliRun(0, "n\n1\n", ""), runCli(memory + listOf("--format", "plain", "-fa.cypher"), dir = dir.toFile()))
+    }
+
+    @Test
+    fun `a reader that closes stdout after a failure under --continue still leaves the run failed`() {
+        val out = object : java.io.Writer() {
+            val taken = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                if ('\n' in taken) throw java.io.IOException("Broken pipe")
+                taken.append(cbuf, off, len)
+            }
+            override fun flush() {}
+            override fun close() {}
+        }
+        val err = java.io.StringWriter()
+        val run = Cli(emptyMap(), out, err).run(memory + listOf("--format", "json", "--continue", "RETURN 1/0; RETURN 1 AS a; RETURN 2 AS b"))
+        assertEquals(1, run, err.toString())
+    }
+
+    @Test
+    fun `a result that can't be written stops the run with 1, past those before it`() {
+        val out = object : java.io.Writer() {
+            val taken = StringBuilder()
+            override fun write(cbuf: CharArray, off: Int, len: Int) {
+                if ('\n' in taken) throw java.io.IOException("No space left on device")
+                taken.append(cbuf, off, len)
+            }
+            override fun flush() {}
+            override fun close() {}
+        }
+        val err = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), out, err).run(memory + listOf("--format", "json", "RETURN 1 AS a; RETURN 2 AS b; RETURN 3 AS c")))
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.taken.toString())
+        assertEquals("drivine: can't write the result: No space left on device\n", err.toString())
+    }
+
+    @Test
+    fun `stdin that breaks mid-run fails the run with 1, past the results before it, and a -f file that can't be read is 2`(@org.junit.jupiter.api.io.TempDir dir: java.nio.file.Path) {
+        // A pipe that gives one statement and then fails, as a broken pipe on stdin does.
+        val broken = object : java.io.Reader() {
+            val text = "RETURN 1 AS a;\n"
+            var at = 0
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int {
+                if (at >= text.length) throw java.io.IOException("Input/output error")
+                cbuf[off] = text[at++]
+                return 1
+            }
+            override fun close() {}
+        }
+        val out = java.io.StringWriter()
+        val err = java.io.StringWriter()
+        assertEquals(1, Cli(emptyMap(), out, err, stdin = { broken }).run(memory + listOf("--format", "json")))
+        assertEquals("{\"columns\":[\"a\"],\"rows\":[[1]]}\n", out.toString())
+        assertEquals("drivine: can't read the statements: Input/output error\n", err.toString())
+        val missing = runCli(memory + listOf("-f", "nope.cypher"), dir = dir.toFile())
+        assertEquals(CliRun(2, "", "drivine: can't read -f nope.cypher: no such file, or not one this user can read\n"), missing)
+    }
+
+    @Test
     fun `a column that holds a list is one column`() {
         assertEquals("{\"columns\":[\"l\"],\"rows\":[[[1,2]]]}\n", runCli(memory + listOf("--format", "json", "RETURN [1, 2] AS l")).stdout)
     }

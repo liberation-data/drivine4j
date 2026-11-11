@@ -118,7 +118,7 @@ class AddressTest {
     @Test
     fun `each address gives the connection properties Drivine is built from`() {
         fun properties(address: String, user: String? = null, password: String? = null) =
-            Store.properties(Plan(parse(address, fromCommandLine = false), "RETURN 1", Format.JSON, user, password))
+            Store.properties(Plan(parse(address, fromCommandLine = false), Source.Text("RETURN 1"), Format.JSON, user, password))
 
         properties("neo4j+s://h:1", "neo", "pw").let {
             assertEquals(DatabaseType.NEO4J, it.type)

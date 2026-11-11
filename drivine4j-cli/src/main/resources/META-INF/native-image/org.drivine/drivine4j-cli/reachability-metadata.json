@@ -780,6 +780,15 @@
       "type": "int[]"
     },
     {
+      "methods": [
+        {
+          "name": "isTerminal",
+          "parameterTypes": []
+        }
+      ],
+      "type": "java.io.Console"
+    },
+    {
       "type": "java.io.Serializable"
     },
     {

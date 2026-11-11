@@ -1,5 +1,7 @@
 package org.drivine.cli
 
+import java.io.File
+
 /**
  * The exit codes of the CLI's contract (drivine-cypher-spec's cli/README.md, "Failures and exit codes"). A script tells
  * a statement that failed from a bad invocation and from a store it couldn't reach, which cypher-shell's single 1 doesn't let it do.
@@ -66,20 +68,36 @@ sealed interface Parsed {
 /** The flags of a run, as given. Nothing is checked against another flag or the environment yet: see [check]. */
 data class Invocation(
     val address: String? = null,
-    /** Each statement given, by `-c` or as the argument. More than one is two inputs, which [check] refuses. */
+    /** Each text given, by `-c` or as the argument. More than one is two inputs, which [check] refuses. */
     val inputs: List<String> = emptyList(),
+    /** Each file `-f` names. More than one, or one with a text, is two inputs. */
+    val files: List<String> = emptyList(),
     val user: String? = null,
     val type: StoreType? = null,
     val format: Format = Format.AUTO,
+    /** `--continue`: run every statement, and report each failure as it comes, rather than stop at the first. */
+    val continueOnFailure: Boolean = false,
+    /** `--non-interactive`: read stdin, even where it's a terminal. */
+    val nonInteractive: Boolean = false,
 ) {
     /**
      * This invocation, checked in the contract's order once the flags have been read: the inputs, then the address, then
      * the user and the password, which come from the flags, then [env]. Throws [BadInvocation] for the first that is wrong.
+     * A `-f` file is looked for in [dir], and must be one the CLI can read, as nothing runs where it can't. With no input
+     * given, the statements are stdin's, unless stdin is a terminal ([stdinTerminal]) and `--non-interactive` isn't given:
+     * that is the REPL's, which comes later.
      */
-    fun check(env: Map<String, String>): Plan {
-        if (inputs.size > 1) throw BadInvocation("drivine: give one statement, as the argument or with -c, not both or two; see --help")
-        val cypher = inputs.singleOrNull()
-            ?: throw BadInvocation("drivine: give a statement, as the argument or with -c; files, stdin and the REPL come later. See --help")
+    fun check(env: Map<String, String>, dir: File = File("."), stdinTerminal: Boolean = false): Plan {
+        if (inputs.size + files.size > 1) {
+            throw BadInvocation("drivine: give one input, a statement as the argument or with -c, or -f FILE, not two; see --help")
+        }
+        val source = when {
+            inputs.isNotEmpty() -> Source.Text(inputs.single())
+            files.isNotEmpty() -> Source.File(readable(dir, files.single()))
+            stdinTerminal && !nonInteractive ->
+                throw BadInvocation("drivine: give a statement, -f FILE, or statements on stdin; the REPL comes later. See --help")
+            else -> Source.Stdin
+        }
         val (text, fromCommandLine) = address?.let { it to true }
             ?: env[ENV_ADDRESS]?.let { it to false }
             ?: throw BadInvocation("drivine: no address: give -a ADDRESS or $ENV_ADDRESS; see --help")
@@ -88,29 +106,49 @@ data class Invocation(
         // only an address kept off the command line may hold.
         return Plan(
             address = parsed,
-            cypher = cypher,
+            source = source,
             format = format,
+            continueOnFailure = continueOnFailure,
             user = user ?: parsed.user ?: env[ENV_USER],
             password = env[ENV_PASSWORD] ?: parsed.password,
         )
     }
 
     companion object {
+        /**
+         * [path], from [dir] where it's relative, as a file the CLI can read: a bad invocation where it isn't, which names
+         * the path as given, as a `-f` value holds no secret.
+         */
+        private fun readable(dir: File, path: String): File {
+            val file = File(path).let { if (it.isAbsolute) it else File(dir, path) }
+            if (!file.isFile || !file.canRead()) throw BadInvocation("drivine: can't read -f $path: no such file, or not one this user can read")
+            return file
+        }
+
         const val ENV_ADDRESS = "DRIVINE_ADDRESS"
         const val ENV_USER = "DRIVINE_USER"
         const val ENV_PASSWORD = "DRIVINE_PASSWORD"
     }
 }
 
-/** A checked invocation: one statement, the store it runs on, and how to print what it gives. */
+/** Where a run's statements come from: a text given on the command line, a `-f` file, or stdin. */
+sealed interface Source {
+    data class Text(val cypher: String) : Source
+    data class File(val file: java.io.File) : Source
+    data object Stdin : Source
+}
+
+/** A checked invocation: its statements, the store they run on, and how to print what they give. */
 data class Plan(
     val address: Address,
-    val cypher: String,
+    val source: Source,
     val format: Format,
     val user: String?,
     val password: String?,
+    val continueOnFailure: Boolean = false,
 ) {
-    override fun toString(): String = "Plan(address=$address, cypher=$cypher, format=$format, user=$user, password=${password?.let { "***" }})"
+    override fun toString(): String =
+        "Plan(address=$address, source=$source, format=$format, user=$user, password=${password?.let { "***" }}, continueOnFailure=$continueOnFailure)"
 }
 
 /**
@@ -143,8 +181,8 @@ object Args {
 
     /** The contract's flags that this build doesn't take yet: still a bad invocation, but said so, not called unknown. */
     internal val LATER = setOf(
-        "-f", "--file", "-d", "--database", "-g", "--graph", "--profile", "-P", "--param", "--sample-rows", "--wrap",
-        "--continue", "--explain", "--non-interactive", "--history", "--idle-timeout", "--transaction-timeout", "--log",
+        "-d", "--database", "-g", "--graph", "--profile", "-P", "--param", "--sample-rows", "--wrap",
+        "--explain", "--history", "--idle-timeout", "--transaction-timeout", "--log",
         "--driver-version",
     )
 
@@ -180,6 +218,9 @@ object Args {
                 "--password" -> throw BadInvocation(PASSWORD_REFUSED)
                 "-a", "--address" -> invocation = invocation.copy(address = value())
                 "-c" -> invocation = invocation.copy(inputs = invocation.inputs + value())
+                "-f", "--file" -> invocation = invocation.copy(files = invocation.files + value())
+                "--continue" -> { noValue(); invocation = invocation.copy(continueOnFailure = true) }
+                "--non-interactive" -> { noValue(); invocation = invocation.copy(nonInteractive = true) }
                 "-u", "--user", "--username" -> invocation = invocation.copy(user = value())
                 "--type" -> {
                     val named = value()
@@ -205,9 +246,13 @@ object Args {
     val USAGE: String = """
         |Usage: drivine [flags] [cypher]
         |
-        |Runs one Cypher statement against a store and exits. On Postgres, Oracle and SQLite, Drivine compiles it to SQL.
+        |Runs Cypher statements against a store and exits. On Postgres, Oracle and SQLite, Drivine compiles them to SQL.
+        |Statements are split on ;, each runs in its own transaction, and each result is printed as it comes.
         |
-        |  cypher, -c CYPHER            The statement to run.
+        |  cypher, -c CYPHER            The statements to run.
+        |  -f, --file FILE              The file's statements. With no cypher, -c or -f, stdin's.
+        |  --non-interactive            Read stdin even where it's a terminal.
+        |  --continue                   Run every statement, reporting each failure, rather than stop at the first.
         |  -a, --address ADDRESS        The store, else DRIVINE_ADDRESS:
         |                                 neo4j://host:port, bolt://host:port (and their +s and +ssc forms),
         |                                 memgraph://host:port, falkordb://host:port,
