@@ -51,8 +51,8 @@ import java.sql.SQLException
  */
 internal class PostgresSchemaGrammar(internal val graph: PostgresGraph) : SchemaGrammar, SchemaAliases {
 
-    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives. */
-    private val schema = PostgresSchema(graph.store)
+    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives, and which the planner is given ([org.drivine.schema.storeSchema]). */
+    internal val schema = PostgresSchema(graph.store)
 
     override val engine = PostgresDdl.ENGINE
     override val supportsIfNotExists = true

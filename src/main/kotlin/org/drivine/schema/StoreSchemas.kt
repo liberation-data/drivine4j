@@ -11,9 +11,6 @@ import org.drivine.cypher.store.marker.SchemaMarker
 import org.drivine.cypher.store.schema.FalkorDbSchema
 import org.drivine.cypher.store.schema.MemgraphSchema
 import org.drivine.cypher.store.schema.Neo4jSchema
-import org.drivine.cypher.store.schema.OracleSchema
-import org.drivine.cypher.store.schema.PostgresSchema
-import org.drivine.cypher.store.schema.SqliteSchema
 import org.drivine.cypher.store.schema.StoreError
 import org.drivine.cypher.store.schema.StoreSchema
 
@@ -35,9 +32,9 @@ internal fun SchemaGrammar.storeSchema(thrown: (StoreError) -> Throwable?): Stor
     Neo4jSchemaGrammar::class -> Neo4jSchema((this as Neo4jSchemaGrammar).elementIdFunction)
     MemgraphSchemaGrammar::class -> MemgraphSchema((this as MemgraphSchemaGrammar).ddl)
     FalkorDbSchemaGrammar::class -> FalkorDbSchema
-    PostgresSchemaGrammar::class -> PostgresSchema((this as PostgresSchemaGrammar).graph.store)
-    OracleSchemaGrammar::class -> OracleSchema((this as OracleSchemaGrammar).graph.store)
-    SqliteSchemaGrammar::class -> SqliteSchema((this as SqliteSchemaGrammar).graph.store)
+    PostgresSchemaGrammar::class -> (this as PostgresSchemaGrammar).schema
+    OracleSchemaGrammar::class -> (this as OracleSchemaGrammar).schema
+    SqliteSchemaGrammar::class -> (this as SqliteSchemaGrammar).schema
     else -> GrammarStoreSchema(this, thrown)
 }
 

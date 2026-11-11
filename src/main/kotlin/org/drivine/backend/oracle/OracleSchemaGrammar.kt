@@ -53,8 +53,8 @@ import java.sql.SQLException
  */
 internal class OracleSchemaGrammar(internal val graph: OracleGraph) : SchemaGrammar, SchemaAliases {
 
-    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives. */
-    private val schema = OracleSchema(graph.store)
+    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives, and which the planner is given ([org.drivine.schema.storeSchema]). */
+    internal val schema = OracleSchema(graph.store)
 
     override val engine = OracleDdl.ENGINE
     override val supportsIfNotExists = true

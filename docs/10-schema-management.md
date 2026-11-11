@@ -305,7 +305,8 @@ index by its name, says so, `Dropped Oracle index DRIVINE_IX_SERIAL_CA01FDF4, an
 for RANGE_INDEX on Coupon[serial]: it was an index over [couponRef]`, and makes the item. The line is INFO for an index,
 and WARN for a uniqueness constraint, whose label is left with no unique index if the data then refuses it. What isn't
 an index, such as a table under the name, is never dropped: its WARN says `Drop or rename it: Drivine makes the item
-under that name, and recreate() leaves it.`, and it stays drift.
+under that name, and recreate() leaves it.`, and it stays drift: `constraints.recreate(spec)` gives `Drift`, and
+`indexes.recreate(spec)` throws a `DrivineException` that says the same.
 
 On Oracle an item with no record is read from its objects' text: a range index's labelled index, a constraint's unique
 index, or a vector or full-text index's trigger. TypeScript's or Python's are kept as stale, and no record is written

@@ -253,6 +253,8 @@ internal object SchemaStatementGolden {
             "added after the recording: it came with the merge of main (#755, drivine4j#517), after the golden was first taken, so the managers' record has nothing of it (the forms' recording has its lines, kept as recorded)",
         "[class:org.drivine.sqlite.SqliteSchemaManagementTest]/[method:an index over something else under Drivine's name is drift, not made, and a recreate replaces it()]" to
             "added after the recording: it came with the forms (drivine4j#770, drivine-cypher-spec#186), after the SQL stores' golden was recorded again, so neither record has it",
+        "[class:org.drivine.sqlite.SqliteSchemaManagementTest]/[method:a table under Drivine's name for an index is drift, which a recreate leaves, and says so()]" to
+            "added after the recording: it came with the forms (drivine4j#770, drivine-cypher-spec#186), after the SQL stores' golden was recorded again, so neither record has it",
     )
 
     /**
