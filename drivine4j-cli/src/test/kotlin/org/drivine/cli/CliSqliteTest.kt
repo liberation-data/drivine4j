@@ -416,6 +416,8 @@ class CliSqliteTest {
                 assertEquals(explained, runCli(memory + listOf("--explain", "--format", format), stdin = ":source s.cypher\n", dir = dir), format)
             }
             assertEquals(CliRun(0, "", ""), runCli(memory + listOf("--explain"), stdin = ""))
+            // :rollback, as :commit, ends nothing: there's no transaction under --explain.
+            assertEquals(explained, runCli(memory + listOf("--explain"), stdin = ":begin\n:source s.cypher\n:rollback\n", dir = dir))
         } finally {
             dir.deleteRecursively()
         }
