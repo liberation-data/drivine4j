@@ -141,8 +141,10 @@ class OracleSchemaManagementIntegrationTest {
                 "the drop is said:\n${said.joinToString("\n")}",
             )
             assertTrue(ensure() is EnsureResult.AlreadyMatching, "the item made in its place is the item")
-        } finally {
+        } catch (failed: Throwable) {
+            // Only where the recreate didn't replace it: once it did, the index under the name is the item's.
             manager.indexes.run("DROP INDEX IF EXISTS $name")
+            throw failed
         }
     }
 
