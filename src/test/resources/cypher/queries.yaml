@@ -520,6 +520,17 @@ cases:
         rows: [["CARRIE", 1], ["HUGO", 1], ["KEANU", 1], ["LAURENCE", 1]]
       - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY min(m.released), n"
         rows: [["Keanu", 3], ["Carrie", 2], ["Laurence", 1]]
+      - note: "One that is DISTINCT orders by an aggregate over each of its rows' groups, not over all the rows (liberation-data/drivine4j#439)."
+        cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name AS n ORDER BY min(m.released), n"
+        rows: ["Keanu", "Carrie", "Laurence"]
+      - cypher: "UNWIND [2, 3, 3, 3, 1, 1] AS i WITH DISTINCT i ORDER BY count(*) DESC RETURN collect(i)"
+        rows: [[3, 1, 2]]
+      - note: "An item that holds a parameter, or a subquery, groups by its value."
+        cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name + $s AS n ORDER BY min(m.released), n"
+        parameters: {s: "!"}
+        rows: ["Keanu!", "Carrie!", "Laurence!"]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT COUNT { (p)-[:ACTED_IN]->() } AS c ORDER BY min(m.released), c"
+        rows: [3, 1, 2]
       - note: An order of an expression of an item, which is no item.
         cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN {name: p.name} AS who, count(*) AS c ORDER BY who.name"
         rows: [[{name: "Carrie"}, 2], [{name: "Keanu"}, 3], [{name: "Laurence"}, 1]]
@@ -779,15 +790,9 @@ cases:
       - cypher: "RETURN [left('hello', 2147483647), right('hello', 2147483647), substring('hello', 1, 2147483647), left('hello', $m), substring('hello', 1, $m)]"
         parameters: {m: 2147483647}
         rows: [["hello", "hello", "ello", "hello", "ello"]]
-      - except: [oracle]
-        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
+      - cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
         parameters: {m: 2147483647}
         rows: [["", ""]]
-      - note: "Oracle's empty text is null."
-        only: [oracle]
-        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
-        parameters: {m: 2147483647}
-        rows: [[null, null]]
       - note: "Beside a null text it is null. Memgraph refuses it."
         except: [memgraph]
         cypher: "RETURN [left(null, -1), right(null, -1), substring(null, 1, -1)]"
@@ -815,15 +820,10 @@ cases:
         parameters: {p: {i: 2}}
         rows: [[null, null]]
       - note: "Bound or read from data, a float is cut toward zero: 2.7 is 2, -0.5 is 0, and -1.5 is -1, which fails. Memgraph and FalkorDB refuse it."
-        only: [neo4j, postgres, sqlite]
+        only: [neo4j, sql]
         cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
         parameters: {f: 2.7, s: 1.7, q: -0.5}
         rows: [["he", "lo", "el", ""]]
-      - note: "Oracle's empty text is null."
-        only: [oracle]
-        cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
-        parameters: {f: 2.7, s: 1.7, q: -0.5}
-        rows: [["he", "lo", "el", null]]
       - only: [neo4j, sql]
         cypher: "UNWIND $xs AS n RETURN [left('hello', n), substring('hello', n)]"
         parameters: {xs: [2.7, 2.0, null]}
@@ -979,6 +979,47 @@ cases:
         only: [neo4j, sql]
         cypher: "RETURN ['  ' STARTS WITH '', '' CONTAINS ' ', '  ' ENDS WITH ' ', size('  '), isEmpty(' ')]"
         rows: [[true, false, true, 2, false]]
+
+  - name: "The empty text made"
+    description: "A function that makes a text makes the empty text where Cypher does: of empty texts, or of a count of 0. Oracle's empty text is null as SQL text, so its functions gave null there (drivine4j#416). An argument that is null still makes null."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "RETURN ['' + '', toUpper(''), toLower(''), trim(''), ltrim(''), rtrim(''), reverse(''), toString('')]"
+        rows: [["", "", "", "", "", "", "", ""]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [replace('a', 'a', ''), replace('', 'a', 'b'), substring('abc', 1, 0), substring('abc', 3), left('abc', 0), right('abc', 0), trim('   ')]"
+        rows: [["", "", "", "", "", "", ""]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [$e + $e, toUpper($e), reverse($e), substring($e, 0), left($e, 2)]"
+        parameters: {e: ""}
+        rows: [["", "", "", "", ""]]
+      - only: [neo4j, sql]
+        cypher: "RETURN split('', ','), split($e, ',')"
+        parameters: {e: ""}
+        rows: [[[""], [""]]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND ['', 'ab'] AS x RETURN x, toUpper(x), x + '', reverse(x), left(x, 1) ORDER BY x"
+        rows: [["", "", "", "", ""], ["ab", "AB", "ab", "ba", "a"]]
+      - note: "A text past 32 KB beside the empty text."
+        only: [neo4j, sql]
+        cypher: "RETURN size($e + $long), size(replace($long, 'x', '')), size(left($long, 0))"
+        parameters: {e: "", long: {$repeat: "x", times: 40000}}
+        rows: [[40000, 0, 0]]
+      - note: "A count out of range beside the empty text still fails, as it does beside any text."
+        only: [neo4j, sql]
+        cypher: "UNWIND [''] AS x RETURN left(x, -1)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [''] AS x RETURN substring(x, 0, $n)"
+        parameters: {n: -1}
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN split('', '')"
+        rows: [[""]]
+      - note: "A null argument, or a missing property, still makes null."
+        only: [neo4j, sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [toUpper(p.nope), '' + null, substring('abc', 1, null), left('', null), replace('', null, 'x'), reverse(p.nope), split(null, ','), toString(p.nope), replace('ab', 'a', null)]"
+        rows: [[null, null, null, null, null, null, null, null, null]]
 
   - name: "Round to a fractional or negative precision"
     description: "round() reads its precision as a whole number toward zero, as Neo4j does, and fails on a row it rounds a number on by one below 0 or past 2147483647."
@@ -1772,8 +1813,7 @@ cases:
         except: [oracle]
         cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))"
         rows: [1]
-      - note: "A text built up from the empty text: Oracle's empty text is null."
-        except: [oracle]
+      - note: "A text built up from the empty text."
         cypher: |
           MATCH (p:Person) WITH p ORDER BY p.name
           WITH collect(p.name) AS names

@@ -22,8 +22,8 @@ import org.drivine.cypher.store.SqliteFunctions as Shared
  *
  * Compiled Cypher calls the rest, for what Cypher does with its values, JSON text each, that SQLite does not:
  *
- * - [EQUAL], [CONTAINS], [CANONICAL] and [ADD] compare, group and add them: see [SqliteEqualFunction],
- *   [SqliteContainsFunction], [SqliteCanonicalFunction] and [SqliteAddFunction].
+ * - [EQUAL], [CANONICAL] and [ADD] compare, group and add them: see [SqliteEqualFunction], [SqliteCanonicalFunction]
+ *   and [SqliteAddFunction].
  * - [UPPER], [SPLIT], [REVERSE] and [UUID] are Cypher's `toUpper`, `split`, `reverse` and `randomUUID`: see
  *   [SqliteUpperFunction], [SqliteSplitFunction], [SqliteReverseFunction] and [SqliteUuidFunction].
  * - [MATH] and [ROUND] work out Cypher's functions of numbers, `exp`, `log`, `sin` …, and `round` by a mode, as
@@ -51,7 +51,6 @@ internal object SqliteFunctions {
     const val LOWER = Shared.LOWER
     const val EPOCH = Shared.EPOCH
     const val EQUAL = Shared.EQUAL
-    const val CONTAINS = Shared.CONTAINS
     const val ADD = Shared.ADD
     const val CANONICAL = Shared.CANONICAL
     const val CYPHER = Shared.CYPHER
@@ -87,7 +86,6 @@ internal object SqliteFunctions {
         Function.create(connection, LOWER, SqliteLowerFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, EPOCH, SqliteEpochFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, EQUAL, SqliteEqualFunction(), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, CONTAINS, SqliteContainsFunction(), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, ADD, SqliteAddFunction(), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, CANONICAL, SqliteCanonicalFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, UPPER, SqliteUpperFunction(), 1, Function.FLAG_DETERMINISTIC)
