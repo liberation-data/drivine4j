@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.model.LowerCopies
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
@@ -137,7 +138,7 @@ class OracleSchemaManagementIntegrationTest {
             assertTrue(recreated is EnsureResult.Recreated, "a recreate drops the other index and makes the item, got $recreated")
             val dropped = "Dropped Oracle index $listed, an index Drivine didn't make under its name for ${spec.kind} on ${spec.label}${spec.properties}: it was $reason"
             assertTrue(
-                said.any { it[1] == logger && it[2].startsWith(dropped) && it[0] == (if (logger == "ConstraintManager") "WARN" else "INFO") },
+                said.any { it[1] == logger && it[2].startsWith(dropped) && it[0] == "INFO" },
                 "the drop is said:\n${said.joinToString("\n")}",
             )
             assertTrue(ensure() is EnsureResult.AlreadyMatching, "the item made in its place is the item")
@@ -191,6 +192,67 @@ class OracleSchemaManagementIntegrationTest {
             assertTrue("SCHEMA_IX_SERIAL" in plan, "the index made in the other's place is over the property:\n$plan")
         } finally {
             runCatching { manager.indexes.drop(spec) }
+        }
+    }
+
+    /** Each index of the graph's node table whose name starts with [name], as Oracle keeps it, and whether it is unique. */
+    private fun indexesNamed(name: String): Map<String, Boolean> =
+        manager.query(QuerySpecification.withStatement(
+            "SELECT index_name || ' ' || uniqueness FROM user_indexes WHERE table_name = 'SCHEMA_NODE' AND index_name LIKE '${name.uppercase()}%'"
+        ).transform(String::class.java)).associate { it.substringBefore(' ') to (it.substringAfter(' ') == "UNIQUE") }
+
+    /**
+     * A uniqueness constraint is made again beside its old index, which is swapped out only once the new one is built
+     * (drivine-cypher-spec#135 §4, plans.yaml case 31b): the data refusing the build (`ORA-01452`) leaves the old index
+     * as it was, and nothing beside it, as the index a recreate cut short had left under the name it builds under first
+     * is dropped before the build. The old index here is over another property, as Oracle builds no second index over
+     * the same expressions (`ORA-01408`, case 31a).
+     */
+    @Test
+    fun `a recreate of a uniqueness constraint the data refuses at its build keeps the index it had, and leaves none beside it`() {
+        val spec = UniquenessConstraintSpec("Badge", "serial")
+        val name = OracleGraph("schema").objectName("uq", listOf("Badge", "serial"))
+        try {
+            manager.indexes.run("CREATE INDEX $name ON schema_node (JSON_VALUE(props, '$.\"badgeRef\"'))")
+            manager.indexes.run("CREATE INDEX ${name}_r ON schema_node (JSON_VALUE(props, '$.\"serial\"'))")
+            execute("CREATE (:Badge {serial: 'b-1'}), (:Badge {serial: 'b-1'})")
+
+            val result = manager.constraints.recreate(spec)
+
+            assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+            assertEquals(mapOf("serial" to "b-1"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
+            assertEquals(mapOf(name.uppercase() to false), indexesNamed(name), "the old index is kept, and the leftover dropped")
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+            manager.indexes.run("DROP INDEX IF EXISTS $name")
+            manager.indexes.run("DROP INDEX IF EXISTS ${name}_r")
+        }
+    }
+
+    /**
+     * A constraint that ignores case fills its lowercased copies in again before the build, with the old index standing
+     * (plans.yaml case 31m): a copy left out of step by a write past Drivine, whose property lowercased repeats another's
+     * copy, is refused by the old index (`ORA-00001`). That is reported as a violation, and the old index still enforces.
+     */
+    @Test
+    fun `a recreate whose refill of the lowercased copies the old index refuses keeps that index, which still enforces`() {
+        val spec = UniquenessConstraintSpec("Member", "handle", ignoreCase = true)
+        val copy = LowerCopies.of("handle")
+        val name = OracleGraph("schema").objectName("uq", listOf("Member", copy))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            // Written past Drivine: the second node's copy is left out.
+            execute("CREATE (:Member {handle: 'Ann', `$copy`: 'ann'}), (:Member {handle: 'ANN'})")
+
+            val result = manager.constraints.recreate(spec)
+
+            assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+            assertEquals(mapOf(copy to "ann"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
+            assertEquals(mapOf(name.uppercase() to true), indexesNamed(name), "the old index is kept, and nothing built beside it")
+            val refused = assertFailsWith<DrivineException> { execute("CREATE (:Member {handle: 'aNN', `$copy`: 'ann'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
         }
     }
 
