@@ -5,7 +5,8 @@ code on real stores (Neo4j, Memgraph, FalkorDB, Postgres, Oracle, SQLite). It pi
 management becomes a driver over the compiler module's planner (liberation-data/drivine-cypher-spec#135): after the
 switch, the same tests must send the same writes. The files are as recorded from the managers before the switch, and are
 not recorded again but for a change that is meant to change what is written: Postgres's, Oracle's and SQLite's were
-recorded again for the forms (below), and the graph engines' are still the managers' own.
+recorded again for the forms and for a uniqueness constraint made again in its place (below), and the graph engines' are
+still the managers' own.
 
 ## Recording and checking
 
@@ -76,7 +77,7 @@ were compared test by test (`SchemaStatementGolden.writes`' rule):
 
 The new tests are the three safe-recreate tests on each store (a recreate that succeeds, one the data refuses at its
 build, and one whose refill of the lowercased copies the old index refuses) and, on SQLite, #770's two tests, which now
-have lines of their own. No test lost a write that is not a recreate's old drop, forget or make.
+have lines of their own and are checked. No test lost a write that is not a recreate's old drop, forget or make.
 
 ## Recorded again: the forms (drivine-cypher-spec#186)
 
@@ -111,14 +112,11 @@ through compiled DDL, among them) fails nothing. Within them, the tests below ar
 (`SchemaStatementGolden.UNCHECKED` names each, with the reason), and their lines, where they have any, are kept as
 recorded.
 
-Added after the golden was first recorded, so the managers' record has nothing of them:
+Added after the golden was first recorded, so the managers' record has nothing of it:
 
 - `StatelessStoreIdentityOracleTest`, "concurrent first boots without the constraint agree on one identity over a full
   node table on Oracle": it came with the merge of main (#755, for drivine4j#517). The forms' recording has its lines,
   which are kept as recorded and not checked.
-- `SqliteSchemaManagementTest`, "an index over something else under Drivine's name is drift, not made, and a recreate
-  replaces it", and "a table under Drivine's name for an index is drift, which a recreate leaves, and says so": they came
-  with the forms (drivine4j#770), after the SQL stores' files were recorded again.
 
 Three tests were rewritten when schema management became a driver over the planner, because they used the internal
 `IndexBuild`, which is gone. What they run now is not what was recorded:
