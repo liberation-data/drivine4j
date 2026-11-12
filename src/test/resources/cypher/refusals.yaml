@@ -105,6 +105,53 @@ cases:
       - cypher: "RETURN duration('1 day')"
         error: "'1 day' is no duration."
 
+  - name: "The current moment in a time zone not compiled yet"
+    description: "date.statement() and the rest, given a zone the compiler can't read where the statement compiles, are refused rather than given as null (drivine4j#425)."
+    steps:
+      - note: "A zone by name, which no store's text holds yet."
+        cypher: "RETURN date.statement('Europe/Stockholm')"
+        error: "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN datetime.transaction('nowhere')"
+        error: "'nowhere' is no time zone."
+      - note: "A zone an expression gives, which would give null in place of the moment where it is no zone."
+        cypher: "WITH '+01:00' AS z RETURN date.statement(z)"
+        error: "date.statement() of a time zone an expression gives is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN localtime.realtime(1)"
+        error: "localtime.realtime() takes a time zone, a text, or nothing."
+      - cypher: "RETURN time.statement($z)"
+        parameters: {z: 1}
+        error: "time.statement() takes a time zone, a text, or nothing."
+      - cypher: "RETURN datetime.statement('Z', 'Z')"
+        error: "datetime.statement() takes a time zone, or nothing."
+
+  - name: "An offset with seconds, or a zone that is no offset, not compiled yet"
+    description: "An offset with seconds, which no store's text or Oracle's TIMESTAMP WITH TIME ZONE holds, and a zone by name are refused where a statement writes them or a parameter gives them, in a text or a map, rather than given as null; a text that is no zone is refused as none (drivine4j#424)."
+    steps:
+      - cypher: "RETURN time({hour: 12, timezone: '+02:05:59'})"
+        error: "The offset with seconds '+02:05:59' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN datetime({datetime: datetime('2024-03-15T10:00Z'), timezone: '-01:30:15'})"
+        error: "The offset with seconds '-01:30:15' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN time('12:34:56+02:05:59')"
+        error: "The offset with seconds '+02:05:59' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN datetime({year: 2024, month: 1, day: 1, timezone: $z})"
+        parameters: {z: "+02:05:59"}
+        error: "The offset with seconds '+02:05:59' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN datetime({year: 2024, month: 1, day: 1, timezone: $z})"
+        parameters: {z: "Europe/Stockholm"}
+        error: "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN datetime({datetime: datetime('2024-03-15T10:00Z'), timezone: $z})"
+        parameters: {z: "Europe/Stockholm"}
+        error: "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet."
+      - note: "A text that is no zone, which gave null."
+        cypher: "RETURN datetime({year: 2024, month: 1, day: 1, timezone: 'nowhere'})"
+        error: "'nowhere' is no time zone."
+      - cypher: "RETURN datetime({year: 2024, month: 1, day: 1, timezone: $z})"
+        parameters: {z: 1}
+        error: "datetime() takes a time zone, not 1."
+      - note: "And one written, which gave null."
+        cypher: "RETURN datetime({year: 2024, month: 1, day: 1, timezone: 1})"
+        error: "datetime() takes a time zone, not 1."
+
   - name: "Temporal map not compiled yet"
     description: "A temporal value made from a map of fields the compiler doesn't handle yet is refused, naming what it is."
     steps:

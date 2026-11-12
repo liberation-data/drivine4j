@@ -191,7 +191,7 @@ internal class SqlitePredicates(
     /**
      * A regular expression that must match the whole value, as Cypher's `=~` does. A leading `(?i)`
      * ignores case. SQLite has no regular expressions of its own, so the expression is Java's, read by
-     * the function [SqliteRegexpFunction] registers as SQLite's `REGEXP`. It is held to the whole value
+     * the shared module's `regexp`, which [SqliteFunctions] registers as SQLite's `REGEXP`. It is held to the whole value
      * by a group that takes no number, so its own groups keep theirs and a backreference names the
      * group it was written for.
      */

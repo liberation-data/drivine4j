@@ -518,3 +518,233 @@ cases:
         value: [{$float: "Infinity"}, {$float: "-Infinity"}]
       - read: {store: "sqlite", nonFinite: false, column: '[1,2.0,"NaN"]'}
         value: [1, 2.0, "NaN"]
+
+  - name: "drivine_temporal"
+    description: "drivine_temporal(operation, …) works out what SQLite can't of a timestamp, the text of a wall clock to the microsecond (2024-03-15T10:30:00.000000), by its operation: add_time(timestamp, days, seconds, nanos) so many days, seconds and nanoseconds later, whole numbers each, the nanoseconds any number of them (a second or more is carried, as Java's plusNanos carries it); seconds_between(from, to) the whole seconds from one to the other, floored, as Cypher holds a duration's seconds, and nanos_between(from, to) the nanoseconds past them, from 0 to 999999999, so the seconds times a billion plus the nanoseconds is the exact difference over the whole range of years, which nanoseconds alone in a 64-bit integer cover for only 292 years either way; extract(timestamp, 'NANOSECOND_OF_MINUTE') its nanoseconds into the minute; local(text, kind) and utc(text, kind) the wall clock an ISO text of a temporal kind reads, its offset left out or moved to UTC. A timestamp keeps the microsecond: a finer part is cut, never rounded. Null where an argument is. The steps here pin what drivine4j#418, #421 and #424 fix; a step noted drivine4j#421 (layout 2) needs a timestamp of nine digits, and is held until it is the store's."
+    pairs:
+      temporal.yaml: ["Adding durations", "duration.between", "Fields of a date, time and moment"]
+    steps:
+      - function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T10:30:00.000000", 1, 1, 500000000]
+        result: "2024-03-16T10:30:01.500000"
+      - note: "Nanoseconds finer than the timestamp's microsecond are cut, not rounded."
+        function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T10:30:00.000000", 0, 0, 1999]
+        result: "2024-03-15T10:30:00.000001"
+      - function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T00:00:00.000000", 0, -1, 999999999]
+        result: "2024-03-14T23:59:59.999999"
+      - note: "Three days of seconds, past a 32-bit integer's range as nanoseconds."
+        function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T00:00:00.000000", 0, 259200, 0]
+        result: "2024-03-18T00:00:00.000000"
+      - function: "drivine_temporal"
+        args: ["add_time", null, 1, 1, 0]
+        result: null
+      - note: "drivine4j#421 (layout 2): a nanosecond is kept."
+        function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T10:30:00.000000000", 0, 0, 1]
+        result: "2024-03-15T10:30:00.000000001"
+      - note: "drivine4j#418: whole seconds, and the nanoseconds past them, so a fraction of a second comes out exact, not 22.14199996."
+        function: "drivine_temporal"
+        args: ["seconds_between", "2024-03-15T10:30:00.000000", "2024-03-15T10:30:22.142000"]
+        result: 22
+      - note: "Floored, as Cypher holds a duration's seconds: -22.142 seconds are -23 and 858000000 nanoseconds."
+        function: "drivine_temporal"
+        args: ["seconds_between", "2024-03-15T10:30:22.142000", "2024-03-15T10:30:00.000000"]
+        result: -23
+      - function: "drivine_temporal"
+        args: ["seconds_between", "1970-01-01T00:00:00.000000", "2024-03-15T10:30:00.000000"]
+        result: 1710498600
+      - function: "drivine_temporal"
+        args: ["seconds_between", "2024-03-15T10:30:00.000000", null]
+        result: null
+      - function: "drivine_temporal"
+        args: ["extract", "2024-03-15T10:30:22.142000", "NANOSECOND_OF_MINUTE"]
+        result: 22142000000
+      - function: "drivine_temporal"
+        args: ["extract", "2024-03-15T10:30:00.000001", "NANOSECOND_OF_MINUTE"]
+        result: 1000
+      - note: "A timestamp of nine digits, as layout 2 keeps one (drivine4j#421), is read to the nanosecond already: not held."
+        function: "drivine_temporal"
+        args: ["extract", "2024-03-15T10:30:59.999999999", "NANOSECOND_OF_MINUTE"]
+        result: 59999999999
+      - note: "drivine4j#424: an offset with seconds, which the compiler refuses in a text but passes on from a map's timezone (time({hour: 12, timezone: '+02:05:59'})), fails here rather than being misread as hours and minutes."
+        function: "drivine_temporal"
+        args: ["utc", "10:00:00+02:05:59", "TIME"]
+        error: "'10:00:00+02:05:59' is no temporal value"
+      - note: "An offset of hours and minutes is read, as before."
+        function: "drivine_temporal"
+        args: ["utc", "10:00:00+02:05", "TIME"]
+        result: "1970-01-01T07:55:00.000000"
+      - function: "drivine_temporal"
+        args: ["local", "2024-03-15T10:00:00+02:05:59", "DATE_TIME"]
+        error: "'2024-03-15T10:00:00+02:05:59' is no temporal value"
+      - function: "drivine_temporal"
+        args: ["local", "2024-03-15T10:00:00+02:05", "DATE_TIME"]
+        result: "2024-03-15T10:00:00.000000"
+      - note: "drivine4j#421 (layout 2): a text's nanoseconds are kept."
+        function: "drivine_temporal"
+        args: ["local", "2024-03-15T10:30:00.123456789", "LOCAL_DATE_TIME"]
+        result: "2024-03-15T10:30:00.123456789"
+      - note: "drivine4j#421 (layout 2)."
+        function: "drivine_temporal"
+        args: ["utc", "2024-03-15T10:30:00.123456789+01:00", "DATE_TIME"]
+        result: "2024-03-15T09:30:00.123456789"
+      - note: "A text's nanoseconds are read, but a timestamp keeps the microsecond until layout 2: the seventh digit and on are cut, never rounded."
+        function: "drivine_temporal"
+        args: ["local", "2024-03-15T10:30:00.1234567", "LOCAL_DATE_TIME"]
+        result: "2024-03-15T10:30:00.123456"
+      - function: "drivine_temporal"
+        args: ["utc", "2024-03-15T10:30:00.9999999+01:00", "DATE_TIME"]
+        result: "2024-03-15T09:30:00.999999"
+      - note: "The nanoseconds past seconds_between's whole seconds (drivine4j#418)."
+        function: "drivine_temporal"
+        args: ["nanos_between", "2024-03-15T10:30:00.000000", "2024-03-15T10:30:22.142000"]
+        result: 142000000
+      - note: "From 0 up to a second, as the seconds are floored: -22.142 seconds are -23 and 858000000 nanoseconds."
+        function: "drivine_temporal"
+        args: ["nanos_between", "2024-03-15T10:30:22.142000", "2024-03-15T10:30:00.000000"]
+        result: 858000000
+      - function: "drivine_temporal"
+        args: ["nanos_between", "1970-01-01T00:00:00.000000", "2024-03-15T10:30:00.000000"]
+        result: 0
+      - function: "drivine_temporal"
+        args: ["nanos_between", null, "2024-03-15T10:30:00.000000"]
+        result: null
+      - note: "A microsecond back is -1 second and 999999000 nanoseconds."
+        function: "drivine_temporal"
+        args: ["seconds_between", "2024-03-15T10:30:00.000001", "2024-03-15T10:30:00.000000"]
+        result: -1
+      - function: "drivine_temporal"
+        args: ["nanos_between", "2024-03-15T10:30:00.000001", "2024-03-15T10:30:00.000000"]
+        result: 999999000
+      - note: "Nearly ten thousand years, past the 292 years a 64-bit integer of nanoseconds holds: exact still."
+        function: "drivine_temporal"
+        args: ["seconds_between", "0001-01-01T00:00:00.000000", "9999-12-31T23:59:59.999999"]
+        result: 315537897599
+      - function: "drivine_temporal"
+        args: ["nanos_between", "0001-01-01T00:00:00.000000", "9999-12-31T23:59:59.999999"]
+        result: 999999000
+      - function: "drivine_temporal"
+        args: ["seconds_between", "9999-12-31T23:59:59.999999", "0001-01-01T00:00:00.000000"]
+        result: -315537897600
+      - function: "drivine_temporal"
+        args: ["nanos_between", "9999-12-31T23:59:59.999999", "0001-01-01T00:00:00.000000"]
+        result: 1000
+      - note: "Ten billion seconds, about 317 years, past the 292 years a 64-bit integer of nanoseconds holds."
+        function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T10:30:00.000000", 0, 10000000000, 0]
+        result: "2341-02-03T04:16:40.000000"
+      - function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T10:30:00.000000", 0, -10000000000, 0]
+        result: "1707-04-26T16:43:20.000000"
+      - note: "Nanoseconds of a second or more, or negative, are carried into the seconds, as Java's plusNanos carries them."
+        function: "drivine_temporal"
+        args: ["add_time", "2024-03-15T00:00:00.000000", 0, 1, -1500000000]
+        result: "2024-03-14T23:59:59.500000"
+      - note: "SECOND is no field: the compiler reads NANOSECOND_OF_MINUTE, a whole number, where a float of seconds lost digits."
+        function: "drivine_temporal"
+        args: ["extract", "2024-03-15T10:30:22.142000", "SECOND"]
+        error: "A timestamp has no field SECOND."
+
+  - name: "drivine_trunc"
+    description: "drivine_trunc(number) cuts the number's fraction off, as Postgres's and Oracle's TRUNC do, and gives a whole number where one holds it, where SQLite's own trunc gives a float, which JSON writes 2.0. A float within two units of its last place of a whole number is that whole number: SQLite works out a fraction of a second in binary, which misses it by that much (33.001 seconds times a million is 33000999.999999996, and those microseconds are 33001000). A float past a whole number's range, an infinity among them, is the float. Null of null."
+    pairs:
+      temporal.yaml: ["Fields of a date, time and moment", "Fractions of a second and wrapping times"]
+    steps:
+      - function: "drivine_trunc"
+        args: [2.7]
+        result: 2
+      - function: "drivine_trunc"
+        args: [-2.7]
+        result: -2
+      - function: "drivine_trunc"
+        args: [-0.5]
+        result: 0
+      - note: "Within two units of the last place of 33001000, so 33001000, not 33000999."
+        function: "drivine_trunc"
+        args: [33000999.999999996]
+        result: 33001000
+      - function: "drivine_trunc"
+        args: [5]
+        result: 5
+      - function: "drivine_trunc"
+        args: [9223372036854775807]
+        result: 9223372036854775807
+      - function: "drivine_trunc"
+        args: [1.0e19]
+        result: 1.0e19
+      - function: "drivine_trunc"
+        args: [{$float: "-Infinity"}]
+        result: {$float: "-Infinity"}
+      - function: "drivine_trunc"
+        args: [null]
+        result: null
+
+  - name: "drivine_to_char"
+    description: "drivine_to_char(value, pattern) writes a timestamp or a number in a pattern of Postgres's and Oracle's to_char, those compiled SQL writes temporal values with. A timestamp's pattern is made of YYYY, MM, DD, HH24, MI, SS, IYYY (the ISO week's year), IW (its week) and DDD (the day of the year), and text in double quotes, written as it is; anything else is itself. A year is numbered astronomically, as Cypher numbers it, and written with its sign before 0: 0000 is 1 BC and -0044 is 45 BC. A number's pattern opens with FM: 0s for its digits, a whole number rounded half away from zero and padded to as many; or after a point as many places as the fraction may have, rounded likewise, its trailing zeros left out, and the point kept where no fraction is left (2.). Null where the value or the pattern is."
+    pairs:
+      temporal.yaml: ["Fields of a date, time and moment", "Fractions of a second and wrapping times", "Fields of a duration"]
+    steps:
+      - function: "drivine_to_char"
+        args: ["2024-03-15T10:30:05.000000", 'YYYY-MM-DD"T"HH24:MI:SS']
+        result: "2024-03-15T10:30:05"
+      - function: "drivine_to_char"
+        args: ["-0044-03-15T00:00:00.000000", "YYYY-MM-DD"]
+        result: "-0044-03-15"
+      - note: "The year 0, 1 BC, is a leap year."
+        function: "drivine_to_char"
+        args: ["0000-12-31T00:00:00.000000", "YYYY DDD"]
+        result: "0000 366"
+      - note: "The 3rd of January 2021 is in the last ISO week of 2020."
+        function: "drivine_to_char"
+        args: ["2021-01-03T00:00:00.000000", "IYYY-IW"]
+        result: "2020-53"
+      - note: "The 30th of December 2024 is in the first ISO week of 2025."
+        function: "drivine_to_char"
+        args: ["2024-12-30T00:00:00.000000", "IYYY-IW"]
+        result: "2025-01"
+      - function: "drivine_to_char"
+        args: ["2024-02-30T00:00:00.000000", "YYYY"]
+        error: "Text '2024-02-30T00:00:00.000000' could not be parsed"
+      - function: "drivine_to_char"
+        args: [12, "FM0000"]
+        result: "0012"
+      - function: "drivine_to_char"
+        args: [-5, "FM00"]
+        result: "-05"
+      - note: "Half away from zero."
+        function: "drivine_to_char"
+        args: ["2.5", "FM0000"]
+        result: "0003"
+      - function: "drivine_to_char"
+        args: ["-2.5", "FM00"]
+        result: "-03"
+      - function: "drivine_to_char"
+        args: ["6.5", "FM9999999999990.999999999"]
+        result: "6.5"
+      - function: "drivine_to_char"
+        args: ["2", "FM9999999999990.999999999"]
+        result: "2."
+      - function: "drivine_to_char"
+        args: ["1.0000000005", "FM9999999999990.999999999"]
+        result: "1.000000001"
+      - note: "Rounded to no fraction, a negative number is 0, with no sign."
+        function: "drivine_to_char"
+        args: ["-0.0000000004", "FM9999999999990.999999999"]
+        result: "0."
+      - function: "drivine_to_char"
+        args: [null, "FM00"]
+        result: null
+      - function: "drivine_to_char"
+        args: ["2024-03-15T10:30:05.000000", null]
+        result: null
+
+  - name: "drivine_host_version"
+    description: "drivine_host_version() is the version of the drivine_ functions' contract, the forms of their arguments and results this file pins, as the compiler's SqliteFunctions.HOST_VERSION is. A library checks it once on each connection it registers the functions on, and fails where it is not the compiler's, or the function is missing: then the functions are not those the compiled SQL calls. No compiled statement calls it, so its case pairs no store case."
+    pairs: {}
+    steps:
+      - function: "drivine_host_version"
+        args: []
+        result: 1

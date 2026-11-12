@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 
 /**
  * The expressions the shared module's full-text search binds on SQLite are Postgres's, and the function drivine4j registers
- * ([SqliteFunctions.REGEXP_COUNT], through [SqlitePatterns]) counts them as Postgres does: a term written again at once each
+ * ([SqliteFunctions.REGEXP_COUNT], through the module's `JavaPatterns`) counts them as Postgres does: a term written again at once each
  * time, and a word in any script as a word.
  */
 class SqlitePatternsTest {

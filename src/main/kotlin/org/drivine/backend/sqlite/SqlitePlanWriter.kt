@@ -505,7 +505,7 @@ internal class SqlitePlanWriter(
 
         /**
          * Text in the order of its code points, which is the byte order Postgres's `COLLATE "C"` sorts labels in, and the order
-         * Cypher compares texts in (see [SqliteCypherValues.order]).
+         * Cypher compares texts in (see the shared module's `SqliteCypherValues.order`).
          */
         internal val CODE_POINTS = Comparator<String> { a, b ->
             val x = a.codePoints().toArray()

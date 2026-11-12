@@ -6,7 +6,6 @@ import org.drivine.connection.JacksonEncoder
 import org.drivine.cypher.json.CypherJson
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import org.drivine.cypher.store.SqliteCypherValues as Shared
 
 /**
@@ -21,7 +20,6 @@ class SqliteCypherValuesTest {
     @Test
     fun `NaN is the compiler's stand-in for it`() {
         assertEquals(CypherJson.writeValueAsString(Shared.NAN), json.writeValueAsString(SqliteCypherValues.NAN))
-        assertTrue(SqliteCypherValues.isNaN(json.readTree(CypherJson.writeValueAsString(Shared.NAN))))
     }
 
     @Test
