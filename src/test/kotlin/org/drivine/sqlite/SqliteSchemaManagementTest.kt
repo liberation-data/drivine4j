@@ -1,5 +1,6 @@
 package org.drivine.sqlite
 
+import org.drivine.DrivineException
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.Test
 import sample.stateless.Claim
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -170,6 +172,51 @@ class SqliteSchemaManagementTest {
 
         assertNull(manager.indexes.find(spec))
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+    }
+
+    @Test
+    fun `an index over something else under Drivine's name is drift, not made, and a recreate replaces it`() {
+        // CREATE INDEX IF NOT EXISTS passes over the name, so only the listing's object rows tell it apart (drivine4j#770).
+        val spec = RangeIndexSpec("Coupon", "serial")
+        val name = org.drivine.backend.sqlite.SqliteGraph("schema").objectName("ix", listOf("Coupon", "serial"))
+        manager.indexes.run("CREATE INDEX $name ON schema_node (${property("", "couponRef")})")
+        try {
+            val drift = manager.indexes.ensure(spec)
+            assertTrue(drift is EnsureResult.Drift, "got $drift")
+            assertEquals(name, drift.existing.name)
+
+            assertTrue(manager.indexes.recreate(spec) is EnsureResult.Recreated)
+            assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+            val plan = plan("SELECT nid FROM schema_node n WHERE ${property("n", "serial")} = 'x' AND ${label("n", "Coupon")}")
+            assertTrue("USING INDEX $name" in plan, plan)
+        } finally {
+            manager.indexes.run("DROP INDEX IF EXISTS $name")
+            runCatching { manager.indexes.drop(spec) }
+        }
+    }
+
+    @Test
+    fun `a table under Drivine's name for an index is drift, which a recreate leaves, and says so`() {
+        // SQLite names tables and indexes alike, so a table under the name is in the way, and no recreate drops it (drivine4j#770).
+        val index = RangeIndexSpec("Ledger", "serial")
+        val constraint = UniquenessConstraintSpec("Ledger", "code")
+        val names = listOf("ix" to index, "uq" to constraint).map { (kind, spec) -> org.drivine.backend.sqlite.SqliteGraph("schema").objectName(kind, listOf(spec.label) + spec.properties) }
+        names.forEach { manager.indexes.run("CREATE TABLE $it (x INTEGER)") }
+        try {
+            assertTrue(manager.indexes.ensure(index) is EnsureResult.Drift)
+            val refused = assertFailsWith<DrivineException> { manager.indexes.recreate(index) }
+            assertTrue(names[0] in refused.message.orEmpty() && "Drop or rename it" in refused.message.orEmpty(), refused.message)
+            assertTrue(manager.indexes.ensure(index) is EnsureResult.Drift, "the table is left as it was")
+
+            assertTrue(manager.constraints.ensure(constraint) is EnsureResult.Drift)
+            val recreated = manager.constraints.recreate(constraint)
+            assertTrue(recreated is EnsureResult.Drift, "got $recreated")
+            assertEquals(names[1], recreated.existing.name)
+        } finally {
+            names.forEach { manager.indexes.run("DROP TABLE IF EXISTS $it") }
+            runCatching { manager.indexes.drop(index) }
+            runCatching { manager.constraints.drop(constraint) }
+        }
     }
 
     @Test

@@ -101,9 +101,9 @@ class OracleSchemaGrammarTest {
             "USING (SELECT 'RANGE_INDEX' AS kind, 'Person' AS label, '[\"name\",\"metadata.source\"]' AS properties FROM dual) k",
             "ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)",
             // A record made before there were labelled indexes takes the name of the one now made, and keeps its aliases.
-            "WHEN MATCHED THEN UPDATE SET c.details = JSON_MERGEPATCH(c.details, '{\"labelled\": \"$labelled\", \"unique\": null}')",
+            "WHEN MATCHED THEN UPDATE SET c.details = JSON_MERGEPATCH(c.details, '{\"form\": 1, \"labelled\": \"$labelled\", \"unique\": null}')",
             "WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)",
-            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{\"labelled\": \"$labelled\"}');",
+            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{\"form\": 1, \"labelled\": \"$labelled\"}');",
             "EXCEPTION WHEN DUP_VAL_ON_INDEX THEN",
             "NULL;",
             "END;",
@@ -143,7 +143,7 @@ class OracleSchemaGrammarTest {
         record.inOrder(
             "MERGE INTO g_schema c",
             "'VECTOR_INDEX' AS kind, 'Doc' AS label, '[\"embedding\"]' AS properties",
-            "VALUES (k.kind, k.label, k.properties, 'doc_vec', '$side', '{\"dimensions\": 3, \"similarity\": \"EUCLIDEAN\"}');",
+            "VALUES (k.kind, k.label, k.properties, 'doc_vec', '$side', '{\"form\": 1, \"dimensions\": 3, \"similarity\": \"EUCLIDEAN\"}');",
         )
     }
 
@@ -169,14 +169,14 @@ class OracleSchemaGrammarTest {
             "WHEN e_no_text THEN",
             "EXECUTE IMMEDIATE 'DROP TABLE $side PURGE';",
             "MERGE INTO g_schema c",
-            "VALUES (k.kind, k.label, k.properties, 'Doc_title_body_fulltext', NULL, '{\"analyzer\": \"english\"}');",
+            "VALUES (k.kind, k.label, k.properties, 'Doc_title_body_fulltext', NULL, '{\"form\": 1, \"analyzer\": \"english\"}');",
             "RETURN;",
             "END IF;",
             "EXECUTE IMMEDIATE 'CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON g_node FOR EACH ROW",
             "JSON_OBJECT(''title'' VALUE JSON_VALUE(:NEW.props, ''$.title'' RETURNING CLOB), ''body'' VALUE JSON_VALUE(:NEW.props, ''$.body'' RETURNING CLOB) ABSENT ON NULL RETURNING JSON) AS doc",
             "EXECUTE IMMEDIATE 'INSERT INTO $side (nid, doc)",
             "MERGE INTO g_schema c",
-            "VALUES (k.kind, k.label, k.properties, 'Doc_title_body_fulltext', '$side', '{\"analyzer\": \"english\"}');",
+            "VALUES (k.kind, k.label, k.properties, 'Doc_title_body_fulltext', '$side', '{\"form\": 1, \"analyzer\": \"english\"}');",
         )
         assertEquals(2, Regex("MERGE INTO g_schema c").findAll(block).count())
         assertTrue(block.contains("'{}'").not() || spec.analyzer == null)
@@ -186,7 +186,7 @@ class OracleSchemaGrammarTest {
     fun `an analyzer is recorded as a JSON string, whatever it holds`() {
         val block = checked(grammar.createIndex(FullTextIndexSpec("Doc", listOf("title"), analyzer = "my \"own\" \\ one"), null)).single()
 
-        assertTrue(block.contains("""'{"analyzer": "my \"own\" \\ one"}'"""), block)
+        assertTrue(block.contains("""'{"form": 1, "analyzer": "my \"own\" \\ one"}'"""), block)
     }
 
     @Test
@@ -203,7 +203,7 @@ class OracleSchemaGrammarTest {
             "CREATE UNIQUE INDEX IF NOT EXISTS $name ON g_node n (CASE WHEN $constrained THEN JSON_VALUE(n.props, '$.email') END, CASE WHEN $constrained THEN JSON_VALUE(n.props, '$.tenant') END)",
         )
         assertEquals(2, Regex("CASE WHEN").findAll(index).count())
-        record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label, '[\"email\",\"tenant\"]' AS properties", "'Person_email_tenant_unique', '$name', '{}'")
+        record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label, '[\"email\",\"tenant\"]' AS properties", "'Person_email_tenant_unique', '$name', '{\"form\": 1}'")
     }
 
     @Test
@@ -296,7 +296,9 @@ class OracleSchemaGrammarTest {
     fun `what is listed is what was recorded and is still there`() {
         val indexes = grammar.listIndexesQuery(SchemaItemKind.RANGE_INDEX)
         indexes.inOrder(
-            "SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details,",
+            // The records first, then a row for each object under a name Drivine gives a range index's objects.
+            "SELECT listed FROM (",
+            "SELECT 0 AS part, label, properties, JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details,",
             // A range index with neither its labelled index nor a unique index to stand for it is listed, as incomplete.
             "'status' VALUE CASE WHEN kind = 'RANGE_INDEX' AND NOT EXISTS (SELECT 1 FROM user_indexes l WHERE l.index_name = UPPER(JSON_VALUE(c.details, '$.labelled')))",
             "AND NOT EXISTS (SELECT 1 FROM g_schema u WHERE u.label = c.label AND u.properties = c.properties AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1",
@@ -307,7 +309,10 @@ class OracleSchemaGrammarTest {
             "object_name IS NULL",
             "EXISTS (SELECT 1 FROM user_indexes i WHERE i.index_name = UPPER(c.object_name))",
             "EXISTS (SELECT 1 FROM user_tables t WHERE t.table_name = UPPER(c.object_name))",
-            "ORDER BY label, properties",
+            "UNION ALL",
+            "JSON_OBJECT('object' VALUE o.object_name, 'type' VALUE o.object_type",
+            "FROM user_objects o",
+            "ORDER BY part, label, properties",
         )
         assertTrue(grammar.listIndexesQuery(SchemaItemKind.VECTOR_INDEX).contains("WHERE kind IN ('VECTOR_INDEX')"))
         assertTrue(grammar.listConstraintsQuery().contains("WHERE kind IN ('UNIQUENESS_CONSTRAINT')"))
@@ -315,7 +320,7 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
-    fun `a listed row is read back as the item it records, and a row that is not a map is passed over`() {
+    fun `a listed row is read back as the item it records, and a row that is not a map, or is an object's, is passed over`() {
         val rows = listOf<Any?>(
             mapOf(
                 "kind" to "VECTOR_INDEX", "label" to "Doc", "properties" to listOf("embedding"), "name" to "doc_vec",
@@ -323,6 +328,8 @@ class OracleSchemaGrammarTest {
             ),
             mapOf("kind" to "FULLTEXT_INDEX", "label" to "Doc", "properties" to listOf("title", "body"), "name" to null, "details" to mapOf("analyzer" to "english")),
             mapOf("kind" to "RANGE_INDEX", "label" to "Person", "properties" to listOf("name"), "name" to "r", "details" to emptyMap<String, Any>()),
+            // What the store has under a name Drivine gives, listed after the records: read for an item's form, and no item.
+            mapOf("object" to "G_IX_NAME_337A8B", "type" to "INDEX", "table" to "G_NODE", "uniqueness" to "NONUNIQUE", "indexType" to "FUNCTION-BASED NORMAL"),
             "not a row",
             null,
         )
@@ -398,7 +405,7 @@ class OracleSchemaGrammarTest {
         val uq = graph.objectName("uq", listOf("Person", "email"))
         shared.waitsOutBusy("CREATE INDEX IF NOT EXISTS $ix ON g_node (JSON_VALUE(props, '$.email'))")
         assertFalse("lx" in range || "CASE WHEN" in range, "no labelled index is made:\n$range")
-        range.inOrder("'RANGE_INDEX' AS kind, 'Person' AS label, '[\"email\"]' AS properties", "'$ix', '{\"unique\": \"$uq\"}'")
+        range.inOrder("'RANGE_INDEX' AS kind, 'Person' AS label, '[\"email\"]' AS properties", "'$ix', '{\"form\": 1, \"unique\": \"$uq\"}'")
         assertFalse("WHEN MATCHED THEN UPDATE" in range, "a range index there already is changed only once the unique index is made")
         unique.waitsOutBusy("CREATE UNIQUE INDEX IF NOT EXISTS $uq ON g_node n (${OracleSql.unique("n", "Person", listOf("email"), "email")})")
         served.inOrder(
@@ -408,10 +415,10 @@ class OracleSchemaGrammarTest {
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
             "END IF;",
             // Its aliases are kept.
-            "UPDATE g_schema SET details = JSON_MERGEPATCH(details, '{\"unique\": \"$uq\", \"labelled\": null}') WHERE kind = 'RANGE_INDEX'",
+            "UPDATE g_schema SET details = JSON_MERGEPATCH(details, '{\"form\": 1, \"unique\": \"$uq\", \"labelled\": null}') WHERE kind = 'RANGE_INDEX'",
             "COMMIT;",
         )
-        record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label", "'$uq', '{}'")
+        record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label", "'$uq', '{\"form\": 1}'")
     }
 
     @Test

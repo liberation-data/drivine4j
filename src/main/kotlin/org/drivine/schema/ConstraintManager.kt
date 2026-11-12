@@ -125,7 +125,8 @@ class ConstraintManager internal constructor(
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
      * prevents recreation (in which case the previous constraint has already been dropped), or
-     * [EnsureResult.BlockedByIndex] as [ensure] does. A constraint that ignores case fills the
+     * [EnsureResult.BlockedByIndex] as [ensure] does, or [EnsureResult.Drift] where something other than an index stands
+     * under the name Drivine gives the constraint's index (on Postgres and SQLite: a table, say), which is left as it is. A constraint that ignores case fills the
      * lowercased copies in again on every node of its label, recorded or not. The constraint made again
      * keeps the aliases its record kept (see [SchemaAliases]).
      */

@@ -3,6 +3,7 @@ package org.drivine.backend.sqlite
 import org.drivine.backend.sqlite.SqliteSql.hasLabel
 import org.drivine.backend.sqlite.SqliteSql.literal
 import org.drivine.cypher.store.ddl.SqliteDdl
+import org.drivine.cypher.store.schema.SqliteSchema
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.LowerCopyStatements
@@ -11,7 +12,6 @@ import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
 import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.SchemaStatement
-import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.VersionMarkerStatements
 import org.drivine.schema.catalogItem
@@ -45,6 +45,9 @@ import java.sql.SQLException
  * violation from another failure, and sampling the keys a constraint would refuse.
  */
 internal class SqliteSchemaGrammar(internal val graph: SqliteGraph) : SchemaGrammar, SchemaAliases {
+
+    /** The module's schema of this graph's store, whose reading of a listing's rows this grammar gives, and which the planner is given ([org.drivine.schema.storeSchema]). */
+    internal val schema = SqliteSchema(graph.store)
 
     override val engine = SqliteDdl.ENGINE
     override val supportsIfNotExists = true
@@ -86,19 +89,11 @@ internal class SqliteSchemaGrammar(internal val graph: SqliteGraph) : SchemaGram
 
     override fun listConstraintsQuery(): String = graph.store.listConstraintsQuery()
 
-    override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
-        val map = row as? Map<*, *> ?: return@mapNotNull null
-        val details = map["details"] as? Map<*, *>
-        SchemaItemInfo(
-            kind = SchemaItemKind.valueOf(map["kind"] as String),
-            label = map["label"] as String,
-            properties = (map["properties"] as List<*>).map { it.toString() },
-            name = map["name"] as? String,
-            dimensions = (details?.get("dimensions") as? Number)?.toInt(),
-            similarity = (details?.get("similarity") as? String)?.let(SimilarityFunction::valueOf),
-            analyzer = details?.get("analyzer") as? String,
-        )
-    }
+    /**
+     * The records among [rows], read by the module's [SqliteSchema]: the rows its listings give after the records, one for each
+     * object under a name Drivine gives (an `object` row), are what the planner reads an item's form from, and no item.
+     */
+    override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = schema.parseIndexRows(rows)
 
     override fun parseConstraintRows(rows: List<Any?>): List<SchemaItemInfo> = parseIndexRows(rows)
 

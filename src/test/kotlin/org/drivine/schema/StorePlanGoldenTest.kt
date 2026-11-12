@@ -71,9 +71,9 @@ class StorePlanGoldenTest {
     }
 
     @Test
-    fun `the cases are the design's 1 to 29 and the item calls, and every store runs`() {
+    fun `the cases are the design's 1 to 29, the form check's 30, and the item calls, and every store runs`() {
         val names = plans["cases"].map { it["case"].textValue() }
-        assertEquals((1..29).toList(), names.filter { it.first().isDigit() }.map { it.takeWhile(Char::isDigit).toInt() }.distinct().sorted())
+        assertEquals((1..30).toList(), names.filter { it.first().isDigit() }.map { it.takeWhile(Char::isDigit).toInt() }.distinct().sorted())
         assertTrue("item" in names)
         assertEquals(engines.keys, plans["cases"].flatMap { texts(it["stores"]) }.toSet())
     }
@@ -231,6 +231,8 @@ class StorePlanGoldenTest {
         execute["dropUnnamed"]?.let { return storeCase(it.textValue())["stores"][id]["dropUnnamed"].toList() }
         execute["statement"]?.let { return listOf(it) }
         execute["native"]?.let { return listOf(execute) }
+        // The record of the catalog's item made in the current form, whose record said none.
+        if (execute["formRecorded"]?.booleanValue() == true) return listOf(store["catalog"]["stores"][id]["formRecorded"])
         return when (val name = execute["marker"].textValue()) {
             "prepare" -> {
                 val prepare = markerStore(id)["prepare"].textValue()

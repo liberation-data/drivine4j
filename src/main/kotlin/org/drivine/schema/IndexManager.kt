@@ -1,5 +1,6 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
 import org.drivine.cypher.store.plan.ItemCall
 import org.drivine.cypher.store.plan.PlanRequest
@@ -137,9 +138,18 @@ class IndexManager internal constructor(
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
      * An index that ignores case fills the lowercased copies in again on every node of its label,
      * recorded or not. The index made again keeps the aliases its record kept (see [SchemaAliases]),
-     * and is returned once it is built, as by [ensure].
+     * and is returned once it is built, as by [ensure]. Where something other than an index stands under the name Drivine
+     * gives the index (on Oracle, Postgres and SQLite: a table, say), it is left as it is and a [DrivineException] is thrown.
      */
-    fun recreate(spec: IndexSpec): EnsureResult.Recreated = driver.item(ItemCall.RECREATE, spec).result as EnsureResult.Recreated
+    fun recreate(spec: IndexSpec): EnsureResult.Recreated = when (val result = driver.item(ItemCall.RECREATE, spec).result) {
+        is EnsureResult.Recreated -> result
+        // The drift a recreate leaves: what stands under the item's name isn't an index, so it isn't dropped.
+        is EnsureResult.Drift -> throw DrivineException(
+            "Could not recreate ${spec.kind} on ${spec.label}${spec.properties}: ${result.existing.name}, an object Drivine didn't make, " +
+                "stands under its name. Drop or rename it: Drivine makes the item under that name, and recreate() leaves it.",
+        )
+        else -> throw DrivineException("Could not recreate ${spec.kind} on ${spec.label}${spec.properties}: $result")
+    }
 
     /** A listing's rows, or null where it fails: some engines refuse to list a kind before there is one. */
     private fun introspect(query: String): List<Any?>? = try {
