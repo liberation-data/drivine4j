@@ -121,10 +121,15 @@ class ConstraintManager internal constructor(
     fun drop(spec: ConstraintSpec): Boolean = checkNotNull(driver.item(ItemCall.DROP, spec).dropped)
 
     /**
-     * Drops (if present) and recreates the constraint described by [spec].
+     * Drops (if present) and recreates the constraint described by [spec]. On Oracle, Postgres and SQLite
+     * the constraint's unique index is built anew beside the old one, which is dropped only once the new
+     * one is built (on Oracle, where an index of the same expressions is there, it is dropped first,
+     * as Oracle builds no second one); the graph engines drop it and then make it.
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
-     * prevents recreation (in which case the previous constraint has already been dropped), or
+     * prevents recreation (in which case, on Oracle, Postgres and SQLite, the old index and its record
+     * are kept as they were, but for Oracle's index dropped first; on the graph engines the previous
+     * constraint has already been dropped), or
      * [EnsureResult.BlockedByIndex] as [ensure] does, or [EnsureResult.Drift] where something other than an index stands
      * under the name Drivine gives the constraint's index (on Postgres and SQLite: a table, say), which is left as it is. A constraint that ignores case fills the
      * lowercased copies in again on every node of its label, recorded or not. The constraint made again

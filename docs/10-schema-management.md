@@ -30,7 +30,7 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed), or on Oracle, Postgres and SQLite another object stands under the name Drivine gives the item ([forms](#the-form-of-an-item-on-oracle-postgres-and-sqlite)). Nothing changed — call `recreate(spec)` to replace it (destructive) |
 | `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values, each with the nodes that hold it: their engine id (`elementId`), and their `@NodeId` when the constraint is declared on a fragment, as many nodes per value as `violationSampleSize`. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
 | `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
-| `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
+| `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created. On Oracle, Postgres and SQLite a uniqueness constraint is built anew beside its old index, which is dropped only once the new one is built ([below](#a-uniqueness-constraint-made-again-on-oracle-postgres-and-sqlite)) |
 
 **An item that ignores case** (`ignoreCase = true`) is made over the lowercased copy a `@CaseInsensitive` field keeps, and `ensure` fills the copy in first: see [@CaseInsensitive](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case). The object managers keep the copy in step, but Cypher you send yourself does not: set the copy in the same statement, or `recreate` the item afterwards to fill it in again ([how](09-supported-engines.md#cypher-of-your-own)).
 
@@ -193,7 +193,7 @@ fun chunkSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
 ).withVersion(embeddingService.modelId)   // bump this → recreate once
 ```
 
-How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across the engines; on Oracle it is a row of the graph's node table). On `enforce()`, a **changed** token drops and recreates that catalog's items, then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
+How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across the engines; on Oracle it is a row of the graph's node table). On `enforce()`, a **changed** token drops and recreates that catalog's items (a uniqueness constraint on Oracle, Postgres and SQLite is made again in its place, [below](#a-uniqueness-constraint-made-again-on-oracle-postgres-and-sqlite)), then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
 
 **Where the marker comes from.** What the `_DrivineSchema` marker holds, and the statements that read and write it on each
 store, are written by the Cypher compiler's module (`org.drivine.cypher.store.marker`, in
@@ -302,8 +302,9 @@ each is the object it would make. An item is then one of five:
 
 A recreate of a mismatch (`recreate(spec)`, `recreate-on-drift`, a changed version, `recreateAll`) drops the other
 index by its name, says so, `Dropped Oracle index DRIVINE_IX_SERIAL_CA01FDF4, an index Drivine didn't make under its name
-for RANGE_INDEX on Coupon[serial]: it was an index over [couponRef]`, and makes the item. The line is INFO for an index,
-and WARN for a uniqueness constraint, whose label is left with no unique index if the data then refuses it. What isn't
+for RANGE_INDEX on Coupon[serial]: it was an index over [couponRef]`, at INFO, and makes the item. A uniqueness
+constraint's other index is dropped only once its own is built beside it ([below](#a-uniqueness-constraint-made-again-on-oracle-postgres-and-sqlite)),
+so data the constraint refuses leaves it standing. What isn't
 an index, such as a table under the name, is never dropped: its WARN says `Drop or rename it: Drivine makes the item
 under that name, and recreate() leaves it.`, and it stays drift: `constraints.recreate(spec)` gives `Drift`, and
 `indexes.recreate(spec)` throws a `DrivineException` that says the same.
@@ -319,6 +320,36 @@ there, and `CREATE INDEX IF NOT EXISTS` passed over the name, so an index of ano
 was reported `Created`, and a uniqueness constraint could go unenforced with nothing said. What a form is, and each of
 these outcomes and lines, is the module's (`org.drivine.cypher.store.schema`, `SqlStoreSchema.formOf`), pinned by the
 spec's `store.yaml` forms and `plans.yaml` case 30.
+
+#### A uniqueness constraint made again on Oracle, Postgres and SQLite
+
+Every recreate of a uniqueness constraint on Oracle, Postgres and SQLite (`recreate(spec)`, `recreateAll`,
+`recreate-on-drift`, a changed version, `recreate-on-startup`, a stale runtime item, a mismatch, an item of another form)
+makes it again in its place, so data that it refuses never leaves its label with no unique index
+(liberation-data/drivine-cypher-spec#135 §4):
+
+1. An index a recreate cut short left under the name it builds under first, the constraint's index's name and `_r`, is
+   dropped.
+2. Where the constraint ignores case, the lowercased copies are filled in again, with the old index standing.
+3. The unique index is built under that name, beside the old one.
+4. It is swapped into the old one's place: on Postgres one block drops the old index and renames the new; on Oracle the
+   old is dropped and the new renamed; on SQLite, which renames no index, the old is dropped, the index made again under
+   its name, and the one built first dropped.
+5. The record is written as one made anew, in the current form, keeping its aliases.
+
+Data that refuses the build, or the refill of the copies, is a `Violation`, with its sample, as an `ensure`'s is: nothing
+is swapped, and the old index and its record are as they were, the old index enforcing what it did. A refusal no key
+that repeats bears out is thrown. A recreate cut off after its old index was dropped leaves only the index built first:
+`ensure` and `enforce` keep it and use it, with one WARN, and the next recreate puts it in its place, saying so at INFO.
+
+Oracle builds no second index over the same expressions (`ORA-01408`), so there a constraint's index made as this
+version makes it is dropped first and made again, said at INFO: the data it held unique is unique still, but for a write
+in between. Over an index of another form, the same line is at WARN, since the data may repeat a key, and the label is
+left with no unique index until the constraint is made. Neo4j, Memgraph and FalkorDB drop a constraint and then make it,
+as before: Neo4j refuses a second constraint over the same schema, and none of them renames one.
+
+What each step runs on each store is the module's (`org.drivine.cypher.store.ddl`), pinned by the spec's `store.yaml`
+(each constraint case's `recreate`); what is run when, and what is said, by `plans.yaml` case 31.
 
 Neptune and generic openCypher have no schema management support — operations fail loudly rather than silently no-op.
 
