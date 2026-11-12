@@ -1809,8 +1809,8 @@ abstract class CypherQueryContract {
         assertEquals(listOf("none", "h", "none"), query("MATCH (n:Count) RETURN CASE WHEN n.m < 0 THEN 'none' ELSE left(n.t, n.m) END ORDER BY n.k"))
     }
 
-    /** The empty text, which Oracle reads as null. */
-    private val empty get() = if (pm.type == DatabaseType.ORACLE) null else ""
+    /** The empty text, on Oracle too, where the compiler gives it as the spec does (#416). */
+    private val empty = ""
 
     /** What the compiler refuses a written float start or length [what] of [function] with. */
     private fun float(function: String, what: String) = "$function() takes an integer for its $what, not a float, as in Neo4j."
@@ -1880,14 +1880,13 @@ abstract class CypherQueryContract {
         val twoByte = mapOf("a" to "é".repeat(1_500))
         assertEquals(listOf(listOf("é".repeat(3_000), "é".repeat(750), "é".repeat(1_500))),
             query("WITH \$a AS a RETURN replace(a, left(a, 1), left(a, 2)), replace(a, left(a, 2), left(a, 1)), replace(a, left(a, 1), right(a, 1))", twoByte))
-        // A null text, and a function of a short text that gives Oracle's empty text, null, are not read again as long ones to give another value.
+        // A null text, and a function of a short text that gives the empty text, are not read again as long ones to give another value.
         for (function in listOf("toUpper(n)", "trim(n)", "substring(n, 1)", "replace(n, 'a', 'b')", "split(n, ',')", "size(n)", "toString(n)", "n + 'a'", "n STARTS WITH 'a'", "n ENDS WITH 'a'", "n CONTAINS 'a'", "n =~ 'a'")) {
             assertEquals(listOf(null), query("WITH \$n AS n RETURN $function", mapOf("n" to null)), function)
         }
-        val empty = if (pm.type == DatabaseType.ORACLE) null else ""
         assertEquals(listOf(listOf(empty, empty, empty, empty)), query("WITH \$s AS s, \$w AS w RETURN substring(s, 5), left(s, 0), replace(s, 'abc', ''), trim(w)", mapOf("s" to "abc", "w" to "   ")))
-        // Two empty texts put together are empty: on Oracle null, as its empty text is, and not read as a long one.
-        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
+        // Two empty texts put together are empty, and not read as a long one.
+        assertEquals(listOf(empty), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
     }
 
     @Test
@@ -1934,9 +1933,9 @@ abstract class CypherQueryContract {
         val rows = listOf("aB".repeat(3_000), "abc", "x" + "😀".repeat(1_500), "é中".repeat(1_999) + "x")
         assertEquals(rows.map(::reversed), query("UNWIND \$ts AS t RETURN reverse(t)", mapOf("ts" to rows)))
         assertEquals(listOf(rows.map(::reversed)), query("RETURN [t IN \$ts | reverse(t)]", mapOf("ts" to rows)))
-        // A null text is null, and an empty one empty: on Oracle null, as its empty text is, and not read again as a long one.
+        // A null text is null, and an empty one empty, and not read again as a long one.
         assertEquals(listOf(null), query("WITH \$n AS n RETURN reverse(n)", mapOf("n" to null)))
-        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN reverse(e)", mapOf("e" to "")))
+        assertEquals(listOf(empty), query("WITH \$e AS e RETURN reverse(e)", mapOf("e" to "")))
         // A literal, a text or a list, whose CLOB Oracle bound without a type, and found no DBMS_LOB.SUBSTR for (PLS-307).
         assertEquals(listOf(listOf("unaeK", listOf(3L, 2L, 1L))), query("RETURN [reverse('Keanu'), reverse([1, 2, 3])]"))
     }
