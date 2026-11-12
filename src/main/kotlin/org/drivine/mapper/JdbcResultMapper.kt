@@ -1,5 +1,6 @@
 package org.drivine.mapper
 
+import org.drivine.cypher.store.ValueLayout
 import com.fasterxml.jackson.core.exc.InputCoercionException
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -82,7 +83,14 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
          * [readJson] reads it.
          */
         private fun readJson(text: String, nonFinite: Boolean, tagged: Boolean = false): Any? =
-            if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java), tagged) else readJson(text)
+            layout(if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java), tagged) else readJson(text))
+
+        /**
+         * [value], read from a SQL store's JSON, as the store layout 2 holds it read back as the caller's
+         * (liberation-data/drivine-cypher-spec#161): a temporal value's tag, `{"$t", "v", "s"}`, as its text `v`, and each
+         * map's key that begins with `$$` with one `$` fewer, at any depth, by the compiler's module ([ValueLayout.readValue]).
+         */
+        private fun layout(value: Any?): Any? = ValueLayout.readValue(value)
 
         /**
          * [number] as [PostgresCypherCompiler.read] reads it: NaN or an infinity where it stands for one, and otherwise its
@@ -206,7 +214,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             results.getString(column)?.let { readJson(it, nonFinite) }
         } catch (e: NumberFormatException) {
             val type = Class.forName(ORACLE_JSON_VALUE, true, results.javaClass.classLoader)
-            oracleJson(results.getObject(column, type))
+            layout(oracleJson(results.getObject(column, type)))
         }
 
         /**

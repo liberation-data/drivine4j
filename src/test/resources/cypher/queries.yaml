@@ -4305,3 +4305,36 @@ cases:
         only: [neo4j, postgres]
         cypher: "UNWIND [-9223372036854775807, -2] AS x RETURN toString(sum(x))"
         rows: ["-9.223372036854776E18"]
+
+  - name: "Numbers equal as Neo4j has them"
+    description: "An integer and a float are equal where their values are, exactly, past 2^53 too: 1 is 1.0, and 9007199254740993 is not 9007199254740992.0, which it is greater than (#161). An index keys numbers so too (see writes.yaml, Unique over numbers)."
+    steps:
+      - cypher: "RETURN [1 = 1.0, 9007199254740993 = 9007199254740992.0, 9007199254740993 > 9007199254740992.0, 9007199254740992 = 9007199254740992.0, 0 = -0.0, '1' = 1]"
+        only: [neo4j, sql]
+        rows: [[true, false, true, true, true, false]]
+      - cypher: "RETURN [$a = $b, $c = $d, $c > $d]"
+        parameters: {a: 1, b: 1.0, c: 9007199254740993, d: 9007199254740992.0}
+        only: [neo4j, sql]
+        rows: [[true, false, true]]
+
+  - name: "Map keys that begin with $"
+    description: "A map's key may begin with $, as Neo4j takes any key: written, given as a parameter, read by its name, by [] and by keys(), and returned, it is the key it is, though a SQL store holds it with one more $ before it (see README.md, Values in the store)."
+    steps:
+      - cypher: "WITH {`$t`: 1, `$$t`: 2, `$x`: 3, `a$`: 4} AS m RETURN [m.`$t`, m['$$t'], m[$k], m.`a$`, size(keys(m))]"
+        parameters: {k: "$x"}
+        rows: [[1, 2, 3, 4, 4]]
+      - cypher: "RETURN keys({`$t`: 1, `$$t`: 2, `$x`: 3, `a$`: 4})"
+        unorderedLists: true
+        rows: [["$t", "$$t", "$x", "a$"]]
+      - cypher: "RETURN {`$t`: 1, `$$t`: 2, `$x`: 3, `a$`: 4}"
+        rows: [{"$t": 1, "$$t": 2, "$x": 3, "a$": 4}]
+      - cypher: "RETURN [$m.`$t`, $m['$$t'], size(keys($m))], $m"
+        parameters: {m: {"$t": "date", "v": "2024-01-01", "$$t": 2}}
+        rows: [[[ "date", 2, 3], {"$t": "date", "v": "2024-01-01", "$$t": 2}]]
+      - note: "A map given that spells a temporal value's tag is a map, not the value."
+        cypher: "RETURN [$m.v, $m.year]"
+        parameters: {m: {"$t": "date", "v": "2024-01-01"}}
+        rows: [["2024-01-01", null]]
+      - cypher: "UNWIND $rows AS r RETURN [r.`$t`, r.a] ORDER BY r.a"
+        parameters: {rows: [{"$t": 1, "a": 1}, {"$t": 2, "a": 2}]}
+        rows: [[1, 1], [2, 2]]

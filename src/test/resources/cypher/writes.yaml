@@ -932,7 +932,7 @@ cases:
         rows: [[1, true]]
 
   - name: "A map parameter keyed with $"
-    description: "A write reads a map parameter with a key that begins with $, such as extended JSON's $numberDouble, as the map it is, alone or beside a float that is a whole number, which it writes as the float it is."
+    description: "A write reads a map parameter with a key that begins with $, such as extended JSON's $numberDouble, as the map it is, alone or beside a float that is a whole number, which it writes as the float it is, as it writes a float within it."
     steps:
       - cypher: "CREATE (n:CyWrite {id: 1}) RETURN $m"
         parameters: {m: {$numberDouble: "1"}}
@@ -950,6 +950,14 @@ cases:
         cypher: "CREATE (n:CyWrite {id: 3, j: $x, m: $m.k}) RETURN [toString(n.j), n.m]"
         parameters: {x: 1.0e+20, m: {$k: "a", k: "b"}}
         rows: [["1.0E20", "b"]]
+      - note: "A float in a map keyed with $, at that key and beside it, and in a map keyed with $ within it, is written as the float it is too (drivine-cypher-spec#202): a SQL store holds the key with one more $, which Oracle reads as extended JSON as the key it is."
+        only: [neo4j, sql]
+        cypher: "CREATE (n:CyWrite {id: 4, f: $m.`$k`, g: $m.k, h: $m.n.`$j`}) RETURN [toString(n.f), toString(n.g), toString(n.h)]"
+        parameters: {m: {$k: 2.0, k: 1.0e+20, n: {$j: 2.5}}}
+        rows: [["2.0", "1.0E20", "2.5"]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite {id: 4}) RETURN [toString(n.f), toString(n.g), toString(n.h)]"
+        rows: [["2.0", "1.0E20", "2.5"]]
 
   - name: "One clock for a statement's writes"
     description: "Every row a statement writes reads the same moment from the clock."
@@ -1661,3 +1669,187 @@ cases:
       - only: [neo4j, sql]
         cypher: "MATCH (c:C) RETURN COUNT { RETURN c AS n UNION ALL RETURN c AS n }"
         rows: [2]
+
+  - name: "Map keys that begin with $, held and read back"
+    description: "A property's name, and a map's key, may begin with $: a SQL store holds it with one more $ before it and gives it back as written, from CREATE, properties(), keys(), a property read by its name and by [], a map parameter and an UNWIND of maps (#161)."
+    steps:
+      - cypher: "CREATE (n:CyKeys {`$t`: 1, `$$t`: 2, `$x`: 3, `a$`: 4}) RETURN properties(n)"
+        rows: [{"$t": 1, "$$t": 2, "$x": 3, "a$": 4}]
+      - cypher: "MATCH (n:CyKeys) RETURN [n.`$t`, n['$$t'], n[$k], n.`a$`]"
+        parameters: {k: "$x"}
+        rows: [[1, 2, 3, 4]]
+      - cypher: "MATCH (n:CyKeys) RETURN keys(n)"
+        unorderedLists: true
+        rows: [["$t", "$$t", "$x", "a$"]]
+      - cypher: "MATCH (n:CyKeys) SET n += $m RETURN [n.`$t`, n.`$y`, n.v]"
+        parameters: {m: {"$t": 5, "$y": 6, "v": "x"}}
+        rows: [[5, 6, "x"]]
+      - cypher: "MATCH (n:CyKeys {`$t`: 5}) RETURN n.`$x`"
+        rows: [3]
+      - cypher: "UNWIND $rows AS r CREATE (:CyKeys2 {k: r.`$t`, m: r.n})"
+        parameters: {rows: [{"$t": "a", "n": 1}, {"$t": "b", "n": 2}]}
+      - cypher: "MATCH (n:CyKeys2) RETURN n.k ORDER BY n.m"
+        rows: ["a", "b"]
+      - cypher: "MATCH (n:CyKeys) RETURN n {.`$t`, .`$x`, `$z`: 7}"
+        rows: [{"$t": 5, "$x": 3, "$z": 7}]
+
+  - name: "Unique over moments at one instant"
+    description: "A uniqueness constraint keys a zoned value by its text, offset and all, as Neo4j's does (#161): two moments at one instant and two offsets are two values, and both are made."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_t IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.t IS UNIQUE"
+        rows: []
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {t: datetime('2024-01-01T10:00:00+02:00')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {t: datetime('2024-01-01T08:00:00Z')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {t: time('10:00:00+02:00')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {t: time('08:00:00Z')})"
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [4]
+      - only: [neo4j, sql]
+        note: "The same moment again, at the same offset, is the same value."
+        cypher: "CREATE (:CyUnique {t: datetime('2024-01-01T08:00:00Z')})"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {t: $t})"
+        parameters: {t: "2024-01-01T08:00:00Z"}
+      - only: [neo4j, sql]
+        note: "A text that spells it is another value."
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [5]
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_t"
+        rows: []
+
+  - name: "Unique over a date and the text that spells it"
+    description: "A uniqueness constraint keeps a date and the text that spells it apart, as Neo4j's does (#161), and a date and a list that holds it; the same date twice is refused."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_d IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.d IS UNIQUE"
+        rows: []
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {d: date('2024-01-01')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {d: '2024-01-01'})"
+      - note: "Nor a list that holds the date, whose item's key Oracle's lax path would read as the list's."
+        only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {d: [date('2024-01-01')]})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {d: date({year: 2024, month: 1, day: 1})})"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [3]
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_d"
+        rows: []
+
+  - name: "Unique over durations of one length"
+    description: "A uniqueness constraint keeps two durations of one length apart where their months, days and seconds differ, as Neo4j's does: P1D and PT24H are both made. Memgraph refuses the second."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_u IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.u IS UNIQUE"
+        rows: []
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {u: duration('P1D')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {u: duration('PT24H')})"
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {u: duration({days: 1})})"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [2]
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_u"
+        rows: []
+
+  - name: "Unique over numbers"
+    description: "A uniqueness constraint keys a number by its value, as Neo4j's does (#161): 1 and 1.0 collide, 0 and 0.0, 2^53 and 2^53.0, and a float written and one given; 2^53 + 1 and 2^53.0 do not, nor 2^63 - 1 and the float 2^63, 1.5 and -1.5, or '1' and 1. Neo4j, probed (2026.10 and 5.26), keeps 2^62 and -2^63 apart from their floats, though = says they are equal and its index finds each by the other; 2^53, 2^53 + 2, 2^54 and -2^53 collide with theirs."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_n IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.n IS UNIQUE"
+        rows: []
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 1})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 1.0})", error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: '1'})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 0})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 0.0})", error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 9007199254740992})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 9007199254740992.0})", error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 9007199254740993})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 4611686018427387904})"}
+      - note: "Postgres holds a float as its shortest text, 4.611686018427388E18, which is another number than 2^62; Oracle and SQLite key it exactly, and it collides there, where Neo4j's doesn't."
+        only: [neo4j, postgres]
+        cypher: "CREATE (:CyUnique {n: 4611686018427387904.0})"
+      - {only: [oracle, sqlite], cypher: "CREATE (:CyUnique {n: 4611686018427387904.0})", error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: $n})", parameters: {n: -9223372036854775808}}
+      - {only: [neo4j, postgres], cypher: "CREATE (:CyUnique {n: $n})", parameters: {n: -9223372036854775808.0}}
+      - {only: [oracle, sqlite], cypher: "CREATE (:CyUnique {n: $n})", parameters: {n: -9223372036854775808.0}, error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 9223372036854775807})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 9223372036854775808.0})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: 1.5})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: -1.5})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {n: $n})", parameters: {n: 1.5}, error: true}
+      - only: [neo4j, postgres]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [13]
+      - only: [oracle, sqlite]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [11]
+      - note: "Neo4j's constraint keeps -0.0 apart from 0, though 0 = -0.0 is true, and its index finds neither by the other. A SQL store keeps no negative zero (drivine4j#552, see queries.yaml): -0.0 is written as 0, and collides."
+        only: [neo4j]
+        cypher: "CREATE (:CyUnique {n: -0.0})"
+      - only: [sql]
+        cypher: "CREATE (:CyUnique {n: -0.0})"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_n"
+        rows: []
+
+  - name: "Unique over moments, found by a value worked out"
+    description: "A node under a uniqueness constraint over a moment is found by a moment the statement works out of values written and given, whole, its sort key worked out once for the statement: so a store's index over the property can answer it (#161)."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_at IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.at IS UNIQUE"
+        rows: []
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {id: 'a', at: datetime('2024-01-01T10:00:00+02:00')}), (:CyUnique {id: 'b', at: datetime('2024-01-01T08:00:00Z')})"}
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique {at: datetime('2024-01-01T09:00:00+02:00') + duration('PT1H')}) RETURN n.id"
+        rows: ["a"]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique) WHERE n.at = datetime($t) + duration({hours: $h}) RETURN n.id"
+        parameters: {t: "2024-01-01T07:00:00Z", h: 1}
+        rows: ["b"]
+      - only: [neo4j, sql]
+        cypher: "MATCH (m:CyUnique {id: 'b'}), (n:CyUnique) WHERE n.at = m.at - duration('PT1H') + duration('PT1H') RETURN n.id"
+        rows: ["b"]
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyUnique {id: 'c', at: datetime('2024-01-01T07:00:00Z') + duration('PT1H')})"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_at"
+        rows: []
+
+  - name: "Unique over a property whose name begins with $"
+    description: "A uniqueness constraint over a property named `$x` constrains the key a statement holds it at, `$$x` on a SQL store (see README.md, Values in the store), so a second node of the same value is refused there as on Neo4j, and a node is found by it (#161)."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "CREATE CONSTRAINT cy_unique_dollar IF NOT EXISTS FOR (n:CyUnique) REQUIRE n.`$x` IS UNIQUE"
+        rows: []
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {id: 'a', `$x`: 1})"}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {id: 'b', `$x`: 1})", error: true}
+      - {only: [neo4j, sql], cypher: "CREATE (:CyUnique {id: 'c', `$x`: 2})"}
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique {`$x`: 1}) RETURN n.id"
+        rows: ["a"]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyUnique) RETURN count(n)"
+        rows: [2]
+      - only: [neo4j, sql]
+        cypher: "DROP CONSTRAINT cy_unique_dollar"
+        rows: []

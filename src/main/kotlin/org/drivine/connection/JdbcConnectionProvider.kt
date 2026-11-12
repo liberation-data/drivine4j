@@ -338,7 +338,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
                     graph.refuse(connection)
                     null
                 } catch (e: Exception) {
-                    if (e is ReusedIdsException) throw e
+                    if (e is ReusedIdsException || e is StoreLayoutException) throw e
                     e
                 }
                 connection.release()
@@ -372,6 +372,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         if (failure == null) return true
         // A SQLite file whose tables give a deleted row's id again is refused, on every connection: not a failure to make them.
         if (failure is ReusedIdsException) throw failure
+        // A graph in a store layout this Drivine does not read is refused, on every connection: see SqlGraph.layout.
+        if (failure is StoreLayoutException) throw failure
         if (cannotMake(type, failure)) {
             logger.warn(
                 "Could not make the tables of graph '{}' on {} database '{}': the user may not make them, or the database may not be written. Statements over them will fail if they are not there. The provider does not try again.",

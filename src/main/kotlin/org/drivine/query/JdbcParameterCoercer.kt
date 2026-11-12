@@ -1,23 +1,27 @@
 package org.drivine.query
 
-import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.connection.JacksonEncoder
+import org.drivine.cypher.json.CypherJson
 import java.time.ZonedDateTime
 
 /**
  * Reshapes parameters into what a JDBC driver binds.
  *
  * - A [ZonedDateTime] is bound as its `OffsetDateTime`: JDBC knows the one and not the other.
- * - A collection or a map is bound as JSON text. SQL has no list or map value, so a statement reads
- *   one with `JSON_TABLE`, `JSON_VALUE` or `JSON_EXISTS`. A list of numbers written this way is also
- *   the text of an Oracle vector, so `TO_VECTOR($embedding)` reads it.
+ * - A collection or a map is bound as JSON text, in the store layout's form: a temporal value in it as its tag, and a
+ *   key that begins with `$` with one more. SQL has no list or map value, so a statement reads one with `JSON_TABLE`,
+ *   `JSON_VALUE` or `JSON_EXISTS`. A list of numbers written this way is also the text of an Oracle vector, so
+ *   `TO_VECTOR($embedding)` reads it.
  */
 object JdbcParameterCoercer : ParameterCoercer {
 
     override fun coerce(parameters: Map<String, Any?>): Map<String, Any?> = parameters.mapValues { (_, value) ->
         when (value) {
             is ZonedDateTime -> value.toOffsetDateTime()
-            // Temporals inside are written as ISO strings, which JSON has no type for.
-            is Collection<*>, is Map<*, *> -> Neo4jObjectMapper.instance.writeValueAsString(TemporalCoercer.shortest(mapOf("v" to listed(value)))["v"])
+            // Written as the store layout holds a value (drivine-cypher-spec#161): a temporal value as its tag, {"$t", "v", "s"},
+            // and a map's key that begins with `$` with one more, by the compiler's module, which asks drivine4j's Jackson
+            // mapper ([JacksonEncoder]) how to write anything else. A save's plan is copied into the store as it is written here.
+            is Collection<*>, is Map<*, *> -> CypherJson.writeValueAsString(CypherJson.valueToTree(listed(value), JacksonEncoder))
             else -> value
         }
     }

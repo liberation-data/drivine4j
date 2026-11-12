@@ -2,9 +2,15 @@ package org.drivine.backend.sql
 
 import org.drivine.connection.Connection
 import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.connection.StoreLayoutException
+import org.drivine.cypher.store.marker.StoreLayout
+import org.drivine.cypher.store.marker.StoreStamp
+import org.drivine.cypher.store.marker.StoreStampStatements
 import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import java.time.Instant
+import java.util.UUID
 
 /**
  * A graph as a SQL store keeps it: a table of nodes, a table of relationships, and a catalog of what
@@ -71,7 +77,14 @@ internal abstract class SqlGraph(val name: String) {
      * Makes the store if it is not there, on [connection], which is in auto-commit mode and in no
      * transaction: how [JdbcConnectionProvider] makes the graph's tables before its first connection.
      */
-    internal fun ensure(connection: Connection) = ensure { connection.query(QuerySpecification.withStatement(it)) }
+    internal fun ensure(connection: Connection) {
+        // A store's own refusals first (SQLite's of ids an earlier Drivine reused), as before there were layouts; then the
+        // layout, judged before anything is made: this layout's tables, made first, would read as its own in a graph an
+        // earlier Drivine wrote.
+        refuse { connection.query(QuerySpecification.withStatement(it)) }
+        layout(connection, write = true)
+        ensure { connection.query(QuerySpecification.withStatement(it)) }
+    }
 
     /**
      * Refuses a store that is there but must not be used, by reads alone, each statement given to [run]: what [ensure]
@@ -81,7 +94,57 @@ internal abstract class SqlGraph(val name: String) {
     internal open fun refuse(run: (String) -> List<Any?>) {}
 
     /** [refuse], on [connection]. */
-    internal fun refuse(connection: Connection) = refuse { connection.query(QuerySpecification.withStatement(it)) }
+    internal fun refuse(connection: Connection) {
+        refuse { connection.query(QuerySpecification.withStatement(it)) }
+        layout(connection, write = false)
+    }
+
+    /**
+     * The store layout's verdict on the graph (liberation-data/drivine-cypher-spec#161), asked of the compiler's module
+     * ([StoreLayout.verdict]) by the graph's stamps, whether it holds a node other than Drivine's own, and the objects an
+     * earlier layout may have left; done before any statement runs over it. A graph in this layout is used. One that holds
+     * none of the application's values and is in an earlier layout, or none, is made this one's where [write]: the earlier
+     * layout's objects dropped, and its stamp given this layout, and asked again; nothing is migrated. One of this layout
+     * whose stamp a clear deleted (`MATCH (n) DETACH DELETE n` deletes Drivine's own nodes too) is stamped again. Any other
+     * graph is refused with [StoreLayoutException], on every connection.
+     */
+    /** Whether the graph's table of nodes is there, which every layout makes first. */
+    private fun tablesThere(connection: Connection): Boolean =
+        runCatching { connection.query(QuerySpecification.withStatement("SELECT 1 FROM ${store.nodes} WHERE 1 = 0")) }.isSuccess
+
+    private fun layout(connection: Connection, write: Boolean) {
+        val statements = StoreStampStatements.of(store)
+        fun rows(statement: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(statement).bind(parameters))
+        fun maps(statement: String?) = statement?.let { rows(it).map { row -> (row as Map<*, *>).entries.associate { (k, v) -> k.toString() to v } } }.orEmpty()
+        for (asked in 1..2) {
+            // A graph whose tables aren't there yet is new: nothing to judge, and nothing of another layout to find.
+            val stamps = try {
+                maps(statements.readStamps)
+            } catch (e: Exception) {
+                if (asked == 1 && !tablesThere(connection)) return
+                throw e
+            }
+            val foreign = rows(statements.foreignNodes).isNotEmpty()
+            val verdict = StoreLayout.verdict(StoreStamp.engine(store), name, stamps, foreign, maps(statements.layoutObjects), store)
+            when (verdict) {
+                StoreLayout.Verdict.Current -> return
+                is StoreLayout.Verdict.Refuse -> throw StoreLayoutException(name, verdict.message)
+                is StoreLayout.Verdict.Stamp -> {
+                    if (!write) return
+                    if (asked == 2) throw StoreLayoutException(name, "The graph '$name' was given store layout ${StoreLayout.current(StoreStamp.engine(store))}, and its stamps read back otherwise: another process may be writing it with an earlier Drivine.")
+                    verdict.drops.forEach { rows(it) }
+                    if (verdict.assign) {
+                        // A graph of this layout whose stamp a clear deleted: stamped again as a stamp is first made. Another
+                        // process may stamp it first; the insert is made only where there is none, and both read the one back.
+                        rows(statements.assignIfAbsent, StoreStamp.assignParameters(UUID.randomUUID().toString(), Instant.now().toString(), StoreStamp.engine(store)))
+                    } else {
+                        statements.restampLayout?.let { rows(it, verdict.parameters) }
+                    }
+                }
+            }
+        }
+    }
 
     companion object {
         /** The graph of a manager that names none. */
