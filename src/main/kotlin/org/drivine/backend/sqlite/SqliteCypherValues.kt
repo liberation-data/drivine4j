@@ -95,10 +95,6 @@ internal object SqliteCypherValues {
         }
     }
 
-    /** Whether the map [props] holds each entry of the map [map], with an equal value: a null among them is held only by a null. */
-    fun contains(props: JsonNode, map: JsonNode): Boolean =
-        props.isObject && map.isObject && map.properties().all { (key, value) -> props.has(key) && equal(props[key], value) }
-
     /**
      * `a + b`, as Cypher adds two values: numbers summed, a whole number where both are; lists joined, or an item put
      * at a list's end or start; a text and a text or a number written one after the other. Null for any other two.

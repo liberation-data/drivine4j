@@ -253,8 +253,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   comparison of one past 32 KB is refused, as is one of a list or a map that holds it anywhere. A text written in the
   statement past 4,000 bytes is written as `CLOB` pieces put together, and is read whole so too
   ([#419](https://github.com/liberation-data/drivine4j/issues/419)). `size()` of a text past 4,000 bytes counts a
-  character past U+FFFF, an emoji say, as 2 ([#729](https://github.com/liberation-data/drivine4j/issues/729)). An empty text that a text function gives is null, and `=~`
-  of any empty text is null; `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `size()` and `isEmpty()` of any other give what Neo4j gives. `reduce` is a function the
+  character past U+FFFF, an emoji say, as 2 ([#729](https://github.com/liberation-data/drivine4j/issues/729)). A text function that gives an empty text gives it, as
+  Neo4j does, but `=~` of any empty text is null; `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `size()` and `isEmpty()` of any other give what Neo4j gives. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists ordered with `<`, `<=`, `>` or `>=` are walked item by item by a function the query declares too, so such a
   comparison is refused in a statement that writes and in the step of a `reduce`.

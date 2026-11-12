@@ -30,17 +30,6 @@ class SqliteCypherFunctionsTest {
     }
 
     @Test
-    fun `drivine_contains holds a map's every entry with an equal value`() {
-        assertEquals(
-            listOf(1L, 0L, 0L, null),
-            row(
-                "SELECT drivine_contains('{\"a\":1,\"b\":2}', '{\"a\":1.0}'), drivine_contains('{\"a\":1}', '{\"a\":1,\"c\":3}'), " +
-                    "drivine_contains('[1]', '{}'), drivine_contains(NULL, '{}')"
-            ),
-        )
-    }
-
-    @Test
     fun `drivine_add sums, joins lists, takes a null into a list, and writes texts and numbers one after the other`() {
         assertEquals(
             listOf("3", "3.5", "[1,2,3]", "[1,null]", "[0,1]", "\"a1\"", "\"1.5b\"", null, null),

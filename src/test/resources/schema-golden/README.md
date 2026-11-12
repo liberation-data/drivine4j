@@ -4,7 +4,9 @@ What each test that exercises schema management sends to each store, statement b
 code on real stores (Neo4j, Memgraph, FalkorDB, Postgres, Oracle, SQLite). It pins the schema statements while schema
 management becomes a driver over the compiler module's planner (liberation-data/drivine-cypher-spec#135): after the
 switch, the same tests must send the same writes. The files are as recorded from the managers before the switch, and are
-not recorded again: they are the record of what those managers did.
+not recorded again but for a change that is meant to change what is written: Postgres's, Oracle's and SQLite's were
+recorded again for the forms and for a uniqueness constraint made again in its place (below), and the graph engines' are
+still the managers' own.
 
 ## Recording and checking
 
@@ -53,6 +55,55 @@ the reads, the `prepare` block and the polls are left out of both sides, and eve
 
 A write left out, added, changed (its text, parameters, path or outcome) or moved fails the test.
 
+## Recorded again: a uniqueness constraint made again in its place (drivine-cypher-spec#189)
+
+`postgres.jsonl`, `oracle.jsonl` and `sqlite.jsonl`, with their `statements.jsonl`, were recorded again on 2026-11-12 with
+the compiler at 0.44.0, the classes of `classes.txt`, `ORACLE_TESTS=true` and FalkorDB 6.0.3, through the lock. #189
+changes what is written on the SQL stores where a uniqueness constraint is made, dropped or made again:
+
+- before it is made or dropped, an index of a recreate cut off part-way, `<name>_r`, is dropped (`leftover`);
+- a recreate builds the constraint's unique index beside the old one under `<name>_r`, then swaps it in (`build`,
+  `swap`), and writes the record again (`remade`), where it dropped the old index, forgot its record and made it anew;
+- on Oracle, where the build is refused as the old index's own (ORA-01408), the old index is dropped first, then made.
+
+The graph engines' files were not recorded again: nothing they are sent changed. The writes of the old files and the new
+were compared test by test (`SchemaStatementGolden.writes`' rule):
+
+| Store | Tests | Same | Differ | New | What differs |
+|---|---|---|---|---|---|
+| Postgres | 211 | 192 | 16 | 3 | the leftover's drop alone in 14; the build, swap and record of a recreate in the other 2 |
+| Oracle | 216 | 196 | 17 | 3 | the leftover's drop alone in 14; a recreate in the other 3, a refused build followed by the drop and the make where the old index is the build's own |
+| SQLite | 182 | 166 | 11 | 5 | the leftover's drop alone in 9; a recreate in the other 2, the swap being SQLite's drop, make again and drop of `<name>_r` |
+
+The new tests are the three safe-recreate tests on each store (a recreate that succeeds, one the data refuses at its
+build, and one whose refill of the lowercased copies the old index refuses) and, on SQLite, #770's two tests, which now
+have lines of their own and are checked. No test lost a write that is not a recreate's old drop, forget or make.
+
+## Recorded again: the forms (drivine-cypher-spec#186)
+
+`postgres.jsonl`, `oracle.jsonl` and `sqlite.jsonl`, with their `statements.jsonl`, were recorded again on 2026-11-11 with
+the compiler at 9631bd9 (#135's PR D), the classes of `classes.txt`, `ORACLE_TESTS=true` and FalkorDB 6.0.3, through the
+lock. PR D changes what is written on the SQL stores: every record the module writes starts its `details` with
+`"form": 1`, in Oracle's `MERGE` (its insert and its `WHEN MATCHED` update), in the update of a range index a uniqueness
+constraint's index serves, and in Postgres's and SQLite's inserts; and an item of the current form whose record says
+none has its form recorded, once (`formRecorded`). The graph engines' files were not recorded again: nothing they are
+sent changed.
+
+The writes of the old files and the new were compared test by test (`SchemaStatementGolden.writes`' rule), with every
+`"form": 1` taken out of the new and the one-off form updates left aside:
+
+| Store | Tests | Same | Differ only by the form | Otherwise |
+|---|---|---|---|---|
+| Postgres | 208 | 135 | 73 | none |
+| Oracle | 210 | 134 | 75 | one: what other threads sent in `StatelessStoreIdentityOracleTest`'s concurrent first boots, the same entries in another order, as they are sorted by their text, which the form changes |
+| SQLite | 177 | 125 | 52 | none |
+
+No test leaves a record with no form for an item of the current form, so there is no one-off form update in any of them.
+Three Oracle tests are new: `OracleSchemaManagementIntegrationTest`'s two #770 tests, which were `@Disabled` and now pass
+(another index under Drivine's name is drift, and a recreate drops it by its name and makes the item), and the
+`StatelessStoreIdentityOracleTest` test below, still not checked. The reads the new files hold are the planner's, which
+reads less than the managers did; the check leaves the reads out, as before.
+
 ## Not checked
 
 Only the classes in `classes.txt` are checked: a run of the whole suite with the check on records every class, and
@@ -61,10 +112,11 @@ through compiled DDL, among them) fails nothing. Within them, the tests below ar
 (`SchemaStatementGolden.UNCHECKED` names each, with the reason), and their lines, where they have any, are kept as
 recorded.
 
-Added after the golden was recorded, so it has nothing of it:
+Added after the golden was first recorded, so the managers' record has nothing of it:
 
 - `StatelessStoreIdentityOracleTest`, "concurrent first boots without the constraint agree on one identity over a full
-  node table on Oracle": it came with the merge of main (#755, for drivine4j#517).
+  node table on Oracle": it came with the merge of main (#755, for drivine4j#517). The forms' recording has its lines,
+  which are kept as recorded and not checked.
 
 Three tests were rewritten when schema management became a driver over the planner, because they used the internal
 `IndexBuild`, which is gone. What they run now is not what was recorded:

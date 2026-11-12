@@ -1,6 +1,8 @@
 package org.drivine.postgres
 
 import org.drivine.DrivineException
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.model.LowerCopies
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
@@ -150,6 +152,93 @@ class PostgresSchemaManagementIntegrationTest {
         assertTrue(manager.constraints.drop(spec))
         assertNull(manager.constraints.find(spec))
         execute("CREATE (:Ticket {number: 1})")
+    }
+
+    /** Each index of the graph's node table whose name starts with [name], as Postgres keeps it, and whether it is unique. */
+    private fun indexesNamed(name: String): Map<String, Boolean> =
+        manager.query(QuerySpecification.withStatement(
+            "SELECT c.relname || ' ' || i.indisunique::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid " +
+                "WHERE i.indrelid = 'schema_node'::regclass AND c.relname LIKE '${name.lowercase()}%'"
+        ).transform(String::class.java)).associate { it.substringBefore(' ') to it.substringAfter(' ').toBoolean() }
+
+    /** A recreate that the data allows swaps the index built beside the old into its name, and leaves nothing beside it (plans.yaml case 31). */
+    @Test
+    fun `a recreate of a uniqueness constraint leaves one unique index under its name, which enforces`() {
+        val spec = UniquenessConstraintSpec("Pass", "serial")
+        val name = PostgresGraph("schema").objectName("uq", listOf("Pass", "serial"))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            execute("CREATE (:Pass {serial: 'p-1'})")
+
+            assertTrue(manager.constraints.recreate(spec) is EnsureResult.Recreated)
+
+            assertEquals(mapOf(name.lowercase() to true), indexesNamed(name), "the index built is swapped into the old one's name")
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.AlreadyMatching)
+            val refused = assertFailsWith<DrivineException> { execute("CREATE (:Pass {serial: 'p-1'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
+    }
+
+    /**
+     * A uniqueness constraint is made again beside its old index, which is swapped out only once the new one is built
+     * (drivine-cypher-spec#135 §4, plans.yaml case 31b): the data refusing the build leaves the old index and its
+     * record as they were, and nothing beside them, as the index a recreate cut short had left under the name it builds
+     * under first is dropped before the build.
+     */
+    @Test
+    fun `a recreate of a uniqueness constraint the data refuses at its build keeps the index it had, and leaves none beside it`() {
+        val spec = UniquenessConstraintSpec("Badge", "serial")
+        val name = PostgresGraph("schema").objectName("uq", listOf("Badge", "serial"))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            // Its index made again by hand, not unique, so that data that repeats a key gets in.
+            manager.indexes.run("DROP INDEX $name")
+            manager.indexes.run("CREATE INDEX $name ON schema_node ((props ->> 'serial')) WHERE labels @> '[\"Badge\"]'")
+            // And what a recreate cut short left under the name it builds under first.
+            manager.indexes.run("CREATE INDEX ${name}_r ON schema_node ((props ->> 'serial'))")
+            execute("CREATE (:Badge {serial: 'b-1'}), (:Badge {serial: 'b-1'})")
+
+            val result = manager.constraints.recreate(spec)
+
+            assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+            assertEquals(mapOf("serial" to "b-1"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
+            assertEquals(mapOf(name.lowercase() to false), indexesNamed(name), "the old index is kept, and the leftover dropped")
+            assertEquals(1L, manager.getOne(QuerySpecification.withStatement(
+                "SELECT count(*) FROM schema_schema WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Badge'"
+            ).transform(Long::class.java)), "the record is kept")
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+            manager.indexes.run("DROP INDEX IF EXISTS ${name}_r")
+        }
+    }
+
+    /**
+     * A constraint that ignores case fills its lowercased copies in again before the build, with the old index standing
+     * (plans.yaml case 31m): a copy left out of step by a write past Drivine, whose property lowercased repeats another's
+     * copy, is refused by the old index. That is reported as a violation, and the old index still enforces.
+     */
+    @Test
+    fun `a recreate whose refill of the lowercased copies the old index refuses keeps that index, which still enforces`() {
+        val spec = UniquenessConstraintSpec("Member", "handle", ignoreCase = true)
+        val copy = LowerCopies.of("handle")
+        val name = PostgresGraph("schema").objectName("uq", listOf("Member", copy))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            // Written past Drivine: the second node's copy is left out.
+            execute("CREATE (:Member {handle: 'Ann', `$copy`: 'ann'}), (:Member {handle: 'ANN'})")
+
+            val result = manager.constraints.recreate(spec)
+
+            assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+            assertEquals(mapOf(copy to "ann"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
+            assertEquals(mapOf(name.lowercase() to true), indexesNamed(name), "the old index is kept, and nothing built beside it")
+            val refused = assertFailsWith<DrivineException> { execute("CREATE (:Member {handle: 'aNN', `$copy`: 'ann'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
     }
 
     @Test
