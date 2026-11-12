@@ -54,6 +54,30 @@ the reads, the `prepare` block and the polls are left out of both sides, and eve
 
 A write left out, added, changed (its text, parameters, path or outcome) or moved fails the test.
 
+## Recorded again: a uniqueness constraint made again in its place (drivine-cypher-spec#189)
+
+`postgres.jsonl`, `oracle.jsonl` and `sqlite.jsonl`, with their `statements.jsonl`, were recorded again on 2026-11-12 with
+the compiler at 0.44.0, the classes of `classes.txt`, `ORACLE_TESTS=true` and FalkorDB 6.0.3, through the lock. #189
+changes what is written on the SQL stores where a uniqueness constraint is made, dropped or made again:
+
+- before it is made or dropped, an index of a recreate cut off part-way, `<name>_r`, is dropped (`leftover`);
+- a recreate builds the constraint's unique index beside the old one under `<name>_r`, then swaps it in (`build`,
+  `swap`), and writes the record again (`remade`), where it dropped the old index, forgot its record and made it anew;
+- on Oracle, where the build is refused as the old index's own (ORA-01408), the old index is dropped first, then made.
+
+The graph engines' files were not recorded again: nothing they are sent changed. The writes of the old files and the new
+were compared test by test (`SchemaStatementGolden.writes`' rule):
+
+| Store | Tests | Same | Differ | New | What differs |
+|---|---|---|---|---|---|
+| Postgres | 211 | 192 | 16 | 3 | the leftover's drop alone in 14; the build, swap and record of a recreate in the other 2 |
+| Oracle | 216 | 196 | 17 | 3 | the leftover's drop alone in 14; a recreate in the other 3, a refused build followed by the drop and the make where the old index is the build's own |
+| SQLite | 182 | 166 | 11 | 5 | the leftover's drop alone in 9; a recreate in the other 2, the swap being SQLite's drop, make again and drop of `<name>_r` |
+
+The new tests are the three safe-recreate tests on each store (a recreate that succeeds, one the data refuses at its
+build, and one whose refill of the lowercased copies the old index refuses) and, on SQLite, #770's two tests, which now
+have lines of their own. No test lost a write that is not a recreate's old drop, forget or make.
+
 ## Recorded again: the forms (drivine-cypher-spec#186)
 
 `postgres.jsonl`, `oracle.jsonl` and `sqlite.jsonl`, with their `statements.jsonl`, were recorded again on 2026-11-11 with
