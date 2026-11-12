@@ -71,9 +71,9 @@ class StorePlanGoldenTest {
     }
 
     @Test
-    fun `the cases are the design's 1 to 29, the form check's 30, and the item calls, and every store runs`() {
+    fun `the cases are the design's 1 to 29, the form check's 30, the recreate in place's 31, and the item calls, and every store runs`() {
         val names = plans["cases"].map { it["case"].textValue() }
-        assertEquals((1..30).toList(), names.filter { it.first().isDigit() }.map { it.takeWhile(Char::isDigit).toInt() }.distinct().sorted())
+        assertEquals((1..31).toList(), names.filter { it.first().isDigit() }.map { it.takeWhile(Char::isDigit).toInt() }.distinct().sorted())
         assertTrue("item" in names)
         assertEquals(engines.keys, plans["cases"].flatMap { texts(it["stores"]) }.toSet())
     }
@@ -229,6 +229,13 @@ class StorePlanGoldenTest {
         execute["create"]?.let { return prefix(id) + storeCase(it.textValue())["stores"][id]["create"].toList() }
         execute["drop"]?.let { return storeCase(it.textValue())["stores"][id]["drop"].toList() }
         execute["dropUnnamed"]?.let { return storeCase(it.textValue())["stores"][id]["dropUnnamed"].toList() }
+        // A uniqueness constraint's steps of its recreate in its place, on a SQL store: each a list, but remade a statement.
+        for (step in listOf("leftover", "build", "swap", "finish", "remade")) {
+            execute[step]?.let {
+                val node = storeCase(it.textValue())["stores"][id]["recreate"][step]
+                return if (node.isTextual) listOf(node) else node.toList()
+            }
+        }
         execute["statement"]?.let { return listOf(it) }
         execute["native"]?.let { return listOf(execute) }
         // The record of the catalog's item made in the current form, whose record said none.
