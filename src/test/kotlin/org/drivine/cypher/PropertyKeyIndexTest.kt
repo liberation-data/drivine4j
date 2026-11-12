@@ -103,9 +103,9 @@ abstract class PropertyKeyIndexContract {
 
     @Test
     fun `a text the statement works out, or an item of a list it writes, finds the node it is equal to though empty or long`() {
-        // Not an empty text worked out: on Oracle, a text function gives null for one, as SQL holds no empty text.
-        val rows = mapOf("rows" to listOf(LONG, "p5").map { mapOf("s" to it) })
-        assertEquals(listOf(-15L, 5L), query("UNWIND \$rows AS row MATCH (a:Person {id: toString(row.s)}) RETURN a.k ORDER BY a.k", rows))
+        // An empty text worked out too: on Oracle a text function gives the empty text, as the spec does (#416).
+        val rows = mapOf("rows" to listOf(LONG, "", "p5").map { mapOf("s" to it) })
+        assertEquals(listOf(-15L, -13L, 5L), query("UNWIND \$rows AS row MATCH (a:Person {id: toString(row.s)}) RETURN a.k ORDER BY a.k", rows))
         assertEquals(listOf(-13L, 5L), query("UNWIND ['', 'p5'] AS s MATCH (a:Person {id: s}) RETURN a.k ORDER BY a.k"))
     }
 
