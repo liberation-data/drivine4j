@@ -15,7 +15,10 @@ import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.sql.SqlGraph
 import org.drivine.backend.sqlite.SqliteGraph
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import org.junit.jupiter.api.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
@@ -35,6 +38,15 @@ abstract class StoreLayoutContract {
 
     /** Drops [graph]'s tables, so a test starts from none. */
     abstract fun drop(graph: String)
+
+    /** The store's name in the spec's files: `postgres`, `oracle`, `sqlite`. */
+    abstract val store: String
+
+    /** Runs [statement] on the store, outside any graph's manager. */
+    abstract fun run(statement: String)
+
+    /** Whether the store has a table named [table]. */
+    abstract fun tableThere(table: String): Boolean
 
     private fun cypher(pm: NonTransactionalPersistenceManager, statement: String): List<Any> =
         pm.query(QuerySpecification.withStatement(CypherStatement(statement)))
@@ -58,6 +70,25 @@ abstract class StoreLayoutContract {
         assertEquals(2L, (stamped["layout"] as Number).toLong(), "stamped again in this layout: $stamped")
     }
 
+    /**
+     * `marker.yaml`'s `firstConnection` cases: an earlier layout's graph holding a value, with no stamp, set up on the store, is
+     * refused on a manager's first connection before anything is made in it, this layout's lock table among them, as the
+     * verdict reads that table as its evidence.
+     */
+    @Test
+    fun `an earlier layout's graph with no stamp is refused on the first connection, and nothing is made in it`() {
+        val pinned = ObjectMapper(YAMLFactory()).readTree(requireNotNull(javaClass.getResource("/cypher/marker.yaml")) { "No spec file cypher/marker.yaml" })
+        val cases = pinned["storeLayout"]["firstConnection"].filter { it["store"].asText() == store }
+        assertEquals(1, cases.size, "marker.yaml's firstConnection cases on $store")
+        for (case in cases) {
+            val name = "cy_first_conn"
+            drop(name)
+            case["setup"].forEach { run(it.asText().replace("{graph}", name)) }
+            assertFailsWith<StoreLayoutException>(case["name"].asText()) { manager(name) }
+            for (absent in case["absent"]) assertFalse(tableThere(absent.asText().replace("{graph}", name)), "${case["name"].asText()}: ${absent.asText()} was made")
+        }
+    }
+
     @Test
     fun `a graph that holds values and no stamp, and none of this layout's objects, is refused`() {
         val name = "cy_layout_old"
@@ -75,6 +106,10 @@ abstract class StoreLayoutContract {
 
 @PostgresTests
 class PostgresStoreLayoutTest : StoreLayoutContract() {
+    override val store = "postgres"
+    override fun run(statement: String) = PostgresTestDatabase.run(statement)
+    override fun tableThere(table: String) =
+        PostgresTestDatabase.pm.query(QuerySpecification.withStatement("SELECT to_regclass('${table.lowercase()}')::text AS t")).single() != null
     override fun manager(graph: String) = PostgresTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = PostgresGraph(name)
     override fun drop(graph: String) {
@@ -85,6 +120,10 @@ class PostgresStoreLayoutTest : StoreLayoutContract() {
 
 @OracleTests
 class OracleStoreLayoutTest : StoreLayoutContract() {
+    override val store = "oracle"
+    override fun run(statement: String) = OracleTestDatabase.run(statement)
+    override fun tableThere(table: String) =
+        (OracleTestDatabase.pm.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER('$table')")).single() as Number).toInt() > 0
     override fun manager(graph: String) = OracleTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = OracleGraph(name)
     override fun drop(graph: String) {
@@ -94,6 +133,10 @@ class OracleStoreLayoutTest : StoreLayoutContract() {
 }
 
 class SqliteStoreLayoutTest : StoreLayoutContract() {
+    override val store = "sqlite"
+    override fun run(statement: String) = SqliteTestDatabase.run(statement)
+    override fun tableThere(table: String) =
+        SqliteTestDatabase.pm.query(QuerySpecification.withStatement("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '$table'")).isNotEmpty()
     override fun manager(graph: String) = SqliteTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = SqliteGraph(name)
     override fun drop(graph: String) {
