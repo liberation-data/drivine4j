@@ -75,6 +75,9 @@ class HostSpecTest {
          */
         const val HELD = "drivine4j#421 (layout 2)"
 
+        /** SQLite's errors of a call it won't make, which no held step's failure can be: the step names no function of the store's. */
+        val RUNNER_ERRORS = listOf("no such function", "wrong number of arguments")
+
         /** The function a library calls itself, once on each connection, and no compiled statement does: its steps pair nothing. */
         const val UNPAIRED = "drivine_host_version"
     }
@@ -112,9 +115,19 @@ class HostSpecTest {
         assertEquals(listOf("a case, step 1"), check(case(heldErring, pairs = mapOf("writes.yaml" to listOf("NaN worked out from stored infinities")))))
         val heldPassing = mapOf("note" to HELD, "function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
         assertContains(assertFails { check(case(heldPassing)) }.message!!, "and passing: take the hold off")
+        val heldWrongError = mapOf("note" to HELD, "function" to "drivine_add", "args" to listOf("1", "2"), "error" to "x")
+        assertEquals(listOf("a case, step 1"), check(case(heldWrongError)))
         // A step the runner can't run is no hold.
         val heldUnreadable = mapOf("note" to HELD, "function" to "drivine_add", "args" to listOf(true, "2"), "result" to "3")
         assertContains(assertFails { check(case(heldUnreadable)) }.message!!, "No SQL value of")
+        // Nor is a function SQLite doesn't have, or one called with arguments of another number.
+        val heldMissing = mapOf("note" to HELD, "function" to "drivine_nothing", "args" to listOf("1"), "result" to "1")
+        assertContains(assertFails { check(case(heldMissing)) }.message!!, "no such function")
+        val heldMiscounted = mapOf("note" to HELD, "function" to "drivine_add", "args" to listOf("1"), "result" to "1")
+        assertContains(assertFails { check(case(heldMiscounted)) }.message!!, "wrong number of arguments")
+        // Not even where the step expects an error.
+        val heldMissingErring = mapOf("note" to HELD, "function" to "drivine_nothing", "args" to listOf("1"), "error" to "x")
+        assertContains(assertFails { check(case(heldMissingErring)) }.message!!, "no such function")
         val otherNote = mapOf("note" to "drivine4j#421", "function" to "drivine_add", "args" to listOf("1", "2"), "result" to "4")
         assertFails { check(case(otherNote)) }
     }
@@ -125,6 +138,8 @@ class HostSpecTest {
         check(case(version, pairs = emptyMap()))
         val add = mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
         assertContains(assertFails { check(Case("a case", steps = listOf(version, add))) }.message!!, "pairs no store case")
+        // Beside another function's steps, it still needs no pair of its own.
+        check(Case("a case", pairs = mapOf("writes.yaml" to listOf("NaN and the infinities written")), steps = listOf(version, add)))
     }
 
     @Test
@@ -223,6 +238,8 @@ class HostSpecTest {
                     } catch (e: AssertionError) {
                         true
                     } catch (e: SQLException) {
+                        // SQLite's own refusal to call it, of a function it hasn't or of another arity, is the runner's.
+                        if (RUNNER_ERRORS.any { it in e.message.orEmpty() }) throw e
                         true
                     }
                     if (!failed) throw AssertionError("$where: held for layout 2 ($HELD), and passing: take the hold off")
@@ -251,6 +268,8 @@ class HostSpecTest {
         if ("error" !in step) return assertEquals(canonical(expanded(step["result"])), canonical(call(connection, sql, args)), where)
         val error = step["error"] as? String ?: throw IllegalArgumentException("$where: error is a text, not ${step["error"]}")
         val failure = assertFailsWith<SQLException>("$where: fails with \"$error\", but gave no error") { call(connection, sql, args) }
+        // SQLite's own refusal to call it is the runner's, not the step's error: a held step mustn't count it as failing.
+        if (RUNNER_ERRORS.any { it in failure.message.orEmpty() }) throw failure
         assertContains(failure.message.orEmpty(), error, message = where)
     }
 

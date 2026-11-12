@@ -17,7 +17,9 @@ import java.sql.SQLException
  * message, as the module's SQLite extension fails it.
  *
  * xerial reads and writes every text as a Java string, so a function's [HostFunction.encoding] makes no difference here:
- * UTF-8's and UTF-16's reads and writes are the same.
+ * UTF-8's and UTF-16's reads and writes are the same. They differ only for a lone surrogate, which the module's extension
+ * writes as U+FFFD through UTF-8 and keeps through UTF-16, and xerial need not do either. No host function registered
+ * here reads or writes UTF-16.
  */
 internal class SqliteHostFunction(private val function: HostFunction) : Function() {
 

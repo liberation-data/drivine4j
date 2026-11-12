@@ -29,9 +29,6 @@ internal object SqliteCypherValues {
      */
     val NAN: JsonNode = JsonNodeFactory.instance.objectNode().put("\$numberDouble", "NaN")
 
-    /** Whether [node] is NaN, as [NAN] writes it. */
-    fun isNaN(node: JsonNode): Boolean = node == NAN
-
     /** [node] with each NaN in it, at any depth, [NAN], and each infinity the number SQLite writes for one. */
     fun nonFinite(node: JsonNode): JsonNode = when {
         node.isFloatingPointNumber && node.doubleValue().isNaN() -> NAN
