@@ -226,6 +226,29 @@ class SqliteSchemaManagementTest {
         ).transform(String::class.java)).associate { it.substringBefore(' ') to (it.substringAfter(' ') == "1") }
 
     /**
+     * A recreate that the data allows ends with the constraint's one unique index under its name: SQLite renames no index,
+     * so the old is dropped, the index made again under its name, and the one built first dropped (plans.yaml case 31).
+     */
+    @Test
+    fun `a recreate of a uniqueness constraint leaves one unique index under its name, which enforces`() {
+        val spec = UniquenessConstraintSpec("Pass", "serial")
+        val name = org.drivine.backend.sqlite.SqliteGraph("schema").objectName("uq", listOf("Pass", "serial"))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            seed.node("Pass", properties = mapOf("serial" to "p-1"))
+
+            assertTrue(manager.constraints.recreate(spec) is EnsureResult.Recreated)
+
+            assertEquals(mapOf(name to true), indexesNamed(name), "the index is made again under its name, and the one built first dropped")
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.AlreadyMatching)
+            val refused = assertFails { seed.node("Pass", properties = mapOf("serial" to "p-1")) }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
+    }
+
+    /**
      * A uniqueness constraint is made again beside its old index, which is swapped out only once the new one is built
      * (drivine-cypher-spec#135 §4, plans.yaml case 31b): the data refusing the build leaves the old index and its
      * record as they were, and nothing beside them, as the index a recreate cut short had left under the name it builds

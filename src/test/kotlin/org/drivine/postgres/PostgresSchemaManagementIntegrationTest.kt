@@ -161,6 +161,26 @@ class PostgresSchemaManagementIntegrationTest {
                 "WHERE i.indrelid = 'schema_node'::regclass AND c.relname LIKE '${name.lowercase()}%'"
         ).transform(String::class.java)).associate { it.substringBefore(' ') to it.substringAfter(' ').toBoolean() }
 
+    /** A recreate that the data allows swaps the index built beside the old into its name, and leaves nothing beside it (plans.yaml case 31). */
+    @Test
+    fun `a recreate of a uniqueness constraint leaves one unique index under its name, which enforces`() {
+        val spec = UniquenessConstraintSpec("Pass", "serial")
+        val name = PostgresGraph("schema").objectName("uq", listOf("Pass", "serial"))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            execute("CREATE (:Pass {serial: 'p-1'})")
+
+            assertTrue(manager.constraints.recreate(spec) is EnsureResult.Recreated)
+
+            assertEquals(mapOf(name.lowercase() to true), indexesNamed(name), "the index built is swapped into the old one's name")
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.AlreadyMatching)
+            val refused = assertFailsWith<DrivineException> { execute("CREATE (:Pass {serial: 'p-1'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
+    }
+
     /**
      * A uniqueness constraint is made again beside its old index, which is swapped out only once the new one is built
      * (drivine-cypher-spec#135 §4, plans.yaml case 31b): the data refusing the build leaves the old index and its

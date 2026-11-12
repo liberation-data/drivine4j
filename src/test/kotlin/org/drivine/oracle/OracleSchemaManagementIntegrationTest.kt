@@ -202,6 +202,29 @@ class OracleSchemaManagementIntegrationTest {
         ).transform(String::class.java)).associate { it.substringBefore(' ') to (it.substringAfter(' ') == "UNIQUE") }
 
     /**
+     * A recreate that the data allows leaves the constraint's one unique index under its name, and nothing beside it:
+     * Oracle's index of this version's form is dropped and made again (plans.yaml case 31a).
+     */
+    @Test
+    fun `a recreate of a uniqueness constraint leaves one unique index under its name, which enforces`() {
+        val spec = UniquenessConstraintSpec("Pass", "serial")
+        val name = OracleGraph("schema").objectName("uq", listOf("Pass", "serial"))
+        try {
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
+            execute("CREATE (:Pass {serial: 'p-1'})")
+
+            assertTrue(manager.constraints.recreate(spec) is EnsureResult.Recreated)
+
+            assertEquals(mapOf(name.uppercase() to true), indexesNamed(name), "the index is made again under its name")
+            assertTrue(manager.constraints.ensure(spec) is EnsureResult.AlreadyMatching)
+            val refused = assertFailsWith<DrivineException> { execute("CREATE (:Pass {serial: 'p-1'})") }
+            assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
+        } finally {
+            runCatching { manager.constraints.drop(spec) }
+        }
+    }
+
+    /**
      * A uniqueness constraint is made again beside its old index, which is swapped out only once the new one is built
      * (drivine-cypher-spec#135 §4, plans.yaml case 31b): the data refusing the build (`ORA-01452`) leaves the old index
      * as it was, and nothing beside it, as the index a recreate cut short had left under the name it builds under first
