@@ -137,19 +137,20 @@ class SqliteCypherFunctionsTest {
     }
 
     @Test
-    fun `drivine_temporal reads, moves, measures and cuts a timestamp`() {
+    fun `drivine_temporal reads, moves, measures in whole seconds and nanoseconds, and cuts a timestamp`() {
         assertEquals(
             listOf(
                 "2024-03-15T00:00:00.000000", "2024-03-15T08:30:00.000000", "1970-01-01T09:00:00.000000", "2024-02-29T10:00:00.000000",
-                "2024-03-16T10:00:01.500000", 2L, -0.5, "2024-03-11T00:00:00.000000", 30.25,
+                "2024-03-16T10:00:01.500000", 2L, -1L, 500000000L, "2024-03-11T00:00:00.000000", 30250000000L,
             ),
             row(
                 "SELECT drivine_temporal('local', '2024-03-15', 'DATE'), drivine_temporal('utc', '2024-03-15T10:30+0200', 'DATE_TIME'), " +
                     "drivine_temporal('utc', '10:00+01:00', 'TIME'), drivine_temporal('add_months', '2024-01-31T10:00:00.000000', 1), " +
-                    "drivine_temporal('add_time', '2024-03-15T10:00:00.000000', 1, 1.5), " +
+                    "drivine_temporal('add_time', '2024-03-15T10:00:00.000000', 1, 1, 500000000), " +
                     "drivine_temporal('months_between', '2024-01-31T00:00:00.000000', '2024-03-31T00:00:00.000000'), " +
                     "drivine_temporal('seconds_between', '2024-03-15T10:00:00.500000', '2024-03-15T10:00:00.000000'), " +
-                    "drivine_temporal('truncate', '2024-03-15T10:30:00.000000', 'week'), drivine_temporal('extract', '2024-03-15T10:30:30.250000', 'SECOND')"
+                    "drivine_temporal('nanos_between', '2024-03-15T10:00:00.500000', '2024-03-15T10:00:00.000000'), " +
+                    "drivine_temporal('truncate', '2024-03-15T10:30:00.000000', 'week'), drivine_temporal('extract', '2024-03-15T10:30:30.250000', 'NANOSECOND_OF_MINUTE')"
             ),
         )
         // A number of months that is no whole number rounds half away from zero, as Postgres casts one.
@@ -165,6 +166,9 @@ class SqliteCypherFunctionsTest {
         assertEquals(null, row("SELECT drivine_temporal('local', NULL, 'DATE')"))
         val refused = assertFailsWith<DrivineException> { row("SELECT drivine_temporal('local', '2024-02-30', 'DATE')") }
         assertTrue("2024-02-30" in refused.message.orEmpty(), refused.message)
+        // Seconds are whole, and the nanoseconds past them read on their own: SECOND, which gave a float, is no field.
+        val second = assertFailsWith<DrivineException> { row("SELECT drivine_temporal('extract', '2024-03-15T10:30:30.250000', 'SECOND')") }
+        assertTrue("no field SECOND" in second.message.orEmpty(), second.message)
     }
 
     @Test

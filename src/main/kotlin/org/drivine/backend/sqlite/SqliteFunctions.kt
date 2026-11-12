@@ -1,5 +1,7 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.cypher.host.HostCheck
+import org.drivine.cypher.host.HostFunctions
 import org.sqlite.Function
 import java.sql.Connection
 import org.drivine.cypher.store.SqliteFunctions as Shared
@@ -15,25 +17,21 @@ import org.drivine.cypher.store.SqliteFunctions as Shared
  * - [LOWER_COPIES] fills in the lowercased copies of a property, and counts the nodes it wrote: see
  *   [SqliteLowerCopiesFunction].
  * - [SIMILARITY] scores an embedding against a vector: see [SqliteSimilarityFunction].
- * - [REGEXP_COUNT] counts the matches of a regular expression, and [REGEXP] is SQLite's `REGEXP`
- *   operator: see [SqliteRegexpCountFunction] and [SqliteRegexpFunction].
+ * - [REGEXP_COUNT] counts the matches of a regular expression: see [SqliteRegexpCountFunction].
  * - [LOWER] lowers text as Unicode does: see [SqliteLowerFunction].
  * - [EPOCH] reads a moment as nanoseconds since the epoch: see [SqliteEpochFunction].
  *
  * Compiled Cypher calls the rest, for what Cypher does with its values, JSON text each, that SQLite does not:
  *
- * - [EQUAL], [CANONICAL] and [ADD] compare, group and add them: see [SqliteEqualFunction], [SqliteCanonicalFunction]
- *   and [SqliteAddFunction].
+ * - The shared module's host functions, [HostFunctions.all]: [EQUAL], [CANONICAL] and [ADD] compare, group and add
+ *   them; [ROUND] rounds by a mode, as Neo4j does; [REGEXP], SQLite's `REGEXP` operator, [REGEX_GROUP] and [REGEX_REPLACE]
+ *   match, read and replace a regular expression; [FLOAT_TEXT] writes a float as Java does, for `toString`, [SORT_KEY]
+ *   orders a list as Cypher does, and [LIST_ORDER] compares two lists as Cypher does; [TRUNC], [TO_CHAR] and [TEMPORAL]
+ *   work out temporal values; and `drivine_host_version`, their version, which [register] checks is the compiler's
+ *   ([HostCheck]). Each is registered through [SqliteHostFunction], as the module declares it.
  * - [UPPER], [SPLIT], [REVERSE] and [UUID] are Cypher's `toUpper`, `split`, `reverse` and `randomUUID`: see
  *   [SqliteUpperFunction], [SqliteSplitFunction], [SqliteReverseFunction] and [SqliteUuidFunction].
- * - [MATH] and [ROUND] work out Cypher's functions of numbers, `exp`, `log`, `sin` …, and `round` by a mode, as
- *   Neo4j does: see [SqliteMathFunction] and [SqliteRoundFunction].
- * - [REGEX_GROUP] and [REGEX_REPLACE] read and replace what a regular expression matches: see
- *   [SqliteRegexGroupFunction] and [SqliteRegexReplaceFunction].
- * - [FLOAT_TEXT] writes a float as Java does, for `toString`, [SORT_KEY] orders a list as Cypher does, and [LIST_ORDER]
- *   compares two lists as Cypher does: see [SqliteFloatTextFunction], [SqliteSortKeyFunction] and [SqliteListOrderFunction].
- * - [TRUNC], [TO_CHAR] and [TEMPORAL] work out temporal values: see [SqliteTruncFunction], [SqliteToCharFunction]
- *   and [SqliteTemporalFunction].
+ * - [MATH] works out Cypher's functions of numbers, `exp`, `log`, `sin` …: see [SqliteMathFunction].
  * - [CYPHER] carries out the procedure a statement that writes compiles to: see [SqliteCypherFunction].
  * - [FAIL] fails the statement with its text, where Neo4j fails on a value it reads: see [SqliteFailFunction].
  *
@@ -73,37 +71,28 @@ internal object SqliteFunctions {
     /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`: as [Shared.REGEXP]. */
     const val REGEXP = Shared.REGEXP
 
-    /** Registers every function on [connection], a connection of xerial's driver, for the statements run on it. */
+    /**
+     * Registers every function on [connection], a connection of xerial's driver, for the statements run on it, and checks
+     * the host functions are of the version the compiler's SQL calls ([SqliteHostFunction.check]).
+     */
     fun register(connection: Connection) {
-        val patterns = SqlitePatterns()
         Function.create(connection, WRITE, SqliteWriteFunction(connection), 6, 0)
         Function.create(connection, DELETE, SqliteDeleteFunction(connection), 2, 0)
         Function.create(connection, LOWER_COPIES, SqliteLowerCopiesFunction(connection), 4, 0)
         Function.create(connection, CYPHER, SqliteCypherFunction(connection), 2, 0)
         Function.create(connection, SIMILARITY, SqliteSimilarityFunction(), 3, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, REGEXP_COUNT, SqliteRegexpCountFunction(patterns), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, REGEXP, SqliteRegexpFunction(patterns), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, REGEXP_COUNT, SqliteRegexpCountFunction(), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, LOWER, SqliteLowerFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, EPOCH, SqliteEpochFunction(), 1, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, EQUAL, SqliteEqualFunction(), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, ADD, SqliteAddFunction(), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, CANONICAL, SqliteCanonicalFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, UPPER, SqliteUpperFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, SPLIT, SqliteSplitFunction(), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, REVERSE, SqliteReverseFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, UUID, SqliteUuidFunction(), 0, 0)
-        Function.create(connection, REGEX_GROUP, SqliteRegexGroupFunction(patterns), 3, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, REGEX_REPLACE, SqliteRegexReplaceFunction(patterns), 3, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, TRUNC, SqliteTruncFunction(), 1, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, TO_CHAR, SqliteToCharFunction(), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, FLOAT_TEXT, SqliteFloatTextFunction(), 1, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, SORT_KEY, SqliteSortKeyFunction(), 1, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, LIST_ORDER, SqliteListOrderFunction(), 2, Function.FLAG_DETERMINISTIC)
-        Function.create(connection, ROUND, SqliteRoundFunction(), 3, Function.FLAG_DETERMINISTIC)
         // Not deterministic: SQLite must not work it out before a row that needs it.
         Function.create(connection, FAIL, SqliteFailFunction(), 1, 0)
         // Of as many arguments as its operation takes.
-        Function.create(connection, TEMPORAL, SqliteTemporalFunction(), -1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, MATH, SqliteMathFunction(), -1, Function.FLAG_DETERMINISTIC)
+        HostFunctions.all.forEach { SqliteHostFunction.register(connection, it) }
+        SqliteHostFunction.check(connection)
     }
 }

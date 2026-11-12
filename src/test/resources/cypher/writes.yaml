@@ -932,7 +932,7 @@ cases:
         rows: [[1, true]]
 
   - name: "A map parameter keyed with $"
-    description: "A write reads a map parameter with a key that begins with $, such as extended JSON's $numberDouble, as the map it is, alone or beside a float that is a whole number."
+    description: "A write reads a map parameter with a key that begins with $, such as extended JSON's $numberDouble, as the map it is, alone or beside a float that is a whole number, which it writes as the float it is."
     steps:
       - cypher: "CREATE (n:CyWrite {id: 1}) RETURN $m"
         parameters: {m: {$numberDouble: "1"}}
@@ -941,6 +941,15 @@ cases:
         cypher: "CREATE (n:CyWrite {id: 2, f: $f}) RETURN $l"
         parameters: {f: 2.0, l: {$numberLong: "5"}}
         rows: [{$numberLong: "5"}]
+      - note: "And the float is written as the float it is (#200)."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite {id: 2}) RETURN toString(n.f)"
+        rows: ["2.0"]
+      - note: "A float past a long's range beside a map keyed with $ is written as a float too (#200)."
+        only: [neo4j, sql]
+        cypher: "CREATE (n:CyWrite {id: 3, j: $x, m: $m.k}) RETURN [toString(n.j), n.m]"
+        parameters: {x: 1.0e+20, m: {$k: "a", k: "b"}}
+        rows: [["1.0E20", "b"]]
 
   - name: "One clock for a statement's writes"
     description: "Every row a statement writes reads the same moment from the clock."

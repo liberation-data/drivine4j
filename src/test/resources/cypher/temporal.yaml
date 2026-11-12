@@ -74,6 +74,36 @@ cases:
                   inSeconds: duration.inSeconds(datetime('2024-01-01T00:00:00Z'), datetime('2024-01-01T01:00:00Z')).seconds,
                   inMonths: duration.inMonths(date('2024-01-31'), date('2024-03-01')).months}
         rows: [{months: 2, days: 5, inDays: 60, inSeconds: 3600, inMonths: 1}]
+      - note: "Between a date and a time of day, only the times of day are compared, a date's being its midnight (drivine4j#418)."
+        cypher: |
+          RETURN {between: duration.between(date('1984-10-11'), localtime('16:30')).minutes,
+                  inDays: duration.inDays(date('1984-10-11'), localtime('16:30')).days,
+                  inSeconds: duration.inSeconds(date('1984-10-11'), localtime('16:30')).seconds,
+                  back: duration.between(localdatetime('2018-01-01T23:00'), localtime('01:00')).minutes,
+                  zoned: duration.between(time('10:00+01:00'), datetime('1984-10-11T12:00+02:00')).minutes,
+                  local: duration.between(datetime('1984-10-11T12:00+02:00'), localtime('16:30')).minutes,
+                  date: duration.between(time('10:00+01:00'), date('1984-10-11')).minutes,
+                  inMonths: duration.inMonths(date('1984-10-11'), localtime('16:30')).months}
+        rows: [{between: 990, inDays: 0, inSeconds: 59400, back: -1320, zoned: 60, local: 270, date: -600, inMonths: 0}]
+      - note: "And on the SQL stores, as text."
+        only: [sql]
+        cypher: "RETURN [duration.between(date('1984-10-11'), localtime('16:30')), duration.inDays(date('1984-10-11'), localtime('16:30'))]"
+        rows: [["PT16H30M", "PT0S"]]
+      - note: "A negative duration's seconds are floored, and its fraction of a second is from 0 up to 1 (drivine4j#418)."
+        cypher: |
+          WITH duration.between(localdatetime('2018-01-02T10:00:00.1'), localdatetime('2018-01-01T10:00:00.2')) AS d
+          RETURN {seconds: d.seconds, nanosecondsOfSecond: d.nanosecondsOfSecond, millisecondsOfSecond: d.millisecondsOfSecond,
+                  milliseconds: d.milliseconds, hours: d.hours, minutes: d.minutes, minutesOfHour: d.minutesOfHour,
+                  secondsOfMinute: d.secondsOfMinute}
+        rows: [{seconds: -86400, nanosecondsOfSecond: 100000000, millisecondsOfSecond: 100, milliseconds: -86399900, hours: -24,
+                minutes: -1440, minutesOfHour: 0, secondsOfMinute: 0}]
+      - note: "And of a fraction below a millisecond."
+        cypher: |
+          WITH duration('PT-0.0005S') AS d
+          RETURN {seconds: d.seconds, milliseconds: d.milliseconds, microseconds: d.microseconds, nanoseconds: d.nanoseconds,
+                  millisecondsOfSecond: d.millisecondsOfSecond, microsecondsOfSecond: d.microsecondsOfSecond, nanosecondsOfSecond: d.nanosecondsOfSecond}
+        rows: [{seconds: -1, milliseconds: -1, microseconds: -500, nanoseconds: -500000, millisecondsOfSecond: 999, microsecondsOfSecond: 999500,
+                nanosecondsOfSecond: 999500000}]
 
   - name: "Truncation and the statement's moment"
     description: "A moment truncates to a unit, and every clock function in a statement reads the same moment."
@@ -180,6 +210,29 @@ cases:
       - note: A duration made from a map keeps the fraction of a second its smaller units make.
         cypher: "RETURN [toString(duration({milliseconds: 1500})), toString(duration({seconds: 1, microseconds: 7})), toString(duration({nanoseconds: 1000}))]"
         rows: [["PT1.5S", "PT1.000007S", "PT0.000001S"]]
+
+  - name: "The current moment in a time zone, or of null"
+    description: "date.statement(), datetime.transaction(), localtime.realtime() and the rest give the moment in the time zone they are given, and null where they are given null (drivine4j#425)."
+    steps:
+      - note: "Given null, each gives null, as in Neo4j, not the moment."
+        cypher: |
+          RETURN [date.statement(null), date.transaction(null), date.realtime(null), localtime.statement(null), localtime.transaction(null),
+                  localtime.realtime(null), time.statement(null), time.transaction(null), time.realtime(null), localdatetime.statement(null),
+                  localdatetime.transaction(null), localdatetime.realtime(null), datetime.statement(null), datetime.transaction(null),
+                  datetime.realtime(null)]
+        rows: [[null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]]
+      - note: "And given null by a parameter."
+        cypher: "RETURN datetime.transaction($z) IS NULL"
+        parameters: {z: null}
+        rows: [true]
+      - note: "Given a zone, the moment there. The clocks at -12:00 and +14:00 are 26 hours apart: a day and 2 hours, of which .hours gives the 2; the date at +14:00 is a day or two after the date at -12:00."
+        cypher: |
+          RETURN {offset: datetime.statement('+05:00').offset, time: time.transaction('-03:30').offset, given: datetime.realtime($z).offset,
+                  days: duration.inDays(date.realtime('-12:00'), date.realtime('+14:00')).days IN [1, 2],
+                  local: duration.between(localdatetime.statement('-12:00'), localdatetime.statement('+14:00')).hours,
+                  clock: duration.between(localtime.statement('-05:00'), localtime.statement('+05:00')).hours IN [10, -14]}
+        parameters: {z: "+01:00"}
+        rows: [{offset: "+05:00", time: "-03:30", given: "+01:00", days: true, local: 2, clock: true}]
 
   - name: "Week-year fields, duration parts and zoned inequality"
     description: "A moment gives its week-year and offset fields, a duration its parts of a larger unit, and zoned values at different offsets are unequal."

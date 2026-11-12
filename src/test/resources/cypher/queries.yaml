@@ -3178,14 +3178,53 @@ cases:
         rows: [[3, ["a", "b"]], [1, ["b", "a", "d"]], [2, ["c"]]]
       - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, m ORDER BY m.released WITH p, collect(m.title) AS ts RETURN p.name ORDER BY ts DESC"
         rows: ["Carrie", "Laurence", "Keanu"]
-      - note: "Null sorts last within a list, as it does among values. Oracle sorts it first (drivine4j#205)."
+      - note: "Null sorts last within a list, as it does among values, and first descending. Oracle's JSON sorts it first; Oracle sorts a list by a key of its own (drivine4j#205)."
         cypher: "UNWIND [[1, 2], [1, null], [1], [null], [0]] AS xs RETURN xs ORDER BY xs"
-        except: [oracle]
         rows: [[0], [1], [1, 2], [1, null], [null]]
-      - note: "Items of different kinds sort as Cypher orders kinds: a text before a number. Oracle sorts a number first (drivine4j#205)."
+      - cypher: "UNWIND [[1, 2], [1, null], [1], [null], [0]] AS xs RETURN xs ORDER BY xs DESC"
+        rows: [[null], [1, null], [1, 2], [1], [0]]
+      - note: "Items of different kinds sort as Cypher orders kinds: a text before a number."
         cypher: "UNWIND [[1, 'a'], [1, 2], ['a'], [1.5]] AS xs RETURN xs ORDER BY xs"
-        except: [oracle]
         rows: [["a"], [1, "a"], [1, 2], [1.5]]
+      - note: "A number that another begins, as 1 begins 1.04 in Oracle's NUMBER, comes first whatever follows it."
+        cypher: "UNWIND [[1.04], [1, 5], [1]] AS xs RETURN xs ORDER BY xs"
+        rows: [[1], [1, 5], [1.04]]
+      - note: "An empty text, which Oracle's VARCHAR2 holds as null, comes before any other, and a text that another begins before it, whatever follows."
+        only: [neo4j, sql]
+        cypher: "UNWIND [['a!'], ['a', 1], [''], ['b'], ['a'], []] AS xs RETURN xs ORDER BY xs"
+        rows: [[], [""], ["a"], ["a", 1], ["a!"], ["b"]]
+      - note: "A map comes before a text, a text before a truth value, false before true, and a truth value before a number, a negative one among them."
+        only: [neo4j, sql]
+        cypher: "UNWIND [[-1, 0], [true], [-1], ['a'], [-1.04], [false], [{a: 1}], [-2, 5]] AS xs RETURN xs ORDER BY xs"
+        rows: [[{a: 1}], ["a"], [false], [true], [-2, 5], [-1.04], [-1], [-1, 0]]
+      - note: "-Infinity comes before every other number, and Infinity after them, then NaN."
+        only: [neo4j, sql]
+        cypher: "UNWIND [[$p], [$i], [3.0], [$n], ['a']] AS xs RETURN xs ORDER BY xs"
+        parameters: {p: {$float: "NaN"}, i: {$float: "Infinity"}, n: {$float: "-Infinity"}}
+        rows: [["a"], [{$float: "-Infinity"}], [3.0], [{$float: "Infinity"}], [{$float: "NaN"}]]
+      - note: "A text that holds U+0000 comes before one that holds U+0001, whatever follows, as Oracle's key writes each as two bytes. Postgres fails, as its JSON holds no U+0000."
+        only: [neo4j, oracle]
+        cypher: "UNWIND [['a\\u0001', 1], ['a\\u0000', 2], ['a', 3]] AS xs RETURN xs[1] ORDER BY xs"
+        rows: [3, 2, 1]
+      - note: "A text too long for Oracle's VARCHAR2 sorts so too."
+        cypher: "UNWIND [[$t, 2], ['a' + $t, 1], [1, 0]] AS xs RETURN xs[1] ORDER BY xs"
+        parameters: {t: {$repeat: "x", times: 40000}}
+        rows: [1, 2, 0]
+      - note: "Such a text is read as itself, not as its JSON, whose quote would sort it before 'a'."
+        only: [neo4j, sql]
+        cypher: "UNWIND [[$t], ['a']] AS xs RETURN size(xs[0]) ORDER BY xs"
+        parameters: {t: {$repeat: "x", times: 40000}}
+        rows: [1, 40000]
+      - note: "A list collected sorts so too."
+        cypher: "UNWIND [1, 2] AS g UNWIND (CASE g WHEN 1 THEN [5] ELSE ['a'] END) AS v WITH g, collect(v) AS c RETURN g ORDER BY c"
+        rows: [2, 1]
+      - note: "So does a list a CALL sorts and limits."
+        cypher: "CALL { UNWIND [[1, null], [1, 2], ['a']] AS xs RETURN xs ORDER BY xs LIMIT 2 } RETURN xs ORDER BY xs DESC"
+        rows: [[1, 2], ["a"]]
+      - note: "A list read from a map, whose kind the statement leaves open. Postgres sorts such a value as jsonb sorts it (drivine4j#307), and Oracle as its JSON sorts it (drivine4j#798)."
+        except: [postgres, oracle]
+        cypher: "UNWIND [{l: [1, 'a']}, {l: ['a']}, {l: [1, null]}] AS m RETURN m.l ORDER BY m.l"
+        rows: [["a"], [1, "a"], [1, null]]
       - note: "A list of lists compares each inner list item by item too."
         cypher: "UNWIND [[[1, 2]], [[3]], [[1]], [[1], [0]]] AS xs RETURN xs ORDER BY xs"
         rows: [[[1]], [[1], [0]], [[1, 2]], [[3]]]
@@ -3196,13 +3235,11 @@ cases:
         rows: [[[[[3]], [[[2]]]], [[[1, 2]]], []]]
       - cypher: "UNWIND [[[1]], [[]], [[], 1], []] AS xs RETURN xs ORDER BY xs"
         rows: [[], [[]], [[], 1], [[1]]]
-      - note: "Within a list, a list sorts before a number, as Cypher orders kinds. Oracle sorts a number first (drivine4j#205)."
+      - note: "Within a list, a list sorts before a number, as Cypher orders kinds."
         cypher: "UNWIND [[[1]], [[[]]]] AS xs RETURN xs ORDER BY xs"
-        except: [oracle]
         rows: [[[[]]], [[1]]]
-      - note: "So does a list that holds null, and a shorter list before a longer one it begins. Oracle sorts a number before a list (drivine4j#205)."
+      - note: "So does a list that holds null, and a shorter list before a longer one it begins."
         cypher: "UNWIND [[1, 2], [[null]], [1, [2, null]], [1, [2]], [1, [1, 5]]] AS xs RETURN xs ORDER BY xs"
-        except: [oracle]
         rows: [[[null]], [1, [1, 5]], [1, [2]], [1, [2, null]], [1, 2]]
       - note: "A list worked out in the order term, by reverse(), tail(), a slice, +, range() or split(), sorts so too."
         cypher: "UNWIND [[1, 2], [3], [0, 5, 6]] AS xs RETURN xs ORDER BY reverse(xs)"
