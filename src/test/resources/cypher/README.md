@@ -372,7 +372,7 @@ A case has a `name`, unique in the file, a `description`, `pairs`, and its steps
 | `function`, `ascending` | The function of one argument, called on each of `ascending` in turn, gives values that ascend as SQLite orders them, each before the next. For `drivine_sort_key` of a list, whose text is each library's own: only its order is pinned. |
 | `read`, `value` | A column of a compiled statement's rows reads as `value`, as `PersistenceManager.query` gives it. `read` has the `store` (`postgres` or `sqlite`), `nonFinite` (whether the statement was given NaN or an infinity, which the compiled statement says), and the `column`'s raw JSON text: a text, or a list of texts and `$repeat`s written one after the other. |
 
-A step noted `drivine4j#421 (layout 2)` pins a timestamp of nine fractional digits, which SQLite's timestamps don't have until layout 2: each runner holds it until its store's do, as it holds any step its code can't pass yet.
+A step noted `drivine4j#421 (layout 2)` pins a timestamp of nine fractional digits, which SQLite's timestamps don't have until layout 2: each runner holds it until its store's do, as it holds any step its code can't pass yet. The module's runners (`HostSpecTest`, `check/extension-native.py`) run a held step and require it to fail, on its result or as the function fails, and fail where it passes, so the hold comes off once the store keeps nine digits.
 
 Values are written as in the other files: `{$float: "NaN"}` is NaN, `{$repeat: …}` a text repeated, and any other map, `{$numberDouble: "2.0"}` among them, is the map it is.
 
