@@ -7,9 +7,9 @@
 # on the latest engine images: keep it in step.
 #
 # A pull request's run leaves out the tests marked @Nightly (org.drivine.test.Nightly): the timings, the plans Oracle
-# makes, the texts past 32 KB on Oracle, the Postgres tests that vacuum or analyze a table to a state, and Oracle's
-# slow APOC batch. A full run adds a `nightly` part to the Neo4j and Oracle variants: a push to main or develop, a pull
-# request labelled `full-ci`, nightly.yml each night, and release.yml's gate. release.yml calls this as its gate, on the
+# makes, the texts past 32 KB on Oracle, and the Postgres tests that vacuum or analyze a table to a state. A full run
+# adds a `nightly` part to the Neo4j and Oracle variants: a push to main or develop, a pull request labelled `full-ci`,
+# nightly.yml each night, and release.yml's gate. release.yml calls this as its gate, on the
 # commit it releases, unless a full push or pull_request run of it has already passed on the same tree.
 name: CI
 
