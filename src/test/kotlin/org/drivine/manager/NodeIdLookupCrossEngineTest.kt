@@ -36,6 +36,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.time.LocalDate
+import java.time.LocalDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -53,6 +54,10 @@ data class LookupText(@NodeId val id: String, val name: String)
 /** A root with an embedding, which `loadNearestAmong` finds among others by their ids' text. */
 @NodeFragment(labels = ["LookupNear"])
 data class LookupNear(@NodeId val id: LocalDate, val name: String, @VectorIndex val embedding: List<Float>? = null)
+
+/** A root with an embedding and a `LocalDateTime` id, whose text `toString` writes without its seconds where they are 0. */
+@NodeFragment(labels = ["LookupNearMoment"])
+data class LookupNearMoment(@NodeId val id: LocalDateTime, val name: String, @VectorIndex val embedding: List<Float>? = null)
 
 @NodeFragment(labels = ["LookupTarget"])
 data class LookupTarget(@NodeId val id: String, val name: String)
@@ -285,6 +290,25 @@ abstract class NodeIdLookupContract {
 
         assertEquals(
             mapOf("2030-01-01" to listOf("2030-01-02"), "2030-01-02" to listOf("2030-01-01"), "2030-01-03" to listOf("2030-01-02")),
+            found.mapValues { (_, near) -> near.map { it.value } },
+        )
+    }
+
+    /**
+     * `loadNearestAmong` gives each root and neighbour by the text it was given, though the store holds a `LocalDateTime`
+     * id's text with its seconds, `2030-01-01T10:00:00`, and `toString` writes `2030-01-01T10:00`.
+     */
+    @Test
+    fun `loadNearestAmong gives each id by the text it was given`() {
+        val first = LocalDateTime.of(2030, 1, 1, 10, 0)
+        val second = LocalDateTime.of(2030, 1, 1, 11, 0)
+        manager.save(LookupNearMoment(first, "a", listOf(1.0f, 0.0f)))
+        manager.save(LookupNearMoment(second, "b", listOf(0.8f, 0.6f)))
+
+        val found = manager.loadNearestAmong(LookupNearMoment::class.java, listOf(first.toString(), second.toString()), 1)
+
+        assertEquals(
+            mapOf("2030-01-01T10:00" to listOf("2030-01-01T11:00"), "2030-01-01T11:00" to listOf("2030-01-01T10:00")),
             found.mapValues { (_, near) -> near.map { it.value } },
         )
     }

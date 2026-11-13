@@ -84,6 +84,12 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         return given.mapNotNull { ids.json(model, it) }.distinct()
     }
 
+    /** Each id's text as the JSON text a root holds it as, as [idsJson] reads it. */
+    override fun nearestAmongIds(graphClass: Class<*>): (String) -> Any? {
+        val model = FragmentModel.from(select(graphClass).rootFragment)
+        return { ids.json(model, it) }
+    }
+
     override val cypherGrammar: CypherGrammar? = null
 
     override val supportsOrphanDelete: Boolean = true

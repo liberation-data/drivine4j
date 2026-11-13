@@ -259,7 +259,8 @@ interface GraphObjectOperations {
      * @param graphClass the `@GraphView` or `@NodeFragment` class whose root nodes the ids name
      * @param ids the set: both the seeds searched from and the only ids that can come back. On Oracle, Postgres and SQLite
      *   each is read as [load] reads an id's text, as the `@NodeId` field's type, and the roots are found through the index
-     *   over the id; each comes back as its id's text, a temporal id as its ISO text
+     *   over the id; each comes back as the text it was given, though the store holds other text of it, as
+     *   `2030-01-01T10:00:00` for a `LocalDateTime` given as `2030-01-01T10:00`
      * @param topK the most neighbours kept for each id
      * @param threshold optional minimum similarity (higher = closer); neighbours below it are dropped
      * @param property the `@VectorIndex` embedding property to search, when the fragment has several

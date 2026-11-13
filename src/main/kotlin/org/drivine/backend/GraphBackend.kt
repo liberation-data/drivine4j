@@ -156,6 +156,13 @@ internal interface GraphBackend {
     fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement
 
     /**
+     * How [nearestAmong]'s ids of [graphClass] are told apart: each given or found id's text as the id the store finds a root
+     * by, so two texts of one id, `2030-01-01T10:00` and `2030-01-01T10:00:00`, are the same id; null for text that finds no
+     * root. A graph engine compares the text itself.
+     */
+    fun nearestAmongIds(graphClass: Class<*>): (String) -> Any? = { it }
+
+    /**
      * The search for the roots whose indexed text meets [text], by the full-text index that covers
      * [property]; null for the only one the fragment declares. [query] filters what the search finds,
      * and the [topK] best that score [threshold] or more come back.

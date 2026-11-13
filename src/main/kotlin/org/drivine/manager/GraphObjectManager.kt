@@ -329,13 +329,18 @@ class GraphObjectManager internal constructor(
         // a property or a store the search refuses is refused alike.
         val statement = backend.nearestAmong(graphClass, property, set, topK, threshold, searchK ?: (topK + 1))
         if (set.isEmpty()) return emptyMap()
+        // The store gives each id as the text it holds, which can be other text of the id than the caller's
+        // (`2030-01-01T10:00:00` for `2030-01-01T10:00`), so each is given back as the caller's text of it.
+        val idOf = backend.nearestAmongIds(graphClass)
+        val given = set.reversed().associateBy(idOf)
+        fun asGiven(id: Any?): String = id.toString().let { given[idOf(it)] ?: it }
         val found = persistenceManager.query(statement.spec().transform(Map::class.java)).associate { row ->
             @Suppress("UNCHECKED_CAST")
-            val near = (row["near"] as List<Map<String, Any?>>).map { Scored(it["id"].toString(), (it["score"] as Number).toDouble()) }
-            row["seed"].toString() to near
+            val near = (row["near"] as List<Map<String, Any?>>).map { Scored(asGiven(it["id"]), (it["score"] as Number).toDouble()) }
+            idOf(row["seed"].toString()) to near
         }
         // In the caller's order, which the store does not keep.
-        return set.filter { it in found }.associateWith { found.getValue(it) }
+        return set.filter { idOf(it) in found }.associateWith { found.getValue(idOf(it)) }
     }
 
     /**
