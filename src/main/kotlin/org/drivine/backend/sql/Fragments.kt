@@ -54,6 +54,9 @@ internal class Fragments(private val compiler: SqlCypherCompiler, private val sc
         return fragment.terms
     }
 
+    /** The value [cypher] gives over the node [row], `n` in it, as the store's JSON holds it: for a statement to group or bind by, never to compare. */
+    fun value(row: String, cypher: String): String = bound(compiler.value(cypher, mapOf(NODE to FragmentVariable.Node(row)), emptyMap()))
+
     private fun bound(fragment: org.drivine.cypher.sql.SqlFragment): String {
         scope.boundAs(fragment.parameters)
         hints += fragment.hints
@@ -79,7 +82,14 @@ internal class Fragments(private val compiler: SqlCypherCompiler, private val sc
                 Triple(written.write(order.expression), written.bindings, order.nulls)
             }
         }
-        val descending = order.direction == OrderDirection.DESC
+        return ordered(row, cypher, order.direction == OrderDirection.DESC, nulls, parameters)
+    }
+
+    /**
+     * The terms an `ORDER BY` sorts the node [row] by [cypher], over `n`, descending where [descending], its nulls first or
+     * last where [nulls] places them and where Cypher does where it is null.
+     */
+    fun ordered(row: String, cypher: String, descending: Boolean, nulls: NullPlacement?, parameters: Map<String, Any?> = emptyMap()): List<String> {
         // Where an order places its nulls, a term of whether the value is null comes first: true sorts after false.
         val placed = when (nulls) {
             NullPlacement.FIRST -> order(row, true, parameters) { cypher.named(it, parameters.keys) + " IS NULL" }
