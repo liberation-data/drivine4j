@@ -79,7 +79,10 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     /** The properties of the relationship of the row [row], with [target] under [field]. */
     protected abstract fun withTarget(row: String, field: String, target: String): String
 
-    /** The property [key] of the row [row], read as [kind]. */
+    /**
+     * The property [key] of the row [row], read as [kind], under the key the store holds it at: a name that begins with
+     * `$` is held as `$$…` (`ValueLayout.escape`).
+     */
     protected abstract fun property(row: String, key: String, kind: SqlKind = SqlKind.TEXT): String
 
     /**

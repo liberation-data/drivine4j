@@ -1,5 +1,6 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
 import org.drivine.connection.CypherCompile
@@ -342,7 +343,7 @@ internal class SqliteSelect(
 
     override fun direction(ascending: Boolean): String = SqliteSql.direction(ascending)
 
-    override fun property(row: String, key: String, kind: SqlKind): String = SqliteSql.property(row, key, kind)
+    override fun property(row: String, key: String, kind: SqlKind): String = SqliteSql.property(row, ValueLayout.escape(key), kind)
 
     override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)
 

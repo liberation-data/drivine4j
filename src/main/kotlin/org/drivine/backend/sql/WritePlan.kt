@@ -1,6 +1,7 @@
 package org.drivine.backend.sql
 
 import org.drivine.annotation.Direction
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.model.Stamps
 import org.drivine.query.RootMode
 
@@ -125,12 +126,15 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     /** The stamps the plan offers the nodes it changes: [mark], and the one each node step carries. */
     val offered: List<String> get() = stamps
 
-    /** The number of the shape a node of [labels], found by the property [key], has: one number for one shape. */
-    fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, key)) { shapes.size }
+    /**
+     * The number of the shape a node of [labels], found by the property [key], has: one number for one shape. The shape
+     * holds the key as the store does ([ValueLayout.escape]).
+     */
+    fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, ValueLayout.escape(key))) { shapes.size }
 
     /**
      * The step that saves the node of [shape] whose id is [id], stored under [key] as the text [storedId]:
-     * found and locked, or made with [labels]. Gives the number later steps know the node by.
+     * found and locked, or made with [labels]. The key is written as the store holds it ([ValueLayout.escape]). Gives the number later steps know the node by.
      *
      * @param index the index the node's stamp is returned under, when it is
      * @param root what the step says about the save's root; null for any other node
@@ -138,7 +142,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun node(shape: Int, key: String, id: Any, storedId: String, labels: List<String>, writes: NodeWrites, index: String? = null, root: RootStep? = null): Int {
         val node = nodes++
         add(
-            StepKind.NODE, "r" to node, "s" to shape, "k" to storedId, "key" to key, "id" to id, "labels" to labels.sorted(), "fresh" to fresh(),
+            StepKind.NODE, "r" to node, "s" to shape, "k" to storedId, "key" to ValueLayout.escape(key), "id" to id, "labels" to labels.sorted(), "fresh" to fresh(),
             "set" to writes.set.takeIf { it.isNotEmpty() }, "unset" to writes.unset.takeIf { it.isNotEmpty() },
             "bags" to writes.bags.map { it.toMap() }.takeIf { it.isNotEmpty() },
             "add" to writes.addLabels.takeIf { it.isNotEmpty() }, "drop" to writes.dropLabels.takeIf { it.isNotEmpty() }, "owned" to writes.owned?.toMap(),

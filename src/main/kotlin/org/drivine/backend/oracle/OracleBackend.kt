@@ -189,7 +189,7 @@ internal class OracleBackend(
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+            listOfNotNull("${OracleSql.property("n", org.drivine.cypher.store.ValueLayout.escape(root.idProperty))} = \$id", OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to OracleSql.key(root.id)),
     )
 

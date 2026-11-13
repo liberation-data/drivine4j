@@ -89,3 +89,14 @@ data class DollarEmbeddedNode(
     @GraphProperty("\$embedding") @VectorIndex(similarity = SimilarityFunction.COSINE)
     val embedding: List<Float>? = null,
 )
+
+/**
+ * A node whose id and a number are stored under names that begin with `$`, which layout 2 holds escaped, as `$$key` and
+ * `$$score` (drivine-cypher-spec#161): a SQL store's own reads of them, a load by id and a sum or a mean, read them there.
+ */
+@NodeFragment(labels = ["DollarScored"])
+data class DollarScoredNode(
+    @NodeId @GraphProperty("\$key") val key: String,
+    val page: String,
+    @GraphProperty("\$score") val score: Long? = null,
+)

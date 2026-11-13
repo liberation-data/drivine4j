@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
 import org.drivine.connection.CypherCompile
@@ -412,7 +413,7 @@ internal class OracleSelect(
 
     override fun withTarget(row: String, field: String, target: String): String = "JSON_TRANSFORM($row.eprops, SET ${path(field)} = $target)"
 
-    override fun property(row: String, key: String, kind: SqlKind): String = OracleSql.property(row, key, kind)
+    override fun property(row: String, key: String, kind: SqlKind): String = OracleSql.property(row, ValueLayout.escape(key), kind)
 
     override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)
 

@@ -102,7 +102,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${PostgresSql.property("n", root.idProperty)} = CAST(\$id AS text)", PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+            listOfNotNull("${PostgresSql.property("n", org.drivine.cypher.store.ValueLayout.escape(root.idProperty))} = CAST(\$id AS text)", PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to PostgresSql.key(root.id)),
     )
 

@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.connection.CypherCompile
 import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
@@ -327,7 +328,7 @@ internal class PostgresSelect(
 
     override fun withTarget(row: String, field: String, target: String): String = "($row.eprops || jsonb_build_object(${PostgresSql.literal(field)}, $target))"
 
-    override fun property(row: String, key: String, kind: SqlKind): String = PostgresSql.property(row, key, kind)
+    override fun property(row: String, key: String, kind: SqlKind): String = PostgresSql.property(row, ValueLayout.escape(key), kind)
 
     override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)
 

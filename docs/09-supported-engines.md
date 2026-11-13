@@ -471,10 +471,11 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   and is not served by that index, so an ordered or keyset-paged load is given no index advice.
 - A range index is two indexes on Oracle: one over the property whatever the label, which a save and
   a load by id find a node by, and one over the property of the label's nodes alone. A `loadAll`, a
-  `count`, a `deleteAll` or a `groups` whose `where` compares an indexed property with a text (`eq`,
-  `gt`, `gte`, `lt`, `lte`) reads the second, and does not test the label on its own: the one index
-  answers both. What else the `where` holds is tested on the nodes it gives. `IN`, `neq`, a test of
-  part of a text, a comparison inside an `or`, and one with a number are read as before. A
+  `count`, a `deleteAll` or a `groups` whose `where` holds an `eq` of an indexed property that every
+  node it gives must pass reads the second, and does not test the label on its own: the one index
+  answers both, and holds each value's kind beside it, so an `eq` with a number is answered as one with
+  a text is. What else the `where` holds is tested on the nodes it gives. `IN`, `neq`, a comparison
+  that orders, a test of part of a text, and an `eq` inside an `or` or a `not` are read as before. A
   uniqueness constraint over one property already has an index over the label's nodes, its unique
   index, which reads the same value: a filter on that property is read through it, and no second
   one is made. A range index made by an earlier version is found, listed and dropped as it is, and
@@ -551,17 +552,12 @@ one field is numbered (`people2_`), as when a condition on `people` is tested be
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
 which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
 of a relationship: the label, escaped as `JSON_SERIALIZE` escapes it, is looked for as one whole label
-among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. Where a range index on the label answers the `where`, the property is read as that
-index reads it and the label is not tested on its own:
-
-```sql
-SELECT n_.doc AS result
-FROM GRAPH_TABLE (drivine
-    MATCH (n_ IS node)
-    COLUMNS (n_.labels, n_.props, n_.doc)) n_
-WHERE CASE WHEN JSON_EXISTS(n_.labels, '$[*]?(@ == "Issue")') THEN JSON_VALUE(n_.props, '$.repoKey') END = $_p0
-  AND JSON_VALUE(n_.props, '$.state') = $_p1
-```
+among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. A `where`, an `orderBy` and a
+seek are the Cypher the query DSL writes for Neo4j, compiled by the shared compiler as one condition or order
+over the row, so they compare as Cypher does whatever kind a value is. Where a range index on the label answers
+an `eq`, the condition reads the property as that index reads it, and the label is not tested on its own. The
+statement then carries the compiler's hint, `SELECT /*+ NO_JSON_TABLE_TRANSFORM */`, in its outermost `SELECT`
+or `DELETE`.
 
 A `@GraphPath` field, and a list read to a depth, is the path's own rows grouped by the node reached,
 so each node is there once however many ways lead to it:
@@ -709,7 +705,7 @@ relationships with it.
   ([#673](https://github.com/liberation-data/drivine4j/issues/673); the compiled read is
   [liberation-data/drivine#680](https://github.com/liberation-data/drivine/issues/680)). Autoanalyze puts it right on its
   own within about a minute with Postgres's default settings; a read planned before then is slow until it ends.
-- Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
+- A temporal value is held as a tagged map of its ISO 8601 text and the key it orders by (`{"$t": "datetime", "v": "…", "s": "…"}`), and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
   from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
@@ -869,7 +865,10 @@ Compiled Cypher needs SQLite 3.53.2. Before it, a compiled statement writes a fl
 comes back as `0.3` (`sqlite-jdbc` 3.53.0.0 and 3.53.1.0 still do); SQLite 3.49 refuses a
 `CALL` subquery that groups by a variable it imports; and a SQLite before 3.47 refuses the `-> -1` that `last()` and a
 negative list index compile to (#565). So on an older `sqlite-jdbc` a Cypher statement is refused, saying which SQLite
-it found and that `sqlite-jdbc` is to be upgraded. Plain SQL, the schema manager and the rest work there as before.
+it found and that `sqlite-jdbc` is to be upgraded. Plain SQL and the schema manager are not refused there, and neither
+are the object managers, but their conditions and orders are the compiler's SQL too, and a least or greatest value of a
+grouped read, and a path's order, are an ordered aggregate (`json_group_array(… ORDER BY …)`), which SQLite before
+3.44 refuses: run them on 3.53.2 or later.
 
 ```yaml
 database:
@@ -943,8 +942,9 @@ There is no migration, as SQLite cannot change a table's key in place.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
-- Temporal values are their ISO 8601 text, and a moment is compared and ordered as nanoseconds since
-  the epoch, whatever offset it was written with. A year before 1 is numbered as Neo4j numbers it: `0000` is 1 BC and
+- A temporal value is held as a tagged map of its ISO 8601 text and the key it orders by, as on Postgres, and a
+  moment is compared and ordered by its instant, whatever offset it was written with; one instant written at two
+  offsets is still two values, which a grouped read's key keeps apart. A year before 1 is numbered as Neo4j numbers it: `0000` is 1 BC and
   `-0044` is 45 BC.
 - SQLite has one writer at a time, and transactions are serializable:
   - A transaction takes the file's write lock as it begins (`BEGIN IMMEDIATE`), so no write in it is
