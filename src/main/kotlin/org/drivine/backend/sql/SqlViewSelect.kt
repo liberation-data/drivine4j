@@ -221,8 +221,9 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     /**
      * The order of a relationship collection by [sort]: the property read as the type of the field
      * that declares it, with the relationship's id to break a tie, so the order is the same each time.
+     * A store whose orders the module compiles orders the property as Cypher does.
      */
-    private fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String {
+    protected open fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String {
         val fragment = if (targetType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(targetType).rootFragment.fragmentType else targetType
         val kind = SqlKind.ofType(runCatching { FragmentModel.from(fragment) }.getOrNull()?.fields?.firstOrNull { it.propertyName == sort.propertyName }?.type)
         return "${property(row, sort.propertyName, kind)} ${direction(sort.ascending)}, $row.eid"

@@ -257,6 +257,10 @@ internal class PostgresSelect(
         return "$groups.${order.column.column} ${order.direction.name}$nulls"
     }
 
+    /** A collection sorted by a property of its nodes, as Cypher orders it, with the relationship's id to break a tie. */
+    override fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String =
+        (fragments.ordered(row, Fragments.property(sort.propertyName), !sort.ascending, null) + "$row.eid").joinToString(", ")
+
     /** What a load or a count asks of a root: its labels, [predicates], and the relationships the view requires. */
     private fun selected(predicates: List<String>): List<String> =
         listOfNotNull(PostgresSql.hasLabels(root, rootLabels())) + predicates + requiredRelationships()
@@ -341,13 +345,14 @@ internal class PostgresSelect(
         val once = scope.row("once")
         val value = element(row, targetType, visits, relationship.fieldName)
         val order = pathOrder(relationship, steps, path)
+        val reached = rows.reached(PostgresRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty())
         val grouped = Query(
             "$path.nid${order?.selected.orEmpty()}",
-            rows.reached(PostgresRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty()),
+            order?.from(reached) ?: reached,
             tail = listOf("GROUP BY $path.nid"),
         ).text()
-        val source = OnceReached(grouped, once, graph.nodes, row)
-        val sort = order?.by(once) ?: "$row.nid"
+        val source = OnceReached(grouped, once, graph.nodes, row, order?.joined(once).orEmpty())
+        val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
             "COALESCE(${Query(arrayOf(value, sort), source).nested()}, $emptyArray)"
         } else {
@@ -357,51 +362,52 @@ internal class PostgresSelect(
 
     /**
      * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
-     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
-     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
-     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
-     * engines order them, every text comes before every number, lowest first; and a node of the hop
-     * that has no value comes last whichever way the path is read.
+     * first node of that hop that leads to it, by the hop's property as Cypher orders it, the lowest or,
+     * read highest first, the highest; a node of the hop that has no value is kept only where none has
+     * one, and comes last whichever way the path is read. The module orders the property, over the hop's
+     * node joined back by its id, as the node reached is ordered by the node it keeps.
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
         val hop = relationship.hops[i]
-        val node = rows.stepNode(steps, i, path)
-        val key = requireNotNull(hop.orderBy)
+        val key = Fragments.property(requireNotNull(hop.orderBy))
+        val step = scope.row("step")
+        val kept = scope.row("kept")
+        fun terms(row: String) = fragments.ordered(row, key, !hop.ascending, NullPlacement.LAST).joinToString(", ")
         return PathOrder(
-            listOf(
-                "order_number" to PostgresSql.number(node, key),
-                "order_text" to "CASE WHEN jsonb_typeof(${PostgresSql.value(node, key)}) = 'string' THEN ${property(node, key)} END",
-            ),
-            hop.ascending,
-            path,
+            listOf(ORDER_NODE to "${rows.stepNode(steps, i, path)}.nid"),
+            path, graph.nodes, step, kept, terms(step), terms(kept),
         )
     }
 
     /**
-     * The order of a path, read from the [columns] of each way to a node and kept for the node by
-     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
-     * has no value; `order_number` is the value of a number, and `order_text` of a text.
+     * The order of a path, by the hop's node each way to a node reached keeps: [columns] give each way's
+     * node of the hop, a row [step] of [nodes] reads it while the ways are grouped by the node reached,
+     * which keeps the first by [stepTerms], and a row [kept] reads that one for the order [keptTerms].
      */
-    private class PathOrder(val columns: List<Pair<String, String>>, private val ascending: Boolean, private val path: String) {
-        private val keep = if (ascending) "MIN" else "MAX"
-        private val direction = if (ascending) "ASC" else "DESC"
+    private class PathOrder(
+        val columns: List<Pair<String, String>>,
+        private val path: String,
+        private val nodes: String,
+        private val step: String,
+        private val kept: String,
+        private val stepTerms: String,
+        private val keptTerms: String,
+    ) {
+        /** The ways to the nodes reached, each joined to its node of the hop. */
+        fun from(reached: RowSource): RowSource = object : RowSource {
+            override val alias: String get() = reached.alias
+            override fun reading(readers: List<String>): String = "${reached.reading(readers)}\nJOIN $nodes $step ON $step.nid = $path.$ORDER_NODE"
+        }
 
-        /** What the ways grouped by the node reached keep of the order. */
-        val selected: String
-            get() = listOf(
-                ", $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL THEN 0 END) AS order_kind",
-                ", $keep($path.order_number) AS order_number",
-                ", $keep($path.order_text) AS order_text",
-            ).joinToString(" ")
+        /** What the ways grouped by the node reached keep of the order: the first node of the hop. */
+        val selected: String get() = ", (array_agg($step.nid ORDER BY $stepTerms))[1] AS $ORDER_NODE"
 
-        /** The order of the row [row]: the nodes with no value last, texts before numbers, then the value, with the node's id last. */
-        fun by(row: String): String = listOf(
-            "$row.order_kind $direction NULLS LAST",
-            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END $direction",
-            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END $direction",
-            "$row.nid",
-        ).joinToString(", ")
+        /** The join of the node of the hop that the grouped row [once] keeps. */
+        fun joined(once: String): String = "\nJOIN $nodes $kept ON $kept.nid = $once.$ORDER_NODE"
+
+        /** The order of the node reached, the row [row]: by the node of the hop it keeps, then by its own id. */
+        fun by(row: String): String = "$keptTerms, $row.nid"
     }
 
     // ----- Scored search -----
@@ -579,6 +585,9 @@ internal class PostgresSelect(
 
         /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
         private const val MEMBERS = "members"
+
+        /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
+        private const val ORDER_NODE = "order_node"
 
         /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
         private const val REPRESENTATIVE = "r"
