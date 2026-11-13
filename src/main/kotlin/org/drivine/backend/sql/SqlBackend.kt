@@ -81,8 +81,8 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     override val orphanDeleteLimit: String? = null
 
     /**
-     * A range index reads a property as text. An order by a number or a moment reads it as that, and is
-     * not served by the index, so no index is advised for an order.
+     * An order sorts as Cypher does, by the module's fragments, which no range index holds: a range index is over a
+     * property's JSON (Postgres) or its class and key (Oracle and SQLite). So no index is advised for an order.
      */
     override val supportsIndexBackedOrdering: Boolean = false
 
