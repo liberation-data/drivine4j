@@ -79,7 +79,7 @@ internal class OracleSelect(
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]): see [hinted]. */
     private val fragments = Fragments(CypherCompile.oracleFragments(graph.name, labelled.leading), scope)
     private val predicates = OraclePredicates(scope, rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
-    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
+    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> OracleSql.keyText(row, ValueLayout.escape(key)) }
 
     // ----- Statements -----
 

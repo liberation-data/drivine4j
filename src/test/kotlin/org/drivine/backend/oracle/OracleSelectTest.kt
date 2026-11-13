@@ -106,7 +106,7 @@ class OracleSelectTest {
     fun `predicates are joined by AND, a line each, and one written by hand is in parentheses, for it may hold an OR`() {
         val select = select(Claim::class.java)
         val statement = select.load(listOf("a = 1", select.written("n.text = 'x' OR n.text = 'y'"))).statement
-        assertTrue(statement.endsWith("WHERE a = 1\n  AND (JSON_VALUE(n_.props, '$.text') = 'x' OR JSON_VALUE(n_.props, '$.text') = 'y')"), statement)
+        assertTrue(statement.endsWith("WHERE a = 1\n  AND (COALESCE(JSON_VALUE(n_.props, '$.text.v'), JSON_VALUE(n_.props, '$.text')) = 'x' OR COALESCE(JSON_VALUE(n_.props, '$.text.v'), JSON_VALUE(n_.props, '$.text')) = 'y')"), statement)
     }
 
     @Test

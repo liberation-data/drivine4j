@@ -158,10 +158,10 @@ class OracleBackendTest {
     fun `a raw where is read as Cypher writes a property, for a load and for a count`() {
         val backend = backend()
 
-        assertContains(backend.loadAll(Claim::class.java, "n.text = 'x'").statement, "(JSON_VALUE(n_.props, '$.text') = 'x')")
+        assertContains(backend.loadAll(Claim::class.java, "n.text = 'x'").statement, "(COALESCE(JSON_VALUE(n_.props, '$.text.v'), JSON_VALUE(n_.props, '$.text')) = 'x')")
         val count = backend.count(Claim::class.java, "n.text = 'x'").statement
         assertTrue(count.startsWith("SELECT COUNT(*)"), count)
-        assertContains(count, "(JSON_VALUE(n_.props, '$.text') = 'x')")
+        assertContains(count, "(COALESCE(JSON_VALUE(n_.props, '$.text.v'), JSON_VALUE(n_.props, '$.text')) = 'x')")
         assertFalse("WHERE (" in backend.loadAll(Claim::class.java, null).statement.substringAfterLast("COLUMNS"))
     }
 
@@ -382,7 +382,7 @@ class OracleBackendTest {
         assertContains(plain, OracleSql.hasId("n_", "id", "JSON(:bN)").replace("'", "''").replace(Regex(""":bN"""), ":b0").substringBefore(" AND "))
         assertContains(plain, "' USING ${List(binds.size) { "\$id" }.joinToString(", ")}; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
-        assertContains(narrowed, " AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')' USING \$id")
+        assertContains(narrowed, " AND (COALESCE(JSON_VALUE(n_.props, ''$.text.v''), JSON_VALUE(n_.props, ''$.text'')) = ''x'')' USING \$id")
     }
 
     @Test
@@ -392,7 +392,7 @@ class OracleBackendTest {
         val some = backend.deleteAll(Claim::class.java, "n.text = 'x'").statement.squashed()
 
         assertContains(all, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, ''$[*]?(@ == \"Claim\")'')'; v_count := SQL%ROWCOUNT;")
-        assertContains(some, "DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, ''$[*]?(@ == \"Claim\")'') AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')';")
+        assertContains(some, "DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, ''$[*]?(@ == \"Claim\")'') AND (COALESCE(JSON_VALUE(n_.props, ''$.text.v''), JSON_VALUE(n_.props, ''$.text'')) = ''x'')';")
     }
 
     @Test

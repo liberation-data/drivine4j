@@ -68,7 +68,7 @@ internal class PostgresSelect(
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
     private val fragments = Fragments(CypherCompile.postgresFragments(graph.name), scope)
     private val predicates = PostgresPredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
-    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
+    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> PostgresSql.keyText(row, ValueLayout.escape(key)) }
 
     // ----- Statements -----
 

@@ -461,6 +461,8 @@ import it with this one. Nothing is migrated. A graph a later Drivine stamped wi
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
   (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`.
+  A property so written is read as text, a date or a moment as its ISO 8601 text, which no range index
+  holds: the query DSL's `where` is answered by one.
 - A save is one statement and checks the stamp, as on the graph engines. Another writer that changes a
   node in SQL should give it a new stamp too: the first sixteen characters of `stamp` for its
   properties or labels, the last sixteen for its relationships. `Stamps.setClause` and
@@ -743,6 +745,8 @@ relationships with it.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
   (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`
   (`issue.props ->> 'state'`). Postgres's `?` operators cannot be used: JDBC takes a `?` for a parameter.
+  A property so written is read as text, a date or a moment as its ISO 8601 text, which no range index
+  holds: the query DSL's `where` is answered by one.
 - A save is a plan of steps, the same plan Oracle's block carries out, which `<graph>_write` carries
   out in one statement: applied whole or not at all, and stamped and checked as on the graph engines.
   A node is found by its id and its labels, then locked by its key and looked at again. Another writer
