@@ -127,6 +127,15 @@ abstract class NodeIdLookupContract {
         assertEquals(LookupDate(day, "second"), manager.load("2024-01-02", LookupDate::class.java))
     }
 
+    @Test
+    fun `one save of a LocalDate id twice makes one node, as the plan keys the nodes it makes by the id as stored`() {
+        val day = LocalDate.of(2024, 1, 3)
+        manager.saveAll(listOf(LookupDate(day, "batch first"), LookupDate(day, "batch second")))
+
+        assertEquals(1L, count("MATCH (n:LookupDate) WHERE n.name IN ['batch first', 'batch second'] RETURN count(n)"))
+        assertEquals(day, manager.load("2024-01-03", LookupDate::class.java)?.id)
+    }
+
     // ----- Load, delete by id and relatedTo, for a Long, a LocalDate and a String id -----
 
     /** Saves [node], joins it to the target, and finds it by [text] through a load, `loadRelated` and a delete. */
@@ -315,6 +324,24 @@ class NodeIdLookupPostgresTest : NodeIdLookupContract() {
 
     private companion object {
         const val GRAPH = "idlookups"
+    }
+
+    /**
+     * A plan of a library that sends a `ref` or a `patch` step only the id's text, as plans before 0.48.1 did, is refused
+     * by name by the store's write function, rather than finding no node and reading as absent (drivine-cypher-spec#245).
+     */
+    @Test
+    fun `a ref or a patch step without the id's JSON is refused by name`() {
+        val shapes = """[{"labels": ["LookupText"], "key": "id"}]"""
+        for (step in listOf("""{"op": "ref", "r": 0, "s": 0, "k": "t1"}""", """{"op": "patch", "s": 0, "k": "t1", "i": "0", "fresh": "f"}""")) {
+            val refused = kotlin.runCatching {
+                store.query(QuerySpecification.withStatement(
+                    "SELECT ${GRAPH}_write(CAST('[$step]' AS jsonb), CAST('$shapes' AS jsonb), 'mark', 'COUNT', NULL)"
+                ))
+            }.exceptionOrNull()
+            val message = generateSequence(refused) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
+            assertTrue("A plan step that finds a node by id carries no id" in message, "$step: $message")
+        }
     }
 }
 
