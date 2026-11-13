@@ -31,6 +31,9 @@ internal class LabelledIndexes(indexes: List<LabelledIndex>) {
     /** A uniqueness constraint's index first: where both are there, it is the one Oracle answers from by a unique scan. */
     private val indexes = indexes.sortedByDescending { it.unique }
 
+    /** Each label and the property an index on it begins with: what the module's compiler reads an equality through. */
+    val leading: Set<Pair<String, String>> get() = indexes.map { it.label to it.properties.first() }.toSet()
+
     /** Whether an index on [label] begins with [key], so that a comparison with [key] alone can be answered by it. */
     fun leads(label: String, key: String): Boolean = indexes.any { it.label == label && it.properties.first() == key }
 
@@ -108,10 +111,7 @@ internal class LabelledIndexCatalog(
     }
 
     private fun fetch(): LabelledIndexes? = try {
-        LabelledIndexes(persistenceManager.indexes.run(query(graph)).mapNotNull { row ->
-            val map = row as? Map<*, *> ?: return@mapNotNull null
-            LabelledIndex(map["label"] as String, (map["properties"] as List<*>).map { it.toString() }, unique = map["kind"] == SchemaItemKind.UNIQUENESS_CONSTRAINT.name)
-        }).also { succeeded = true }
+        read(persistenceManager.indexes.run(query(graph))).also { succeeded = true }
     } catch (e: Exception) {
         // Loud until a read has succeeded: until then no filter is read through an index.
         if (!succeeded) {
@@ -127,6 +127,12 @@ internal class LabelledIndexCatalog(
 
         /** The labelled indexes recorded for [graph] that are there, as the module lists them: see [org.drivine.cypher.store.ddl.OracleDdl.labelledIndexesQuery]. */
         fun query(graph: OracleGraph): String = graph.store.labelledIndexesQuery()
+
+        /** The labelled indexes the rows of [query] list, as a connection's query gives them, a map each. */
+        fun read(rows: List<Any?>): LabelledIndexes = LabelledIndexes(rows.mapNotNull { row ->
+            val map = row as? Map<*, *> ?: return@mapNotNull null
+            LabelledIndex(map["label"] as String, (map["properties"] as List<*>).map { it.toString() }, unique = map["kind"] == SchemaItemKind.UNIQUENESS_CONSTRAINT.name)
+        })
 
         private val counts = ConcurrentHashMap<String, AtomicLong>()
 

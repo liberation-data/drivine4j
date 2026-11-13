@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleIndexedProperties
 import org.drivine.backend.oracle.OracleStoredFunctions
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.sqlite.SqliteGraph
@@ -310,6 +311,7 @@ class JdbcConnection(
                 nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
                 typed = typed,
+                indexedProperties = OracleIndexedProperties.leading(connection, graphName) { sql -> query(QuerySpecification.withStatement(sql)) },
             )
             DatabaseType.SQLITE -> {
                 // So is a SQLite older than 3.53.2, which the application's sqlite-jdbc may be: plain SQL runs on it.

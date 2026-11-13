@@ -33,7 +33,9 @@ internal object CypherCompile {
     /**
      * [cypher] compiled for Oracle, calling the functions the graph's store keeps where the statement needs one and the
      * session may call it, and compiled again to call none where it may not: [nullsEqualStored] and [eraStored] are asked
-     * only of a statement that calls that function. See OracleStoredFunctions.
+     * only of a statement that calls that function. See OracleStoredFunctions. [indexedProperties] are the leading
+     * property of each labelled index the graph's store has, by label, so a key equality is read through its index: compiled
+     * without them, a keyed `MATCH` read every node of the label (#805). See OracleIndexedProperties.
      */
     fun oracle(
         graph: String,
@@ -42,14 +44,15 @@ internal object CypherCompile {
         nullsEqualStored: () -> Boolean,
         eraStored: () -> Boolean,
         typed: Boolean = false,
+        indexedProperties: Set<Pair<String, String>> = emptySet(),
     ): CompiledCypher = refusing {
         val values = drained(parameters)
-        val compiler = OracleCypherCompiler(graph, nullsEqualStored = true, eraStored = true, indexedProperties = emptySet(), encoder = JacksonEncoder)
+        val compiler = OracleCypherCompiler(graph, nullsEqualStored = true, eraStored = true, indexedProperties = indexedProperties, encoder = JacksonEncoder)
         val compiled = compiler.compile(cypher, values, typed)
         // Each is asked of apart: a store an earlier version made may have the one and not the others.
         val nullsEqual = !compiler.callsStoredNullsEqual || nullsEqualStored()
         val era = !compiler.callsStoredEra || eraStored()
-        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, values, typed)
+        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = indexedProperties, encoder = JacksonEncoder).compile(cypher, values, typed)
     }
 
     /**
