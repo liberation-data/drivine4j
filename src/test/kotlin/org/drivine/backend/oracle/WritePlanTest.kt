@@ -122,7 +122,7 @@ class WritePlanTest {
         val plan = WritePlan(blocks)
         val claims = plan.shape(listOf("Claim"), "id")
         val humans = plan.shape(listOf("Human"), "id")
-        val from = plan.ref(claims, "c1")
+        val from = plan.ref(claims, "c1", "c1")
         plan.unlink(from, "MENTIONS", Direction.OUTGOING, humans, listOf("h1", "h2"), keep = false, delete = false, held = emptyList())
 
         assertEquals(mapOf("op" to "unlink", "from" to 0, "type" to "MENTIONS", "dir" to "OUT", "s" to humans, "ids" to listOf("h1", "h2")), steps(plan).last())
@@ -131,7 +131,7 @@ class WritePlanTest {
     @Test
     fun `an unlink that keeps none still names its empty list, for with keep that is every relationship of the field`() {
         val plan = WritePlan(blocks)
-        val from = plan.ref(plan.shape(listOf("Claim"), "id"), "c1")
+        val from = plan.ref(plan.shape(listOf("Claim"), "id"), "c1", "c1")
         val humans = plan.shape(listOf("Human"), "id")
         plan.unlink(from, "MENTIONS", Direction.INCOMING, humans, emptyList(), keep = true, delete = true, held = listOf("h9"))
 
@@ -148,7 +148,7 @@ class WritePlanTest {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val a = plan.node(shape, "id", "a", "a", listOf("Human"), NodeWrites())
-        val b = plan.ref(shape, "b")
+        val b = plan.ref(shape, "b", "b")
         plan.link(a, b, "KNOWS", Direction.UNDIRECTED, emptyMap(), clear = listOf("since"))
         val c = plan.node(shape, "id", "c", "c", listOf("Human"), NodeWrites())
         plan.cut(c, null, "KNOWS", Direction.OUTGOING)

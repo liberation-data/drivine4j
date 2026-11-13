@@ -284,12 +284,12 @@ internal class PostgresSelect(
     override fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
 
     /**
-     * The root whose id is bound as [parameter]. A property is read as text, so the id is compared as
-     * its text: a number bound as one is not compared with a text.
+     * The root whose id is bound as [parameter], as the JSON the node holds it as ([org.drivine.backend.sql.NodeIds]): the
+     * property's JSON is compared with it, which a range index or a uniqueness constraint answers.
      */
     override fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        return "${property(root, idProperty)} = CAST(\$$parameter AS text)"
+        return PostgresSql.hasId(root, ValueLayout.escape(idProperty), "\$$parameter")
     }
 
     /**
@@ -568,13 +568,13 @@ internal class PostgresSelect(
     // ----- A traversal on its own -----
 
     /**
-     * Whether the root is a node that the node of [labels] whose id is bound as [parameter] is related
-     * to by a relationship of [type] in [direction].
+     * Whether the root is a node that the node of [labels] whose id is bound as [parameter], as the JSON the node holds it
+     * as, is related to by a relationship of [type] in [direction].
      */
     override fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
         val from = scope.row("from")
         val row = scope.row("related")
-        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull("${property(from, key)} = CAST(\$$parameter AS text)", PostgresSql.hasLabels(from, labels)))
+        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull(PostgresSql.hasId(from, ValueLayout.escape(key), "\$$parameter"), PostgresSql.hasLabels(from, labels)))
         val reached = rows.reached(PostgresRowSources.Anchor.among(found.text()), listOf(Step(type, direction, emptyList())), row)
         return "$root.nid IN ${Query("$row.nid", reached).nested()}"
     }

@@ -4,7 +4,9 @@ import org.drivine.backend.sql.storedProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.backend.GraphStatement
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.backend.sql.under
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.FullTextIndexResolver
@@ -72,11 +74,14 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${SqliteSql.property("n", org.drivine.cypher.store.ValueLayout.escape(root.idProperty))} = CAST(\$id AS TEXT)", SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to SqliteSql.key(root.id)),
+            listOfNotNull(SqliteSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

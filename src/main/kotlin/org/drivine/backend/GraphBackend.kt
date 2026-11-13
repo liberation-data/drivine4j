@@ -21,11 +21,26 @@ import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
 
-/** A statement in the store's own language, and the values its parameters take. */
-internal class GraphStatement(val statement: String, val bindings: Map<String, Any?> = emptyMap()) {
+/**
+ * A statement in the store's own language, and the values its parameters take.
+ *
+ * @param id what the statement binds the id an object manager gives it as [GraphBackend.ID_PARAM] as, where the store
+ *   holds an id otherwise than it is given: a SQL store finds a node by the JSON it holds its id as (see
+ *   `org.drivine.backend.sql.NodeIds`). Null to bind the id as it is given, as a graph engine's statement does.
+ */
+internal class GraphStatement(
+    val statement: String,
+    val bindings: Map<String, Any?> = emptyMap(),
+    private val id: ((Any?) -> Any?)? = null,
+) {
     /** The specification that runs the statement, with [more] bound beside its own values: an id, where the statement names one. */
-    fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> =
-        QuerySpecification.withStatement(statement).bind(bindings + more)
+    fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> {
+        val given = if (id != null && GraphBackend.ID_PARAM in more) more + (GraphBackend.ID_PARAM to id.invoke(more[GraphBackend.ID_PARAM])) else more
+        return QuerySpecification.withStatement(statement).bind(bindings + given)
+    }
+
+    /** This statement, binding the id it is given as [id] says: see the class. */
+    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id)
 }
 
 /**

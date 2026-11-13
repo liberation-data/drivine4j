@@ -353,11 +353,14 @@ internal class OracleSelect(
     /** Whether the statement holds a predicate written by hand, which may read any column of the root, named any way SQL allows. */
     private var handWritten = false
 
-    /** The root whose id is bound as [parameter]. */
+    /**
+     * The root whose id is bound as [parameter], as the JSON the node holds it as ([org.drivine.backend.sql.NodeIds]): the
+     * property's class and key are compared with the id's, which the index over the property of every node answers.
+     */
     override fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         scope.narrowed = true
-        return "${property(root, idProperty)} = \$$parameter"
+        return OracleSql.hasId(root, ValueLayout.escape(idProperty), "JSON(\$$parameter)")
     }
 
     /**
@@ -675,8 +678,8 @@ internal class OracleSelect(
     }
 
     /**
-     * Whether the root is a node that the node of [labels] whose id is bound as [parameter] is related
-     * to by a relationship of [type] in [direction].
+     * Whether the root is a node that the node of [labels] whose id is bound as [parameter], as the JSON the node holds it
+     * as, is related to by a relationship of [type] in [direction].
      *
      * The node is found first, from the node table, and the relationship is tested against it. Tested
      * in the pattern, the id is all that is read of that node when it has no label, and Oracle Free
@@ -688,7 +691,7 @@ internal class OracleSelect(
         scope.narrowed = true
         val from = scope.row("from")
         val row = scope.row("related")
-        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull("${property(from, key)} = \$$parameter", hasLabels(from, labels)))
+        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull(OracleSql.hasId(from, ValueLayout.escape(key), "JSON(\$$parameter)"), hasLabels(from, labels)))
         val reached = rows.reached(from, listOf(Step(type, direction, emptyList())), row)
         return "$root.nid IN ${Query("$row.nid", reached, listOf("$row.src IN ${found.nested()}")).nested()}"
     }

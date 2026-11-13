@@ -168,6 +168,13 @@ fun ObjectMapper.toMap(value: Any): Map<String, Any?> {
 }
 
 /**
+ * [value], one field's value, as [toMap] writes a field: a temporal value as its native `java.time` type, a `UUID` and an
+ * enum as their text, and anything else as Jackson converts it. So a value given on its own, such as an id a node is found
+ * by, is the value a save writes for the same field.
+ */
+internal fun ObjectMapper.toPropertyValue(value: Any): Any? = temporalWriteMapper().convertValue(value, Any::class.java)
+
+/**
  * Converts a single value to a Neo4j-compatible format.
  *
  * This function handles type conversions for values that Neo4j's driver doesn't support directly:

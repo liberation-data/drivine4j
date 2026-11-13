@@ -26,9 +26,15 @@ import org.drivine.query.StampWrite
  * gained by saving the nodes of a field together.
  *
  * @param blocks how the store carries out a plan
- * @param key an id as the text the store reads its property back as, which a step finds a node by
+ * @param key an id as the text a step keys its node by within the plan, and the store reads a target's stored id back as
+ * @param ids an id as a node of a class holds it: an id read from a digest, as text, is made the `@NodeId` field's type
  */
-internal class SqlSavePlan(private val blocks: WriteBlocks, private val objectMapper: ObjectMapper, private val key: (Any) -> String) {
+internal class SqlSavePlan(
+    private val blocks: WriteBlocks,
+    private val objectMapper: ObjectMapper,
+    private val key: (Any) -> String,
+    private val ids: NodeIds,
+) {
 
     /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
@@ -87,11 +93,16 @@ internal class SqlSavePlan(private val blocks: WriteBlocks, private val objectMa
         override fun viewRoot(fragment: Any, model: FragmentModel, depth: Int, replaces: Boolean, before: JsonNode?, after: JsonNode?): Int =
             if (depth == 0) rootNode(fragment, model, replaces, before) else relatedNode(fragment, model, before, after)
 
-        /** The ids are compared as keys: a number with the text the store reads a JSON number back as. */
+        /**
+         * The ids are compared as keys: a number with the text the store reads a JSON number back as, and a temporal value
+         * with its tag's text. An id read from the digest, as text, is first made the target's `@NodeId` type, as a save
+         * writes it, so a temporal id is keyed by its tag's text and not by the text Jackson wrote it as.
+         */
         override fun removal(field: Field, root: Int, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>) {
+            val keyOf = { id: Any -> key(this@SqlSavePlan.ids.of(field.target.model, id) ?: id) }
             plan.unlink(
                 root, field.relationship.type, field.relationship.direction, plan.shape(field.target.model.labels, field.target.idProperty),
-                ids.map(key), keep, delete = removedTargets == RemovedTargets.DELETE_UNREFERENCED, held = heldIds.map(key),
+                ids.map(keyOf), keep, delete = removedTargets == RemovedTargets.DELETE_UNREFERENCED, held = heldIds.map(keyOf),
             )
         }
 

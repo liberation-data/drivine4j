@@ -1,7 +1,9 @@
 package org.drivine.backend.postgres
 
 import org.drivine.backend.sql.storedProperty
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.CollectionSortSpec
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
@@ -99,11 +101,14 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${PostgresSql.property("n", org.drivine.cypher.store.ValueLayout.escape(root.idProperty))} = CAST(\$id AS text)", PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to PostgresSql.key(root.id)),
+            listOfNotNull(PostgresSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

@@ -1,7 +1,9 @@
 package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.storedProperty
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
@@ -186,11 +188,14 @@ internal class OracleBackend(
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${OracleSql.property("n", org.drivine.cypher.store.ValueLayout.escape(root.idProperty))} = \$id", OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to OracleSql.key(root.id)),
+            listOfNotNull(OracleSql.hasId("n", ValueLayout.escape(root.idProperty), "JSON(\$id)"), OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

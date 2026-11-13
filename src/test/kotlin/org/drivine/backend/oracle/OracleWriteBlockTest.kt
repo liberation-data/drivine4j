@@ -11,6 +11,7 @@ import org.drivine.query.SqlParameters
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -26,23 +27,23 @@ class OracleWriteBlockTest {
     // Steps
 
     @Test
-    fun `a ref step finds a node of a shape by its stored id, and gives it the next number`() {
+    fun `a ref step finds a node of a shape by its id, keyed by its text, and gives it the next number`() {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val node = plan.node(shape, "id", "ada", "ada", listOf("Human"), NodeWrites())
-        val ref = plan.ref(shape, "bob")
+        val ref = plan.ref(shape, "bob", "bob")
 
         assertEquals(0, node)
         assertEquals(1, ref)
-        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to shape, "k" to "bob"), steps(plan).last())
+        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to shape, "k" to "bob", "id" to "bob"), steps(plan).last())
     }
 
     @Test
     fun `a link step says always only when it makes one more relationship`() {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
-        val a = plan.ref(shape, "a")
-        val b = plan.ref(shape, "b")
+        val a = plan.ref(shape, "a", "a")
+        val b = plan.ref(shape, "b", "b")
         plan.link(a, b, "KNOWS", Direction.OUTGOING, emptyMap())
         plan.link(a, b, "KNOWS", Direction.OUTGOING, mapOf("since" to 2020), always = true)
 
@@ -55,8 +56,8 @@ class OracleWriteBlockTest {
     fun `a cut step names the other node only when there is one`() {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
-        val a = plan.ref(shape, "a")
-        val b = plan.ref(shape, "b")
+        val a = plan.ref(shape, "a", "a")
+        val b = plan.ref(shape, "b", "b")
         plan.cut(a, b, "KNOWS", Direction.INCOMING)
         plan.cut(a, null, "KNOWS", Direction.UNDIRECTED)
 
@@ -82,7 +83,7 @@ class OracleWriteBlockTest {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         plan.node(shape, "id", "a", "a", listOf("Human"), NodeWrites())
-        plan.ref(shape, "b")
+        plan.ref(shape, "b", "b")
         plan.node(shape, "id", "c", "c", listOf("Human"), NodeWrites())
 
         val fresh = steps(plan).filter { it["op"] == "node" }.map { it["fresh"] }
@@ -117,16 +118,18 @@ class OracleWriteBlockTest {
     fun `a patch step names a node by its shape and stored id, with the index it is returned under, and takes no number`() {
         val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
-        plan.patch(shape, "7", "3", set = mapOf("name" to "Ada"), unset = listOf("note"))
-        plan.patch(shape, "8", "4", set = emptyMap(), unset = emptyList())
-        val ref = plan.ref(shape, "b")
+        plan.patch(shape, "7", 7L, "3", set = mapOf("name" to "Ada"), unset = listOf("note"))
+        plan.patch(shape, "8", null, "4", set = emptyMap(), unset = emptyList())
+        val ref = plan.ref(shape, "b", "b")
 
         val (full, bare) = steps(plan)
         assertEquals(
-            mapOf("op" to "patch", "s" to shape, "k" to "7", "i" to "3", "fresh" to full["fresh"], "set" to mapOf("name" to "Ada"), "unset" to listOf("note")),
+            mapOf("op" to "patch", "s" to shape, "k" to "7", "id" to 7L, "i" to "3", "fresh" to full["fresh"], "set" to mapOf("name" to "Ada"), "unset" to listOf("note")),
             full,
         )
-        assertEquals(setOf("op", "s", "k", "i", "fresh"), bare.keys)
+        // An id that finds no node is still named, as JSON's null: a step that finds a node always names its id.
+        assertEquals(setOf("op", "s", "k", "i", "fresh", "id"), bare.keys)
+        assertNull(bare["id"])
         assertEquals(0, ref)
         assertEquals(listOf(plan.mark, full["fresh"], bare["fresh"]), plan.offered)
     }

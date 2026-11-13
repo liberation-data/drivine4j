@@ -133,8 +133,9 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, ValueLayout.escape(key))) { shapes.size }
 
     /**
-     * The step that saves the node of [shape] whose id is [id], stored under [key] as the text [storedId]:
-     * found and locked, or made with [labels]. The key is written as the store holds it ([ValueLayout.escape]). Gives the number later steps know the node by.
+     * The step that saves the node of [shape] whose id is [id], stored under [key], and keyed within the plan by the text
+     * [storedId]: found by [id] as the node holds it, as JSON (see [NodeIds]), and locked, or made with [labels]. The key
+     * is written as the store holds it ([ValueLayout.escape]). Gives the number later steps know the node by.
      *
      * @param index the index the node's stamp is returned under, when it is
      * @param root what the step says about the save's root; null for any other node
@@ -155,10 +156,14 @@ internal class WritePlan(private val blocks: WriteBlocks) {
         return node
     }
 
-    /** The step that finds the node of [shape] whose stored id is [storedId], which must be there. Gives the number later steps know it by. */
-    fun ref(shape: Int, storedId: String): Int {
+    /**
+     * The step that finds the node of [shape] whose id is [id], as a save writes it, keyed within the plan by the text
+     * [storedId], which must be there. A null [id] finds no node: it is sent as JSON's null, as a step that finds a node
+     * always names its id. Gives the number later steps know it by.
+     */
+    fun ref(shape: Int, storedId: String, id: Any?): Int {
         val node = nodes++
-        add(StepKind.REF, "r" to node, "s" to shape, "k" to storedId)
+        add(StepKind.REF, "r" to node, "s" to shape, "k" to storedId, keep = listOf("id" to id))
         return node
     }
 
@@ -188,15 +193,17 @@ internal class WritePlan(private val blocks: WriteBlocks) {
         add(StepKind.CUT, "from" to from, "to" to to, "type" to type, "dir" to direction.code)
 
     /**
-     * The step that writes [set] to the node of [shape] whose stored id is [storedId], and removes
-     * [unset] from it, if the node is there. It makes no node: one that is not there is left out of
-     * what the block hands back. The node is returned under [index], with whether the step changed it.
-     * It writes the lowercased copy of each of [lower] on a node it changed, as a `node` step does.
+     * The step that writes [set] to the node of [shape] whose id is [id], as a save writes it, keyed by the text
+     * [storedId], and removes [unset] from it, if the node is there. A null [id] finds no node, and is sent as JSON's null,
+     * as a step that finds a node always names its id. It makes no node: one that
+     * is not there is left out of what the block hands back. The node is returned under [index], with whether the step
+     * changed it. It writes the lowercased copy of each of [lower] on a node it changed, as a `node` step does.
      */
-    fun patch(shape: Int, storedId: String, index: String, set: Map<String, Any?>, unset: List<String>, lower: List<String> = emptyList()) =
+    fun patch(shape: Int, storedId: String, id: Any?, index: String, set: Map<String, Any?>, unset: List<String>, lower: List<String> = emptyList()) =
         add(
             StepKind.PATCH, "s" to shape, "k" to storedId, "i" to index, "fresh" to fresh(),
             "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "lower" to lower.takeIf { it.isNotEmpty() },
+            keep = listOf("id" to id),
         )
 
     /**
@@ -216,10 +223,10 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     /**
      * Adds a step of [kind] with [fields]. A field that is null is left out: the block reads an absent
      * field as null. One that is empty is not, unless its method leaves it out: an empty list of ids
-     * says something of an `unlink` that keeps.
+     * says something of an `unlink` that keeps. Each of [keep] is written even where it is null.
      */
-    private fun add(kind: StepKind, vararg fields: Pair<String, Any?>) {
-        steps += (listOf("op" to kind.op) + fields.filter { it.second != null }).toMap()
+    private fun add(kind: StepKind, vararg fields: Pair<String, Any?>, keep: List<Pair<String, Any?>> = emptyList()) {
+        steps += (listOf("op" to kind.op) + fields.filter { it.second != null } + keep).toMap()
     }
 
     companion object {

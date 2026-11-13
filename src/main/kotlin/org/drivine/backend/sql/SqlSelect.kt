@@ -38,7 +38,10 @@ internal interface SqlSelect {
     /** A predicate written by hand, in Cypher's terms, as the store's SQL. */
     fun written(predicate: String): String
 
-    /** The predicate that selects the root whose id is the parameter [parameter]. */
+    /**
+     * The predicate that selects the root whose id is the parameter [parameter], bound as the JSON text the node holds it
+     * as ([NodeIds.json]), or null for an id that finds no node.
+     */
     fun hasId(parameter: String): String
 
     /** The query a `patch` step asks of the node it found, when there are [conditions] for it to meet; null when there are none. */
@@ -66,6 +69,9 @@ internal interface SqlSelect {
     /** The steps a cascade follows, each once. */
     fun cascadeSteps(): List<Step>
 
-    /** The predicate that selects the roots related by [type] in [direction] to the node of [labels] whose [key] is the parameter [parameter]. */
+    /**
+     * The predicate that selects the roots related by [type] in [direction] to the node of [labels] whose [key] is the
+     * parameter [parameter], bound as [hasId]'s is.
+     */
     fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String
 }

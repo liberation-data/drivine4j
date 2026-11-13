@@ -146,9 +146,12 @@ class OracleBackendTest {
     fun `a load by id finds the root by the id bound under the name every backend binds it by`() {
         val statement = backend().load(Claim::class.java)
 
-        assertContains(statement.statement, "JSON_VALUE(n_.props, '$.id') = \$${GraphBackend.ID_PARAM}")
-        assertEquals(listOf(GraphBackend.ID_PARAM), SqlParameters.positional(statement.statement).names)
+        // Compared by its class and key, as the index over the property of every node is made over them.
+        assertContains(statement.statement, OracleSql.hasId("n_", "id", "JSON(\$${GraphBackend.ID_PARAM})"))
+        assertEquals(setOf(GraphBackend.ID_PARAM), SqlParameters.positional(statement.statement).names.toSet())
         assertTrue(statement.bindings.isEmpty(), "the id is the caller's to bind")
+        // Bound as the JSON the node holds it as.
+        assertEquals(mapOf<String, Any?>(GraphBackend.ID_PARAM to "\"c1\""), statement.spec(mapOf(GraphBackend.ID_PARAM to "c1")).parameters)
     }
 
     @Test
@@ -371,9 +374,15 @@ class OracleBackendTest {
         val plain = backend.delete(Claim::class.java, null, CascadeType.NONE).statement.squashed()
         val narrowed = backend.delete(Claim::class.java, "n.text = 'x'", CascadeType.NONE).statement.squashed()
 
-        assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR('','' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), '']''), ''['') || '',\"'', '',\"Claim\",\"'') > 0 AND JSON_VALUE(n_.props, ''$.id'') = :b0' USING \$id; v_count := SQL%ROWCOUNT;")
+        assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR('','' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), '']''), ''['') || '',\"'', '',\"Claim\",\"'') > 0 AND ")
+        // The id compared by its class and key, as the index over the property of every node is made over them.
+        // Each place the comparison reads the id is a bind of its own, each given the id.
+        val binds = Regex("""JSON\(:b(\d+)\)""").findAll(plain).map { it.groupValues[1].toInt() }.toList()
+        assertEquals((0 until binds.size).toList(), binds)
+        assertContains(plain, OracleSql.hasId("n_", "id", "JSON(:bN)").replace("'", "''").replace(Regex(""":bN"""), ":b0").substringBefore(" AND "))
+        assertContains(plain, "' USING ${List(binds.size) { "\$id" }.joinToString(", ")}; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
-        assertContains(narrowed, "AND JSON_VALUE(n_.props, ''$.id'') = :b0 AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')' USING \$id;")
+        assertContains(narrowed, " AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')' USING \$id")
     }
 
     @Test
@@ -493,7 +502,7 @@ class OracleBackendTest {
         assertEquals(500, first.size)
         assertEquals((0..500).map { "h${500 - it}" }, (first + second).map { it["k"] })
         // The node `h0` was given last, and is returned under the index it was given at.
-        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500")), second.single())
+        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500"), "id" to "h0"), second.single())
         assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
         assertContains(specs[0].statement!!.text, "JSON_TABLE(v_result")
     }
@@ -519,9 +528,10 @@ class OracleBackendTest {
 
         val step = steps(patch.bindings).single()
         assertEquals(
-            mapOf("op" to "patch", "s" to 0, "k" to "7", "i" to "0", "fresh" to step["fresh"], "set" to mapOf("text" to "two"), "unset" to listOf("note")),
+            mapOf("op" to "patch", "s" to 0, "k" to "7", "i" to "0", "fresh" to step["fresh"], "set" to mapOf("text" to "two"), "unset" to listOf("note"), "id" to 7.0),
             step,
         )
+        // A String id is the value given, 7.0, which no node of a String id holds, as on the graph engines.
         // The predicate's values are the block's own parameters, handed to the query in the order it names them.
         val text = "_cy_param_claim_text_0"
         val name = "_cy_param_people_name_1"
@@ -570,15 +580,15 @@ class OracleBackendTest {
     }
 
     @Test
-    fun `the stamp a node carries is read by its id as stored text and every label of the root`() {
+    fun `the stamp a node carries is read by its id's JSON and every label of the root`() {
         val found = backend().foundStamp(StampWrite(Gauge::class.java, 3.0, "Gauge:Hot", "id", null))
 
         assertEquals(
-            "SELECT n.stamp FROM g_node n WHERE JSON_VALUE(n.props, '$.id') = \$id" +
+            "SELECT n.stamp FROM g_node n WHERE ${OracleSql.hasId("n", "id", "JSON(\$id)")}" +
                 " AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Gauge\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0",
             found.statement,
         )
-        assertEquals(mapOf<String, Any?>("id" to "3"), found.bindings)
+        assertEquals(mapOf<String, Any?>("id" to "3.0"), found.bindings)
     }
 
     @Test
@@ -615,8 +625,8 @@ class OracleBackendTest {
         )
 
         val (from, to, link) = steps(statement.bindings)
-        assertEquals(mapOf("op" to "ref", "r" to 0, "s" to 0, "k" to "c1"), from)
-        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to 1, "k" to "h1"), to)
+        assertEquals(mapOf("op" to "ref", "r" to 0, "s" to 0, "k" to "c1", "id" to "c1"), from)
+        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to 1, "k" to "h1", "id" to "h1"), to)
         assertEquals(mapOf("op" to "link", "from" to 0, "to" to 1, "type" to "MENTIONS", "dir" to "OUT", "props" to mapOf("page" to 3)), link)
         // The labels the ref adds are part of how the node is found.
         assertContains(statement.statement, "\"Vip\"")
@@ -686,11 +696,12 @@ class OracleBackendTest {
         val statement = backend().related(NodeRef(Gauge::class.java, 3.0, setOf("Hot")), "READ_BY", Direction.INCOMING, Human::class.java)
         val sql = statement.statement.squashed()
 
-        assertEquals(mapOf<String, Any?>("_fromId" to "3"), statement.bindings)
+        // The id as the JSON the node holds it as: a double, which Oracle compares as the number it is.
+        assertEquals(mapOf<String, Any?>("_fromId" to "3.0"), statement.bindings)
         assertContains(sql, "<-[e IS edge WHERE e.type = 'READ_BY']-")
         assertContains(sql, "\"Gauge\"")
         assertContains(sql, "\"Hot\"")
-        assertContains(sql, "= \$_fromId")
+        assertContains(sql, "JSON(\$_fromId)")
         // The target's label is tested on the node found, not used to find it.
         assertContains(sql, "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0")
     }
