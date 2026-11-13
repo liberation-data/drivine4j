@@ -89,6 +89,33 @@ private const val SEED = """
     CREATE (n1)-[:TAGGED]->(t1)
 """
 
+private const val MIXED_KINDS = """
+    CREATE (a:Ranked {id: 'a', rank: 2})
+    CREATE (b:Ranked {id: 'b', rank: 'x'})
+    CREATE (c:Ranked {id: 'c'})
+    CREATE (d:Ranked {id: 'd', rank: 10})
+    CREATE (e:Ranked {id: 'e', rank: 'y'})
+"""
+
+/**
+ * A property no field declares, holding texts and numbers, ordered as Neo4j orders it: every text before every
+ * number ascending, the nulls last ascending and first descending. Placing the nulls moves the rows with no
+ * value, and leaves the texts and the numbers where the order without a placement has them. [MIXED_KINDS] is seeded.
+ */
+private fun verifyMixedKinds(gom: StatelessGraphObjectManager) {
+    val rank = PropertyReference<Any>("n", "rank")
+    fun ids(spec: GraphQuerySpec<RankedNodeQueryDsl>.() -> Unit) =
+        gom.loadAll(RankedNode::class.java, RankedNodeQueryDsl.INSTANCE, spec).map { it.id }
+
+    assertEquals(listOf("c", "d", "a", "e", "b"), ids { orderBy { rank.desc() } })
+    assertEquals(listOf("d", "a", "e", "b", "c"), ids { orderBy { rank.desc().nullsLast() } })
+    assertEquals(listOf("c", "d", "a", "e", "b"), ids { orderBy { rank.desc().nullsFirst() } })
+
+    assertEquals(listOf("b", "e", "a", "d", "c"), ids { orderBy { rank.asc() } })
+    assertEquals(listOf("c", "b", "e", "a", "d"), ids { orderBy { rank.asc().nullsFirst() } })
+    assertEquals(listOf("b", "e", "a", "d", "c"), ids { orderBy { rank.asc().nullsLast() } })
+}
+
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) =
     StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, registry)
 
@@ -126,6 +153,13 @@ class NullPlacementNeo4jTest {
 
     @Test
     fun `nulls go where the order says on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `a property of texts and numbers is ordered texts first, and placing its nulls moves only them`() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(MIXED_KINDS.trimIndent()))
+        verifyMixedKinds(buildGom(pm, SubtypeRegistry()))
+    }
 }
 
 class NullPlacementFalkorDbTest {
@@ -257,36 +291,12 @@ class NullPlacementPostgresTest {
     @Test
     fun `nulls go where the order says on Postgres`() = verify(buildGom(pm, registry))
 
-    /**
-     * A property no field declares is ordered as a number and then as text, and a row with a text
-     * is null as a number. Placing the nulls moves the rows with no value, and leaves the texts and
-     * the numbers where the order without a placement has them.
-     */
+    /** As Neo4j orders it: see [verifyMixedKinds]. */
     @Test
-    fun `placing the nulls of a property no field declares moves the rows without a value, and no others`() {
+    fun `a property of texts and numbers is ordered texts first, and placing its nulls moves only them`() {
         PostgresTestDatabase.clear(pm)
-        PostgresTestDatabase.seed(
-            pm,
-            """
-            CREATE (a:Ranked {id: 'a', rank: 2})
-            CREATE (b:Ranked {id: 'b', rank: 'x'})
-            CREATE (c:Ranked {id: 'c'})
-            CREATE (d:Ranked {id: 'd', rank: 10})
-            CREATE (e:Ranked {id: 'e', rank: 'y'})
-            """,
-        )
-        val gom = buildGom(pm, registry)
-        val rank = PropertyReference<Any>("n", "rank")
-        fun ids(spec: GraphQuerySpec<RankedNodeQueryDsl>.() -> Unit) =
-            gom.loadAll(RankedNode::class.java, RankedNodeQueryDsl.INSTANCE, spec).map { it.id }
-
-        assertEquals(listOf("c", "e", "b", "d", "a"), ids { orderBy { rank.desc() } })
-        assertEquals(listOf("e", "b", "d", "a", "c"), ids { orderBy { rank.desc().nullsLast() } })
-        assertEquals(listOf("c", "e", "b", "d", "a"), ids { orderBy { rank.desc().nullsFirst() } })
-
-        assertEquals(listOf("a", "d", "b", "e", "c"), ids { orderBy { rank.asc() } })
-        assertEquals(listOf("c", "a", "d", "b", "e"), ids { orderBy { rank.asc().nullsFirst() } })
-        assertEquals(listOf("a", "d", "b", "e", "c"), ids { orderBy { rank.asc().nullsLast() } })
+        PostgresTestDatabase.seed(pm, MIXED_KINDS)
+        verifyMixedKinds(buildGom(pm, registry))
     }
 }
 
