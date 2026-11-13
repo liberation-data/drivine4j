@@ -341,8 +341,6 @@ internal class SqliteSelect(
     /** SQLite has no `FETCH FIRST`. */
     override fun first(order: String): String = "ORDER BY $order LIMIT 1"
 
-    override fun direction(ascending: Boolean): String = SqliteSql.direction(ascending)
-
     override fun property(row: String, key: String, kind: SqlKind): String = SqliteSql.property(row, ValueLayout.escape(key), kind)
 
     override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)

@@ -328,7 +328,7 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     fun `a statement compiled without the graph's indexes compares the property as JSON alone, and tests the labels through their index`() {
         // A property with no index of its own: its labels tested by their text, the node table would be read whole (#638).
         val sql = OracleCypherCompiler(GRAPH).compile("UNWIND \$rows AS row MATCH (a:Person {id: row.s}) RETURN a.k", mapOf("rows" to listOf(mapOf("s" to "p1")))).sql
-        assertTrue(org.drivine.backend.oracle.OracleSql.unique("n2", "Person", listOf("id"), "id") !in sql, sql)
+        assertTrue(org.drivine.backend.oracle.OracleSql.labelled("n2", "Person", "id") !in sql, sql)
         assertTrue("CARDINALITY" !in sql, sql)
         assertTrue("JSON_EXISTS(n2.labels, '\$[*]?(@ == \"Person\")')" in sql, sql)
     }

@@ -62,15 +62,6 @@ internal class GroupQuery private constructor(val source: FragmentModel, val spe
 
         private val COLLECTIONS = listOf(Collection::class.java, Map::class.java)
 
-        /**
-         * What follows a key's column in the name of a column a backend returns beside it: whether the
-         * key's text is stored empty, for a store that reads `""` as no value. Oracle returns one.
-         */
-        const val EMPTY = "e"
-
-        /** As [EMPTY]: the key's value where it is stored as a number, for a store that reads a key no field declares as text. */
-        const val NUMBER = "n"
-
         /** What a `having` compares an aggregate with a value by. */
         private val COMPARISONS = setOf(
             ComparisonOperator.EQUALS, ComparisonOperator.NOT_EQUALS, ComparisonOperator.GREATER_THAN,

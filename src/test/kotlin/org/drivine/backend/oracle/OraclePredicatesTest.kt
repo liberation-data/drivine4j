@@ -309,4 +309,11 @@ class OraclePredicatesTest {
         assertTrue(sql.startsWith("($root AND EXISTS ("), sql)
         assertFalse(sql.contains("n_."), sql)
     }
+
+    @Test
+    fun `a property is named to the module quoted, a backtick in it doubled, and an empty name, which the graph engines' Cypher refuses, is refused before anything is compiled`() {
+        assertEquals("n.`odd``name`", org.drivine.backend.sql.Fragments.property("odd`name"))
+        val refused = assertThrows<IllegalArgumentException> { org.drivine.backend.sql.Fragments.property("") }
+        assertTrue("empty" in refused.message!!, refused.message)
+    }
 }

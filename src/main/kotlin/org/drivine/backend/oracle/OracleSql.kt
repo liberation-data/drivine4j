@@ -66,14 +66,6 @@ internal object OracleSql {
     /** As [Shared.labelled], which the compiler calls too. */
     fun labelled(alias: String, label: String, key: String): String = Shared.labelled(alias, label, key)
 
-    /**
-     * The property [key] of a node of [label] as text, for a uniqueness constraint's index. Layout 2 (drivine-cypher-spec#161)
-     * keys that index by the value's class and key, which drivine4j's own reads don't compare yet: until they do, read as the
-     * labelled form reads it, the same text, not through the unique index. LAYOUT-2 ADOPTION (PR in progress): replaced
-     * when the object manager's predicates compare as the compiler does.
-     */
-    fun unique(alias: String, label: String, @Suppress("UNUSED_PARAMETER") keys: List<String>, key: String): String = Shared.labelled(alias, label, key)
-
     /** As [Shared.quoted], which the compiler calls too. */
     internal fun quoted(text: String): String = Shared.quoted(text)
 

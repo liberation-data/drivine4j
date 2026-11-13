@@ -174,12 +174,6 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     protected open fun first(order: String): String = "ORDER BY $order FETCH FIRST 1 ROWS ONLY"
 
     /**
-     * The direction of a term of an order, with its nulls where Cypher puts them: last when ascending,
-     * first when descending. Oracle and Postgres put them there unasked; a store that does not says so.
-     */
-    protected open fun direction(ascending: Boolean): String = if (ascending) "ASC" else "DESC"
-
-    /**
      * A field of a view that holds views of the same class: each level holds the next, down to
      * [max] levels, where the field is empty. A sort on the field sorts every level, so the tree is
      * in one order.
@@ -222,15 +216,10 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         RelationshipConditions.sortOf(collectionSorts, relationship, parentField)
 
     /**
-     * The order of a relationship collection by [sort]: the property read as the type of the field
-     * that declares it, with the relationship's id to break a tie, so the order is the same each time.
-     * A store whose orders the module compiles orders the property as Cypher does.
+     * The order of a relationship collection by [sort], the target nodes' rows named [row]: the property as Cypher orders
+     * it, with the relationship's id to break a tie, so the order is the same each time.
      */
-    protected open fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String {
-        val fragment = if (targetType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(targetType).rootFragment.fragmentType else targetType
-        val kind = SqlKind.ofType(runCatching { FragmentModel.from(fragment) }.getOrNull()?.fields?.firstOrNull { it.propertyName == sort.propertyName }?.type)
-        return "${property(row, sort.propertyName, kind)} ${direction(sort.ascending)}, $row.eid"
-    }
+    protected abstract fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String
 
     /** A relationship field that is one object and may not be null leaves out the roots that have none. */
     protected fun requiredRelationships(): List<String> =

@@ -262,9 +262,9 @@ order, is what drivine4j wrote.
 |---|---|
 | Vector indexes | A table of embeddings (`VECTOR(n, FLOAT32)`) beside the nodes, kept in step by a trigger and filled from the nodes there are, with `CREATE VECTOR INDEX … ORGANIZATION NEIGHBOR PARTITIONS` over it. An embedding of another dimension leaves its node out of the index |
 | Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
-| Range indexes | Two indexes. `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text, over the property whatever the label, so two labels that index a property of one name share it: a save and a load by id find a node by it. And `CREATE INDEX … (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == "Label")') THEN JSON_VALUE(n.props, '$.p') END)`, over the property of the label's nodes alone, which a filter on the label's nodes reads. Composite supported |
+| Range indexes | Two indexes, each over a property's class and key as the store layout holds a value, so a value is equal only to one of its kind: a temporal value's kind and sort key, a number's exact digits, any other value as `JSON_VALUE` reads it. One is over the property whatever the label, so two labels that index a property of one name share it. The other, `CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == "Label")') THEN … END` around each, is over the property of the label's nodes alone, which an `eq` on the label's nodes reads. Composite supported |
 | TEXT indexes | Refused: Neo4j's alone |
-| Uniqueness | A unique index over the property for the nodes that carry the label, with the range index a node is found by. A node that lacks one of the properties is not constrained. Over one property, the unique index stands for the range index's index over the label's nodes, and none is made beside it |
+| Uniqueness | A unique index over the property's class and key for the nodes that carry the label, with the range index over the property whatever the label. A node that lacks one of the properties is not constrained. Over one property, the unique index stands for the range index's index over the label's nodes, and none is made beside it |
 | Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
 The store's identity (`DrivineStore`) and the schema marker are nodes of the graph on Oracle too, and the graph's tables are made for them when they are the first thing asked of a new graph.
@@ -275,7 +275,7 @@ The store's identity (`DrivineStore`) and the schema marker are nodes of the gra
 |---|---|
 | Vector indexes | `CREATE INDEX … USING hnsw ((CAST(CAST(props -> 'p' AS text) AS vector(n))) vector_cosine_ops) WHERE labels @> '["Label"]' AND …`, over the embeddings of the label's nodes that are of its size (`vector_l2_ops` for Euclidean). Needs pgvector, which the index makes where it may |
 | Full-text indexes | `CREATE INDEX … USING gin ((lower(…)) gin_trgm_ops) WHERE labels @> '["Label"]'`, over the text a search reads, with `pg_trgm`, which the index makes where it may |
-| Range indexes | `CREATE INDEX … ((props ->> 'p')) WHERE labels @> '["Label"]'`, one per label. Composite supported |
+| Range indexes | `CREATE INDEX … ((props -> 'p')) WHERE labels @> '["Label"]'`, one per label: the property's JSON, whose equality is Cypher's, so a text equals only a text, a number a number of the same value, and a temporal value only the same value. Composite supported |
 | TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | The same index made `UNIQUE`, which also finds a node, so no range index is made beside it. A node that lacks one of the properties is not constrained |
 | Item names | Recorded; the index's name is derived from the graph, label and properties, and Postgres keeps it in lower case. A drop drops the index the record names |
