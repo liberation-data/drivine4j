@@ -516,6 +516,13 @@ table:
       parameters: {"a": 36}
       rows: [["p1", "p3"], ["p2", "p4", "p5"], ["p1", "p3", "p5"], ["p1", "p3"]]
       digests: {"postgres": ["8f886d6eec5e961c", "ad8fc1ab2dfbbc5f", "8f376f75d1b18389", "526b8fe4cab1c766"], "oracle": ["3450f754cf9f743a", "bed5c0a1b7eb614b", "624342f43045eb5b", "4e7c3419b2526a17"], "sqlite": ["509542754deb1fe3", "aa85264e57769973", "eda0f6527b3e0133", "a9ad22f6f628473a"]}
+    - form: "EXISTS { (n)-[:KNOWS]-(:Person)-[:KNOWS]-(m:Person) }"
+      rows: [["p1", "p3"], ["p2", "p4", "p5"], ["p1", "p3", "p5"], ["p1", "p3"]]
+      digests: {"postgres": ["d50b6f7529949eca", "6ca9b1fb1e2ba8c8", "7d52435da6106538", "eede1868773529c3"], "oracle": ["e62f49b4c1eb71cd", "366f2e4b7edc4508", "582f7017fc2ab23e", "c5c139882c37840c"], "sqlite": ["001f9d8ac533d02a", "00c82ac161a0ab59", "2cdcc803e4416580", "3e921716a7d50e74"]}
+    - form: "EXISTS { MATCH (n)-[:KNOWS]->(m:Person) WHERE m.age > $a }"
+      parameters: {"a": 40}
+      rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
+      digests: {"postgres": ["6d682601f76ded31", "5a31033a57457fb7", "fa2faad2f519c0dd", "ea0d7a13accaedd0"], "oracle": ["144ee5e33d05c245", "a98a25dd0e77773b", "5df46d83a1f93974", "7147321c5eef54a0"], "sqlite": ["c41506566969a275", "00596115936ac10f", "361cbc3951d424d1", "1ab9e9350bc54c7b"]}
   orders:
     - value: "n.age"
       rows: [["p1", "p3", "p2", "p4", "p5"], ["p4", "p5", "p2", "p1", "p3"]]
@@ -547,3 +554,6 @@ table:
     - value: "n.seen"
       rows: [["p1", "p2", "p3", "p4", "p5"], ["p4", "p5", "p3", "p2", "p1"]]
       digests: {"postgres": ["04ce4a345625547f", "5a894a94e7148cba"], "oracle": ["09789449b05c645b", "49a737c91f5cf77a"], "sqlite": ["42cb3022c410a1bc", "010b60d23adf0148"]}
+    - value: "n.age IS NULL"
+      rows: [["p1", "p2", "p3", "p4", "p5"], ["p4", "p5", "p1", "p2", "p3"]]
+      digests: {"postgres": ["68bcb20536da24ec", "250d1760581ae74c"], "oracle": ["aa00ff3aa40f901e", "9b09d1e31c16b082"], "sqlite": ["b279d93296119c8a", "61d904f79b891237"]}
