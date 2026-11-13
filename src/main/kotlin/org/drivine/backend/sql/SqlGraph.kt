@@ -99,6 +99,14 @@ internal abstract class SqlGraph(val name: String) {
         layout(connection, write = false)
     }
 
+    /** Whether the graph's table of nodes is there, which every layout makes first: asked of the store's catalog. */
+    private fun tablesThere(connection: Connection): Boolean =
+        connection.query(QuerySpecification.withStatement(tablesMade)).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
+            .let { (it as Number).toLong() > 0 }
+
+    /** A query of the store's catalog whose one value is how many of the graph's table of nodes it holds, none or one. */
+    protected abstract val tablesMade: String
+
     /**
      * The store layout's verdict on the graph (liberation-data/drivine-cypher-spec#161), asked of the compiler's module
      * ([StoreLayout.verdict]) by the graph's stamps, whether it holds a node other than Drivine's own, and the objects an
@@ -108,14 +116,6 @@ internal abstract class SqlGraph(val name: String) {
      * whose stamp a clear deleted (`MATCH (n) DETACH DELETE n` deletes Drivine's own nodes too) is stamped again. Any other
      * graph is refused with [StoreLayoutException], on every connection.
      */
-    /** Whether the graph's table of nodes is there, which every layout makes first: asked of the store's catalog. */
-    private fun tablesThere(connection: Connection): Boolean =
-        connection.query(QuerySpecification.withStatement(tablesMade)).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
-            .let { (it as Number).toLong() > 0 }
-
-    /** A query of the store's catalog whose one value is how many of the graph's table of nodes it holds, none or one. */
-    protected abstract val tablesMade: String
-
     private fun layout(connection: Connection, write: Boolean) {
         val statements = StoreStampStatements.of(store)
         fun rows(statement: String, parameters: Map<String, Any?> = emptyMap()) =

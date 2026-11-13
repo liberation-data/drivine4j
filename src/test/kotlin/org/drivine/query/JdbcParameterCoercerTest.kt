@@ -51,6 +51,11 @@ class JdbcParameterCoercerTest {
     @Test
     fun `a map's key that begins with a dollar is written with one more, so it is never taken for a tag's`() {
         assertEquals("""{"${'$'}${'$'}t":"date","v":1}""", coerced(mapOf("${'$'}t" to "date", "v" to 1)))
+        // At any depth, in a list in a map, and one that begins with two is written with three.
+        assertEquals(
+            """{"a":[{"${'$'}${'$'}k":{"${'$'}${'$'}${'$'}j":1}}]}""",
+            coerced(mapOf("a" to listOf(mapOf("${'$'}k" to mapOf("${'$'}${'$'}j" to 1))))),
+        )
     }
 
     @Test

@@ -18,6 +18,13 @@ import org.drivine.backend.sqlite.SqliteGraph
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
+import org.springframework.jdbc.datasource.ConnectionHolder
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.nio.file.Path
 import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -68,6 +75,26 @@ abstract class StoreLayoutContract {
         assertEquals(listOf<Any>("Grace"), cypher(next, "MATCH (p:Person) RETURN p.name"))
         val stamped = stamps(next, name).single() as Map<*, *>
         assertEquals(2L, (stamped["layout"] as Number).toLong(), "stamped again in this layout: $stamped")
+    }
+
+    @Test
+    fun `an empty graph stamped with an earlier layout is stamped with this one on the next first connection, and used`() {
+        val name = "cy_layout_restamp"
+        drop(name)
+        // A graph stamped as the clear above leaves one, its value then deleted and its stamp given the earlier layout.
+        val first = manager(name)
+        cypher(first, "CREATE (:Person {name: 'Grace'})")
+        cypher(first, "MATCH (n) DETACH DELETE n")
+        cypher(first, "CREATE (:Person {name: 'Grace'})")
+        val stamped = manager(name)
+        cypher(stamped, "MATCH (p:Person) DETACH DELETE p")
+        cypher(stamped, "MATCH (s:DrivineStore) SET s.layout = 1")
+        assertEquals(1L, ((stamps(stamped, name).single() as Map<*, *>)["layout"] as Number).toLong())
+        val next = manager(name)
+        val restamped = stamps(next, name).single() as Map<*, *>
+        assertEquals(2L, (restamped["layout"] as Number).toLong(), "stamped again in this layout: $restamped")
+        cypher(next, "CREATE (:Person {name: 'Ada'})")
+        assertEquals(listOf<Any>("Ada"), cypher(next, "MATCH (p:Person) RETURN p.name"))
     }
 
     /**
@@ -134,6 +161,44 @@ class OracleStoreLayoutTest : StoreLayoutContract() {
 }
 
 class SqliteStoreLayoutTest : StoreLayoutContract() {
+
+    /**
+     * A Spring transaction's connection is only looked at, as its statements are the transaction's (#395, #713): a graph of
+     * an earlier layout is refused there too, on every connection, and nothing is made in it.
+     */
+    @Test
+    fun `a Spring transaction's connection to a graph of an earlier layout is refused, and nothing is made in it`(@TempDir directory: Path) {
+        val name = "spring_earlier"
+        val source = org.sqlite.SQLiteDataSource().apply { url = "jdbc:sqlite:${directory.resolve("earlier.db")}" }
+        source.connection.use { c ->
+            c.createStatement().use { s ->
+                s.execute("CREATE TABLE ${name}_node (nid INTEGER PRIMARY KEY AUTOINCREMENT, labels TEXT NOT NULL, props TEXT NOT NULL, stamp TEXT)")
+                s.execute("INSERT INTO ${name}_node (labels, props) VALUES ('[\"Person\"]', '{\"name\": \"Ada\"}')")
+            }
+        }
+        val held = source.connection.apply { autoCommit = false }
+        val provider = JdbcConnectionProvider("earlier", DatabaseType.SQLITE, TransactionAwareDataSourceProxy(source), graphName = name)
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            repeat(2) { assertEquals(name, assertFailsWith<StoreLayoutException> { provider.connect() }.graph) }
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+            held.close()
+        }
+        source.connection.use { c ->
+            c.createStatement().use { s ->
+                s.executeQuery("SELECT group_concat(name) FROM (SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name)").use {
+                    it.next()
+                    assertEquals("${name}_node", it.getString(1))
+                }
+            }
+        }
+    }
+
     override val store = "sqlite"
     override fun run(statement: String) = SqliteTestDatabase.run(statement)
     override fun tableThere(table: String) =

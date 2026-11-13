@@ -1256,15 +1256,11 @@ The key comes back as the node itself, hydrated as a load of its fragment hydrat
 - A path walks a relationship once: two hops of one type are two relationships, so a path there and back does not lead a node to itself. Two path keys may be reached over the same relationship.
 - A read of keys alone gives each key once.
 - An aggregate's filter never takes a node out of its group. A group none of whose nodes meet it is still returned, with 0.
-- `sum`, `avg`, `min` and `max` skip a node with no value. Over no values `sum` is 0 and the others are null.
+- `sum`, `avg`, `min` and `max` skip a node with no value. Over no values `sum` is 0 and the others are null. An empty text is a value, and the lowest text.
+- A text is ordered by its characters' code points, as Cypher orders it, on Oracle too whatever the session's `NLS_SORT`: `"B"` comes before `"a"`.
 - Ties are broken by the key. Every order ends with the keys it left out, ascending, so a top 5 is the same five on every engine.
 - A key is the value as it is stored, and is ordered, and `min`, `max` and `having` compare it, as Cypher does: a number and a text are two keys, never equal, and every text comes before every number. One instant written at two offsets is two keys, ordered by the instant and then by the offset.
 - Every value is bound as a parameter, and each condition has its own.
-
-Where Oracle differs, and stays different:
-
-- `min` and `max` of a text skip a value stored as `""`, which Oracle reads as no value. A key does not: `""` is a key of its own everywhere.
-- A text key is ordered by the session's `NLS_SORT`, which is binary unless it has been set otherwise.
 
 On Oracle and Postgres, a `sum` or an `avg` of a `Double` is worked out in exact decimal, so it is more accurate: 0.1 + 0.2 is 0.3 there, where doubles give 0.30000000000000004. It differs from a graph engine's only around its 16th significant digit, and is still a `Double`.
 
