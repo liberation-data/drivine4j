@@ -433,86 +433,81 @@ internal class OracleSelect(
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
         val order = pathOrder(relationship, steps, path)
-        val once = Derived(
-            Query(
-                "$path.src, $path.nid, ANY_VALUE($path.doc) AS doc${order?.selected.orEmpty()}",
-                rows.reached(parent, steps, path, extra = order?.columns.orEmpty()),
-                tail = listOf("GROUP BY $path.src, $path.nid"),
-            ).text(),
+        val reached = rows.reached(parent, steps, path, extra = order?.columns.orEmpty())
+        val once = order?.once(reached, row) ?: Derived(
+            Query("$path.src, $path.nid, ANY_VALUE($path.doc) AS doc", reached, tail = listOf("GROUP BY $path.src, $path.nid")).text(),
             row,
         )
-        val reached = listOf("$row.src = $parent.nid")
         val sort = order?.by(row) ?: "$row.nid"
+        val joined = "$row.src = $parent.nid"
         return if (relationship.isCollection) {
-            "COALESCE(${Query(arrayOf(value, sort), once, reached).nested()}, $emptyArray)"
+            "COALESCE(${Query(arrayOf(value, sort), once, listOf(joined)).nested()}, $emptyArray)"
         } else {
-            Query(value, once, reached, listOf(first(sort))).nested()
+            Query(value, once, listOf(joined), listOf(first(sort))).nested()
         }
     }
 
     /**
      * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
-     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
-     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
-     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
-     * engines order them, every text comes before every number, lowest first; and a node of the hop
-     * that has no value comes last whichever way the path is read. `JSON_VALUE` reads a stored `""`
-     * as null, so whether the node holds one is read on its own: it is a text, and the lowest.
+     * first node of that hop that leads to it, by the hop's property as Cypher orders it, the lowest or,
+     * read highest first, the highest; a node of the hop that has no value is kept only where none has
+     * one, and comes last whichever way the path is read. The module orders the property ([Fragments]).
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
         val hop = relationship.hops[i]
         val node = rows.stepNode(steps, i, path)
-        val key = requireNotNull(hop.orderBy)
+        val key = Fragments.property(requireNotNull(hop.orderBy))
+        val way = scope.row("way")
+        val ranked = scope.row("ranked")
+        val kept = scope.row("kept")
+        fun terms(row: String) = fragments.ordered(row, key, !hop.ascending, NullPlacement.LAST).joinToString(", ")
         return PathOrder(
-            listOf(
-                GraphTable.Column("order_number", SqlKind.NUMBER.read("$node.props", path(key, ".numberOnly()"))),
-                GraphTable.Column("order_text", property(node, key, SqlKind.TEXT)),
-                GraphTable.Column("order_empty", "CASE WHEN JSON_EXISTS($node.props, ${path(key, "?(@ == \"\")")}) THEN 1 END"),
-            ),
-            hop.ascending,
-            path,
+            listOf(GraphTable.Column(ORDER_NODE, "$node.nid"), GraphTable.Column(ORDER_PROPS, "$node.props")),
+            path, graph.nodes, way, ranked, kept, terms(way), terms(kept),
         )
     }
 
     /**
-     * The order of a path, read from the [columns] of each way to a node and kept for the node by
-     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
-     * has no value; `order_number` is the value of a number, and `order_text` of a text other than
-     * `""`. Each is ordered only where the node's value is of its kind, so a node kept as a text is
-     * not ordered by a number that also leads to it.
+     * The order of a path, by the hop's node each way to a node reached keeps. [columns] give each way's node of the hop
+     * and its properties; a row [way] reads those properties as its own, and a window over the ways to each node reached
+     * gives the first hop node by [wayTerms], as `FIRST_VALUE` and not `KEEP (DENSE_RANK FIRST …)`, which ends Oracle's
+     * (23.26) server process ordered by a value of JSON (`keep-dense-rank-repro.sql`). The node reached is then grouped
+     * once, its kept hop node joined back as [kept] by the keys Oracle keeps ([OracleSql.sameKey]), and ordered by
+     * [keptTerms].
      */
-    private class PathOrder(val columns: List<GraphTable.Column>, private val ascending: Boolean, private val path: String) {
-        private val keep = if (ascending) "MIN" else "MAX"
-        private val direction = if (ascending) "ASC" else "DESC"
-
-        /**
-         * What the rows grouped by the node reached keep of the order. Read lowest first, a node that
-         * a `""` leads to keeps no text, which orders first among the texts; read highest first, it
-         * keeps the highest text, and none only where every text that leads to it is `""`.
-         */
-        val selected: String
-            get() {
-                val text = "CASE WHEN $path.order_number IS NULL THEN $path.order_text END"
-                val kept = if (ascending) "CASE WHEN MAX($path.order_empty) IS NULL THEN MIN($text) END" else "MAX($text)"
-                return """
-                    , $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL OR $path.order_empty = 1 THEN 0 END) AS order_kind
-                    , $keep($path.order_number) AS order_number
-                    , $kept AS order_text
-                """.trimIndent().lines().joinToString(" ")
+    private class PathOrder(
+        val columns: List<GraphTable.Column>,
+        private val path: String,
+        private val nodes: String,
+        private val way: String,
+        private val ranked: String,
+        private val kept: String,
+        private val wayTerms: String,
+        private val keptTerms: String,
+    ) {
+        /** The nodes [reached] gives once each, as rows named [row], each with the hop node it keeps joined as [kept]. */
+        fun once(reached: GraphTable, row: String): RowSource {
+            val ways = Query("$path.src, $path.nid, $path.doc, $path.$ORDER_NODE, $path.$ORDER_PROPS AS props", reached).text()
+            val windowed = Query(
+                "$way.src, $way.nid, $way.doc, FIRST_VALUE($way.$ORDER_NODE) OVER (PARTITION BY $way.src, $way.nid ORDER BY $wayTerms) AS $ORDER_NODE",
+                Derived(ways, way),
+            ).text()
+            val grouped = Query(
+                "$ranked.src, $ranked.nid, ANY_VALUE($ranked.doc) AS doc, MIN($ranked.$ORDER_NODE) AS $ORDER_NODE",
+                Derived(windowed, ranked),
+                tail = listOf("GROUP BY $ranked.src, $ranked.nid"),
+            ).text()
+            val source = Derived(grouped, row)
+            return object : RowSource {
+                override val alias: String get() = row
+                override fun reading(readers: List<String>): String =
+                    "${source.reading(readers)}\nJOIN $nodes $kept ON ${OracleSql.sameKey("$kept.nid", "$row.$ORDER_NODE")}"
             }
+        }
 
-        /**
-         * The order of the row [row]: the nodes with no value last, texts before numbers, then the
-         * value, with the node's id last so that equal values are read in one order. A text with no
-         * value is `""`, the lowest text.
-         */
-        fun by(row: String): String = listOf(
-            "$row.order_kind $direction NULLS LAST",
-            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END $direction",
-            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END $direction NULLS ${if (ascending) "FIRST" else "LAST"}",
-            "$row.nid",
-        ).joinToString(", ")
+        /** The order of the node reached, the row [row]: by the hop node it keeps, then by its own id. */
+        fun by(row: String): String = "$keptTerms, $row.nid"
     }
 
     // ----- Scored search -----
@@ -708,6 +703,10 @@ internal class OracleSelect(
 
         /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
         private const val REPRESENTATIVE = "r"
+
+        /** The columns of a path's ways that hold a way's node of the hop the path is ordered by, and its properties. */
+        private const val ORDER_NODE = "order_node"
+        private const val ORDER_PROPS = "order_props"
 
         /** What follows a least or greatest value's name for the column of the window that gives its node: see [groups]. */
         private const val FIRST = "_first"
