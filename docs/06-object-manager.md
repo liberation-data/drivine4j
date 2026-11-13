@@ -281,6 +281,8 @@ fun getPerson(uuid: String): PersonCareer? {
 }
 ```
 
+On Oracle, Postgres and SQLite the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id finds its node the same way. The graph engines compare the text as it is given.
+
 #### Count
 
 `count` returns a `Long` and is **consistent with `loadAll`** — it counts exactly the objects `loadAll` would return for the same type and filter. There are three overloads, mirroring `loadAll`/`deleteAll`:

@@ -37,6 +37,29 @@ private enum class Shade { LIGHT, DARK }
 @NodeFragment(labels = ["IdsShade"])
 private data class ShadeIdNode(@NodeId val id: Shade, val name: String)
 
+/** An id held as a type of the caller's own, which a save writes as its value. */
+@JvmInline
+value class IdKey(val value: String)
+
+/** An id held as a number of the caller's own. */
+@JvmInline
+value class IdNumber(val value: Long)
+
+@NodeFragment(labels = ["IdsKey"])
+private data class KeyIdNode(@NodeId val id: IdKey, val name: String)
+
+@NodeFragment(labels = ["IdsNumberKey"])
+private data class NumberKeyIdNode(@NodeId val id: IdNumber, val name: String)
+
+@NodeFragment(labels = ["IdsNullable"])
+private data class NullableIdNode(@NodeId val id: Long?, val name: String)
+
+@NodeFragment(labels = ["IdsRenamed"])
+private data class RenamedIdNode(@NodeId @org.drivine.annotation.GraphProperty("key") val id: Long, val name: String)
+
+@NodeFragment(labels = ["IdsDouble"])
+private data class DoubleIdNode(@NodeId val id: Double, val name: String)
+
 /**
  * An id given to find a node by on a SQL store is made the JSON the node holds it as, by the paths a save writes the
  * `@NodeId` field by: the text a load or a delete by id gives is read as the field's type first, and text that is no value
@@ -112,5 +135,17 @@ class NodeIdsTest {
         assertNull(NodeIds.temporalText("2024-01-02"))
         assertEquals("7", PostgresSql.key(7L))
         assertEquals("3", OracleSql.key(3.0))
+    }
+
+    @Test
+    fun `an id of a value class, a nullable, a renamed, a Double or a Java field is read as a save writes it`() {
+        assertEquals(saved(KeyIdNode(IdKey("k1"), "a")), json<KeyIdNode>("k1"))
+        assertEquals(saved(KeyIdNode(IdKey("k1"), "a")), json<KeyIdNode>(IdKey("k1")))
+        assertEquals(saved(NumberKeyIdNode(IdNumber(5), "a")), json<NumberKeyIdNode>("5"))
+        assertEquals("5", json<NullableIdNode>("5"))
+        assertEquals(saved(RenamedIdNode(5, "a")), json<RenamedIdNode>("5"))
+        assertEquals(saved(DoubleIdNode(3.0, "a")), json<DoubleIdNode>("3"))
+        assertEquals(saved(DoubleIdNode(3.0, "a")), json<DoubleIdNode>(3))
+        assertEquals("\"m1\"", json<org.drivine.schema.JavaMembershipNode>("m1"))
     }
 }
