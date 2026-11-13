@@ -50,14 +50,14 @@ class SchemaVersionStoreTest {
     }
 
     @Test
-    fun `the Cypher stamp is merged on its key and set only when it is made, and every stamp is read as a map, the oldest first`() {
+    fun `the Cypher stamp is merged on its key and set only when it is made, and every stamp is read as a map with its layout, the oldest first`() {
         val statements = CypherStoreStamp("DrivineStore", "key")
 
         assertEquals(
             "MERGE (s:DrivineStore { key: \$key })\nON CREATE SET s.storeId = \$storeId,\n              s.assignedAt = \$assignedAt,\n              s.engine = \$engine",
             statements.assignIfAbsent,
         )
-        assertEquals("MATCH (s:DrivineStore)\nRETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp\nORDER BY s.assignedAt, s.storeId", statements.readStamps)
+        assertEquals("MATCH (s:DrivineStore)\nRETURN { id: s.storeId, assignedAt: s.assignedAt, layout: s.layout } AS stamp\nORDER BY s.assignedAt, s.storeId", statements.readStamps)
         assertNull(statements.prepare)
     }
 

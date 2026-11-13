@@ -2,8 +2,7 @@ package org.drivine.backend.sqlite
 
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
-import org.drivine.cypher.sql.SqliteCypherCompiler
-import org.drivine.connection.JacksonEncoder
+import org.drivine.connection.CypherCompile
 import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
@@ -69,7 +68,7 @@ internal class SqliteSelect(
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = SqliteRowSources(graph, scope)
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
-    private val fragments = Fragments(SqliteCypherCompiler(graph.name, JacksonEncoder), scope)
+    private val fragments = Fragments(CypherCompile.sqliteFragments(graph.name), scope)
     private val predicates = SqlitePredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 

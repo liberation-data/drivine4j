@@ -1,7 +1,9 @@
 package org.drivine.sqlite
 
 import org.drivine.DrivineException
+import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.cypher.sql.SqliteCypherCompiler
+import org.drivine.cypher.store.SqliteSql as StoreSql
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -37,6 +39,19 @@ class SqliteSchemaManagementTest {
 
     private fun label(alias: String, label: String) = org.drivine.backend.sqlite.SqliteSql.hasLabel(alias, label)
 
+    /**
+     * The test that the node `n`'s property [key] is the text [value], as a statement compares a value a range index holds:
+     * the property's class and then its key, as the module reads them ([StoreSql.indexClass], [StoreSql.indexKey]).
+     */
+    private fun lookup(key: String, value: String) =
+        "${StoreSql.indexClass("n.props", StoreSql.path(key))} = 'text' AND ${StoreSql.indexKey("n.props", StoreSql.path(key))} = '$value'"
+
+    /** The name of the range index on [label]'s [properties] over the graph `schema`. */
+    private fun rangeIndex(label: String, vararg properties: String) = SqliteGraph("schema").objectName("ix", listOf(label) + properties)
+
+    /** Whether [plan] finds rows by a search of the index [name], not a scan. */
+    private fun searches(plan: String, name: String) = Regex("""SEARCH \w+ USING INDEX $name\b""").containsMatchIn(plan)
+
     @Test
     fun `range index - ensure creates, ensure again matches, and a lookup as a statement writes it uses it`() {
         val spec = RangeIndexSpec("Proposition", "contextId")
@@ -44,8 +59,8 @@ class SqliteSchemaManagementTest {
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
         assertEquals("Proposition_contextId_range", manager.indexes.find(spec)?.name)
-        val plan = plan("SELECT nid FROM schema_node n WHERE ${property("n", "contextId")} = 'x' AND ${label("n", "Proposition")}")
-        assertTrue("USING INDEX schema_ix_PropositioncontextId" in plan, plan)
+        val plan = plan("SELECT nid FROM schema_node n WHERE ${lookup("contextId", "x")} AND ${label("n", "Proposition")}")
+        assertTrue(searches(plan, rangeIndex("Proposition", "contextId")), plan)
     }
 
     @Test
@@ -53,13 +68,13 @@ class SqliteSchemaManagementTest {
         manager.indexes.ensure(RangeIndexSpec("Verdict", "contextId"))
         manager.indexes.ensure(RangeIndexSpec("Verdict", "settled"))
         listOf(
-            Triple("MATCH (p:Verdict {contextId: 'x'}) RETURN p", emptyMap(), "schema_ix_VerdictcontextId"),
-            Triple("MATCH (p:Verdict) WHERE p.contextId = \$c RETURN p", mapOf("c" to "x"), "schema_ix_VerdictcontextId"),
-            Triple("MATCH (p:Verdict) WHERE p.settled = true RETURN p", emptyMap<String, Any?>(), "schema_ix_Verdictsettled"),
+            Triple("MATCH (p:Verdict {contextId: 'x'}) RETURN p", emptyMap(), rangeIndex("Verdict", "contextId")),
+            Triple("MATCH (p:Verdict) WHERE p.contextId = \$c RETURN p", mapOf("c" to "x"), rangeIndex("Verdict", "contextId")),
+            Triple("MATCH (p:Verdict) WHERE p.settled = true RETURN p", emptyMap<String, Any?>(), rangeIndex("Verdict", "settled")),
         ).forEach { (cypher, parameters, index) ->
             val compiled = SqliteCypherCompiler("schema").compile(cypher, parameters)
             val plan = manager.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters)).joinToString("\n")
-            assertTrue("USING INDEX $index" in plan, "$cypher: $plan")
+            assertTrue(searches(plan, index), "$cypher: $plan")
         }
     }
 
@@ -72,20 +87,20 @@ class SqliteSchemaManagementTest {
         assertTrue(manager.indexes.drop(RangeIndexSpec("Article", "slug")))
         assertNull(manager.indexes.find(RangeIndexSpec("Article", "slug")))
         assertNotNull(manager.indexes.find(RangeIndexSpec("Page", "slug")), "the other label's index is its own")
-        val page = plan("SELECT nid FROM schema_node n WHERE ${property("n", "slug")} = 'x' AND ${label("n", "Page")}")
-        assertTrue("schema_ix_Pageslug" in page, page)
+        val page = plan("SELECT nid FROM schema_node n WHERE ${lookup("slug", "x")} AND ${label("n", "Page")}")
+        assertTrue(searches(page, rangeIndex("Page", "slug")), page)
     }
 
     @Test
     fun `range index - a dotted property name is one property, and a node of several labels is found through either's index`() {
         assertTrue(manager.indexes.ensure(RangeIndexSpec("BagNode", "metadata.context")) is EnsureResult.Created)
-        val bagged = plan("SELECT nid FROM schema_node n WHERE ${property("n", "metadata.context")} = 'x' AND ${label("n", "BagNode")}")
-        assertTrue("schema_ix_BagNodemetadatacontext" in bagged, bagged)
+        val bagged = plan("SELECT nid FROM schema_node n WHERE ${lookup("metadata.context", "x")} AND ${label("n", "BagNode")}")
+        assertTrue(searches(bagged, rangeIndex("BagNode", "metadata.context")), bagged)
 
         manager.indexes.ensure(RangeIndexSpec("Author", "handle"))
         // What the write function asks to find a node of the shape [Author, Person] by its handle.
-        val found = plan("SELECT n.nid FROM schema_node n WHERE ${property("n", "handle")} = 'x' AND ${label("n", "Author")} AND ${label("n", "Person")} ORDER BY n.nid LIMIT 1")
-        assertTrue("schema_ix_Authorhandle" in found, found)
+        val found = plan("SELECT n.nid FROM schema_node n WHERE ${lookup("handle", "x")} AND ${label("n", "Author")} AND ${label("n", "Person")} ORDER BY n.nid LIMIT 1")
+        assertTrue(searches(found, rangeIndex("Author", "handle")), found)
     }
 
     @Test
@@ -168,7 +183,7 @@ class SqliteSchemaManagementTest {
     fun `an index dropped by hand is not listed, and is made again when asked for`() {
         val spec = RangeIndexSpec("Note", "topic")
         manager.indexes.ensure(spec)
-        manager.indexes.run("DROP INDEX schema_ix_Notetopic_${Integer.toHexString("Note\u0000topic".hashCode())}")
+        manager.indexes.run("DROP INDEX ${rangeIndex("Note", "topic")}")
 
         assertNull(manager.indexes.find(spec))
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)

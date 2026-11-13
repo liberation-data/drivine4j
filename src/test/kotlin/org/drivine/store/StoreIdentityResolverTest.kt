@@ -7,6 +7,7 @@ import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sql.DdlContention
 import org.drivine.connection.DatabaseType
+import org.drivine.cypher.store.marker.StoreLayout
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.FalkorDbSchemaGrammar
@@ -57,9 +58,11 @@ class StoreIdentityResolverTest {
         assertEquals(StoreIdentity("store-1", DatabaseType.NEPTUNE, "2026-01-01T00:00:00Z"), identity)
         val written = store.executed.single()
         assertEquals(cypherStamp.assignIfAbsent, written.statement)
-        assertEquals(setOf("key", "storeId", "assignedAt", "engine"), written.parameters.keys)
+        assertEquals(setOf("key", "storeId", "assignedAt", "engine", "layout"), written.parameters.keys)
         assertEquals("singleton", written.parameters["key"])
         assertEquals("NEPTUNE", written.parameters["engine"])
+        // A graph engine holds its own values, so its stamp records the graph engines' layout.
+        assertEquals(StoreLayout.current("NEPTUNE"), written.parameters["layout"])
         // What is offered is a new id and this moment: the store keeps them only if it had no stamp.
         UUID.fromString(written.parameters["storeId"] as String)
         assertTrue(!Instant.parse(written.parameters["assignedAt"] as String).isBefore(before.minusSeconds(1)))

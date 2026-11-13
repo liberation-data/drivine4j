@@ -20,18 +20,18 @@ class PostgresGraphTest {
 
     @Test
     fun `a graph's name is as long as leaves room within Postgres's 63 for what it names`() {
-        // A table beside the nodes, `_v__` and an 8-digit hash with nothing readable, and its `_t` trigger.
-        val longest = "g" + "x".repeat(48)
+        // A table beside the nodes, `_uq2__` (a kind and the layout) and an 8-digit hash with nothing readable, and its `_t` trigger.
+        val longest = "g" + "x".repeat(46)
         assertEquals(longest, PostgresGraph(longest).name)
         val failure = assertThrows<IllegalArgumentException> { PostgresGraph(longest + "x") }
-        assertTrue("Postgres" in failure.message.orEmpty() && "49" in failure.message.orEmpty(), failure.message)
+        assertTrue("Postgres" in failure.message.orEmpty() && "47" in failure.message.orEmpty(), failure.message)
         assertThrows<IllegalArgumentException> { PostgresGraph("1graph") }
         assertThrows<IllegalArgumentException> { PostgresGraph("my-graph") }
     }
 
     @Test
     fun `an object's name fits within 63 with what is made beside it`() {
-        val graph = PostgresGraph("g" + "x".repeat(48))
+        val graph = PostgresGraph("g" + "x".repeat(46))
         val labels = listOf("A".repeat(60), "embedding".repeat(5))
         // A table beside the nodes has a trigger and an index named after it; an index on the nodes stands alone.
         for (side in listOf(graph.vectors(labels[0], labels[1]), graph.texts(labels[0], labels))) {

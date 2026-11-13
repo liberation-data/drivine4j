@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.connection.DatabaseType
+import org.drivine.cypher.store.OracleSql as StoreSql
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -43,109 +44,100 @@ class OracleLabelledIndexTest {
     private fun condition(key: String, operator: ComparisonOperator, value: Any?, alias: String = "n") = PropertyCondition("$alias.$key", operator, value)
 
     private val scansClaim = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")')"
-    private val text = "CASE WHEN $scansClaim THEN JSON_VALUE(n_.props, '$.text') END"
-    private val note = "CASE WHEN $scansClaim THEN JSON_VALUE(n_.props, '$.note') END"
+
+    /**
+     * Whether [sql] compares the property [key] of the node [row] through the index of [label]: by the expressions of the
+     * labelled index a range index makes, and of the unique index a uniqueness constraint makes, each null on a node without
+     * the label ([StoreSql.labelledIndex], [StoreSql.uniqueIndex]), so either index answers the label and the property.
+     */
+    private fun throughIndex(sql: String, label: String, key: String, row: String = "n_"): Boolean =
+        (StoreSql.labelledIndex(row, label, key) + StoreSql.uniqueIndex(row, label, listOf(key), key)).all { it in sql }
+
+    /** Whether [sql] compares anything through an index of [label]: the test of the label that begins each such expression. */
+    private fun anyThroughIndex(sql: String, label: String, row: String = "n_") = "CASE WHEN ${StoreSql.hasLabel(row, label)}" in sql
 
     @Test
     fun `a comparison a labelled index answers reads the property as the index does, and the label is then not tested on its own`() {
         val select = select()
         val statement = select.load(listOfNotNull(select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)))
-        assertEquals(
-            """
-            SELECT n_.doc AS result
-            FROM GRAPH_TABLE (g
-                MATCH (n_ IS node)
-                COLUMNS (n_.labels, n_.props, n_.doc)) n_
-            WHERE $text = ${'$'}_p0
-            """.trimIndent(),
-            statement.statement,
-        )
-        assertEquals(mapOf<String, Any?>("_p0" to "x"), statement.bindings)
+        // The fragment's hints in the outermost SELECT, and no label tested in the pattern.
+        assertTrue(statement.statement.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM */ n_.doc AS result\nFROM GRAPH_TABLE (g\n    MATCH (n_ IS node)\n"), statement.statement)
+        assertTrue(throughIndex(statement.statement.substringAfter("\nWHERE "), "Claim", "text"), statement.statement)
+        assertEquals(mapOf<String, Any?>("_cy_param_n_text_0" to "\"x\""), statement.bindings)
     }
 
     @Test
     fun `a count is read through the index alone`() {
         val select = select()
         val statement = select.count(listOfNotNull(select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)))
-        assertEquals(
-            """
-            SELECT COUNT(*)
-            FROM GRAPH_TABLE (g
-                MATCH (n_ IS node)
-                COLUMNS (n_.labels, n_.props)) n_
-            WHERE $text = ${'$'}_p0
-            """.trimIndent(),
-            statement.statement,
-        )
+        assertTrue(statement.statement.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM */ COUNT(*)\nFROM GRAPH_TABLE (g\n    MATCH (n_ IS node)\n"), statement.statement)
+        assertTrue(throughIndex(statement.statement, "Claim", "text"), statement.statement)
     }
 
     @Test
-    fun `each ordering is answered as equality is`() {
-        listOf(
-            ComparisonOperator.GREATER_THAN to ">", ComparisonOperator.GREATER_THAN_OR_EQUAL to ">=",
-            ComparisonOperator.LESS_THAN to "<", ComparisonOperator.LESS_THAN_OR_EQUAL to "<=",
-        ).forEach { (operator, written) ->
-            val select = select()
-            assertEquals("$text $written \$_p0", select.predicate(listOf(condition("text", operator, "m")), indexed = true))
-            assertEquals(null, select.selecting(emptyList()).takeIf { it.isNotEmpty() }, "no label is left to test")
+    fun `an equality with a number is answered as one with a text is, as the index holds each value's class and key`() {
+        val select = select()
+        assertTrue(throughIndex(select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, 3)), indexed = true)!!, "Claim", "text"))
+        assertEquals("", select.selecting(emptyList()), "no label is left to test")
+    }
+
+    @Test
+    fun `the other conditions on the root are as they were, a property an index holds further in among them`() {
+        for (labelled in listOf(claimText, claimTextNote)) {
+            val select = select(labelled = labelled)
+            val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x"), condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)!!
+            assertTrue(throughIndex(sql, "Claim", "text"), sql)
+            assertFalse(StoreSql.labelledIndex("n_", "Claim", "note").any { it in sql }, sql)
+            assertEquals(listOf("_cy_param_n_text_0", "_cy_param_n_note_1"), select.bindings().keys.toList())
         }
-    }
-
-    @Test
-    fun `the other conditions on the root are as they were, and one on a property the index also holds reads it as the index does`() {
-        val one = select()
-        val sql = one.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x"), condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)
-        assertEquals("$text = \$_p0 AND JSON_VALUE(n_.props, '$.note') = \$_p1", sql)
-
-        val composite = select(labelled = claimTextNote)
-        val both = composite.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x"), condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)
-        assertEquals("$text = \$_p0 AND $note = \$_p1", both)
     }
 
     @Test
     fun `a property the index holds but does not begin with does not answer for the label`() {
         val select = select(labelled = claimTextNote)
-        val sql = select.predicate(listOf(condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)
-        assertEquals("JSON_VALUE(n_.props, '$.note') = \$_p0", sql)
+        val sql = select.predicate(listOf(condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)!!
+        assertFalse(anyThroughIndex(sql, "Claim"), sql)
         assertEquals(scansClaim, select.selecting(emptyList()))
     }
 
     @Test
-    fun `what no index answers leaves the statement as it was, the label read through the index over labels`() {
+    fun `what no index answers leaves the label tested, read through the index over labels`() {
         val unanswered = listOf(
             listOf(condition("text", ComparisonOperator.NOT_EQUALS, "x")),
             listOf(condition("text", ComparisonOperator.IN, listOf("x", "y"))),
             listOf(condition("text", ComparisonOperator.CONTAINS, "x")),
             listOf(condition("text", ComparisonOperator.STARTS_WITH, "x")),
             listOf(condition("text", ComparisonOperator.IS_NULL, null)),
+            // Oracle stores an empty text as it stores null.
             listOf(condition("text", ComparisonOperator.EQUALS, "")),
-            listOf(condition("text", ComparisonOperator.EQUALS, 3)),
             listOf(condition("note", ComparisonOperator.EQUALS, "x")),
-            // In an OR, the condition is not met by every root.
+            // An ordering is compared as Cypher compares it, by kind and then by value, which the index's key does not order.
+            listOf(condition("text", ComparisonOperator.GREATER_THAN, "m")),
+            listOf(condition("text", ComparisonOperator.LESS_THAN_OR_EQUAL, "m")),
+            // In an OR, or under a NOT, the condition is not met by every root.
             listOf(OrCondition(listOf(condition("text", ComparisonOperator.EQUALS, "x"), condition("note", ComparisonOperator.EQUALS, "y")))),
+            listOf(WhereCondition.NotCondition(listOf(condition("text", ComparisonOperator.EQUALS, "x")))),
         )
         unanswered.forEach { conditions ->
             val select = select()
             val sql = select.predicate(conditions, indexed = true)!!
-            assertFalse("CASE WHEN" in sql, sql)
+            assertFalse(anyThroughIndex(sql, "Claim"), sql)
             assertEquals(scansClaim, select.selecting(emptyList()), "for $conditions")
         }
     }
 
     @Test
-    fun `nothing is read through an index unless the caller says every root meets the predicate`() {
+    fun `nothing is taken as tested by an index unless the caller says every root meets the predicate`() {
         val select = select()
-        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")))
-        assertEquals("JSON_VALUE(n_.props, '$.text') = \$_p0", sql)
+        select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")))
         assertEquals(scansClaim, select.selecting(emptyList()))
     }
 
     @Test
-    fun `a root found by its id is found as it was, by the index over the id`() {
+    fun `a root found by its id is found as it was, by the index over the id, its label tested`() {
         val select = select()
         val id = select.hasId("id")
-        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
-        assertEquals("JSON_VALUE(n_.props, '$.text') = \$_p0", sql)
+        select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
         assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0\n  AND $id", select.selecting(listOf(id)))
     }
 
@@ -155,17 +147,24 @@ class OracleLabelledIndexTest {
         val sql = select.predicate(
             listOf(LabelCondition("n", listOf("Claim", "Reviewed")), condition("text", ComparisonOperator.EQUALS, "x")),
             indexed = true,
-        )
-        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Reviewed\",\"') > 0 AND $text = \$_p0", sql)
+        )!!
+        assertTrue("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Reviewed\",\"') > 0" in sql, sql)
+        assertTrue(throughIndex(sql, "Claim", "text"), sql)
+        assertEquals("", select.selecting(emptyList()))
     }
 
     @Test
-    fun `a uniqueness constraint's index over one property is read through as it reads the property, before a labelled index`() {
-        val unique = LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text")), LabelledIndex("Claim", listOf("text"), unique = true)))
-        val select = select(labelled = unique)
-        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
-        assertEquals("CASE WHEN $scansClaim AND JSON_EXISTS(n_.props, '$.text') THEN JSON_VALUE(n_.props, '$.text') END = \$_p0", sql)
-        assertEquals("", select.selecting(emptyList()))
+    fun `a uniqueness constraint's index over one property answers an equality as a labelled index does`() {
+        val equal = listOf(condition("text", ComparisonOperator.EQUALS, "x"))
+        val labelled = select().predicate(equal, indexed = true)
+        for (indexes in listOf(
+            LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text"), unique = true))),
+            LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text")), LabelledIndex("Claim", listOf("text"), unique = true))),
+        )) {
+            val select = select(labelled = indexes)
+            assertEquals(labelled, select.predicate(equal, indexed = true))
+            assertEquals("", select.selecting(emptyList()))
+        }
     }
 
     // ----- A root of two labels -----
@@ -194,14 +193,14 @@ class OracleLabelledIndexTest {
         val id = condition("id", ComparisonOperator.EQUALS, "x")
         listOf(listOf(chunk, id), listOf(id, chunk)).forEach { conditions ->
             val statement = twoLabelled(indexes, *conditions.toTypedArray())
-            assertTrue("CASE WHEN ${has("VecContent")} THEN JSON_VALUE(n_.props, '$.id') END = " in statement, statement)
-            assertTrue("CASE WHEN ${has("VecChunk")} THEN JSON_VALUE(n_.props, '$.chunkText') END = " in statement, statement)
+            assertTrue(throughIndex(statement, "VecContent", "id"), statement)
+            assertTrue(throughIndex(statement, "VecChunk", "chunkText"), statement)
             assertTrue("MATCH (n_ IS node)\n" in statement, statement)
         }
     }
 
     @Test
-    fun `two labels with unique indexes on one property, and another index on one label, are each tested`() {
+    fun `two labels with indexes on one property, and another index on one label, are each tested`() {
         val indexes = LabelledIndexes(listOf(
             LabelledIndex("VecContent", listOf("id"), unique = true),
             LabelledIndex("VecChunk", listOf("id"), unique = true),
@@ -209,33 +208,31 @@ class OracleLabelledIndexTest {
         ))
         val x = condition("x", ComparisonOperator.EQUALS, "a")
         val id = condition("id", ComparisonOperator.EQUALS, "b")
-        listOf(listOf(x, id), listOf(id, x)).forEach { conditions ->
+        listOf(listOf(x, id), listOf(id, x), listOf(id)).forEach { conditions ->
             val statement = twoLabelled(indexes, *conditions.toTypedArray())
-            // The id is answered for the first label whose index leads with it, and read through that label's index alone.
-            assertTrue("CASE WHEN ${has("VecContent")} AND JSON_EXISTS(n_.props, '$.id') THEN JSON_VALUE(n_.props, '$.id') END = " in statement, statement)
-            assertFalse("CASE WHEN ${has("VecChunk")} AND JSON_EXISTS(n_.props, '$.id')" in statement, statement)
-            assertTrue("CASE WHEN ${has("VecChunk")} THEN JSON_VALUE(n_.props, '$.x') END = " in statement, statement)
+            // The id is compared through the index of each label that leads with it, so each label is tested by it.
+            assertTrue(throughIndex(statement, "VecContent", "id"), statement)
+            assertTrue(throughIndex(statement, "VecChunk", "id"), statement)
+            assertTrue("MATCH (n_ IS node)\n" in statement, statement)
         }
-        // With the id alone, the other label is tested on its own, in the form no index answers.
-        val alone = twoLabelled(indexes, id)
-        assertTrue("MATCH (n_ IS node WHERE ${carries("VecChunk")})" in alone, alone)
+        assertTrue(throughIndex(twoLabelled(indexes, x), "VecChunk", "x"))
     }
 
     @Test
-    fun `a property one label holds a unique index on and the other a labelled index on is read through the label that answers it`() {
-        val indexes = LabelledIndexes(listOf(LabelledIndex("VecContent", listOf("id"), unique = true), LabelledIndex("VecChunk", listOf("id"))))
+    fun `a property one label holds an index on is read through that label's, and the other label is tested on its own`() {
+        val indexes = LabelledIndexes(listOf(LabelledIndex("VecContent", listOf("id"), unique = true)))
         val statement = twoLabelled(indexes, condition("id", ComparisonOperator.EQUALS, "b"), condition("id", ComparisonOperator.LESS_THAN, "z"))
-        assertEquals(2, Regex(Regex.escape("CASE WHEN ${has("VecContent")} AND JSON_EXISTS(n_.props, '$.id')")).findAll(statement).count(), statement)
-        assertFalse("CASE WHEN ${has("VecChunk")}" in statement, statement)
+        assertTrue(throughIndex(statement, "VecContent", "id"), statement)
+        assertFalse(anyThroughIndex(statement, "VecChunk"), statement)
         assertTrue("MATCH (n_ IS node WHERE ${carries("VecChunk")})" in statement, statement)
     }
 
     @Test
     fun `a view's root is read through the index under the root's own name`() {
         val select = select(ClaimView::class.java)
-        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x", alias = "claim")), indexed = true)
-        assertEquals("CASE WHEN JSON_EXISTS(claim_.labels, '$[*]?(@ == \"Claim\")') THEN JSON_VALUE(claim_.props, '$.text') END = \$_p0", sql)
-        assertTrue(select.load(listOfNotNull(sql)).statement.contains("MATCH (claim_ IS node)\n"))
+        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x", alias = "claim")), indexed = true)!!
+        assertTrue(throughIndex(sql, "Claim", "text", row = "claim_"), sql)
+        assertTrue(select.load(listOf(sql)).statement.contains("MATCH (claim_ IS node)\n"))
     }
 
     // ----- Through the backend -----
@@ -265,10 +262,12 @@ class OracleLabelledIndexTest {
 
         listOf(load, count).forEach {
             assertTrue("MATCH (n_ IS node)\n" in it, it)
-            assertTrue(it.endsWith("\nWHERE $text = \$_p0"), it)
+            assertTrue(throughIndex(it.substringAfter("\nWHERE "), "Claim", "text"), it)
         }
-        // A delete is run from a block, its quotes doubled.
-        assertTrue("DELETE FROM g_node n_\n    WHERE ${text.replace("'", "''")} = :b0'" in delete, delete)
+        // A delete is run from a block, its quotes doubled, the label tested by the comparison alone.
+        assertTrue("DELETE /*+ NO_JSON_TABLE_TRANSFORM */ FROM g_node n_\n    WHERE (" in delete, delete)
+        assertTrue((StoreSql.labelledIndex("n_", "Claim", "text")).all { it.replace("'", "''") in delete }, delete)
+        assertFalse("WHERE ${has("Claim").replace("'", "''")}" in delete, delete)
         assertEquals(1, store.schema.count { it == LabelledIndexCatalog.query(graph) }, "the catalog is read once")
         assertTrue(store.queried.none { it.statement == LabelledIndexCatalog.query(graph) }, "and not among the statements of a read")
     }
@@ -276,7 +275,6 @@ class OracleLabelledIndexTest {
     @Test
     fun `a grouped read filters its roots through the index, and a filter of one of its numbers does not decide how the roots are read`() {
         val backend = backend(store(listed("GroupFeedback", "page"), listed("GroupFeedback", "id")))
-        val page = "CASE WHEN JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupFeedback\")') THEN JSON_VALUE(n_.props, '$.page') END"
 
         val filtered = backend.groups(Feedback::class.java, GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
             where { query.page eq "/home" }
@@ -284,15 +282,15 @@ class OracleLabelledIndexTest {
             count()
         }).statement
         assertTrue("MATCH (n_ IS node)\n" in filtered, filtered)
-        assertTrue("\n    WHERE $page = \$_p0\n" in filtered, filtered)
+        assertTrue(throughIndex(filtered.substringAfter("\n    WHERE "), "GroupFeedback", "page"), filtered)
 
-        // A count of the roots with a page is no filter of the roots, which are then read by their label.
+        // A count of the roots with an id is no filter of the roots, which are then read by their label, whether or not the
+        // count's own condition is compared through the index.
         val counted = backend.groups(Feedback::class.java, GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
             keyOrNull(query.helpful)
             count { query.id eq "f1" }
         }).statement
         assertTrue("MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupFeedback\")'))" in counted, counted)
-        assertFalse("CASE WHEN JSON_EXISTS(n_.labels" in counted, counted)
     }
 
     @Test
@@ -304,19 +302,19 @@ class OracleLabelledIndexTest {
         fun reads() = store.schema.count { it == LabelledIndexCatalog.query(graph) }
 
         // Before the first read is done, none is known; and asking again begins no second read.
-        assertEquals(null, catalog.current().expression("n", "Claim", "text"))
-        assertEquals(null, catalog.current().expression("n", "Claim", "text"))
+        assertEquals(emptySet(), catalog.current().leading)
+        assertEquals(emptySet(), catalog.current().leading)
         assertEquals(1, pending.size)
         assertEquals(0, reads())
 
         pending.removeFirst().run()
         assertEquals(1, reads())
-        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertEquals(setOf("Claim" to "text"), catalog.current().leading)
         assertTrue(pending.isEmpty())
 
         // Once old, what was read is still used while it is read again.
         now = 1000
-        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertEquals(setOf("Claim" to "text"), catalog.current().leading)
         assertEquals(1, pending.size)
     }
 
@@ -344,10 +342,10 @@ class OracleLabelledIndexTest {
         }
         var now = 0L
         val catalog = LabelledIndexCatalog(store, graph, maxAge = 1000, clock = { now }, refresh = Runnable::run)
-        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertEquals(setOf("Claim" to "text"), catalog.current().leading)
         failing = true
         now = 1000
-        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertEquals(setOf("Claim" to "text"), catalog.current().leading)
     }
 
     @Test

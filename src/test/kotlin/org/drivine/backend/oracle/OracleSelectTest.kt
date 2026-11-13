@@ -1,12 +1,14 @@
 package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
+import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
 import org.drivine.cypher.api.SearchIndex
 import org.drivine.cypher.api.SearchPlan
 import org.drivine.cypher.api.SearchRequest
 import org.drivine.cypher.api.SearchStore
+import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.query.ActorDirectorsByReleaseYear
 import org.drivine.query.JavaActorDirectorsLatestFirst
 import org.drivine.query.dsl.CollectionSortSpec
@@ -46,6 +48,19 @@ class OracleSelectTest {
     private fun String.squashed(): String = replace(Regex("\\s+"), " ")
 
     private fun count(text: String, part: String): Int = Regex(Regex.escape(part)).findAll(text).count()
+
+    private val fragments = CypherCompile.oracleFragments("g", emptySet())
+
+    /** The terms the module orders the node [row] by its property [key], as Cypher orders it, descending where [descending]. */
+    private fun ordered(row: String, key: String, descending: Boolean, cypher: String = "n.`$key`"): List<String> =
+        fragments.order(cypher, descending, mapOf("n" to FragmentVariable.Node(row))).terms.map { it.squashed() }
+
+    /** The terms a path's hop orders its node [row] by: its property [key], a node with none last whichever way. */
+    private fun hopOrder(row: String, key: String, descending: Boolean): String =
+        (ordered(row, key, false, "n.`$key` IS NULL") + ordered(row, key, descending)).joinToString(", ")
+
+    /** The terms a sort of a collection orders its rows [row] by: its property [key], then the relationship, to break a tie. */
+    private fun sorted(row: String, key: String, descending: Boolean): String = (ordered(row, key, descending) + "$row.eid").joinToString(", ")
 
     private val scansClaim = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")')"
     private val carriesClaim = "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0"
@@ -234,27 +249,23 @@ class OracleSelectTest {
     }
 
     @Test
-    fun `a path ordered by a hop reads the order from the node that hop reaches, by kind and then by value`() {
+    fun `a path ordered by a hop reads the order from the node that hop reaches, as Cypher orders it`() {
         val statement = select(ActorDirectorsByReleaseYear::class.java).load(emptyList()).statement.squashed()
-        // The node the ordered hop reaches is m1, and its property's name is quoted as a JSON path step.
-        assertTrue(statement.contains("JSON_VALUE(m1.props, '$.\"release year\".numberOnly()' RETURNING NUMBER) AS order_number"), statement)
-        assertTrue(statement.contains("JSON_VALUE(m1.props, '$.\"release year\"') AS order_text"), statement)
-        assertTrue(statement.contains("JSON_EXISTS(m1.props, '$.\"release year\"?(@ == \"\")')"), statement)
-        assertTrue(
-            statement.contains(
-                "ORDER BY directors_.order_kind ASC NULLS LAST, " +
-                    "CASE WHEN directors_.order_kind = 1 THEN directors_.order_number END ASC, " +
-                    "CASE WHEN directors_.order_kind = 0 THEN directors_.order_text END ASC NULLS FIRST, directors_.nid",
-            ),
-            statement,
-        )
+        // Each node reached keeps the first of the hop's nodes that lead to it, by the hop's property as the module orders it, a
+        // node with none last; the property's name quoted as a JSON path step.
+        assertTrue("'$.\"release year\"" in statement, statement)
+        val way = hopOrder("way_", "release year", descending = false)
+        assertTrue(statement.contains("FIRST_VALUE(way_.order_node) OVER (PARTITION BY way_.src, way_.nid ORDER BY $way)"), statement)
+        assertTrue(statement.contains("MIN(ranked_.order_node) AS order_node"), statement)
+        // The nodes reached in the order of the hop node each keeps, joined back as kept_.
+        assertTrue(statement.contains("ORDER BY ${hopOrder("kept_", "release year", descending = false)}"), statement)
     }
 
     @Test
-    fun `a path ordered highest first keeps the highest value of each node, and an empty text last among the texts`() {
+    fun `a path ordered highest first keeps the highest value of each node, and a node with none last`() {
         val statement = select(JavaActorDirectorsLatestFirst::class.java).load(emptyList()).statement.squashed()
-        assertTrue(statement.contains("MAX(reached_.order_number) AS order_number"), statement)
-        assertTrue(statement.contains("CASE WHEN directors_.order_kind = 0 THEN directors_.order_text END DESC NULLS LAST, directors_.nid"), statement)
+        assertTrue(statement.contains("ORDER BY ${hopOrder("way_", "year", descending = true)})"), statement)
+        assertTrue(statement.contains("ORDER BY ${hopOrder("kept_", "year", descending = true)}"), statement)
     }
 
     @Test
@@ -299,7 +310,7 @@ class OracleSelectTest {
     @Test
     fun `a sort on a collection orders its array by the property, with the relationship to break a tie`() {
         val statement = select(ClaimView::class.java, sorts = listOf(CollectionSortSpec("people", "name", false))).load(emptyList()).statement
-        assertTrue(statement.contains("JSON_ARRAYAGG(people_.doc ORDER BY JSON_VALUE(people_.props, '$.name') DESC, people_.eid RETURNING JSON)"), statement)
+        assertTrue(statement.squashed().contains("JSON_ARRAYAGG(people_.doc ORDER BY ${sorted("people_", "name", descending = true)} RETURNING JSON)"), statement)
         assertTrue(statement.contains("COLUMNS (claim_.nid AS src, e.eid, people_.props, people_.doc)) people_"), statement)
         // The other collection is untouched.
         assertTrue(statement.contains("JSON_ARRAYAGG(companies_.doc ORDER BY companies_.eid RETURNING JSON)"), statement)
@@ -308,8 +319,9 @@ class OracleSelectTest {
     @Test
     fun `a sort on a nested view's collection is applied under the relationship that leads to it`() {
         val statement = select(Dossier::class.java, sorts = listOf(CollectionSortSpec("claims_people", "name", true))).load(emptyList()).statement
-        assertEquals(1, Regex("ORDER BY JSON_VALUE\\(\\w+_\\.props, '\\$\\.name'\\) ASC, \\w+_\\.eid").findAll(statement).count(), statement)
-        assertTrue(statement.contains("JSON_ARRAYAGG(people_.doc ORDER BY JSON_VALUE(people_.props, '$.name') ASC, people_.eid RETURNING JSON)"), statement)
+        // Once, under the claims: the sort is the nested view's people's alone.
+        assertEquals(1, count(statement.squashed(), "ORDER BY ${sorted("people_", "name", descending = false)}"), statement)
+        assertTrue(statement.squashed().contains("JSON_ARRAYAGG(people_.doc ORDER BY ${sorted("people_", "name", descending = false)} RETURNING JSON)"), statement)
         assertTrue(statement.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node"), statement)
         assertTrue(statement.contains("JSON_ARRAYAGG(JSON_OBJECT("), statement)
     }
@@ -318,7 +330,9 @@ class OracleSelectTest {
     fun `a sort on a recursive field is applied at every level, so the tree is in one order`() {
         val statement = select(LocationHierarchy::class.java, sorts = listOf(CollectionSortSpec("subLocations", "name", true))).load(emptyList()).statement
         assertEquals(3, count(statement, "e.type = 'HAS_LOCATION'"), statement)
-        assertEquals(3, Regex("ORDER BY JSON_VALUE\\(subLocations\\d?_\\.props, '\\$\\.name'\\) ASC, subLocations\\d?_\\.eid").findAll(statement).count(), statement)
+        for (level in listOf("subLocations_", "subLocations2_", "subLocations3_")) {
+            assertEquals(1, count(statement.squashed(), "ORDER BY ${sorted(level, "name", descending = false)}"), statement)
+        }
     }
 
     @Test

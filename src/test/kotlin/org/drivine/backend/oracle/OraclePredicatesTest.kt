@@ -1,5 +1,8 @@
 package org.drivine.backend.oracle
 
+import org.drivine.connection.CypherCompile
+import org.drivine.cypher.sql.FragmentVariable
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.WhereCondition.LabelCondition
@@ -15,7 +18,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/** The predicates the query DSL's conditions become on Oracle, written without a database. */
+/**
+ * The predicates the query DSL's conditions become on Oracle, written without a database: the Cypher the DSL writes for
+ * Neo4j, compiled whole by the module as one fragment over the root's row ([org.drivine.backend.sql.Fragments]), so each
+ * value is compared as Cypher compares it and bound as JSON text.
+ */
 class OraclePredicatesTest {
 
     private val graph = OracleGraph("g")
@@ -24,6 +31,9 @@ class OraclePredicatesTest {
 
     private fun view() = OracleSelect(graph, ClaimView::class.java)
 
+    /** A compiler of one statement's fragments, as each statement has its own: it numbers what it shares within the statement. */
+    private val fragments get() = CypherCompile.oracleFragments("g", emptySet())
+
     /** The predicate one condition on the root fragment `n` makes, with what it binds. */
     private fun compared(key: String, operator: ComparisonOperator, value: Any?): Pair<String, Map<String, Any?>> {
         val select = fragment()
@@ -31,238 +41,109 @@ class OraclePredicatesTest {
         return sql to select.bindings()
     }
 
-    private val name = "JSON_VALUE(n_.props, '$.name')"
-    private val rank = "JSON_VALUE(n_.props, '$.rank' RETURNING NUMBER)"
+    /**
+     * The condition the module compiles [cypher] to over the root `n_`, a Claim: `$v` in it the one value [bound] holds, by
+     * the name the statement binds it under, given as [value].
+     */
+    private fun expected(cypher: String, bound: Map<String, Any?>, value: Any?): String {
+        val name = bound.keys.singleOrNull()?.removePrefix("_cy_")
+        val written = name?.let { cypher.replace("\$v", "\$$it") } ?: cypher
+        return fragments.condition(written, mapOf("n" to FragmentVariable.Node("n_", listOf("Claim"))), name?.let { mapOf(it to value) }.orEmpty()).terms.single()
+    }
 
-    /** The test that a related node carries [label]: a node the field loads carries its target's labels. */
-    private fun carries(row: String, label: String) =
-        "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE($row.labels), ']'), '[') || ',\"', ',\"$label\",\"') > 0"
-    private val human = carries("people_", "Human")
+    /** [value] as the module binds it: its JSON text. */
+    private fun json(value: Any?): String = Neo4jObjectMapper.instance.writeValueAsString(value)
 
     // ----- One case per operator -----
 
     @Test
-    fun `equals binds the value and reads the property as text`() {
-        val (sql, bound) = compared("name", ComparisonOperator.EQUALS, "ada")
-        assertEquals("$name = \$_p0", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "ada"), bound)
-    }
-
-    @Test
-    fun `a number is read as a number when compared`() {
-        val (sql, bound) = compared("rank", ComparisonOperator.EQUALS, 3)
-        assertEquals("$rank = \$_p0", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to 3), bound)
-    }
-
-    @Test
-    fun `not equals writes the inequality`() {
-        val (sql, bound) = compared("name", ComparisonOperator.NOT_EQUALS, "ada")
-        assertEquals("$name <> \$_p0", sql)
-        assertEquals("ada", bound["_p0"])
-    }
-
-    @Test
-    fun `the four orderings write their operator`() {
-        assertEquals("$rank > \$_p0", compared("rank", ComparisonOperator.GREATER_THAN, 1).first)
-        assertEquals("$rank >= \$_p0", compared("rank", ComparisonOperator.GREATER_THAN_OR_EQUAL, 1).first)
-        assertEquals("$rank < \$_p0", compared("rank", ComparisonOperator.LESS_THAN, 1).first)
-        assertEquals("$rank <= \$_p0", compared("rank", ComparisonOperator.LESS_THAN_OR_EQUAL, 1).first)
-    }
-
-    @Test
-    fun `in binds the list once and reads it through JSON_TABLE`() {
-        val (sql, bound) = compared("name", ComparisonOperator.IN, listOf("ada", "grace"))
-        assertEquals("$name IN (SELECT v FROM JSON_TABLE(\$_p0, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$')))", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to listOf("ada", "grace")), bound)
-    }
-
-    @Test
-    fun `in over numbers reads the list's column as a number`() {
-        val (sql, bound) = compared("rank", ComparisonOperator.IN, listOf(1, 2))
-        assertEquals("$rank IN (SELECT v FROM JSON_TABLE(\$_p0, '$[*]' COLUMNS (v NUMBER PATH '$')))", sql)
-        assertEquals(1, bound.size)
-    }
-
-    @Test
-    fun `not in negates the same membership test`() {
-        val (sql, bound) = compared("name", ComparisonOperator.NOT_IN, listOf("ada"))
-        assertEquals("NOT ($name IN (SELECT v FROM JSON_TABLE(\$_p0, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$'))))", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to listOf("ada")), bound)
-    }
-
-    @Test
-    fun `a value that is not a list is still bound as one for in`() {
-        val (_, bound) = compared("name", ComparisonOperator.IN, "ada")
-        assertEquals(listOf("ada"), bound["_p0"])
-    }
-
-    @Test
-    fun `has element passes the value into the path`() {
-        val (sql, bound) = compared("tags", ComparisonOperator.HAS_ELEMENT, "x")
-        assertEquals("JSON_EXISTS(n_.props, '$.tags[*]?(@ == \$v)' PASSING \$_p0 AS \"v\")", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "x"), bound)
-    }
-
-    @Test
-    fun `has element with a boolean writes it into the path and binds nothing`() {
-        val (sql, bound) = compared("flags", ComparisonOperator.HAS_ELEMENT, true)
-        assertEquals("JSON_EXISTS(n_.props, '$.flags[*]?(@ == true)')", sql)
-        assertTrue(bound.isEmpty())
-    }
-
-    @Test
-    fun `contains looks for the text with INSTR`() {
-        val (sql, bound) = compared("name", ComparisonOperator.CONTAINS, "da")
-        assertEquals("INSTR($name, \$_p0) > 0", sql)
-        assertEquals("da", bound["_p0"])
-    }
-
-    @Test
-    fun `starts with compares the head of the text`() {
-        val (sql, bound) = compared("name", ComparisonOperator.STARTS_WITH, "ad")
-        assertEquals("SUBSTR($name, 1, LENGTH(\$_p0)) = \$_p0", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "ad"), bound)
-    }
-
-    @Test
-    fun `ends with compares the tail of the text`() {
-        val (sql, bound) = compared("name", ComparisonOperator.ENDS_WITH, "da")
-        assertEquals("SUBSTR($name, -LENGTH(\$_p0)) = \$_p0", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "da"), bound)
-    }
-
-    @Test
-    fun `contains ignoring case lowers the text and binds the value lower-cased`() {
-        val (sql, bound) = compared("name", ComparisonOperator.CONTAINS_IGNORE_CASE, "AdA")
-        assertEquals("INSTR(LOWER($name), \$_p0) > 0", sql)
-        assertEquals("ada", bound["_p0"])
-    }
-
-    @Test
-    fun `equals ignoring case lowers the text and binds the value lower-cased`() {
-        val (sql, bound) = compared("name", ComparisonOperator.EQUALS_IGNORE_CASE, "AdA")
-        assertEquals("LOWER($name) = \$_p0", sql)
-        assertEquals("ada", bound["_p0"])
-    }
-
-    @Test
-    fun `matches anchors the expression to the whole value`() {
-        val (sql, bound) = compared("name", ComparisonOperator.MATCHES, "a.*")
-        assertEquals("REGEXP_LIKE($name, \$_p0)", sql)
-        assertEquals("^(a.*)\\z", bound["_p0"])
-    }
-
-    @Test
-    fun `matches renumbers a backreference for the group that anchors the expression`() {
-        assertEquals("^((A).*\\2)\\z", compared("name", ComparisonOperator.MATCHES, "(A).*\\1").second.values.single())
-        assertEquals("^((a)(b)\\3\\2)\\z", compared("name", ComparisonOperator.MATCHES, "(a)(b)\\2\\1").second.values.single())
-        // An escaped backslash, and a backslash in a bracket expression, are no backreferences.
-        assertEquals("^(a\\\\1)\\z", compared("name", ComparisonOperator.MATCHES, "a\\\\1").second.values.single())
-        assertEquals("^([\\1]x)\\z", compared("name", ComparisonOperator.MATCHES, "[\\1]x").second.values.single())
-        assertEquals("^([]\\1](a)\\2)\\z", compared("name", ComparisonOperator.MATCHES, "[]\\1](a)\\1").second.values.single())
-    }
-
-    @Test
-    fun `matches refuses a reference to a ninth group, which would need a tenth`() {
-        val refused = assertThrows<IllegalArgumentException> { compared("name", ComparisonOperator.MATCHES, "(a)(b)(c)(d)(e)(f)(g)(h)(i)\\9") }
-        assertTrue("ninth" in refused.message.orEmpty(), refused.message)
-    }
-
-    @Test
-    fun `matches ignores case only for a leading case flag, which is taken off the expression`() {
-        val (sql, bound) = compared("name", ComparisonOperator.MATCHES, "(?i)a.*")
-        assertEquals("REGEXP_LIKE($name, \$_p0, 'i')", sql)
-        assertEquals("^(a.*)\\z", bound["_p0"])
-    }
-
-    @Test
-    fun `is null asks whether the property is there and binds nothing`() {
-        val (sql, bound) = compared("name", ComparisonOperator.IS_NULL, null)
-        assertEquals("NOT JSON_EXISTS(n_.props, '$.name')", sql)
-        assertTrue(bound.isEmpty())
-    }
-
-    @Test
-    fun `is not null asks whether the property is there`() {
-        val (sql, bound) = compared("name", ComparisonOperator.IS_NOT_NULL, null)
-        assertEquals("JSON_EXISTS(n_.props, '$.name')", sql)
-        assertTrue(bound.isEmpty())
-    }
-
-    @Test
-    fun `a boolean is compared with the text JSON writes it as`() {
-        val (sql, bound) = compared("done", ComparisonOperator.EQUALS, true)
-        assertEquals("JSON_VALUE(n_.props, '$.done') = \$_p0", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "true"), bound)
-    }
-
-    @Test
-    fun `a key with a dot in it is quoted in the path, so it is one key`() {
-        val (sql, _) = compared("metadata.source", ComparisonOperator.EQUALS, "web")
-        assertEquals("JSON_VALUE(n_.props, '$.\"metadata.source\"') = \$_p0", sql)
-    }
-
-    @Test
-    fun `the stamp is a column, not a property`() {
-        val (sql, _) = compared("__drivine.stamp", ComparisonOperator.EQUALS, "s1")
-        assertEquals("n_.stamp = \$_p0", sql)
-        assertEquals("NOT n_.stamp IS NOT NULL", compared("__drivine.stamp", ComparisonOperator.IS_NULL, null).first)
-    }
-
-    // ----- The empty string, which Oracle keeps as null -----
-
-    @Test
-    fun `equals the empty string looks for a property stored empty through a JSON path`() {
-        val (sql, bound) = compared("name", ComparisonOperator.EQUALS, "")
-        assertEquals("JSON_EXISTS(n_.props, '$.name?(@ == \"\")')", sql)
-        assertTrue(bound.isEmpty())
-        assertEquals("JSON_EXISTS(n_.props, '$.name?(@ == \"\")')", compared("name", ComparisonOperator.EQUALS_IGNORE_CASE, "").first)
-    }
-
-    @Test
-    fun `contains, starts with and ends with the empty string hold for any string, the empty one among them`() {
-        for (operator in listOf(ComparisonOperator.CONTAINS, ComparisonOperator.STARTS_WITH, ComparisonOperator.ENDS_WITH, ComparisonOperator.CONTAINS_IGNORE_CASE)) {
-            val (sql, bound) = compared("name", operator, "")
-            assertEquals("($name IS NOT NULL OR JSON_EXISTS(n_.props, '$.name?(@ == \"\")'))", sql, "$operator")
-            assertTrue(bound.isEmpty(), "$operator")
+    fun `each operator is the Cypher Neo4j is given for it, compiled by the module, its value bound as JSON text`() {
+        val cases = listOf(
+            Triple("name", ComparisonOperator.EQUALS, "ada") to "n.name = \$v",
+            Triple("rank", ComparisonOperator.EQUALS, 3) to "n.rank = \$v",
+            Triple("done", ComparisonOperator.EQUALS, true) to "n.done = \$v",
+            Triple("name", ComparisonOperator.NOT_EQUALS, "ada") to "n.name <> \$v",
+            Triple("rank", ComparisonOperator.GREATER_THAN, 1) to "n.rank > \$v",
+            Triple("rank", ComparisonOperator.GREATER_THAN_OR_EQUAL, 1) to "n.rank >= \$v",
+            Triple("rank", ComparisonOperator.LESS_THAN, 1) to "n.rank < \$v",
+            Triple("rank", ComparisonOperator.LESS_THAN_OR_EQUAL, 1) to "n.rank <= \$v",
+            Triple("name", ComparisonOperator.IN, listOf("ada", "grace")) to "n.name IN \$v",
+            Triple("rank", ComparisonOperator.IN, listOf(1, 2)) to "n.rank IN \$v",
+            Triple("name", ComparisonOperator.NOT_IN, listOf("ada")) to "NOT n.name IN \$v",
+            Triple("tags", ComparisonOperator.HAS_ELEMENT, "x") to "\$v IN n.tags",
+            Triple("flags", ComparisonOperator.HAS_ELEMENT, true) to "\$v IN n.flags",
+            Triple("name", ComparisonOperator.CONTAINS, "da") to "n.name CONTAINS \$v",
+            Triple("name", ComparisonOperator.STARTS_WITH, "ad") to "n.name STARTS WITH \$v",
+            Triple("name", ComparisonOperator.ENDS_WITH, "da") to "n.name ENDS WITH \$v",
+            Triple("name", ComparisonOperator.CONTAINS_IGNORE_CASE, "AdA") to "toLower(n.name) CONTAINS \$v",
+            Triple("name", ComparisonOperator.EQUALS_IGNORE_CASE, "AdA") to "toLower(n.name) = \$v",
+            Triple("name", ComparisonOperator.MATCHES, "(?i)a.*") to "n.name =~ \$v",
+            // The empty string, which Oracle keeps as null, is bound as JSON text, which keeps it apart from null.
+            Triple("name", ComparisonOperator.EQUALS, "") to "n.name = \$v",
+            Triple("name", ComparisonOperator.NOT_EQUALS, "") to "n.name <> \$v",
+            Triple("name", ComparisonOperator.CONTAINS, "") to "n.name CONTAINS \$v",
+            Triple("name", ComparisonOperator.STARTS_WITH, "") to "n.name STARTS WITH \$v",
+            Triple("name", ComparisonOperator.ENDS_WITH, "") to "n.name ENDS WITH \$v",
+        )
+        for ((case, cypher) in cases) {
+            val (key, operator, given) = case
+            // An operator that ignores case binds the value lower-cased, as the DSL binds it for Neo4j, and lowers the property.
+            val value = if (operator == ComparisonOperator.CONTAINS_IGNORE_CASE || operator == ComparisonOperator.EQUALS_IGNORE_CASE) (given as String).lowercase() else given
+            val (sql, bound) = compared(key, operator, given)
+            assertEquals(expected(cypher, bound, value), sql, "$operator $given")
+            // A pattern is bound as written: the module anchors it to the whole value, a leading flag group among it.
+            assertEquals(listOf<Any?>(json(value)), bound.values.toList(), "$operator $given")
         }
     }
 
     @Test
-    fun `not equals the empty string holds for any string that is there and not empty`() {
-        val (sql, bound) = compared("name", ComparisonOperator.NOT_EQUALS, "")
-        assertEquals("($name IS NOT NULL AND NOT JSON_EXISTS(n_.props, '$.name?(@ == \"\")'))", sql)
-        assertTrue(bound.isEmpty())
+    fun `is null and is not null ask whether the property has a value, and bind nothing`() {
+        for ((operator, cypher) in listOf(ComparisonOperator.IS_NULL to "n.name IS NULL", ComparisonOperator.IS_NOT_NULL to "n.name IS NOT NULL")) {
+            val (sql, bound) = compared("name", operator, null)
+            assertEquals(expected(cypher, bound, null), sql)
+            assertTrue(bound.isEmpty())
+        }
+    }
+
+    @Test
+    fun `a key with a dot in it is quoted in the path, so it is one key`() {
+        val (sql, bound) = compared("metadata.source", ComparisonOperator.EQUALS, "web")
+        assertEquals(expected("n.`metadata.source` = \$v", bound, "web"), sql)
+        assertTrue("'$.\"metadata.source\"" in sql, sql)
+    }
+
+    @Test
+    fun `the stamp is a column, not a property`() {
+        val (sql, bound) = compared("__drivine.stamp", ComparisonOperator.EQUALS, "s1")
+        assertEquals(expected("n.`__drivine.stamp` = \$v", bound, "s1"), sql)
+        assertTrue("n_.stamp" in sql && "__drivine.stamp" !in sql, sql)
+        val (unset, _) = compared("__drivine.stamp", ComparisonOperator.IS_NULL, null)
+        assertTrue("n_.stamp" in unset && "__drivine.stamp" !in unset, unset)
     }
 
     // ----- Conditions on the root beyond a property -----
 
     @Test
-    fun `a label on the root is tested through the index when the roots are scanned, and on the row once they are found by id`() {
-        val scanned = fragment()
-        assertEquals("JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")')", scanned.predicate(listOf(LabelCondition("n", listOf("Claim")))))
-
-        val narrowed = fragment()
-        narrowed.hasId("id")
-        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0", narrowed.predicate(listOf(LabelCondition("n", listOf("Claim")))))
+    fun `a label on the root is the module's test of the node's labels`() {
+        val sql = fragment().predicate(listOf(LabelCondition("n", listOf("Claim"))))
+        assertEquals("(JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")'))", sql)
     }
 
     @Test
     fun `any label binds the labels once and looks among the row's labels`() {
         val select = fragment()
-        val sql = select.predicate(listOf(WhereCondition.AnyLabelCondition("n", listOf("A", "B"))))
-        assertEquals("EXISTS (SELECT 1 FROM JSON_TABLE(n_.labels, '$[*]' COLUMNS (l VARCHAR2(4000) PATH '$')) WHERE l IN (SELECT v FROM JSON_TABLE(\$_p0, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$'))))", sql)
-        assertEquals(listOf("A", "B"), select.bindings()["_p0"])
+        val sql = assertNotNull(select.predicate(listOf(WhereCondition.AnyLabelCondition("n", listOf("A", "B")))))
+        val (name, value) = select.bindings().entries.single()
+        assertEquals("[\"A\",\"B\"]", value)
+        assertTrue("JSON_TABLE(n_.labels, '$[*]'" in sql && "JSON_TABLE(JSON(\$$name), '$[*]'" in sql, sql)
     }
 
     @Test
-    fun `list membership on the root passes the value into the path`() {
+    fun `list membership on the root is the value in the list the property holds`() {
         val select = fragment()
-        assertEquals(
-            "JSON_EXISTS(n_.props, '$.tags[*]?(@ == \$v)' PASSING \$_p0 AS \"v\")",
-            select.predicate(listOf(WhereCondition.ListMembershipCondition("n.tags", "x"))),
-        )
+        val sql = select.predicate(listOf(WhereCondition.ListMembershipCondition("n.tags", "x")))
+        assertEquals(expected("\$v IN n.tags", select.bindings(), "x"), sql)
+        assertEquals(listOf<Any?>("\"x\""), select.bindings().values.toList())
     }
 
     @Test
@@ -272,17 +153,23 @@ class OraclePredicatesTest {
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "a"),
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "b"),
         ))))
-        assertEquals("($name = \$_p0 OR $name = \$_p1)", sql)
-        assertEquals(mapOf<String, Any?>("_p0" to "a", "_p1" to "b"), select.bindings())
+        val (a, b) = select.bindings().keys.map { it.removePrefix("_cy_") }
+        val root = mapOf("n" to FragmentVariable.Node("n_", listOf("Claim")))
+        assertEquals(fragments.condition("(n.name = \$$a OR n.name = \$$b)", root, mapOf(a to "a", b to "b")).terms.single(), sql)
+        assertEquals(listOf<Any?>("\"a\"", "\"b\""), select.bindings().values.toList())
     }
 
     @Test
     fun `a not condition negates its conditions together`() {
-        val sql = fragment().predicate(listOf(WhereCondition.NotCondition(listOf(
+        val select = fragment()
+        val sql = assertNotNull(select.predicate(listOf(WhereCondition.NotCondition(listOf(
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "a"),
             PropertyCondition("n.rank", ComparisonOperator.GREATER_THAN, 1),
-        ))))
-        assertEquals("NOT ($name = \$_p0 AND $rank > \$_p1)", sql)
+        )))))
+        val (name, rank) = select.bindings().keys.map { it.removePrefix("_cy_") }
+        val root = mapOf("n" to FragmentVariable.Node("n_", listOf("Claim")))
+        assertEquals(fragments.condition("NOT (n.name = \$$name AND n.rank > \$$rank)", root, mapOf(name to "a", rank to 1)).terms.single(), sql)
+        assertTrue(sql.startsWith("(NOT ("), sql)
     }
 
     @Test
@@ -292,6 +179,12 @@ class OraclePredicatesTest {
 
     // ----- Conditions on related nodes -----
 
+    /** How many `EXISTS` [sql] holds of its own, a `JSON_EXISTS` aside. */
+    private fun exists(sql: String) = Regex("""\bEXISTS \(""").findAll(sql).count()
+
+    /** The test of a related row of the module's [EXISTS][exists] that ties its relationship to the row [from]. */
+    private fun tied(sql: String, from: String) = Regex("""\be\d+\.src = ${Regex.escape(from)}\.nid\b""").containsMatchIn(sql)
+
     @Test
     fun `two conditions on one relationship alias are met together by one related node`() {
         val select = view()
@@ -299,113 +192,86 @@ class OraclePredicatesTest {
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
             PropertyCondition("people.id", ComparisonOperator.EQUALS, "h1"),
         )))
-        // The related node is the field's row, and the pattern that reaches it tests it: its labels first, as the load does.
-        assertEquals(
-            """
-            EXISTS (
-                SELECT 1
-                FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
-                    COLUMNS (claim_.nid AS src)) people_
-                WHERE people_.src = claim_.nid)
-            """.trimIndent(),
-            sql,
-        )
-        assertEquals(mapOf<String, Any?>("_p0" to "ada", "_p1" to "h1"), select.bindings())
+        // One related node, of the field's labels, tied to the root, meets both.
+        assertEquals(1, exists(sql), sql)
+        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
+        assertTrue(tied(sql, "claim_") && "e2.type = 'MENTIONS'" in sql, sql)
+        assertTrue("n1.props, '$.name'" in sql && "n1.props, '$.id'" in sql, sql)
+        assertEquals(listOf<Any?>("\"ada\"", "\"h1\""), select.bindings().values.toList())
     }
 
     @Test
-    fun `a test of a related node against a list is asked of the pattern's rows, and the conditions beside it in the pattern`() {
+    fun `a test of a related node against a list reads the bound list within the related node's EXISTS`() {
         val select = view()
         val sql = assertNotNull(select.predicate(listOf(
             PropertyCondition("people.id", ComparisonOperator.IN, listOf("h1", "h2")),
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
         )))
-        // The list is read as rows by a subquery, which a pattern does not hold (ORA-40988).
-        assertEquals(
-            """
-            EXISTS (
-                SELECT 1
-                FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
-                    COLUMNS (claim_.nid AS src, people_.props)) people_
-                WHERE people_.src = claim_.nid
-                  AND JSON_VALUE(people_.props, '$.id') IN (SELECT v FROM JSON_TABLE(${'$'}_p1, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$'))))
-            """.trimIndent(),
-            sql,
-        )
-        assertEquals(setOf("_p0", "_p1"), select.bindings().keys)
+        val list = select.bindings().entries.single { it.value == "[\"h1\",\"h2\"]" }.key
+        assertEquals(1, exists(sql.replace("EXISTS (SELECT 1 FROM JSON_TABLE(JSON(\$$list)", "")), sql)
+        assertTrue("JSON_TABLE(JSON(\$$list), '$[*]'" in sql, sql)
+        assertEquals(2, select.bindings().size)
     }
 
     @Test
-    fun `an or or a not that holds a subquery is asked whole of the pattern's rows, and one that holds none in the pattern`() {
+    fun `an or or a not on a related node is compiled whole within its EXISTS`() {
         fun asked(condition: WhereCondition) = assertNotNull(view().predicate(listOf(RelationshipCondition("people", listOf(condition)))))
         val named = PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")
         val listed = PropertyCondition("people.id", ComparisonOperator.IN, listOf("h1"))
-        val onRows = listOf(
+        for (condition in listOf(
             WhereCondition.OrCondition(listOf(named, listed)),
             WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))),
-            WhereCondition.OrCondition(listOf(named, WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))))),
-            WhereCondition.OrCondition(listOf(named, WhereCondition.AnyLabelCondition("people", listOf("Human")))),
-        )
-        for (condition in onRows) {
+            WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))),
+        )) {
             val sql = asked(condition)
-            assertTrue("(people_ IS node WHERE $human)" in sql, sql)
-            assertTrue("WHERE people_.src = claim_.nid\n      AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR " in sql, sql)
+            assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
+            assertTrue(" OR " in sql && tied(sql, "claim_"), sql)
         }
-
-        val inPattern = asked(WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))))
-        assertTrue(
-            "(people_ IS node WHERE $human AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR NOT (JSON_VALUE(people_.props, '$.name') = \$_p1)))" in inPattern,
-            inPattern,
-        )
-        assertTrue(inPattern.endsWith("WHERE people_.src = claim_.nid)"), inPattern)
     }
 
     @Test
     fun `a condition on a relationship of a nested view is an EXISTS within the EXISTS`() {
         val select = OracleSelect(graph, Dossier::class.java)
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))
-        assertEquals(2, Regex("EXISTS").findAll(sql).count(), sql)
-        // Each level tests only the nodes its field loads: a claim, then a human.
-        assertTrue(sql.contains("MATCH (memo_ IS node) -[e IS edge WHERE e.type = 'COVERS']-> (claims_ IS node WHERE ${carries("claims_", "Claim")})"), sql)
-        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE $human AND JSON_VALUE(people_.props, '$.name') = \$_p0)"), sql)
-        // The inner EXISTS names the row of the outer, so it is asked of that row and not in its pattern.
-        assertTrue(sql.contains("WHERE claims_.src = memo_.nid\n      AND EXISTS ("), sql)
+        assertEquals(2, exists(sql), sql)
+        // Each level tests only the nodes its field loads, a claim and then a human, each tied to the level above.
+        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Claim\")')"), sql)
+        assertTrue(tied(sql, "memo_") && "e2.type = 'COVERS'" in sql, sql)
+        assertTrue("JSON_EXISTS(n3.labels, '$[*]?(@ == \"Human\")')" in sql && tied(sql, "n1") && "e4.type = 'MENTIONS'" in sql, sql)
     }
 
     @Test
-    fun `a condition on a list read over several hops asks a path of each length to its depth`() {
+    fun `a condition on a list read over several hops walks to its depth, with no quantified step`() {
         val window = sample.conditiondepth.CdWindowView::class.java
         fun asked(depths: Map<String, Int>) = assertNotNull(
             OracleSelect(graph, window, depthOverrides = depths)
                 .predicate(listOf(RelationshipCondition("following", listOf(PropertyCondition("following.text", ComparisonOperator.EQUALS, "c"))))),
         )
-        val target = "(following_ IS node WHERE ${carries("following_", "CdNode")} AND JSON_VALUE(following_.props, '$.text') = \$_p0)"
         val walked = asked(emptyMap())
         // No quantified step: one with a bound value in its pattern fails on Oracle Free (ORA-00600 [qctcte1]).
         assertFalse("->{" in walked, walked)
-        assertEquals(2, Regex("EXISTS").findAll(walked).count(), walked)
-        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in walked, walked)
-        assertTrue("-[e2 IS edge WHERE e2.type = 'NEXT']-> $target" in walked, walked)
-        assertTrue(walked.startsWith("(EXISTS ") && " OR EXISTS " in walked, walked)
-        assertEquals(3, Regex("EXISTS").findAll(asked(mapOf("following" to 3))).count())
+        assertEquals(1, exists(walked), walked)
+        assertTrue("WITH w" in walked && "depth < 2" in walked && "depth >= 1" in walked && "e2.type = 'NEXT'" in walked, walked)
+        assertTrue("depth < 3" in asked(mapOf("following" to 3)))
+        // To a depth of one, a single hop.
         val one = asked(mapOf("following" to 1))
-        assertEquals(1, Regex("EXISTS").findAll(one).count(), one)
-        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in one, one)
+        assertEquals(1, exists(one), one)
+        assertFalse("WITH " in one, one)
+        assertTrue(tied(one, "node_") && "e2.type = 'NEXT'" in one, one)
     }
 
     @Test
     fun `a negated relationship condition asks that no related node meets it`() {
         val sql = view().predicate(listOf(RelationshipCondition("people", listOf(PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")), negate = true)))
-        assertTrue(assertNotNull(sql).startsWith("NOT EXISTS ("), sql)
+        assertTrue(assertNotNull(sql).startsWith("(NOT (EXISTS ("), sql)
+        assertEquals(1, exists(sql), sql)
     }
 
     @Test
     fun `a label condition on a relationship alias tests the related node's row`() {
         val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Author")))))
         assertTrue(sql.startsWith("EXISTS"), sql)
-        assertTrue(sql.contains("(people_ IS node WHERE $human AND ${carries("people_", "Author")})"), sql)
+        assertTrue("JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')" in sql && "JSON_EXISTS(n1.labels, '$[*]?(@ == \"Author\")')" in sql, sql)
     }
 
     @Test
@@ -438,7 +304,9 @@ class OraclePredicatesTest {
             PropertyCondition("claim.text", ComparisonOperator.EQUALS, "t"),
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
         )))
-        assertTrue(sql.startsWith("JSON_VALUE(claim_.props, '$.text') = \$_p0 AND EXISTS"), sql)
+        val text = select.bindings().keys.first().removePrefix("_cy_")
+        val root = fragments.condition("claim.text = \$$text", mapOf("claim" to FragmentVariable.Node("claim_", listOf("Claim"))), mapOf(text to "t")).terms.single()
+        assertTrue(sql.startsWith("($root AND EXISTS ("), sql)
         assertFalse(sql.contains("n_."), sql)
     }
 }

@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.DrivineException
 import org.drivine.cypher.CompilerException
 import org.drivine.cypher.spec.CypherSpec
+import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
@@ -83,6 +84,30 @@ class CompilerBoundaryTest {
             val thrown = assertThrows<Throwable>("$case on $store") { compile() }
             assertIs<DrivineException>(thrown, "$case on $store")
             assertEquals(step.error, thrown.message, "$case on $store")
+        }
+    }
+
+    @Test
+    fun `each store's fragment compiler at the boundary throws the module's refusal of a fragment as a DrivineException`() {
+        // A fragment is written into the object manager's own SQL, which groups no rows: one that aggregates is refused.
+        val cypher = "count(n) > 1"
+        val variables = mapOf("n" to FragmentVariable.Node("n_", listOf("Person")))
+        val refusal = assertThrows<CompilerException> { SqliteCypherCompiler("g", JacksonEncoder).condition(cypher, variables) }
+        val compilers = mapOf(
+            "postgres" to CypherCompile.postgresFragments("g"),
+            "sqlite" to CypherCompile.sqliteFragments("g"),
+            "oracle" to CypherCompile.oracleFragments("g", setOf("Person" to "name")),
+        )
+        for ((store, compiler) in compilers) {
+            for ((form, compile) in listOf<Pair<String, () -> Any>>(
+                "condition" to { compiler.condition(cypher, variables) },
+                "value" to { compiler.value("count(n)", variables) },
+                "order" to { compiler.order("count(n)", false, variables) },
+            )) {
+                val thrown = assertThrows<Throwable>("$form on $store") { compile() }
+                assertIs<DrivineException>(thrown, "$form on $store")
+                if (form == "condition") assertEquals(refusal.message, thrown.message, "$form on $store")
+            }
         }
     }
 

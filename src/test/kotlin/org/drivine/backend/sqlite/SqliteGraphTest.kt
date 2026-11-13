@@ -33,14 +33,22 @@ class SqliteGraphTest {
     @Test
     fun `the store is the tables Postgres keeps, with JSON as text, each statement safe to run again`() {
         val ddl = SqliteGraph("g").ddl
-        assertTrue(ddl.all { "IF NOT EXISTS" in it }, ddl.joinToString("\n"))
+        // Each makes only what is not there, and the lock's row is put in only where it is not.
+        assertTrue(ddl.all { "IF NOT EXISTS" in it || it.startsWith("INSERT OR IGNORE INTO") }, ddl.joinToString("\n"))
         assertTrue(ddl[0].startsWith("CREATE TABLE IF NOT EXISTS g_node") && "labels TEXT NOT NULL" in ddl[0] && "props  TEXT NOT NULL" in ddl[0], ddl[0])
         assertTrue("REFERENCES g_node (nid) ON DELETE CASCADE" in ddl[1] && "DEFAULT '{}'" in ddl[1], ddl[1])
         // Keys that never give a deleted row's id again (#713).
         assertTrue("nid    INTEGER PRIMARY KEY AUTOINCREMENT," in ddl[0], ddl[0])
         assertTrue("eid   INTEGER PRIMARY KEY AUTOINCREMENT," in ddl[1], ddl[1])
         assertTrue("PRIMARY KEY (kind, label, properties)" in ddl[2], ddl[2])
-        assertEquals(listOf("CREATE INDEX IF NOT EXISTS g_edge_src ON g_edge (src, type)", "CREATE INDEX IF NOT EXISTS g_edge_dst ON g_edge (dst, type)"), ddl.drop(3))
+        assertEquals(listOf("CREATE INDEX IF NOT EXISTS g_edge_src ON g_edge (src, type)", "CREATE INDEX IF NOT EXISTS g_edge_dst ON g_edge (dst, type)"), ddl.subList(3, 5))
+        // Then the count store and the lock table, whose names carry the store layout, the lock's one row put in it.
+        assertTrue(ddl[5].startsWith("CREATE TABLE IF NOT EXISTS g_count2 ("), ddl[5])
+        assertTrue(ddl[6].startsWith("CREATE TABLE IF NOT EXISTS g_count2_delta ("), ddl[6])
+        assertEquals("CREATE INDEX IF NOT EXISTS g_count2_dk ON g_count2_delta (kind, name)", ddl[7])
+        assertEquals("CREATE TABLE IF NOT EXISTS g_lock2 (name TEXT PRIMARY KEY)", ddl[8])
+        assertEquals("INSERT OR IGNORE INTO g_lock2 (name) VALUES ('schema')", ddl[9])
+        assertEquals(10, ddl.size)
     }
 
     @Test

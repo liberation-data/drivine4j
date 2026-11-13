@@ -4,8 +4,11 @@ import org.drivine.DrivineException
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.cypher.CompilerException
 import org.drivine.cypher.sql.CompiledCypher
+import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqlCypherCompiler
+import org.drivine.cypher.sql.SqlFragment
 import org.drivine.cypher.sql.SqliteCypherCompiler
 
 /**
@@ -50,6 +53,41 @@ internal object CypherCompile {
         val nullsEqual = !compiler.callsStoredNullsEqual || nullsEqualStored()
         val era = !compiler.callsStoredEra || eraStored()
         if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = emptySet(), encoder = JacksonEncoder).compile(cypher, values, typed)
+    }
+
+    /** The compiler of one Postgres statement's fragments over the graph [graph]: see [FragmentCompiler]. */
+    fun postgresFragments(graph: String): FragmentCompiler = refusing { FragmentCompiler(PostgresCypherCompiler(graph, JacksonEncoder)) }
+
+    /** The compiler of one SQLite statement's fragments over the graph [graph]: see [FragmentCompiler]. */
+    fun sqliteFragments(graph: String): FragmentCompiler = refusing { FragmentCompiler(SqliteCypherCompiler(graph, JacksonEncoder)) }
+
+    /**
+     * The compiler of one Oracle statement's fragments over the graph [graph], which reads an equality of a label's
+     * property through the labelled index of each of [indexedProperties]: see [FragmentCompiler]. A fragment is written
+     * into the object manager's own SQL, which calls the functions the store keeps as its statements always have.
+     */
+    fun oracleFragments(graph: String, indexedProperties: Set<Pair<String, String>>): FragmentCompiler = refusing {
+        FragmentCompiler(OracleCypherCompiler(graph, nullsEqualStored = true, eraStored = true, indexedProperties = indexedProperties, encoder = JacksonEncoder))
+    }
+
+    /**
+     * The module's compiler of the fragments of one statement the object manager writes (see
+     * `org.drivine.backend.sql.Fragments`): a condition, a value or an order's terms, each compiled as [SqlCypherCompiler]
+     * compiles it, and its refusal thrown as drivine4j's, as [refusing] throws a whole statement's.
+     */
+    class FragmentCompiler internal constructor(private val compiler: SqlCypherCompiler) {
+
+        /** See [SqlCypherCompiler.condition]. */
+        fun condition(cypher: String, variables: Map<String, FragmentVariable>, parameters: Map<String, Any?> = emptyMap()): SqlFragment =
+            refusing { compiler.condition(cypher, variables, drained(parameters)) }
+
+        /** See [SqlCypherCompiler.value]. */
+        fun value(cypher: String, variables: Map<String, FragmentVariable>, parameters: Map<String, Any?> = emptyMap()): SqlFragment =
+            refusing { compiler.value(cypher, variables, drained(parameters)) }
+
+        /** See [SqlCypherCompiler.order]. */
+        fun order(cypher: String, descending: Boolean, variables: Map<String, FragmentVariable>, parameters: Map<String, Any?> = emptyMap()): SqlFragment =
+            refusing { compiler.order(cypher, descending, variables, drained(parameters)) }
     }
 
     /**

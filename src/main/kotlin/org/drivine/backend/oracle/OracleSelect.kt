@@ -2,8 +2,7 @@ package org.drivine.backend.oracle
 
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
-import org.drivine.cypher.sql.OracleCypherCompiler
-import org.drivine.connection.JacksonEncoder
+import org.drivine.connection.CypherCompile
 import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
@@ -77,9 +76,7 @@ internal class OracleSelect(
 
     private val rows = OracleRowSources(graph, scope)
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]): see [hinted]. */
-    private val fragments = Fragments(
-        OracleCypherCompiler(graph.name, nullsEqualStored = true, eraStored = true, indexedProperties = labelled.leading, encoder = JacksonEncoder), scope,
-    )
+    private val fragments = Fragments(CypherCompile.oracleFragments(graph.name, labelled.leading), scope)
     private val predicates = OraclePredicates(scope, rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
@@ -131,7 +128,8 @@ internal class OracleSelect(
         val paths = spec.keys.filter { it.source is KeySource.Path }
         val pairs = scope.row("pair")
         val nodes = paths.associateWith { scope.row(it.column) }
-        val filtered = listOfNotNull(predicate(spec.conditions))
+        // A labelled index answers a condition on the roots where they are read by their labels, and not where they are reached by a path.
+        val filtered = listOfNotNull(predicate(spec.conditions, indexed = paths.isEmpty()))
 
         // The columns read through a node of the group that has the value: see the KDoc.
         val held = (query.orders.map { it.column } + spec.aggregates).filter { column ->

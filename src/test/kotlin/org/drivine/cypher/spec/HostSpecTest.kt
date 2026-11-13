@@ -10,6 +10,8 @@ import org.drivine.backend.sqlite.SqliteFunctions
 import org.drivine.connection.CypherCompile
 import org.drivine.cypher.spec.CypherSpec.Companion.expanded
 import org.drivine.cypher.sql.CompiledCypher
+import org.drivine.cypher.sql.Temporals
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.mapper.JdbcResultMapper
 import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
@@ -37,7 +39,8 @@ import kotlin.test.fail
  * it ([CypherCompile]), on SQLite, to SQL
  * that calls each function the case's steps call (for `regexp`, which SQLite calls for its `REGEXP` operator, SQL that holds the
  * operator), and one compiles, on each store its steps read, with the `nonFinite`
- * each read step says. The three libraries read the same file.
+ * each read step says. Each `key` step's temporal value has the sort key the module works out ([Temporals.key]), and one of its
+ * pairs makes a temporal value as the statement runs. The three libraries read the same file.
  *
  * As the shared module's HostSpecTest runs it: a step with an `error` must fail, with a message that holds it; a step
  * whose note holds [HELD] waits for layout 2, and must fail, so the hold comes off when it passes; and
@@ -57,8 +60,16 @@ class HostSpecTest {
     )
 
     private companion object {
-        /** The keys of each kind of step, beside its optional `note`: a function's result, its failure, its order, and a read. */
-        val SHAPES = setOf(setOf("function", "args", "result"), setOf("function", "args", "error"), setOf("function", "ascending"), setOf("read", "value"))
+        /**
+         * The keys of each kind of step, beside its optional `note`: a function's result, its failure, its order, a read, and a
+         * temporal value's sort key.
+         */
+        val SHAPES = setOf(
+            setOf("function", "args", "result"), setOf("function", "args", "error"), setOf("function", "ascending"), setOf("read", "value"), setOf("key", "result"),
+        )
+        val KEY = setOf("kind", "v")
+        /** A call in Cypher that makes a temporal value of a kind with a sort key, as a statement runs. */
+        val TEMPORAL_CALL = Regex("""\b(?:date|localtime|time|localdatetime|datetime)\s*\(""", RegexOption.IGNORE_CASE)
         val READ = setOf("store", "nonFinite", "column")
         /** Drivine's functions, and `regexp`, which SQLite calls, as `regexp(pattern, text)`, for its operator `text REGEXP pattern`. */
         val FUNCTION = Regex("drivine_[a-z_]+|regexp")
@@ -140,6 +151,20 @@ class HostSpecTest {
         assertContains(assertFails { check(Case("a case", steps = listOf(version, add))) }.message!!, "pairs no store case")
         // Beside another function's steps, it still needs no pair of its own.
         check(Case("a case", pairs = mapOf("writes.yaml" to listOf("NaN and the infinities written")), steps = listOf(version, add)))
+    }
+
+    @Test
+    fun `a key step gives the module's sort key, and one with another key, another shape or no pair that makes a temporal value fails`() {
+        val pairs = mapOf("temporal.yaml" to listOf("A sort key worked out as the statement runs"))
+        val step = mapOf("key" to mapOf("kind" to "date", "v" to "2024-01-01"), "result" to "10000020240101")
+        check(case(step, pairs = pairs))
+        check(case(mapOf("key" to mapOf("kind" to "duration", "v" to "P1D"), "result" to null), pairs = pairs))
+        assertFails { check(case(step + ("result" to "10000020240102"), pairs = pairs)) }
+        assertContains(assertFails { check(case(step + ("key" to mapOf("kind" to "date", "value" to "2024-01-01")), pairs = pairs)) }.message!!, "a key has the keys")
+        assertContains(assertFails { check(case(step + ("key" to mapOf("kind" to "day", "v" to "2024-01-01")), pairs = pairs)) }.message!!, "no temporal kind")
+        assertContains(assertFails { check(case(step - "result", pairs = pairs)) }.message!!, "a step has the keys")
+        val unrelated = mapOf("queries.yaml" to listOf("NaN and the infinities as parameters"))
+        assertContains(assertFails { check(case(step, pairs = unrelated)) }.message!!, "makes a temporal value as the statement runs")
     }
 
     @Test
@@ -228,6 +253,8 @@ class HostSpecTest {
                     val read = step["read"] as Map<*, *>
                     require(read.keys == READ) { "$where: a read has the keys $READ" }
                     read(connection, step, where)
+                } else if ("key" in keys) {
+                    key(step, where)
                 } else if ((step["note"] as? String)?.contains(HELD) != true) {
                     function(connection, step, where)
                 } else {
@@ -303,6 +330,22 @@ class HostSpecTest {
         assertEquals(canonical(expanded(step["value"])), canonical(rows.single().values.single()), where)
     }
 
+    /**
+     * The step's `key`, the kind's word and canonical text of a temporal value, has the sort key `result`, a text of digits,
+     * or null for a duration: as the module works it out ([Temporals.key]), which every store's SQL and drivine4j's writes
+     * ([org.drivine.query.JdbcParameterCoercer], through [ValueLayout.tag]) give.
+     */
+    private fun key(step: Map<String, Any?>, where: String) {
+        val key = step["key"] as? Map<*, *> ?: throw IllegalArgumentException("$where: a key is a map")
+        require(key.keys == KEY) { "$where: a key has the keys $KEY" }
+        val kind = requireNotNull(ValueLayout.kindOf(key["kind"] as String)) { "$where: no temporal kind ${key["kind"]}" }
+        val v = key["v"] as String
+        val result = step["result"]
+        assertEquals(result, Temporals.key(kind, v), where)
+        // The tag a value is written as carries the same key.
+        assertEquals(result, ValueLayout.tagMap(kind, v)[ValueLayout.KEY], where)
+    }
+
     /** A column's text: a text, or a list of texts (and `$repeat`s) written one after the other. */
     private fun column(value: Any?): String = when (value) {
         is String -> value
@@ -339,7 +382,9 @@ class HostSpecTest {
 
     /**
      * The case's pairs are cases of their files, and rely on its steps: one of them compiles on SQLite to SQL that calls each
-     * function its steps call (for `regexp`, SQL that holds the operator `REGEXP`), and one compiles on each store its steps read with the `nonFinite` each read step says.
+     * function its steps call (for `regexp`, SQL that holds the operator `REGEXP`), one compiles on each store its steps read
+     * with the `nonFinite` each read step says, and, for its `key` steps, one that compiles on SQLite makes a temporal value
+     * as the statement runs.
      */
     private fun paired(case: Case) {
         // drivine_host_version's steps need no pair, as no compiled statement calls it: a case of them alone pairs none.
@@ -363,6 +408,11 @@ class HostSpecTest {
                 else -> fail("${case.name}: no compiler for $store")
             }
             assertTrue(statements.any { it.nonFinite == nonFinite }, "${case.name}: no step of ${case.pairs} compiles on $store with nonFinite $nonFinite")
+        }
+        if (case.steps.any { "key" in it }) {
+            val making = paired.flatMap { it.steps }.filter { it.runsOn("sqlite") && TEMPORAL_CALL.containsMatchIn(it.cypher) }
+                .any { step -> runCatching { CypherCompile.sqlite("g", step.cypher, expanded(step.parameters)) }.isSuccess }
+            assertTrue(making, "${case.name}: no step of ${case.pairs} compiles on SQLite and makes a temporal value as the statement runs")
         }
     }
 

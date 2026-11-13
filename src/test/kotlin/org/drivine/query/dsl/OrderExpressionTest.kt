@@ -2,7 +2,13 @@ package org.drivine.query.dsl
 
 import org.drivine.backend.CypherBackend
 import org.drivine.backend.oracle.OracleBackend
+import org.drivine.backend.GraphStatement
+import org.drivine.connection.CypherCompile
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.cypher.sql.FragmentVariable
+import org.drivine.cypher.sql.Temporal
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.dsl.temporal.TemporalOrder
 import org.drivine.query.dsl.temporal.epochSeconds
@@ -251,19 +257,34 @@ class OrderExpressionTest {
 
     // ----- Oracle -----
 
+    /** The module's compiler of the fragments of an Oracle statement over the root `n_`, as the backend's is. */
+    private val fragments = CypherCompile.oracleFragments(JdbcConnectionProvider.DEFAULT_GRAPH, emptySet())
+    private val root = mapOf("n" to FragmentVariable.Node("n_", listOf("Belief")))
+
+    /** The condition the module compiles [cypher] to over the root, with [parameters] by the names the order's fragment gives them. */
+    private fun condition(cypher: String, parameters: Map<String, Any?> = emptyMap()) = fragments.condition(cypher, root, parameters).terms.single()
+
+    /** The values [statement] binds, each read from the JSON text the module binds it as. */
+    private fun boundValues(statement: GraphStatement): List<Any?> =
+        statement.bindings.values.map { value -> if (value is String) Neo4jObjectMapper.instance.readValue(value, Any::class.java) else value }
+
+    /** The tag the store layout holds [asOf] as, which a statement binds for it. */
+    private val asOfTag = ValueLayout.tagMap(Temporal.DATE_TIME, asOf.toString())
+
     @Test
-    fun `on Oracle the expression is SQL over the properties read as their fields declare, with every value bound`() {
+    fun `on Oracle the expression is the Cypher Neo4j is given, compiled by the module, with every value bound`() {
         val statement = oracle().loadAll(Belief::class.java, beliefs { orderBy { query.score().desc(); query.id.asc() }; limit(3) }).statement
         val order = statement.statement.substringAfterLast("ORDER BY ")
 
-        assertTrue(order.startsWith("CASE WHEN (JSON_VALUE(n_.props, '\$.validFrom' RETURNING TIMESTAMP WITH TIME ZONE) > \$_p"), order)
-        assertContains(order, "COALESCE(JSON_VALUE(n_.props, '\$.boost' RETURNING NUMBER), \$_p")
-        assertContains(order, "EXP(((-JSON_VALUE(n_.props, '\$.decay' RETURNING NUMBER)) * FLOOR(((\$_p")
-        assertContains(order, "JSON_VALUE(n_.props, '\$.lastReadSeconds' RETURNING NUMBER)) / \$_p")
-        assertContains(order, "END DESC, JSON_VALUE(n_.props, '\$.id') ASC")
+        // The properties the expression reads, and then the id, which breaks its ties.
+        listOf("validFrom", "validTo", "confidence", "boost", "decay", "lastReadSeconds").forEach { assertContains(order, "'\$.$it") }
+        assertTrue(order.lastIndexOf("'\$.id") > order.lastIndexOf(" DESC"), order)
+        // Every value bound, as the module binds a fragment's: a moment as the store layout's tag, a number as JSON.
         assertFalse("86400" in statement.statement)
-        assertTrue(86400 in statement.bindings.values)
-        assertTrue(asOf in statement.bindings.values)
+        val bound = boundValues(statement)
+        assertTrue(86400 in bound, "$bound")
+        assertTrue(bound.any { it is Number && it.toLong() == asOfSeconds }, "$bound")
+        assertTrue(asOfTag in bound, "$bound")
     }
 
     @Test
@@ -277,55 +298,65 @@ class OrderExpressionTest {
                 limit(3)
             },
         ).statement
-        val written = Regex("""\$(_p\d+)""").findAll(statement.statement).map { it.groupValues[1] }.toSet()
+        val written = Regex("""\$(_[A-Za-z0-9_]+)""").findAll(statement.statement).map { it.groupValues[1] }.toSet()
 
         assertEquals(statement.bindings.keys, written, "every name written is bound, and every bound name is written")
-        listOf(0.1, 2, 3, asOf, 0.0, 1.0, asOfSeconds, 86400).forEach { assertTrue(it in statement.bindings.values, "$it is bound") }
+        // The where clause's by the names the module gives a condition's, the order's by its fragment's.
+        assertTrue(statement.bindings.keys.any { it.startsWith("_cy_param_") } && statement.bindings.keys.any { it.startsWith("_cy_f") }, "${statement.bindings.keys}")
+        val bound = boundValues(statement)
+        // A double as the extended JSON the module binds it as, which keeps its kind.
+        listOf(mapOf("\$numberDouble" to "0.1"), 2, 3, 86400).forEach { assertTrue(it in bound, "$it is bound: $bound") }
+        assertTrue(asOfTag in bound, "$bound")
     }
 
     @Test
-    fun `on Oracle a moment is read as seconds where a field declares it, and refused where none does`() {
+    fun `on Oracle a moment is read as seconds as the module reads one, whether a field declares it or not`() {
         val order = oracle().loadAll(Belief::class.java, beliefs { orderBy { epochSeconds(query.lastRead).desc().nullsLast() } })
             .statement.statement.substringAfterLast("ORDER BY ")
-        assertContains(order, "SYS_EXTRACT_UTC(JSON_VALUE(n_.props, '\$.lastRead' RETURNING TIMESTAMP WITH TIME ZONE))")
-        assertTrue(order.trimEnd().endsWith("DESC NULLS LAST"), order)
+        assertContains(order, "'\$.lastRead")
+        assertTrue(order.trimEnd().endsWith(" DESC"), order)
 
+        // The module reads the stored value's kind as the statement runs, so a moment no field declares is read alike.
         val undeclared = PropertyReference<Instant>("n", "seenAt")
-        assertFailsWith<UnsupportedOrderFunctionException> {
-            oracle().loadAll(Belief::class.java, beliefs { orderBy { epochSeconds(undeclared).desc() } })
-        }
+        val read = oracle().loadAll(Belief::class.java, beliefs { orderBy { epochSeconds(undeclared).desc() } }).statement.statement
+        assertContains(read.substringAfterLast("ORDER BY "), "'\$.seenAt")
     }
 
     @Test
-    fun `on Oracle a property no field declares is tested for a value as text, which counts as one`() {
+    fun `on Oracle a property no field declares is tested for a value as Cypher tests it`() {
         val note = PropertyReference<String>("n", "note")
-        val order = oracle().loadAll(Belief::class.java, beliefs { orderBy { case(note.hasValue() then 1, otherwise = 0).desc() } })
-            .statement.statement.substringAfterLast("ORDER BY ")
+        val statement = oracle().loadAll(Belief::class.java, beliefs { orderBy { case(note.hasValue() then 1, otherwise = 0).desc() } }).statement
 
-        assertContains(order, "CASE WHEN JSON_VALUE(n_.props, '\$.note') IS NOT NULL THEN")
+        assertContains(statement.statement.substringAfterLast("ORDER BY "), condition("n.`note` IS NOT NULL"))
+        assertEquals(listOf<Any?>(1, 0), boundValues(statement))
     }
 
     @Test
-    fun `on Oracle a property no field declares is read as the kind of the value it is compared with`() {
+    fun `on Oracle a property no field declares is compared as Cypher compares it with the value`() {
         val note = PropertyReference<String>("n", "note")
         val seenAt = PropertyReference<Instant>("n", "seenAt")
         val rank = PropertyReference<Int>("n", "rank")
-        val order = oracle().loadAll(
+        val statement = oracle().loadAll(
             Belief::class.java,
             beliefs { orderBy { case(note equalTo "x" then 1, (seenAt above asOf) then 2, (rank atLeast 3) then 3, otherwise = 0).desc() } },
-        ).statement.statement.substringAfterLast("ORDER BY ")
-
-        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.note') = \$_p")
-        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.seenAt' RETURNING TIMESTAMP WITH TIME ZONE) > \$_p")
-        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.rank.numberOnly()' RETURNING NUMBER) >= \$_p")
+        ).statement
+        val order = statement.statement.substringAfterLast("ORDER BY ")
+        // Each property read as it is stored, whatever its kind, and each value bound as the module binds it: the moment as its tag.
+        listOf("note", "seenAt", "rank").forEach { assertContains(order, "'\$.$it") }
+        val bound = boundValues(statement)
+        listOf("x", 3, asOfTag).forEach { assertTrue(it in bound, "$it is bound: $bound") }
     }
 
     @Test
-    fun `on Oracle an expression places its nulls on its term`() {
-        val order = oracle().loadAll(Belief::class.java, beliefs { orderBy { coalesce(query.boost, query.decay).asc().nullsFirst() } })
-            .statement.statement.substringAfterLast("ORDER BY ")
+    fun `on Oracle an expression places its nulls by a term of its own before it`() {
+        val first = oracle().loadAll(Belief::class.java, beliefs { orderBy { coalesce(query.boost, query.decay).asc().nullsFirst() } })
+            .statement.statement.substringAfterLast("ORDER BY ").trimEnd()
+        val unplaced = oracle().loadAll(Belief::class.java, beliefs { orderBy { coalesce(query.boost, query.decay).asc() } })
+            .statement.statement.substringAfterLast("ORDER BY ").trimEnd()
 
-        assertTrue(order.trimEnd().startsWith("COALESCE(JSON_VALUE(n_.props, '\$.boost' RETURNING NUMBER), JSON_VALUE(n_.props, '\$.decay' RETURNING NUMBER)) ASC NULLS FIRST"), order)
+        // The value's terms, after a term of whether it is null, descending, which sorts a null first.
+        assertTrue(first.endsWith(", $unplaced"), first)
+        assertTrue(first.substring(0, first.length - unplaced.length).trimEnd().endsWith("DESC,"), first)
     }
 
     @Test
@@ -336,8 +367,8 @@ class OrderExpressionTest {
         ).statement
         val order = statement.statement.substringAfterLast("ORDER BY ")
 
-        assertTrue(order.startsWith("(JSON_VALUE(belief_.props, '\$.confidence' RETURNING NUMBER) * \$_p"), order)
-        assertTrue(2 in statement.bindings.values)
+        assertContains(order, "belief_.props, '\$.confidence")
+        assertTrue(2 in boundValues(statement))
         assertContains(statement.statement, "'\$.weight'")
     }
 

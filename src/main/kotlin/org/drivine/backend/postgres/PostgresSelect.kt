@@ -1,7 +1,6 @@
 package org.drivine.backend.postgres
 
-import org.drivine.connection.JacksonEncoder
-import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.connection.CypherCompile
 import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
@@ -66,7 +65,7 @@ internal class PostgresSelect(
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = PostgresRowSources(graph, scope)
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
-    private val fragments = Fragments(PostgresCypherCompiler(graph.name, JacksonEncoder), scope)
+    private val fragments = Fragments(CypherCompile.postgresFragments(graph.name), scope)
     private val predicates = PostgresPredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 

@@ -13,7 +13,13 @@ import sample.groups.Role
 import sample.groups.User
 import org.drivine.annotation.Direction
 import org.drivine.annotation.NodeFragment
+import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.backend.GraphBackend
+import org.drivine.connection.CypherCompile
+import org.drivine.cypher.sql.FragmentVariable
+import org.drivine.cypher.sql.Temporal
+import org.drivine.cypher.store.ValueLayout
+import org.drivine.cypher.store.OracleSql as StoreSql
 import org.drivine.connection.DatabaseType
 import org.drivine.manager.CascadeType
 import org.drivine.manager.NodeRef
@@ -78,6 +84,20 @@ class OracleBackendTest {
     private fun steps(bindings: Map<String, Any?>): List<Map<String, Any?>> = bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
 
     private fun String.squashed(): String = replace(Regex("\\s+"), " ")
+
+    /** The module's compiler of the fragments of a statement over the graph `g`, which has no labelled index. */
+    private val fragments = CypherCompile.oracleFragments("g", emptySet())
+
+    /** The terms the module orders the node [row] by its property [key], as Cypher orders it, descending where [descending]. */
+    private fun terms(row: String, key: String, descending: Boolean = false, cypher: String = "n.`$key`"): String =
+        fragments.order(cypher, descending, mapOf("n" to FragmentVariable.Node(row))).terms.joinToString(", ") { it.squashed() }
+
+    /** The value of the property [key] of the node [row], as the module reads it to group or return by. */
+    private fun value(row: String, key: String): String = fragments.value("n.`$key`", mapOf("n" to FragmentVariable.Node(row))).terms.single().squashed()
+
+    /** The condition the module compiles [cypher] to over the node [row] of [labels], given [parameters]. */
+    private fun condition(row: String, labels: List<String>, cypher: String, parameters: Map<String, Any?>): String =
+        fragments.condition(cypher, mapOf("n" to FragmentVariable.Node(row, labels)), parameters).terms.single().squashed()
 
     // ----- Making the store -----
 
@@ -158,15 +178,16 @@ class OracleBackendTest {
     fun `an order that places its nulls says so in SQL, and is refused under a seek`() {
         fun ordered(order: OrderSpec) = backend().loadAll(Claim::class.java, query { orders += order }).statement.statement.substringAfterLast("ORDER BY ")
 
-        assertTrue(ordered(OrderSpec("n.text", DESC).nullsLast()).startsWith("JSON_VALUE(n_.props, '$.text') DESC NULLS LAST"))
-        assertTrue(ordered(OrderSpec("n.text", ASC).nullsFirst()).startsWith("JSON_VALUE(n_.props, '$.text') ASC NULLS FIRST"))
-        assertFalse("NULLS" in ordered(OrderSpec("n.text", DESC)))
-        // A property no field declares is two terms, as a number and as text, and a text is null as a
-        // number: its nulls are placed by a term of their own, and the two are as they are without one.
-        val unplaced = "JSON_VALUE(n_.props, '$.undeclared.numberOnly()' RETURNING NUMBER) DESC, JSON_VALUE(n_.props, '$.undeclared') DESC"
-        assertTrue(ordered(OrderSpec("n.undeclared", DESC)).startsWith(unplaced))
-        assertTrue(ordered(OrderSpec("n.undeclared", DESC).nullsLast()).startsWith("CASE WHEN JSON_VALUE(n_.props, '$.undeclared') IS NULL THEN 1 ELSE 0 END, $unplaced"))
-        assertTrue(ordered(OrderSpec("n.undeclared", DESC).nullsFirst()).startsWith("CASE WHEN JSON_VALUE(n_.props, '$.undeclared') IS NULL THEN 0 ELSE 1 END, $unplaced"))
+        // Its nulls are placed by a term of their own, of whether the value is null, before the value's own terms, as Cypher
+        // orders them; a property no field declares alike.
+        for (key in listOf("text", "undeclared")) {
+            fun isNull(descending: Boolean) = terms("n_", key, descending, "n.`$key` IS NULL")
+            val unplaced = terms("n_", key, descending = true)
+            assertTrue(ordered(OrderSpec("n.$key", DESC)).squashed().startsWith(unplaced), key)
+            assertTrue(ordered(OrderSpec("n.$key", DESC).nullsLast()).squashed().startsWith("${isNull(false)}, $unplaced"), key)
+            assertTrue(ordered(OrderSpec("n.$key", DESC).nullsFirst()).squashed().startsWith("${isNull(true)}, $unplaced"), key)
+            assertTrue(ordered(OrderSpec("n.$key", ASC).nullsFirst()).squashed().startsWith("${isNull(true)}, ${terms("n_", key)}"), key)
+        }
 
         val underSeek = query {
             orders += OrderSpec("n.text", DESC).nullsFirst()
@@ -203,8 +224,11 @@ class OracleBackendTest {
         })
 
         assertTrue(seeking.keyset)
-        assertContains(seeking.statement.statement, "JSON_VALUE(n_.props, '$.text') < \$_p0")
-        assertEquals("m", seeking.statement.bindings["_p0"])
+        // The cursor's value bound as JSON text, by the name the module gives the seek's fragment, and compared as Cypher does.
+        val (cursor, value) = seeking.statement.bindings.entries.single { it.key.startsWith("_cy_") }
+        assertEquals("\"m\"", value)
+        val seek = condition("n_", listOf("Claim"), "n.`text` < \$${cursor.removePrefix("_cy_")}", mapOf(cursor.removePrefix("_cy_") to "m"))
+        assertContains(seeking.statement.statement.squashed(), seek)
         assertFalse(seeking.statement.statement.contains("OFFSET"))
 
         assertFalse(paging.keyset)
@@ -224,7 +248,7 @@ class OracleBackendTest {
         val sql = plan.statement.statement.squashed()
         // The roots are ordered by their own property alone; the list is ordered inside its own array.
         val rootOrder = sql.substringAfterLast("ORDER BY ")
-        assertTrue(rootOrder.startsWith("JSON_VALUE(claim_.props, '$.text')"), rootOrder)
+        assertTrue(rootOrder.startsWith(terms("claim_", "text")), rootOrder)
         assertFalse("'$.name'" in rootOrder, rootOrder)
         assertContains(sql.substringBeforeLast("ORDER BY "), "'$.name'")
     }
@@ -334,7 +358,8 @@ class OracleBackendTest {
         val plan = backend(store(made(null))).matching(ArticleNode::class.java, null, null, "graph", topK = 3, threshold = 0.0)
 
         assertFalse("JSON_TEXTCONTAINS" in plan.cypher)
-        assertContains(plan.cypher, "LOWER(JSON_VALUE(c.props, '$.body' RETURNING CLOB)) AS text")
+        // The text a search reads of the property: a temporal value's tag by its text, as the module reads it.
+        assertContains(plan.cypher, "LOWER(${StoreSql.searchedText("c", "body")}) AS text")
         assertTrue(3 in plan.bindings.values, "the number asked for is bound")
     }
 
@@ -366,11 +391,14 @@ class OracleBackendTest {
         val statement = backend().deleteAll(ClaimView::class.java, query { conditions += PropertyCondition("people.name", ComparisonOperator.EQUALS, "Ada") })
         val sql = statement.statement.squashed()
 
-        assertContains(sql, "EXECUTE IMMEDIATE 'DELETE FROM g_node claim_ WHERE")
-        assertContains(sql, "FROM GRAPH_TABLE (g MATCH")
-        assertContains(sql, "JSON_VALUE(people_.props, ''$.name'') = :b0)")
-        assertContains(sql, "' USING \$_p0; v_count := SQL%ROWCOUNT;")
-        assertEquals(mapOf("_p0" to "Ada"), statement.bindings)
+        // The fragment's hints in the DELETE, and the related node's condition the module's EXISTS, its value the block's bind.
+        assertContains(sql, "EXECUTE IMMEDIATE 'DELETE /*+ NO_JSON_TABLE_TRANSFORM */ FROM g_node claim_ WHERE")
+        assertContains(sql, "AND EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
+        assertContains(sql, "e2.src = claim_.nid")
+        assertContains(sql, "e2.type = ''MENTIONS''")
+        assertContains(sql, "= JSON(:b0)")
+        assertContains(sql, "' USING \$_cy_param_people_name_0; v_count := SQL%ROWCOUNT;")
+        assertEquals(mapOf("_cy_param_people_name_0" to "\"Ada\""), statement.bindings)
     }
 
     @Test
@@ -495,16 +523,19 @@ class OracleBackendTest {
             step,
         )
         // The predicate's values are the block's own parameters, handed to the query in the order it names them.
-        assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK, "_p0", "_p1"), patch.bindings.keys)
-        assertEquals(setOf("one", "Ada"), setOf(patch.bindings["_p0"], patch.bindings["_p1"]))
+        val text = "_cy_param_claim_text_0"
+        val name = "_cy_param_people_name_1"
+        assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK, text, name), patch.bindings.keys)
+        assertEquals(listOf<Any?>("\"one\"", "\"Ada\""), listOf(patch.bindings[text], patch.bindings[name]))
         val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
-        assertContains(asked.squashed(), "SELECT COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
-        assertContains(asked, "GRAPH_TABLE (g")
+        // The fragments' hints in the query's SELECT, and a condition on a related node the module's EXISTS.
+        assertContains(asked.squashed(), "SELECT /*+ NO_JSON_TABLE_TRANSFORM */ COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
+        assertContains(asked, "EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
         // Inside the text a quote is doubled, and no parameter of the block is named.
-        assertContains(asked, "e.type = ''MENTIONS''")
-        assertFalse("\$_p" in asked)
+        assertContains(asked, "e2.type = ''MENTIONS''")
+        assertFalse("\$_cy" in asked)
         assertEquals(listOf(":b0", ":b1", ":b2"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
-        assertEquals(listOf("v_nid", "\$_p0", "\$_p1"), patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";").split(", ").let { used -> listOf(used[0]) + used.drop(1).sorted() })
+        assertEquals(listOf("v_nid", "\$$text", "\$$name"), patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";").split(", ").let { used -> listOf(used[0]) + used.drop(1).sorted() })
         assertContains(patch.statement, "IF v_met > 0 THEN\n            write_props(op, v_o);")
         assertContains(patch.statement, "CASE WHEN v_met = 0 THEN '-' WHEN v_same = 0 THEN '1' ELSE '0' END")
     }
@@ -519,7 +550,7 @@ class OracleBackendTest {
 
         val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         assertContains(asked, "cost\$_p0")
-        assertEquals("v_nid, \$_p0", patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";"))
+        assertEquals("v_nid, \$_cy_param_n_name_0", patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";"))
         assertEquals(listOf(":b0", ":b1"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
     }
 
@@ -696,38 +727,45 @@ class OracleBackendTest {
     @Test
     fun `a grouped read by a property groups the roots, and the statement filters, orders and returns its rows`() {
         val groups = backend().groups(Feedback::class.java, pageVotes())
+        val sql = groups.statement.squashed()
 
-        assertEquals(
-            """
-            SELECT JSON_OBJECT( 'k0' VALUE g_.k0, 'k0e' VALUE g_.k0e, 'a0' VALUE g_.a0, 'a1' VALUE g_.a1, 'a2' VALUE g_.a2 RETURNING JSON) AS result
-            FROM ( SELECT JSON_VALUE(n_.props, '$.page') AS k0, CASE WHEN JSON_EXISTS(n_.props, '$.page?(@ == "")') THEN 1 ELSE 0 END AS k0e, COUNT(*) AS a0,
-            COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.helpful') = ${'$'}_p0 THEN 1 ELSE 0 END), 0) AS a1,
-            COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.helpful') = ${'$'}_p1 THEN 1 ELSE 0 END), 0) AS a2
-            FROM GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == "GroupFeedback")')) COLUMNS (n_.props)) n_
-            GROUP BY JSON_VALUE(n_.props, '$.page'), CASE WHEN JSON_EXISTS(n_.props, '$.page?(@ == "")') THEN 1 ELSE 0 END ) g_
-            WHERE g_.a0 >= ${'$'}_p2
-            ORDER BY CASE WHEN g_.k0 IS NULL AND g_.k0e = 0 THEN 1 ELSE 0 END, g_.k0e DESC, g_.k0 ASC
-            """.trimIndent().squashed(),
-            groups.statement.squashed(),
-        )
-        // A boolean is compared as the text JSON writes it.
-        assertEquals(mapOf<String, Any?>("_p0" to "true", "_p1" to "false", "_p2" to 3), groups.bindings)
+        // The fragments' hints in the outermost SELECT, and there alone.
+        assertTrue(sql.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM */ JSON_OBJECT( 'k0' VALUE g_.k0, 'a0' VALUE g_.a0, 'a1' VALUE g_.a1, 'a2' VALUE g_.a2 RETURNING JSON) AS result"), sql)
+        assertEquals(1, Regex(Regex.escape("/*+")).findAll(sql).count(), sql)
+        // Grouped by the key's value as the module reads it, whatever kind it is.
+        val page = value("n_", "page")
+        assertContains(sql, "SELECT $page AS k0, COUNT(*) AS a0, ")
+        assertContains(sql, "GROUP BY $page ) g_")
+        // Each filtered count's condition the DSL's Cypher compiled by the module, its value bound by the name it gives it.
+        fun helpful(i: Int, value: Boolean) =
+            condition("n_", listOf("GroupFeedback"), "n.helpful = \$param_n_helpful_$i", mapOf("param_n_helpful_$i" to value))
+        assertContains(sql, "COALESCE(SUM(CASE WHEN ${helpful(0, true)} THEN 1 ELSE 0 END), 0) AS a1")
+        assertContains(sql, "COALESCE(SUM(CASE WHEN ${helpful(1, false)} THEN 1 ELSE 0 END), 0) AS a2")
+        // Ordered by the key as Cypher orders it, read from a node of the group that holds it.
+        assertTrue(sql.endsWith("WHERE g_.a0 >= \$_p2 ORDER BY ${terms("k0_holder_", "page")}"), sql)
+        assertEquals(mapOf<String, Any?>("_cy_param_n_helpful_0" to "true", "_cy_param_n_helpful_1" to "false", "_p2" to 3), groups.bindings)
     }
 
     @Test
     fun `a grouped read by a node reads the distinct pairs of a root and its key node, and joins each back for what is read of it`() {
         val sql = backend().groups(Message::class.java, topUsers()).statement.squashed()
 
-        // The where is tested in the pattern, on the node the path starts from.
-        assertContains(sql, "MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupMessage\")') AND JSON_VALUE(n_.props, '$.role') = ${'$'}_p1 AND ")
+        assertContains(sql, "MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupMessage\")')) <-")
         assertContains(sql, "<-[e1_1 IS edge WHERE e1_1.type = 'HAS_MESSAGE']- (via_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(via_.labels), ']'), '[') || ',\"', ',\"GroupSession\",\"') > 0)")
         assertContains(sql, "-[e1_2 IS edge WHERE e1_2.type = 'OWNED_BY']-> (k0_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(k0_.labels), ']'), '[') || ',\"', ',\"GroupUser\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(k0_.labels), ']'), '[') || ',\"', ',\"GroupPerson\",\"') > 0)")
         assertContains(sql, "SELECT DISTINCT r.nid, r.k0 FROM GRAPH_TABLE (g")
-        assertContains(sql, "COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON n_.nid = pair_.nid GROUP BY pair_.k0 ) g_")
-        assertContains(sql, "COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.role') = ${'$'}_p0 THEN JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) END), 0) AS a1")
-        // The key's node is joined back for its document, and gives the order its last term.
+        // Each pair's root joined back by the keys Oracle keeps, and the where the module's condition on it, the path's start.
+        val joined = "COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON (n_.nid = pair_.nid + 0 AND pair_.nid = n_.nid + 0) WHERE "
+        assertContains(sql, joined)
+        val where = sql.substringAfter(joined).substringBefore(") n_ GROUP BY").substringBefore("GROUP BY pair_.k0")
+        assertContains(where, "JSON(\$_cy_param_n_role_0)")
+        assertContains(where, "\$_cy_param_n_createdAt_1")
+        assertContains(sql, "GROUP BY pair_.k0 ) g_")
+        assertContains(sql, "THEN JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) END), 0) AS a1")
+        // The key's node is joined back for its document, and gives the order its last term, its id as Cypher orders it.
         assertContains(sql, "'k0' VALUE JSON_TRANSFORM(k0_.props, SET '$.labels' = k0_.labels, SET '$.\"__drivine.stamp\"' = k0_.stamp)")
-        assertContains(sql, "JOIN g_node k0_ ON k0_.nid = g_.k0 ORDER BY g_.a0 DESC, JSON_VALUE(k0_.props, '$.id') ASC OFFSET ${'$'}_p3 ROWS FETCH NEXT ${'$'}_p4 ROWS ONLY")
+        assertContains(sql, "JOIN g_node k0_ ON k0_.nid = g_.k0")
+        assertTrue(sql.endsWith("ORDER BY g_.a0 DESC, ${terms("k0_", "id")} OFFSET ${'$'}_p3 ROWS FETCH NEXT ${'$'}_p4 ROWS ONLY"), sql)
     }
 
     @Test
@@ -755,15 +793,20 @@ class OracleBackendTest {
         val groups = backend().groups(Message::class.java, spec)
         val sql = groups.statement.squashed()
 
-        assertContains(sql, "WHERE e1_1.eid <> e1_2.eid COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON n_.nid = pair_.nid WHERE JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) IN (SELECT v FROM JSON_TABLE(")
-        // The condition a pattern can hold is in the pattern, and the one written with a subquery is not.
-        assertContains(sql, "AND JSON_VALUE(n_.props, '$.role') = ")
-        assertFalse("IN (SELECT" in sql.substringAfter("MATCH").substringBefore("COLUMNS"))
-        assertContains(sql, ") g_ JOIN g_node k0_ ON k0_.nid = g_.k0 WHERE g_.a0 = ")
+        val joined = "WHERE e1_1.eid <> e1_2.eid COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON (n_.nid = pair_.nid + 0 AND pair_.nid = n_.nid + 0) WHERE "
+        assertContains(sql, joined)
+        // The where is the module's, on the root's own row: the test against the list reads the bound list there, and not in the pattern.
+        assertContains(sql.substringAfter(joined), "JSON_TABLE(JSON(\$_cy_param_n_tokens_1)")
+        assertFalse("JSON_TABLE" in sql.substringAfter("MATCH").substringBefore("COLUMNS"))
+        assertEquals("[1,2]", groups.bindings["_cy_param_n_tokens_1"])
+        // The least value's node joined back, and the having compares its value with the moment, bound as its tag.
+        assertContains(sql, ") g_ JOIN g_node k0_ ON k0_.nid = g_.k0 LEFT JOIN g_node a0_holder_ ON (a0_holder_.nid = g_.a0r + 0 AND g_.a0r = a0_holder_.nid + 0) WHERE ")
+        val having = groups.bindings.entries.single { it.key.startsWith("_cy_f") }
+        assertEquals(Neo4jObjectMapper.instance.valueToTree<JsonNode>(ValueLayout.tagMap(Temporal.DATE_TIME, "2026-03-01T00:00:00Z")), Neo4jObjectMapper.instance.readTree(having.value as String))
     }
 
     @Test
-    fun `a key no field declares is grouped as its text, whether that is stored empty, and its number where it is one`() {
+    fun `a key no field declares is grouped by its value as the module reads it, whatever kind it is`() {
         val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
             val priority = keyOrNull(PropertyReference<Any?>("n", "meta.priority"))
             orderBy { priority.desc() }
@@ -771,13 +814,14 @@ class OracleBackendTest {
 
         val sql = backend().groups(Message::class.java, spec).statement.squashed()
 
-        assertContains(sql, "GROUP BY JSON_VALUE(n_.props, '$.\"meta.priority\"'), CASE WHEN JSON_EXISTS(n_.props, '$.\"meta.priority\"?(@ == \"\")') THEN 1 ELSE 0 END, JSON_VALUE(n_.props, '$.\"meta.priority\".numberOnly()' RETURNING NUMBER)")
-        assertContains(sql, "'k0' VALUE g_.k0, 'k0e' VALUE g_.k0e, 'k0n' VALUE g_.k0n")
-        assertContains(sql, "ORDER BY CASE WHEN g_.k0 IS NULL AND g_.k0e = 0 THEN 0 ELSE 1 END, g_.k0n DESC NULLS LAST, g_.k0e ASC, g_.k0 DESC")
+        // One key, its name quoted as a JSON path step, read and ordered as Cypher reads and orders a value.
+        assertContains(sql, "GROUP BY ${value("n_", "meta.priority")} ) g_")
+        assertContains(sql, "'k0' VALUE g_.k0 RETURNING JSON")
+        assertTrue(sql.endsWith("ORDER BY ${terms("k0_holder_", "meta.priority", descending = true)}"), sql)
     }
 
     @Test
-    fun `a key is read as the kind its field declares, and a least or greatest value as its own`() {
+    fun `a key is read as the module reads a value whatever its field declares, and a least value is its node's own`() {
         val spec = GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
             keyOrNull(query.stars)
             key(query.createdAt)
@@ -787,8 +831,10 @@ class OracleBackendTest {
 
         val sql = backend().groups(Feedback::class.java, spec).statement.squashed()
 
-        assertContains(sql, "GROUP BY JSON_VALUE(n_.props, '$.stars' RETURNING NUMBER), JSON_VALUE(n_.props, '$.createdAt' RETURNING TIMESTAMP WITH TIME ZONE)")
-        assertContains(sql, "MIN(JSON_VALUE(n_.props, '$.createdAt' RETURNING TIMESTAMP WITH TIME ZONE)) AS a0, AVG(JSON_VALUE(n_.props, '$.stars' RETURNING NUMBER)) AS a1")
-        assertContains(sql, "ORDER BY g_.k0 ASC, g_.k1 ASC")
+        assertContains(sql, "GROUP BY ${value("n_", "stars")}, ${value("n_", "createdAt")} ) g_")
+        // The least moment is the value of the first node of its group as Cypher orders it, joined back.
+        assertContains(sql, "'a0' VALUE ${value("a0_holder_", "createdAt")}")
+        assertContains(sql, "AVG(JSON_VALUE(n_.props, '$.stars' RETURNING NUMBER)) AS a1")
+        assertTrue(sql.endsWith("ORDER BY ${terms("k0_holder_", "stars")}, ${terms("k1_holder_", "createdAt")}"), sql)
     }
 }

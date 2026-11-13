@@ -10,7 +10,7 @@ import org.drivine.query.dsl.ExpressionOrder
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
 import org.drivine.cypher.sql.FragmentVariable
-import org.drivine.cypher.sql.SqlCypherCompiler
+import org.drivine.connection.CypherCompile
 import org.drivine.cypher.sql.SqlFragment
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CypherGenerator
@@ -28,9 +28,10 @@ import org.drivine.model.GraphViewModel
  * Each fragment's Cypher parameters are named apart, `f<n>_<name>`, and bound in [scope] under the names the module gives
  * them (`_cy_f<n>_<name>`), beside the statement's own. [hints] are those the statement's outermost `SELECT` carries.
  *
- * @param compiler the store's compiler, for this statement alone, as no other statement is compiled on it
+ * @param compiler the store's compiler, for this statement alone, as no other statement is compiled on it: from
+ *   [CypherCompile], so that a fragment the module refuses is thrown as drivine4j's refusal of a statement is
  */
-internal class Fragments(private val compiler: SqlCypherCompiler, private val scope: StatementScope) {
+internal class Fragments(private val compiler: CypherCompile.FragmentCompiler, private val scope: StatementScope) {
     private var count = 0
 
     /** How many parameters the DSL's conditions written so far ([where]) bind: the next are numbered on from it. */

@@ -18,34 +18,13 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * @param properties in the order the index holds them
  */
-internal class LabelledIndex(val label: String, val properties: List<String>, val unique: Boolean = false) {
-
-    /** The property [key] of the node [alias], as this index reads it. */
-    fun expression(alias: String, key: String): String =
-        if (unique) OracleSql.unique(alias, label, properties, key) else OracleSql.labelled(alias, label, key)
-}
+internal class LabelledIndex(val label: String, val properties: List<String>, val unique: Boolean = false)
 
 /** The [LabelledIndex]es of a graph. */
-internal class LabelledIndexes(indexes: List<LabelledIndex>) {
-
-    /** A uniqueness constraint's index first: where both are there, it is the one Oracle answers from by a unique scan. */
-    private val indexes = indexes.sortedByDescending { it.unique }
+internal class LabelledIndexes(private val indexes: List<LabelledIndex>) {
 
     /** Each label and the property an index on it begins with: what the module's compiler reads an equality through. */
     val leading: Set<Pair<String, String>> get() = indexes.map { it.label to it.properties.first() }.toSet()
-
-    /** Whether an index on [label] begins with [key], so that a comparison with [key] alone can be answered by it. */
-    fun leads(label: String, key: String): Boolean = indexes.any { it.label == label && it.properties.first() == key }
-
-    /**
-     * The property [key] of the node [alias] as an index on [label] that holds it reads it, one that
-     * begins with [key] before one that holds it further in; null when none does. Whichever it is,
-     * it is null on a node without [label].
-     */
-    fun expression(alias: String, label: String, key: String): String? =
-        indexes.filter { it.label == label && key in it.properties }
-            .minByOrNull { if (it.properties.first() == key) 0 else 1 }
-            ?.expression(alias, key)
 
     companion object {
         val NONE = LabelledIndexes(emptyList())

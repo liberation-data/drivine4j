@@ -3,6 +3,8 @@ package org.drivine.backend.oracle
 import org.drivine.backend.sql.SqlSavePlan
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.annotation.Direction
+import org.drivine.cypher.sql.Temporal
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
@@ -598,7 +600,7 @@ class OracleSavePlanTest {
     // Serialisation
 
     @Test
-    fun `the plan is bound as JSON text, a temporal in it as an ISO string and a list as an array`() {
+    fun `the plan is bound as JSON text, a temporal in it as the store layout's tag and a list as an array`() {
         val seen = Instant.parse("2026-10-12T09:30:00Z")
         val statement = build(Beacon("b1", seen, tags = listOf("red", "blue")), checked = false)
         val bound = JdbcParameterCoercer.coerce(statement.bindings)
@@ -609,7 +611,10 @@ class OracleSavePlanTest {
         val steps = Neo4jObjectMapper.instance.readTree(plan)
         assertTrue(steps.isArray)
         val set = steps[0]["set"]
-        assertEquals("2026-10-12T09:30:00Z", set["seenAt"].textValue())
+        assertEquals(
+            Neo4jObjectMapper.instance.valueToTree<JsonNode>(ValueLayout.tagMap(Temporal.DATE_TIME, "2026-10-12T09:30:00Z")),
+            set["seenAt"],
+        )
         assertTrue(set["tags"].isArray)
         assertEquals(listOf("red", "blue"), set["tags"].map { it.textValue() })
     }

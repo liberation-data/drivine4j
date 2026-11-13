@@ -21,7 +21,7 @@ import org.drivine.backend.postgres.PostgresSelect
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteLowerCopies
 import org.drivine.backend.sqlite.SqliteSelect
-import org.drivine.backend.sqlite.SqliteSql
+import org.drivine.backend.sql.SqlSelect
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.FragmentModel
@@ -63,6 +63,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -133,28 +134,28 @@ class CaseInsensitiveStatementsTest {
 
     @Test
     fun `Oracle, Postgres and SQLite lowercase the value too, and Oracle reads the copy through its labelled index`() {
-        val equal = PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.EQUALS_LOWERED, "Ann@X.com")
-        val contains = PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.CONTAINS_LOWERED, "NN@")
+        val copy = LowerCopies.of("email")
+        val equal = PropertyCondition("n.$copy", ComparisonOperator.EQUALS_LOWERED, "Ann@X.com")
+        val contains = PropertyCondition("n.$copy", ComparisonOperator.CONTAINS_LOWERED, "NN@")
         val oracle = OracleGraph("g")
-        val labelled = OracleSelect(oracle, CiAccount::class.java, labelled = LabelledIndexes(listOf(LabelledIndex("CiAccount", listOf(LowerCopies.of("email"))))))
-
-        assertEquals(
-            "CASE WHEN JSON_EXISTS(n_.labels, '\$[*]?(@ == \"CiAccount\")') THEN JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"') END = LOWER(\$_p0)",
-            labelled.predicate(listOf(equal), indexed = true),
-        )
-        assertEquals("INSTR(JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"'), LOWER(\$_p0)) > 0", OracleSelect(oracle, CiAccount::class.java).predicate(listOf(contains)))
-        // A value that may lowercase past the 4,000 bytes the index holds is compared as a CLOB, not through the index.
-        fun lowered(length: Int) = OracleSelect(oracle, CiAccount::class.java, labelled = LabelledIndexes(listOf(LabelledIndex("CiAccount", listOf(LowerCopies.of("email"))))))
-            .predicate(listOf(PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.EQUALS_LOWERED, "a".repeat(length))), indexed = true)
-        assertEquals("DBMS_LOB.COMPARE(JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"' RETURNING CLOB), LOWER(TO_CLOB(\$_p0))) = 0", lowered(1_334))
-        assertEquals("CASE WHEN JSON_EXISTS(n_.labels, '\$[*]?(@ == \"CiAccount\")') THEN JSON_VALUE(n_.props, '\$.\"__drivine.lower.email\"') END = LOWER(\$_p0)", lowered(1_333))
-        assertEquals(
-            "(n_.props ->> '__drivine.lower.email') = lower(CAST(\$_p0 AS text))",
-            PostgresSelect(PostgresGraph("g"), CiAccount::class.java).predicate(listOf(equal)),
-        )
-        val sqliteCopy = SqliteSql.property("n_", LowerCopies.of("email"))
-        assertEquals("$sqliteCopy = drivine_lower(CAST(\$_p0 AS TEXT))", SqliteSelect(SqliteGraph("g"), CiAccount::class.java).predicate(listOf(equal)))
-        assertEquals("instr($sqliteCopy, drivine_lower(CAST(\$_p0 AS TEXT))) > 0", SqliteSelect(SqliteGraph("g"), CiAccount::class.java).predicate(listOf(contains)))
+        // Each store compares the copy with the value as the module compiles `n.copy = toLower($value)`: the value is bound as
+        // it was given, as JSON text, and lowercased by the statement, by the store's own function.
+        fun compared(select: SqlSelect, condition: PropertyCondition, lower: String, indexed: Boolean = false): String {
+            val sql = assertNotNull(select.predicate(listOf(condition), indexed = indexed))
+            assertTrue("$lower(" in sql, sql)
+            assertEquals(listOf<Any?>("\"${condition.value}\""), select.bindings().values.toList(), sql)
+            return sql
+        }
+        val labelled = OracleSelect(oracle, CiAccount::class.java, labelled = LabelledIndexes(listOf(LabelledIndex("CiAccount", listOf(copy)))))
+        val throughIndex = compared(labelled, equal, "LOWER", indexed = true)
+        // An equality the labelled index answers reads the copy as the index does: null on a node without the label.
+        assertTrue(throughIndex.contains("CASE WHEN JSON_EXISTS(n_.labels, '\$[*]?(@ == \"CiAccount\")') THEN"), throughIndex)
+        assertTrue(throughIndex.contains("'\$.\"$copy\""), throughIndex)
+        val contained = compared(OracleSelect(oracle, CiAccount::class.java), contains, "LOWER")
+        assertTrue("INSTR(" in contained, contained)
+        assertTrue(compared(PostgresSelect(PostgresGraph("g"), CiAccount::class.java), equal, "lower").contains("(n_.props -> '$copy')"))
+        compared(SqliteSelect(SqliteGraph("g"), CiAccount::class.java), equal, "drivine_lower")
+        compared(SqliteSelect(SqliteGraph("g"), CiAccount::class.java), contains, "drivine_lower")
     }
 
     @Test
