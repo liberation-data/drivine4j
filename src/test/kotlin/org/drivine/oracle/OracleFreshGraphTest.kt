@@ -115,11 +115,12 @@ class OracleFreshGraphTest {
             s.executeQuery("SELECT LISTAGG(object_name, ',') WITHIN GROUP (ORDER BY object_name) FROM user_objects WHERE object_type = 'FUNCTION' AND status = 'VALID' AND object_name LIKE 'FRESH\\_UPGRADE\\_%' ESCAPE '\\'")
                 .use { it.next(); it.getString(1) }
         }
-        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL", made())
+        // Layout 2's store keeps a temporal value's key function beside them (drivine-cypher-spec#161).
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_KEY", made())
         // One of the two missing is made on its own; asked of together, the two are callable once both are there.
         OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).eraDate}")
         OracleGraph(g).ensure(ensuring)
-        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL", made())
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_KEY", made())
     }
 
     @Test

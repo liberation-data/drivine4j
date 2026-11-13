@@ -34,6 +34,13 @@ class OracleSchemaManagementIntegrationTest {
 
     private fun execute(cypher: String) = fixtures.execute(QuerySpecification.withStatement(cypher))
 
+    /**
+     * A lookup of the node `n` by its property [key] equal to the text `x`, as layout 2 indexes it (drivine-cypher-spec#161):
+     * the property's class and key, which the index over the property of every node is made over.
+     */
+    private fun lookup(key: String) =
+        "${org.drivine.cypher.store.OracleSql.indexClass("n.props", key)} = 'string' AND ${org.drivine.cypher.store.OracleSql.indexKey("n.props", key)} = 'x'"
+
     /** The plan Oracle makes for [sql], as text. */
     private fun plan(sql: String): String {
         manager.execute(QuerySpecification.withStatement("EXPLAIN PLAN FOR $sql"))
@@ -60,7 +67,7 @@ class OracleSchemaManagementIntegrationTest {
         assertTrue(manager.indexes.drop(RangeIndexSpec("Article", "slug")))
         assertNull(manager.indexes.find(RangeIndexSpec("Article", "slug")))
         assertNotNull(manager.indexes.find(RangeIndexSpec("Page", "slug")), "the other label's index is its own record")
-        assertTrue("SCHEMA_IX_SLUG" in plan("SELECT nid FROM schema_node n WHERE JSON_VALUE(n.props, '$.\"slug\"') = 'x'"), "the shared index is still there")
+        assertTrue("SCHEMA_IX2_SLUG" in plan("SELECT nid FROM schema_node n WHERE ${lookup("slug")}"), "the shared index is still there")
     }
 
     @Test
@@ -70,8 +77,8 @@ class OracleSchemaManagementIntegrationTest {
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
 
-        val plan = plan("SELECT nid FROM schema_node n WHERE JSON_VALUE(n.props, '$.\"metadata.context\"') = 'x'")
-        assertTrue("INDEX" in plan && "SCHEMA_IX_METADATACONTEXT" in plan, "expected an index scan, got:\n$plan")
+        val plan = plan("SELECT nid FROM schema_node n WHERE ${lookup("metadata.context")}")
+        assertTrue("INDEX" in plan && "SCHEMA_IX2_METADATACONTEXT" in plan, "expected an index scan, got:\n$plan")
     }
 
     @Test
@@ -188,8 +195,8 @@ class OracleSchemaManagementIntegrationTest {
                 OracleGraph("schema").objectName("ix", listOf("serial")), "couponRef", "an index over [couponRef]", spec, "IndexManager",
                 { manager.indexes.ensure(spec) }, { manager.indexes.recreate(spec) },
             )
-            val plan = plan("SELECT nid FROM schema_node n WHERE JSON_VALUE(n.props, '$.\"serial\"') = 'x'")
-            assertTrue("SCHEMA_IX_SERIAL" in plan, "the index made in the other's place is over the property:\n$plan")
+            val plan = plan("SELECT nid FROM schema_node n WHERE ${lookup("serial")}")
+            assertTrue("SCHEMA_IX2_SERIAL" in plan, "the index made in the other's place is over the property:\n$plan")
         } finally {
             runCatching { manager.indexes.drop(spec) }
         }
@@ -349,7 +356,7 @@ class OracleSchemaManagementIntegrationTest {
         // A node that is there before the index is made is taken in with it.
         execute("CREATE (:Passage {id: 'p0', embedding: [1.0, 0.0, 0.0]})")
         manager.indexes.ensure(spec)
-        val embeddings = "schema_v_Passageembedding_" + Integer.toHexString("Passage\u0000embedding".hashCode())
+        val embeddings = "schema_v2_Passageembedding_" + Integer.toHexString("Passage\u0000embedding".hashCode())
         assertEquals(1, count("SELECT COUNT(*) FROM user_indexes WHERE table_name = '${embeddings.uppercase()}' AND index_type = 'VECTOR'"))
 
         execute("CREATE (:Passage {id: 'p1', embedding: [0.0, 1.0, 0.0]}), (:Passage {id: 'p2'}), (:Other {id: 'o1', embedding: [0.0, 0.0, 1.0]})")
@@ -370,7 +377,7 @@ class OracleSchemaManagementIntegrationTest {
         execute("CREATE (:Essay {id: 'e0', title: 'Graphs', body: 'stored as rows'})")
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
-        val texts = "schema_t_Essaytitlebody_" + Integer.toHexString("Essay\u0000title\u0000body".hashCode())
+        val texts = "schema_t2_Essaytitlebody_" + Integer.toHexString("Essay\u0000title\u0000body".hashCode())
 
         execute("CREATE (:Essay {id: 'e1', title: 'Soup'}), (:Other {id: 'o2', title: 'Graphs'})")
         assertEquals(2, count("SELECT COUNT(*) FROM $texts"))
@@ -387,7 +394,7 @@ class OracleSchemaManagementIntegrationTest {
     fun `an index is dropped as the object its record names, whatever it would be named now`() {
         val spec = VectorIndexSpec("Legacy", "embedding", 3)
         manager.indexes.ensure(spec)
-        val named = "schema_v_Legacyembedding_" + Integer.toHexString("Legacy\u0000embedding".hashCode())
+        val named = "schema_v2_Legacyembedding_" + Integer.toHexString("Legacy\u0000embedding".hashCode())
         // The table as an earlier version might have named it, with the trigger such a table has, and the record of it.
         manager.indexes.run("ALTER TABLE $named RENAME TO schema_legacy_side")
         manager.indexes.run("DROP TRIGGER ${named}_t")

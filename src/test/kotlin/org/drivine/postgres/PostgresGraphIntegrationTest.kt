@@ -38,7 +38,7 @@ class PostgresGraphIntegrationTest {
     @Test
     fun `ensuring makes the tables and marks them, and ensuring again changes nothing`() {
         PostgresGraph(graph).ensure(manager)
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
         val comment = PostgresTestDatabase.pm.getOne(spec("SELECT obj_description(to_regclass('made_node'), 'pg_class')").transform(String::class.java))
         assertEquals(PostgresGraph.VERSION, comment)
 
@@ -71,7 +71,7 @@ class PostgresGraphIntegrationTest {
         } finally {
             pool.shutdown()
         }
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
     }
 
     @Test
@@ -113,7 +113,7 @@ class PostgresGraphIntegrationTest {
     @Test
     fun `a test's cleanup deletes the nodes it tagged, on a graph it makes if it must`() {
         TestCleanup.beforeEach(manager, "tagged")
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
         SqlCypherFixtures.run(manager, "CREATE (:Thing {createdBy: 'tagged'}), (:Thing {createdBy: 'kept'})")
 
         TestCleanup.beforeEach(manager, "tagged")
