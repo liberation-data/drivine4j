@@ -1201,6 +1201,50 @@ cases:
         cypher: "MATCH (n:CyWrite) WHERE n.l IS NOT NULL RETURN count(DISTINCT n.l[0]), size(collect(DISTINCT n.l[0]))"
         rows: [[1, 1]]
 
+  - name: "A list that holds null as a property"
+    description: "A statement that writes a property that is a list that holds null fails, as Neo4j fails it, and stores nothing: CREATE, MERGE and SET of a node's or a relationship's property, a list written, given or worked out as it runs (drivine4j#557). Over no rows, or on a node that is null, it does not fail; the empty list is stored, and a null property is no list."
+    steps:
+      - cypher: "CREATE (:CyWrite {id: 1})"
+      - note: "A SQL store stored the list (drivine4j#557). Neo4j: 22N39, a value that holds null cannot be stored in properties."
+        cypher: "CREATE (n:CyWrite {id: 2, x: [null]})"
+        error: true
+      - cypher: "CREATE (n:CyWrite {id: 3, x: [1, null, 2]})"
+        error: true
+      - cypher: "MERGE (n:CyWrite {id: 4, x: [null]})"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n.x = [null]"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n.x = $p"
+        parameters: {p: [1, null]}
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n += {x: [null]}"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n = $m"
+        parameters: {m: {x: [null], y: 1}}
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) CREATE (n)-[r:R {x: [null]}]->(:CyWrite {id: 5})"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) MERGE (n)-[r:R]->(m:CyWrite {id: 6}) ON CREATE SET r.x = $q"
+        parameters: {q: [null]}
+        error: true
+      - note: "It fails on the second row, and the first row's node is not kept: the statement fails as a whole."
+        cypher: "UNWIND [[1], [null]] AS l CREATE (n:CyWrite {x: l})"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n.x = [null] + [1]"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 1}) WITH n, [x IN [1, 2] | CASE WHEN x = 2 THEN null ELSE x END] AS l SET n.x = l"
+        error: true
+      - cypher: "MATCH (n:CyWrite {id: 9}) SET n.x = [null]"
+        rows: []
+      - note: "A SET of a node that is null sets nothing, and fails on no list it would write (openCypher's Set1 [8])."
+        cypher: "OPTIONAL MATCH (n:CyWrite {id: 9}) SET n.x = [null], n += {y: [null]} RETURN n IS NULL"
+        rows: [true]
+      - cypher: "MATCH (n:CyWrite {id: 1}) SET n.x = [], n.y = null"
+      - cypher: "MATCH (n) RETURN properties(n)"
+        rows: [{id: 1, x: []}]
+      - cypher: "MATCH ()-[r]->() RETURN count(r)"
+        rows: [0]
+
   - name: "NaN worked out from stored infinities"
     description: "NaN that a statement given no NaN or infinity works out, from infinities stored, is the float it is, as NaN given is: equal to nothing and ordered with nothing, kept by `+`, written by toString() as Java writes it, no map, sorted after every number, and NaN in a sum and a max(). SQLite's JSON holds no NaN, so its rows give it back from the value it stands in for it (see host.yaml), and it refuses a write of it. Postgres stores no infinity to start from."
     steps:

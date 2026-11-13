@@ -23,6 +23,8 @@ internal class PostgresGraph(name: String) : SqlGraph(name) {
 
     override val store = PostgresDdl(name)
 
+    override val tablesMade = "SELECT count(*) AS made FROM pg_catalog.pg_class c WHERE c.oid = to_regclass('${store.nodes.lowercase()}')"
+
     /** The functions the graph is written through. */
     val writes: PostgresWriteFunctions = store.writes
 

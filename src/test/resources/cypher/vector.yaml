@@ -17,9 +17,10 @@
 # Each case says what Neo4j gives (Neo4j 2026.10.1 community, Cypher 25, its default), which is what every store is to
 # give: for vector search, Neo4j's answer is the rule (liberation-data/drivine-cypher-spec#160). Where a store gives
 # something else today, `today` says what, and the issue, as in search.yaml; a library holds such a step in its own HELD
-# list until the issue's fix lands. `today` is not read. Every step that gives rows is held on the SQL stores today:
-# their compiler refuses db.index.vector.queryNodes() as it refuses any procedure, does not read SEARCH, and refuses
-# vector.similarity.cosine() and vector.similarity.euclidean() as functions it does not compile.
+# list until the issue's fix lands. `today` is not read. The SQL stores' compiler compiles db.index.vector.queryNodes(),
+# given the graph's vector indexes as its catalog records them (GraphOptions.vectorIndexes). It does not read SEARCH
+# yet, and refuses vector.similarity.cosine() and vector.similarity.euclidean() as functions it does not compile: those
+# steps are held.
 #
 # Rows are compared as queries.yaml compares them, with two differences. Each float is compared within 1e-6: Neo4j's
 # scores are float32s, so 0.8 comes back 0.800000011920929. And a run of consecutive rows whose last column, the score,
@@ -65,53 +66,43 @@ cases:
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 3, [1.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 10, [0.1, 0.2, 0.3]) YIELD node, score RETURN node.id, score"
         rows: [["c", 0.7939873933792114], ["b", 0.767261266708374], ["a", 0.633630633354187], ["d", 0.633630633354187], ["g", 0.366369366645813]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - note: "A vector's length doesn't count, only its direction."
         cypher: "CALL db.index.vector.queryNodes('chunk_cos', 3, [2.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - note: "A list of integers is taken as one of floats."
         cypher: "CALL db.index.vector.queryNodes('chunk_cos', 3, [1, 0, 0]) YIELD node, score RETURN node.id, score"
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
 
   - name: "Euclidean"
     description: "A euclidean index gives the k nodes nearest the vector, best first, each scored 1 / (1 + d²)."
     steps:
       - cypher: "CALL db.index.vector.queryNodes('place_l2', 3, [0.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["q", 1.0], ["r", 0.25], ["p", 0.03846153989434242]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('place_l2', 3, [3.0, 4.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["p", 1.0], ["r", 0.06666667014360428], ["q", 0.03846153989434242]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
 
   - name: "Hits that score alike"
     description: "Hits that score alike come in any order: Neo4j gave d before a here, and a before d for a k of 3 or more."
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 2, [1.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["d", 1.0], ["a", 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
 
   - name: "Only the index's nodes"
     description: "A k past the index's nodes gives each of them once: not a node of another label (o), of an embedding of another size (e), of none (f), or, on a cosine index, of a list of zeros (z)."
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 100, [1.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929], ["b", 0.5], ["g", 0.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - note: "On a euclidean index, a list of zeros is a point like any other."
         cypher: "CALL db.index.vector.queryNodes('place_l2', 100, [0.0, 0.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["q", 1.0], ["r", 0.25], ["p", 0.03846153989434242]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
 
   - name: "One neighbour"
     description: "A k of 1 gives the nearest node alone."
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 1, [0.0, 1.0, 0.0]) YIELD node, score RETURN node.id, score"
         rows: [["b", 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "MATCH (c:Chunk) SEARCH c IN (VECTOR INDEX chunk_cos FOR [0.0, 1.0, 0.0] LIMIT 1) SCORE AS s RETURN c.id, s"
         rows: [["b", 1.0]]
         today: [{stores: ["sql"], issue: "liberation-data/drivine-cypher-spec#160"}]
@@ -122,7 +113,6 @@ cases:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', $k, $v) YIELD node, score RETURN node.id, score"
         parameters: {k: 3, v: [1.0, 0.0, 0.0]}
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "MATCH (c:Chunk) SEARCH c IN (VECTOR INDEX chunk_cos FOR $v LIMIT $k) SCORE AS s RETURN c.id, s"
         parameters: {k: 3, v: [1.0, 0.0, 0.0]}
         rows: [["a", 1.0], ["d", 1.0], ["c", 0.800000011920929]]
@@ -133,13 +123,10 @@ cases:
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 2, [1.0, 0.0, 0.0]) YIELD node, score WHERE node.lang = 'en' RETURN node.id, score"
         rows: [["a", 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 10, [1.0, 0.0, 0.0]) YIELD node, score WHERE node.lang = 'en' RETURN node.id, score"
         rows: [["a", 1.0], ["b", 0.5]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 2, [1.0, 0.0, 0.0]) YIELD node, score WITH node, score WHERE node.lang = 'en' RETURN node.id, score"
         rows: [["a", 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - note: "A WHERE before SEARCH, in its MATCH, is applied after the search too."
         cypher: "MATCH (c:Chunk) WHERE c.lang = 'en' SEARCH c IN (VECTOR INDEX chunk_cos FOR [1.0, 0.0, 0.0] LIMIT 2) SCORE AS s RETURN c.id, s"
         rows: [["a", 1.0]]
@@ -179,19 +166,14 @@ cases:
     steps:
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 3, [1.0, 0.0, 0.0]) YIELD node, score MATCH (node)-[:PART_OF]->(d:Doc)<-[:WROTE]-(a:Author) WHERE d.public RETURN node.id, score, d.id, a.name"
         rows: [["a", 1.0, "doc-en", "Ann"]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 3, [1.0, 0.0, 0.0]) YIELD node AS c, score MATCH (c)-[:PART_OF]->(d:Doc) WHERE EXISTS { (d)<-[:WROTE]-(:Author {name: 'Bo'}) } RETURN c.id, d.id, score"
         rows: [["d", "doc-fr", 1.0], ["c", "doc-fr", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "MATCH (a:Author {name: 'Ann'}) CALL db.index.vector.queryNodes('chunk_cos', 4, [1.0, 0.0, 0.0]) YIELD node, score MATCH (node)-[:PART_OF]->(:Doc)<-[:WROTE]-(a) RETURN node.id, score"
         rows: [["a", 1.0], ["b", 0.5]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 5, [1.0, 0.0, 0.0]) YIELD node, score OPTIONAL MATCH (node)-[:PART_OF]->(d:Doc) RETURN node.id, d.id, score"
         rows: [["a", "doc-en", 1.0], ["d", "doc-fr", 1.0], ["c", "doc-fr", 0.800000011920929], ["b", "doc-en", 0.5], ["g", null, 0.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "CALL db.index.vector.queryNodes('chunk_cos', 4, [1.0, 0.0, 0.0]) YIELD node, score MATCH (node)-[:PART_OF]->(d:Doc) RETURN d.id, count(*) AS hits, max(score) AS best ORDER BY d.id"
         rows: [["doc-en", 2, 1.0], ["doc-fr", 2, 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
 
   - name: "From each SEARCH hit, a traversal"
     description: "What SEARCH binds is read on as any node is, as db.index.vector.queryNodes()'s hits are."
@@ -217,7 +199,6 @@ cases:
     steps:
       - cypher: "MATCH (q:Chunk {id: 'c'}) CALL (q) { CALL db.index.vector.queryNodes('chunk_cos', 2, q.embedding) YIELD node, score RETURN node, score } RETURN node.id, score"
         rows: [["c", 1.0], ["b", 0.8999999761581421]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "MATCH (q:Chunk {id: 'c'}) CALL (q) { MATCH (c:Chunk) SEARCH c IN (VECTOR INDEX chunk_cos FOR q.embedding LIMIT 2) SCORE AS s RETURN c, s } RETURN c.id, s"
         rows: [["c", 1.0], ["b", 0.8999999761581421]]
         today: [{stores: ["sql"], issue: "liberation-data/drivine-cypher-spec#160"}]
@@ -225,12 +206,11 @@ cases:
   - name: "A vector from each row"
     description: "The vector may be read from the row: a node's property, or each of an UNWIND's lists, a search for each."
     steps:
-      - cypher: "MATCH (q:Chunk {id: 'c'}) CALL db.index.vector.queryNodes('chunk_cos', 3, q.embedding) YIELD node, score RETURN node.id, score"
-        rows: [["c", 1.0], ["b", 0.8999999761581421], ["a", 0.800000011920929]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
+      - note: "a and d score alike, so k is 4, to keep both: k = 3 would cut between them, and Neo4j's choice of one is not stable."
+        cypher: "MATCH (q:Chunk {id: 'c'}) CALL db.index.vector.queryNodes('chunk_cos', 4, q.embedding) YIELD node, score RETURN node.id, score"
+        rows: [["c", 1.0], ["b", 0.8999999761581421], ["a", 0.800000011920929], ["d", 0.800000011920929]]
       - cypher: "UNWIND [[0.0, 1.0, 0.0], [0.6, 0.8, 0.0]] AS v CALL db.index.vector.queryNodes('chunk_cos', 1, v) YIELD node, score RETURN v, node.id, score"
         rows: [[[0.0, 1.0, 0.0], "b", 1.0], [[0.6, 0.8, 0.0], "c", 1.0]]
-        today: [{stores: ["sql"], error: "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.", issue: "liberation-data/drivine-cypher-spec#160"}]
       - cypher: "UNWIND [[0.0, 1.0, 0.0], [0.6, 0.8, 0.0]] AS v MATCH (c:Chunk) SEARCH c IN (VECTOR INDEX chunk_cos FOR v LIMIT 1) SCORE AS s RETURN v, c.id, s"
         rows: [[[0.0, 1.0, 0.0], "b", 1.0], [[0.6, 0.8, 0.0], "c", 1.0]]
         today: [{stores: ["sql"], issue: "liberation-data/drivine-cypher-spec#160"}]

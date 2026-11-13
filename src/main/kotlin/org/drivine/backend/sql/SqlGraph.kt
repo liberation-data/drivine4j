@@ -108,9 +108,13 @@ internal abstract class SqlGraph(val name: String) {
      * whose stamp a clear deleted (`MATCH (n) DETACH DELETE n` deletes Drivine's own nodes too) is stamped again. Any other
      * graph is refused with [StoreLayoutException], on every connection.
      */
-    /** Whether the graph's table of nodes is there, which every layout makes first. */
+    /** Whether the graph's table of nodes is there, which every layout makes first: asked of the store's catalog. */
     private fun tablesThere(connection: Connection): Boolean =
-        runCatching { connection.query(QuerySpecification.withStatement("SELECT 1 FROM ${store.nodes} WHERE 1 = 0")) }.isSuccess
+        connection.query(QuerySpecification.withStatement(tablesMade)).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
+            .let { (it as Number).toLong() > 0 }
+
+    /** A query of the store's catalog whose one value is how many of the graph's table of nodes it holds, none or one. */
+    protected abstract val tablesMade: String
 
     private fun layout(connection: Connection, write: Boolean) {
         val statements = StoreStampStatements.of(store)
@@ -118,13 +122,10 @@ internal abstract class SqlGraph(val name: String) {
             connection.query(QuerySpecification.withStatement(statement).bind(parameters))
         fun maps(statement: String?) = statement?.let { rows(it).map { row -> (row as Map<*, *>).entries.associate { (k, v) -> k.toString() to v } } }.orEmpty()
         for (asked in 1..2) {
-            // A graph whose tables aren't there yet is new: nothing to judge, and nothing of another layout to find.
-            val stamps = try {
-                maps(statements.readStamps)
-            } catch (e: Exception) {
-                if (asked == 1 && !tablesThere(connection)) return
-                throw e
-            }
+            // A graph whose tables aren't there yet is new: nothing to judge, and nothing of another layout to find. Asked of
+            // the store's catalog, which no statement fails: on Postgres a failed one ends the transaction it is in.
+            if (asked == 1 && !tablesThere(connection)) return
+            val stamps = maps(statements.readStamps)
             val foreign = rows(statements.foreignNodes).isNotEmpty()
             val verdict = StoreLayout.verdict(StoreStamp.engine(store), name, stamps, foreign, maps(statements.layoutObjects), store)
             when (verdict) {

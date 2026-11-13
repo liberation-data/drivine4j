@@ -24,6 +24,8 @@ internal class OracleGraph(name: String) : SqlGraph(name) {
 
     override val store = OracleDdl(name)
 
+    override val tablesMade = "SELECT COUNT(*) AS made FROM user_tables WHERE table_name = UPPER('${store.nodes}')"
+
     /** What makes the store, when it is not there. Each statement is safe to run again. */
     val ddl: List<String> = store.ddl
 

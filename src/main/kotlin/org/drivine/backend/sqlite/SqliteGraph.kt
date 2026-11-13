@@ -36,6 +36,8 @@ internal class SqliteGraph(name: String) : SqlGraph(name) {
 
     override val store = SqliteDdl(name)
 
+    override val tablesMade = "SELECT count(*) AS made FROM sqlite_master WHERE type = 'table' AND name = '${store.nodes}'"
+
     /** What makes the store, when it is not there. */
     val ddl: List<String> = store.ddl
 

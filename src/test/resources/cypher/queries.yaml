@@ -937,6 +937,50 @@ cases:
         cypher: "RETURN [split('abc', ''), split('', ',')]"
         rows: [[["a", "b", "c"], [""]]]
 
+  - name: "A map, a node or a list read by a key of another kind"
+    description: "A map, a node or a relationship is read by a text key, and a list by an integer, as in Neo4j, which fails another, as it plans the statement where it knows both kinds and as it runs otherwise. The SQL stores read a map by a number as a list, so Oracle gave the whole map, and Postgres and SQLite null (drivine4j#698). A null map or key is still null."
+    steps:
+      - cypher: "WITH $expr AS expr, $idx AS idx RETURN expr[idx]"
+        parameters: {expr: {name: "Apa"}, idx: 0}
+        error: true
+      - cypher: "WITH $expr AS expr, $idx AS idx RETURN expr[idx]"
+        parameters: {expr: {name: "Apa"}, idx: 12.3}
+        error: true
+      - cypher: "WITH {a: 1} AS m RETURN m[0]"
+        error: true
+      - note: "A key worked out for each row fails as the statement runs."
+        cypher: "UNWIND [0, 'a'] AS k WITH {a: 1} AS m, k RETURN m[k]"
+        error: true
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) WITH p, 0 AS k RETURN p[k]"
+        error: true
+      - cypher: "WITH $list AS l, $k AS k RETURN l[k]"
+        parameters: {list: [10, 20], k: "name"}
+        error: true
+      - cypher: "UNWIND ['a', 1] AS k WITH [10, 20] AS l, k RETURN l[k]"
+        error: true
+      - cypher: "WITH $expr AS expr, $idx AS idx RETURN expr[idx]"
+        parameters: {expr: {name: "Apa"}, idx: "name"}
+        rows: ["Apa"]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) WITH p, 'name' AS k RETURN p[k]"
+        rows: ["Keanu"]
+      - cypher: "WITH $list AS l, $idx AS k RETURN l[k]"
+        parameters: {list: [10, 20], idx: 0}
+        rows: [10]
+      - cypher: "UNWIND ['a', 'b'] AS k WITH {a: 1} AS m, k RETURN m[k] ORDER BY k"
+        rows: [1, null]
+      - cypher: "WITH $expr AS expr, $n AS idx RETURN expr[idx]"
+        parameters: {expr: {name: "Apa"}, n: null}
+        rows: [null]
+      - cypher: "WITH null AS m, 0 AS k RETURN m[k]"
+        rows: [null]
+      - note: "A null read by a key worked out at run time is null, whatever the key's kind."
+        cypher: "OPTIONAL MATCH (x:Nobody) UNWIND [0, 'a'] AS k RETURN x[k]"
+        rows: [null, null]
+      - note: "An item taken out of another value is read with no test of its kind as the statement runs: testing it at each level of a list of lists made the statement grow faster than its depth. A map so taken and read by a number is null here, where Neo4j fails; Oracle's JSON path reads a map as a list of one, and is left out."
+        only: [postgres, sqlite]
+        cypher: "UNWIND [0, 1] AS i WITH [{a: 1}, [5, 6]] AS l, i RETURN l[i][0]"
+        rows: [null, 5]
+
   - name: "The empty text searched for and measured"
     description: "Every text starts with, ends with and holds the empty text, and the empty text holds no other; its size is 0. Oracle's empty text is null as SQL text (drivine4j#416)."
     steps:
@@ -979,6 +1023,57 @@ cases:
         only: [neo4j, sql]
         cypher: "RETURN ['  ' STARTS WITH '', '' CONTAINS ' ', '  ' ENDS WITH ' ', size('  '), isEmpty(' ')]"
         rows: [[true, false, true, 2, false]]
+
+  - name: "A regular expression over the empty text"
+    description: "The empty text matches a pattern that matches it whole, as Java's matches() reads it, and no other; a pattern that is null makes null. Oracle's empty text is null as SQL text, so its regular expressions gave null there (drivine4j#416)."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "RETURN ['' =~ '', '' =~ '.*', '' =~ 'a*', '' =~ 'a', 'ab' =~ '', '' =~ '^$']"
+        rows: [[true, true, true, false, false, true]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [$e =~ $e, $e =~ $q, 'ab' =~ $e, $e =~ 'a']"
+        parameters: {e: "", q: "a*"}
+        rows: [[true, true, false, false]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND ['', 'ab'] AS x RETURN x, x =~ '', x =~ 'a*', x =~ '.+' ORDER BY x"
+        rows: [["", true, true, false], ["ab", false, false, true]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND ['', 'ab', 'b'] AS x WITH x WHERE NOT x =~ 'a.*' RETURN x ORDER BY x"
+        rows: ["", "b"]
+      - note: "A text a function makes empty."
+        only: [neo4j, sql]
+        cypher: "RETURN [('' + '') =~ '', toUpper('') =~ '^$', substring('ab', 2) =~ '']"
+        rows: [[true, true, true]]
+      - note: "Anchors and flags as Java reads them over the empty text: \\z its end, (?s) and (?m), and an escaped backslash before z, which is no anchor."
+        only: [neo4j, sql]
+        cypher: "RETURN [$e =~ $z, $e =~ $za, $e =~ $s, $e =~ $l, $e =~ $nl, $e =~ $ns]"
+        parameters: {e: "", z: "\\z", za: "a?\\z", s: "(?s).*", l: "\\\\z", nl: "\\n", ns: "[^a]"}
+        rows: [[true, true, true, false, false, false]]
+      - note: "\\z, the text's end, over a text that isn't empty: Postgres has no \\z of its own."
+        only: [neo4j, sql]
+        cypher: "RETURN [$a =~ $z, $ab =~ $z, $ab =~ $zb]"
+        parameters: {a: "a", ab: "ab", z: "a\\z", zb: "a.\\z"}
+        rows: [[true, false, true]]
+      - note: "Java's ^ under (?m) never matches at the input's end, which in the empty text is its start. Postgres's does, so it gives true (liberation-data/drivine-cypher-spec#227)."
+        only: [neo4j, oracle, sqlite]
+        cypher: "RETURN $e =~ $m"
+        parameters: {e: "", m: "(?m)^$"}
+        rows: [false]
+      - note: "(?x) skips the whitespace written in a pattern, and only that."
+        only: [neo4j, sql]
+        cypher: "RETURN [$e =~ $x, $e =~ $xs, 'ab' =~ $xs]"
+        parameters: {e: "", x: "(?x)a*", xs: "(?x) a * b ?"}
+        rows: [[true, true, true]]
+      - note: "A text past 32 KB is matched as a CLOB."
+        only: [neo4j, sql]
+        cypher: "RETURN [$long =~ '', $long =~ 'x*', $e =~ 'x*']"
+        parameters: {e: "", long: {$repeat: "x", times: 40000}}
+        rows: [[false, true, true]]
+      - note: "A null text or pattern makes null, the empty pattern too beside a null."
+        only: [neo4j, sql]
+        cypher: "RETURN [null =~ '', $e =~ null, $e =~ $n, $n =~ $e]"
+        parameters: {e: "", n: null}
+        rows: [[null, null, null, null]]
 
   - name: "The empty text made"
     description: "A function that makes a text makes the empty text where Cypher does: of empty texts, or of a count of 0. Oracle's empty text is null as SQL text, so its functions gave null there (drivine4j#416). An argument that is null still makes null."
@@ -2651,11 +2746,9 @@ cases:
         cypher: "WITH $m AS m, 'a' AS k RETURN m[k]"
         parameters: {m: {}}
         rows: [null]
-      - note: "Only a map's entries are read: a list read by a text is null on a SQL store, and not its items' entries. Neo4j fails."
-        only: [sql]
+      - note: "Only a map's entries are read: a list read by a text fails, as in Neo4j, and not its items' entries read (drivine4j#698)."
         cypher: "UNWIND [[{a: 1}], {a: 2}] AS x WITH x, 'a' AS k RETURN x[k]"
-        unordered: true
-        rows: [null, 2]
+        error: true
       - cypher: "OPTIONAL MATCH (x:Nobody) WITH x, 'name' AS k RETURN x[k]"
         rows: [null]
       - cypher: "MATCH (p:Person) WITH p, 'name' AS k WHERE p[k] = 'Keanu' RETURN p.born"
