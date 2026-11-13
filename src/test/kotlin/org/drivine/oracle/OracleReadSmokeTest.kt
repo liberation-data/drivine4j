@@ -17,10 +17,16 @@ import org.drivine.query.assertMixedOrderedPaths
 import org.drivine.query.assertOrderedPaths
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.containsIgnoreCase
+import org.drivine.query.dsl.eqIgnoreCase
+import org.drivine.query.dsl.query
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import sample.fulltext.ArticleNode
+import sample.patch.ClaimQueryDsl
+import sample.patch.PatchSession
+import sample.patch.PatchSessionQueryDsl
 import sample.stateless.Claim
 import sample.stateless.ClaimEmployers
 import sample.stateless.ClaimView
@@ -29,6 +35,7 @@ import sample.stateless.Human
 import sample.vector.DocNode
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import java.time.Instant
 
 /** Loads, counts and deletes through `StatelessGraphObjectManager` on Oracle, over a graph written as rows. */
 @OracleTests
@@ -88,6 +95,44 @@ class OracleReadSmokeTest {
         assertEquals(emptySet(), matching("Bob|Ada"), "an alternation is of the whole value, not of its start or its end")
         // A backreference names the group the expression numbers it by, as Cypher's `=~` reads it.
         assertEquals(setOf("c1"), matching("(A).*\\1.*"))
+    }
+
+    @Test
+    fun `a property over 4,000 characters is compared whole by the DSL's conditions`() {
+        val long = "a".repeat(4_500) + "end"
+        // 2,100 characters, 4,200 bytes: past a VARCHAR2's 4,000 bytes.
+        val wide = "é".repeat(2_100)
+        manager.save(Claim("long", long))
+        manager.save(Claim("wide", wide))
+        fun ids(spec: GraphQuerySpec<ClaimQueryDsl>.() -> Unit) = manager.loadAll(Claim::class.java, ClaimQueryDsl.INSTANCE, spec).map { it.id }.toSet()
+
+        assertEquals(setOf("long"), ids { where { query.text eq long } })
+        assertEquals(setOf("wide"), ids { where { query.text eq wide } })
+        assertEquals(emptySet(), ids { where { query.text eq long.dropLast(1) } })
+        assertEquals(setOf("c1", "c2", "wide"), ids { where { query.text neq long } })
+        assertEquals(setOf("long"), ids { where { query.text contains "aend" } })
+        assertEquals(setOf("wide"), ids { where { query.text contains "éé" } })
+        assertEquals(setOf("long"), ids { where { query.text startsWith "aaa" } })
+        assertEquals(setOf("long"), ids { where { query.text endsWith "aend" } })
+        assertEquals(setOf("long"), ids { where { query.text eqIgnoreCase long.uppercase() } })
+        assertEquals(setOf("wide"), ids { where { query.text containsIgnoreCase "ÉÉ" } })
+        assertEquals(setOf("long", "wide", "c1"), ids { where { query.text `in` listOf(long, wide, "Ada founded Acme") } })
+        assertEquals(1L, manager.count(Claim::class.java, ClaimQueryDsl.INSTANCE) { where { query.text eq long } })
+    }
+
+    @Test
+    fun `a moment before 1 AD is ordered and compared before every later one by the DSL`() {
+        val bc = Instant.parse("-0199-06-01T00:00:00Z")
+        manager.save(PatchSession("bc", bc))
+        manager.save(PatchSession("ad", Instant.parse("0050-01-01T00:00:00Z")))
+        manager.save(PatchSession("now", Instant.parse("2026-01-01T00:00:00Z")))
+        fun ids(spec: GraphQuerySpec<PatchSessionQueryDsl>.() -> Unit) = manager.loadAll(PatchSession::class.java, PatchSessionQueryDsl.INSTANCE, spec).map { it.id }
+
+        assertEquals(listOf("bc", "ad", "now"), ids { orderBy { query.lastActivityAt.asc() } })
+        assertEquals(listOf("now", "ad", "bc"), ids { orderBy { query.lastActivityAt.desc() } })
+        assertEquals(listOf("bc"), ids { where { query.lastActivityAt lt Instant.parse("0001-01-01T00:00:00Z") } })
+        assertEquals(listOf("ad", "now"), ids { where { query.lastActivityAt gt bc }; orderBy { query.lastActivityAt.asc() } })
+        assertEquals(bc, manager.load("bc", PatchSession::class.java)!!.lastActivityAt)
     }
 
     @Test
