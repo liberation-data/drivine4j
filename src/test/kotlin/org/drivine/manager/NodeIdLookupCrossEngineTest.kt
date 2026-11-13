@@ -38,6 +38,7 @@ import org.junit.jupiter.api.TestInstance
 import java.time.LocalDate
 import java.time.LocalDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -68,6 +69,14 @@ data class LookupTargetDays(
     @Root val target: LookupTarget,
     @GraphRelationship(type = "ON_DAY", direction = Direction.OUTGOING)
     val days: List<LookupDate> = emptyList(),
+)
+
+/** Days, each with the days that are part of it, one level deep: a cascade delete refuses a tree deeper than that. */
+@GraphView
+data class LookupDateTree(
+    @Root val day: LookupDate,
+    @GraphRelationship(type = "DAY_PART_OF", direction = Direction.INCOMING, maxDepth = 1)
+    val parts: List<LookupDateTree> = emptyList(),
 )
 
 /**
@@ -233,6 +242,29 @@ abstract class NodeIdLookupContract {
         assertEquals(listOf("second day"), pm.query(QuerySpecification.withStatement(joined).transform(String::class.java)))
         assertEquals(held, pm.query(QuerySpecification.withStatement(stamp).transform(String::class.java)).single(), "the held day's relationship is untouched")
         assertEquals(2L, count("MATCH (d:LookupDate) WHERE d.name IN ['first day', 'second day'] RETURN count(d)"), "unlinked, not deleted")
+    }
+
+    /**
+     * A cascade delete by a `LocalDate` id's text finds its root as a load does, both in the check that refuses a tree
+     * deeper than the view reads and in the delete itself. Found by the text alone, the check would find no root and refuse
+     * nothing, and the delete would leave the level below behind.
+     */
+    @Test
+    fun `a cascade delete by a LocalDate id's text checks the depth and deletes the tree`() {
+        val days = (0..2).map { LookupDate(LocalDate.of(2026, 2, 1 + it), "tree day $it") }
+        days.forEach { manager.save(it) }
+        days.zipWithNext { parent, part ->
+            assertTrue(manager.edges.relate(NodeRef(LookupDate::class.java, part.id.toString()), NodeRef(LookupDate::class.java, parent.id.toString()), "DAY_PART_OF"))
+        }
+        val inTree = "MATCH (n:LookupDate) WHERE n.name STARTS WITH 'tree day' RETURN count(n)"
+
+        val refused = assertFailsWith<IllegalStateException> { manager.delete("2026-02-01", LookupDateTree::class.java, CascadeType.DELETE_ALL) }
+        assertTrue("1 node below that would be left behind" in refused.message.orEmpty(), refused.message)
+        assertEquals(3L, count(inTree))
+
+        assertEquals(1, manager.delete("2026-02-03", LookupDate::class.java))
+        assertEquals(2, manager.delete("2026-02-01", LookupDateTree::class.java, CascadeType.DELETE_ALL))
+        assertEquals(0L, count(inTree))
     }
 
     @Test
