@@ -74,4 +74,17 @@ class CypherCompileTest {
         assertTrue(nullsEqual in other, other)
         assertFalse(era in other, other)
     }
+
+    @Test
+    fun `a statement compiled again, for a store without a function it calls, is still read through the graph's indexes`() {
+        // A keyed MATCH that compares lists: compiled again for a store with no nulls-equal function (#805).
+        val cypher = "MATCH (c:Claim {id: \$id}) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l) AS same"
+        val throughIndex = "THEN JSON_VALUE(n1.props, '\$.id') END"
+        for (kept in listOf(true, false)) {
+            val sql = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { kept }, { kept }, indexedProperties = setOf("Claim" to "id")).sql
+            assertTrue(throughIndex in sql, sql)
+            assertEquals(kept, nullsEqual in sql, sql)
+        }
+        assertFalse(throughIndex in CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { true }, { true }).sql)
+    }
 }

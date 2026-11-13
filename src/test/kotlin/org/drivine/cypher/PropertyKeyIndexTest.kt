@@ -12,7 +12,6 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.UniquenessConstraintSpec
-import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -227,7 +226,7 @@ abstract class PropertyKeyIndexContract {
     }
 
     /** A batch of relationships as `apoc.export.cypher` writes it: its rows written out, its key a name of spaces. */
-    private fun apocBatch(from: Int, to: Int, write: String = "CREATE (start)-[r:NEXT_CHUNK]->(finish) SET r += row.properties") =
+    protected fun apocBatch(from: Int, to: Int, write: String = "CREATE (start)-[r:NEXT_CHUNK]->(finish) SET r += row.properties") =
         "UNWIND [${(from until to).joinToString(", ") { "{start: {_id: $it}, end: {_id: ${it + 1}}, properties: {}}" }}] AS row " +
             "MATCH (start:`$IMPORT_LABEL` {`$IMPORT_ID`: row.start._id}) MATCH (finish:`$IMPORT_LABEL` {`$IMPORT_ID`: row.end._id}) $write"
 
@@ -295,10 +294,7 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     override val pm by lazy { OracleTestDatabase.graphManager(GRAPH) }
     override val cypher by lazy { OracleTestDatabase.fixtures(pm) }
 
-    /**
-     * Compiled knowing the indexes the graph has, which a statement the connection runs is not yet: its rows are found as
-     * before, without the index, which the tests of rows here check stays so.
-     */
+    /** Compiled knowing the indexes the graph has, as a statement the connection runs is (#805): see the test of query()'s plan. */
     override fun compiled(cypher: String, parameters: Map<String, Any?>) =
         OracleCypherCompiler(GRAPH, indexedProperties = setOf("Person" to "id", IMPORT_LABEL to IMPORT_ID)).compile(cypher, parameters)
 
@@ -318,11 +314,17 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
 
     override fun analyze() = OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${GRAPH.uppercase()}_NODE'); END;")
 
-    /** Nightly alone: its two writes of 20 relationships take about 16 minutes on Oracle (#675). */
-    @Nightly
     @Test
     override fun `a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`() =
         super.`a batch of relationships as APOC exports it finds each row's nodes through the index on a key of spaces`()
+
+    @Test
+    fun `a statement run through query is compiled with the graph's labelled indexes, so each row's node is read through its index`() {
+        // query() compiled with none, so a keyed MATCH read every node of the label for each row: an APOC batch of 20
+        // relationships took 137 s to read its nodes, and each write of one about three minutes (#805, #675).
+        val plan = cypher.plan(QuerySpecification.withStatement(CypherStatement(apocBatch(0, 20, "RETURN start, finish")))).lines.joinToString("\n")
+        assertTrue(probesIndex(plan), "query() reads every node of the label for each row:\n$plan")
+    }
 
     @Test
     fun `a statement compiled without the graph's indexes compares the property as JSON alone, and tests the labels through their index`() {
