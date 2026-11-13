@@ -67,7 +67,7 @@ internal class PostgresSelect(
     private val rows = PostgresRowSources(graph, scope)
     /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
     private val fragments = Fragments(PostgresCypherCompiler(graph.name, JacksonEncoder), scope)
-    private val predicates = PostgresPredicates(scope, rows, rootAlias, root, rootModel, viewModel, depthOverrides, fragments)
+    private val predicates = PostgresPredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----
