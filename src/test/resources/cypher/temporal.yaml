@@ -1557,7 +1557,7 @@ cases:
         rows: ["i", "b", "s", "du", "lt", "t", "d", "d0", "ldt", "dt2", "dt1", "l", "m"]
 
   - name: "A property stored as temporal values and values of other kinds, in Cypher's order of kinds"
-    description: "A temporal value's tag sorts among the other kinds as Cypher orders them: after a list, the moments, the local moments, the dates, the times, the local times and the durations, then the texts, the truth values and the numbers, and a missing property last; min() and max() take that order too, a tag by its sort key in its kind (#161). Postgres sorts the kinds as jsonb does (drivine4j#307)."
+    description: "A temporal value's tag sorts among the other kinds as Cypher orders them: after a list, the moments, the local moments, the dates, the times, the local times and the durations, then the texts, the truth values and the numbers, and a missing property last; min() and max() take that order too, a tag by its sort key in its kind (#161). Postgres sorts the kinds as jsonb does (drivine4j#307), but the temporal kinds among themselves as Cypher does."
     steps:
       - cypher: "CREATE (:CyTemporal {id: 'l', v: [1]}), (:CyTemporal {id: 'dt1', v: datetime('2024-03-15T10:00:00+02:00')}), (:CyTemporal {id: 'dt2', v: datetime('2024-03-15T09:00:00Z')}), (:CyTemporal {id: 'd', v: date('2024-03-15')}), (:CyTemporal {id: 'lt', v: localtime('10:00:00')}), (:CyTemporal {id: 'du', v: duration('P1D')}), (:CyTemporal {id: 'sA', v: 'A'}), (:CyTemporal {id: 'sb', v: 'b'}), (:CyTemporal {id: 'tr', v: true}), (:CyTemporal {id: 'f', v: 1.5}), (:CyTemporal {id: 'i', v: 2}), (:CyTemporal {id: 'none'})"
         only: [neo4j, sql]
@@ -1567,6 +1567,13 @@ cases:
       - cypher: "MATCH (n:CyTemporal) RETURN n.id ORDER BY n.v DESC"
         only: [neo4j, oracle, sqlite]
         rows: ["none", "i", "f", "tr", "sb", "sA", "du", "lt", "d", "dt2", "dt1", "l"]
+      - note: "Temporal values of several kinds alone sort by kind, then within it, on Postgres too, which sorts a tag by its kind's rank and its key: as its own jsonb object it was sorted by time alone, whatever its kind."
+        cypher: "MATCH (n:CyTemporal) WHERE n.id IN ['dt1', 'dt2', 'd', 'lt', 'du'] RETURN n.id ORDER BY n.v"
+        only: [neo4j, sql]
+        rows: ["dt1", "dt2", "d", "lt", "du"]
+      - cypher: "MATCH (n:CyTemporal) WHERE n.id IN ['dt1', 'dt2', 'd', 'lt', 'du'] RETURN n.id ORDER BY n.v DESC"
+        only: [neo4j, sql]
+        rows: ["du", "lt", "d", "dt2", "dt1"]
       - cypher: "MATCH (n:CyTemporal) WHERE n.id IN ['dt1', 'dt2', 'd', 'lt', 'du'] RETURN [min(n.v).hour, max(n.v) = duration('P1D')]"
         only: [neo4j, sql]
         rows: [[10, true]]

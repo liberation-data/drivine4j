@@ -84,7 +84,8 @@ abstract class StoreLayoutContract {
             val name = "cy_first_conn"
             drop(name)
             case["setup"].forEach { run(it.asText().replace("{graph}", name)) }
-            assertFailsWith<StoreLayoutException>(case["name"].asText()) { manager(name) }
+            val refused = assertFailsWith<StoreLayoutException>(case["name"].asText()) { manager(name) }
+            assertEquals(case["refuse"].asText().replace("{graph}", name), refused.message, case["name"].asText())
             for (absent in case["absent"]) assertFalse(tableThere(absent.asText().replace("{graph}", name)), "${case["name"].asText()}: ${absent.asText()} was made")
         }
     }

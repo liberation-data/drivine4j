@@ -534,7 +534,7 @@ storeLayout:
   # The verdict on a graph by its store layout (#161), StoreLayout.verdict: the stamps' layouts as readStamps gives them, whether
   # foreignNodes gives a row, and the indexes, tables and triggers layoutObjects lists. A verdict is "current", a re-stamp with
   # the earlier layout's objects dropped first, or a refusal with its message. A library asks again of the stamps it reads back
-  # after a re-stamp, and refuses anything but "current".
+  # after a re-stamp, and of the objects it lists again, and refuses anything but "current".
   cases:
     - name: "In this layout, holding values"
       store: "postgres"
@@ -709,8 +709,8 @@ storeLayout:
         - {name: "drivine_uq_personemail_8e5a9c3b", type: "INDEX"}
       verdict: {refuse: "The graph 'drivine' on Oracle has no store stamp, and holds objects of store layout 2 (drivine_lock2, drivine_uq2_drivinestorekey_e211949b) and of an earlier layout (drivine_uq_personemail_8e5a9c3b): two versions of Drivine made it. This version of Drivine reads layout 2 only. Reload it: export it with the Drivine version that wrote it and import it with this one; see the upgrade notes."}
     - name: "Cleared, nothing loaded: no stamp, empty, an earlier layout's objects and this layout's lock table"
-      # A graph of an earlier layout whose stamp a clear deleted: on Postgres the library's prepare has made the lock table
-      # by the time it lists the objects. Nothing to lose: the earlier layout's dropped, then asked again, current.
+      # A graph of an earlier layout whose stamp a clear deleted, beside a lock table a library of this layout made while it
+      # stood empty. Nothing to lose: the earlier layout's dropped, then asked again, current.
       store: "postgres"
       stamps: []
       foreignNodes: false
@@ -764,32 +764,75 @@ storeLayout:
       stamps: []
       foreignNodes: true
       verdict: "current"
+    - name: "No stamp, empty, on a graph engine"
+      store: "memgraph"
+      stamps: []
+      foreignNodes: false
+      verdict: "current"
+    - name: "No stamp, holding values, and only an earlier layout's objects"
+      # An earlier layout's graph whose stamp a clear deleted, loaded again by it: nothing of this layout's, refused.
+      store: "postgres"
+      stamps: []
+      foreignNodes: true
+      objects:
+        - {name: "drivine_node_labels", type: "INDEX"}
+        - {name: "drivine_uq_drivinestorekey_e211949b", type: "INDEX"}
+      verdict: {refuse: "The graph 'drivine' on Postgres was written in store layout 1, and this version of Drivine reads layout 2 only, which holds values otherwise. Reload it: export it with the Drivine version that wrote it and import it with this one; see the upgrade notes."}
+    - name: "Cleared and loaded again, its lock table dropped by hand: this layout's generated names alone"
+      store: "postgres"
+      stamps: []
+      foreignNodes: true
+      objects:
+        - {name: "drivine_node_labels", type: "INDEX"}
+        - {name: "drivine_uq2_drivinestorekey_e211949b", type: "INDEX"}
+      verdict: {stamp: {drops: [], assign: true}}
+    - name: "No stamp, empty, and a later layout's objects"
+      # A graph a later Drivine made, whose stamp a clear deleted: refused whatever it holds, as a later layout's stamp is.
+      store: "postgres"
+      stamps: []
+      foreignNodes: false
+      objects:
+        - {name: "drivine_node_labels", type: "INDEX"}
+        - {name: "drivine_uq3_drivinestorekey_e211949b", type: "INDEX"}
+      verdict: {refuse: "The graph 'drivine' on Postgres was written in store layout 3 by a later version of Drivine, and this version reads layout 2 only: upgrade Drivine to use it."}
+    - name: "No stamp, holding values, and a later layout's objects beside this layout's lock table"
+      store: "sqlite"
+      stamps: []
+      foreignNodes: true
+      objects:
+        - {name: "drivine_ix3_personname_44ce5436", type: "INDEX"}
+        - {name: "drivine_lock2", type: "TABLE"}
+      verdict: {refuse: "The graph 'drivine' on SQLite was written in store layout 3 by a later version of Drivine, and this version reads layout 2 only: upgrade Drivine to use it."}
   # The order a library asks in, which no statement of the module's can hold it to: the verdict on a graph's first connection
   # comes before the store's ensuring or ddl and the stamp's prepare make anything, as this layout's lock table, which they
   # make, is the verdict's evidence that a graph without a stamp is of this layout. Each library's runner sets each case up
   # on the store (its statements, {graph} the graph the runner uses), opens a manager of the graph, and checks that its first
-  # connection refuses the graph and that none of `absent` was made.
+  # connection refuses the graph with the message `refuse` ({graph} the graph again), not some other error, and that none of
+  # `absent` was made.
   firstConnection:
     - name: "An earlier layout's graph holding values, with no stamp: refused before anything is made"
       store: "postgres"
       setup:
-        - "CREATE TABLE {graph}_node (nid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, labels jsonb NOT NULL, props jsonb NOT NULL)"
+        - "CREATE TABLE {graph}_node (nid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, labels jsonb NOT NULL, props jsonb NOT NULL, stamp varchar(33))"
         - "INSERT INTO {graph}_node (labels, props) VALUES ('[\"Person\"]', '{\"name\": \"Ada\", \"born\": \"1815-12-10\"}')"
       refused: true
+      refuse: "The graph '{graph}' on Postgres was written in store layout 1, and this version of Drivine reads layout 2 only, which holds values otherwise. Reload it: export it with the Drivine version that wrote it and import it with this one; see the upgrade notes."
       absent: ["{graph}_lock2"]
     - name: "An earlier layout's graph holding values, with no stamp: refused before anything is made, on Oracle"
       store: "oracle"
       setup:
-        - "CREATE TABLE {graph}_node (nid NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, labels JSON NOT NULL, props JSON NOT NULL)"
+        - "CREATE TABLE {graph}_node (nid NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, labels JSON NOT NULL, props JSON NOT NULL, stamp VARCHAR2(33))"
         - "INSERT INTO {graph}_node (labels, props) VALUES ('[\"Person\"]', '{\"name\": \"Ada\", \"born\": \"1815-12-10\"}')"
       refused: true
+      refuse: "The graph '{graph}' on Oracle was written in store layout 1, and this version of Drivine reads layout 2 only, which holds values otherwise. Reload it: export it with the Drivine version that wrote it and import it with this one; see the upgrade notes."
       absent: ["{graph}_lock2"]
     - name: "An earlier layout's graph holding values, with no stamp: refused before anything is made, on SQLite"
       store: "sqlite"
       setup:
-        - "CREATE TABLE {graph}_node (nid INTEGER PRIMARY KEY AUTOINCREMENT, labels TEXT NOT NULL, props TEXT NOT NULL)"
+        - "CREATE TABLE {graph}_node (nid INTEGER PRIMARY KEY AUTOINCREMENT, labels TEXT NOT NULL, props TEXT NOT NULL, stamp TEXT)"
         - "INSERT INTO {graph}_node (labels, props) VALUES ('[\"Person\"]', '{\"name\": \"Ada\", \"born\": \"1815-12-10\"}')"
       refused: true
+      refuse: "The graph '{graph}' on SQLite was written in store layout 1, and this version of Drivine reads layout 2 only, which holds values otherwise. Reload it: export it with the Drivine version that wrote it and import it with this one; see the upgrade notes."
       absent: ["{graph}_lock2"]
 nodeStamps:
   property: "__drivine.stamp"

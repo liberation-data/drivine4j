@@ -131,6 +131,8 @@ internal abstract class SqlGraph(val name: String) {
                 StoreLayout.Verdict.Current -> return
                 is StoreLayout.Verdict.Refuse -> throw StoreLayoutException(name, verdict.message)
                 is StoreLayout.Verdict.Stamp -> {
+                    // A connection that only reads leaves the stamping to the next that writes, whose ensure runs it: every graph
+                    // the verdict would stamp reads the same before it is stamped (empty, or a cleared graph of this layout).
                     if (!write) return
                     if (asked == 2) throw StoreLayoutException(name, "The graph '$name' was given store layout ${StoreLayout.current(StoreStamp.engine(store))}, and its stamps read back otherwise: another process may be writing it with an earlier Drivine.")
                     verdict.drops.forEach { rows(it) }
