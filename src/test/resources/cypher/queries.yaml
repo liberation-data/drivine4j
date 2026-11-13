@@ -1024,6 +1024,117 @@ cases:
         cypher: "RETURN ['  ' STARTS WITH '', '' CONTAINS ' ', '  ' ENDS WITH ' ', size('  '), isEmpty(' ')]"
         rows: [[true, false, true, 2, false]]
 
+  - name: "A regular expression with a backreference"
+    description: "A backreference names the group the pattern writes it for, as in Java. The SQL stores hold the pattern to the whole text in a group of their own, which on Postgres and Oracle captured, so the pattern's first group was the second: Postgres refused \\1, and Oracle read it as the whole match (#236). Past the simplest forms each store numbers and captures groups its own way, so the SQL stores answer a backreference only where it is \\1 to \\8, with no digit after it, outside a class, to a simple group that closed before it, one that holds no quantifier, alternative or group, is not repeated and is in no alternative or repeated group, in a pattern with no group of its own syntax but a leading flag group, no class within a class and no flag x, that the statement gives; and refuse every other by name."
+    steps:
+      - note: "Each form answered, over a text it matches and one it doesn't."
+        only: [neo4j, sql]
+        cypher: "RETURN [$t0 =~ $p0, $f0 =~ $p0, $t1 =~ $p1, $f1 =~ $p1, $t2 =~ $p2, $f2 =~ $p2, $t3 =~ $p3, $f3 =~ $p3, $t4 =~ $p4, $f4 =~ $p4, $t5 =~ $p5, $f5 =~ $p5, $t6 =~ $p6, $f6 =~ $p6, $t7 =~ $p7, $f7 =~ $p7, $t8 =~ $p8, $f8 =~ $p8, $t9 =~ $p9, $f9 =~ $p9, $t10 =~ $p10, $f10 =~ $p10, $t11 =~ $p11, $f11 =~ $p11, $t12 =~ $p12, $f12 =~ $p12]"
+        parameters: {p0: "(A).*\\1.*", t0: "Ada founded Acme", f0: "Bob founded Acme", p1: "(a)\\1", t1: "aa", f1: "ab", p2: "(a)\\1\\1", t2: "aaa", f2: "aa", p3: "(a)(b)\\2\\1", t3: "abba", f3: "abab", p4: "((a)b)\\2", t4: "aba", f4: "abb", p5: "(?i)(a)\\1", t5: "aA", f5: "ab", p6: "(a)\\\\\\1", t6: "a\\a", f6: "a\\b", p7: "(a)(b)(c)(d)(e)(f)(g)(h)\\8", t7: "abcdefghh", f7: "abcdefgh", p8: "()\\1", t8: "", f8: "a", p9: "(a)\\1?", t9: "a", f9: "ab", p10: "(a)\\1x", t10: "aax", f10: "ax", p11: "([ab])\\1", t11: "bb", f11: "ab", p12: "([a-c])x\\1", t12: "cxc", f12: "cxa"}
+        rows: [[true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false]]
+      - note: "Refused: to a group that holds an alternative, a quantifier or a group, or is repeated, which each engine captures its own way."
+        only: [sql]
+        cypher: "RETURN ['abb' =~ $p, 'bb' =~ $q, 'abab' =~ $r]"
+        parameters: {p: "(a|b)+\\1", q: "(a|b)\\1", r: "((a)b)\\1"}
+        error: true
+      - note: "Written in the statement."
+        only: [neo4j, sql]
+        cypher: "RETURN ['abab' =~ '(ab)\\\\1', 'abac' =~ '(ab)\\\\1']"
+        rows: [[true, false]]
+      - note: "Over the empty text, which Oracle reads apart."
+        only: [neo4j, sql]
+        cypher: "RETURN [$e =~ $p, $e =~ $q]"
+        parameters: {e: "", p: "()\\1", q: "(a)\\1"}
+        rows: [[true, false]]
+      - note: "Refused: in a character class, which Java refuses too."
+        cypher: "RETURN 'a1' =~ $p"
+        parameters: {p: "(a)[\\1]"}
+        error: true
+      - note: "Refused: past \\8."
+        only: [sql]
+        cypher: "RETURN 'abcdefghii' =~ $p"
+        parameters: {p: "(a)(b)(c)(d)(e)(f)(g)(h)(i)\\9"}
+        error: true
+      - note: "Refused: with a digit after it, which Java reads apart and Postgres as one number."
+        only: [sql]
+        cypher: "RETURN 'aa0' =~ $p"
+        parameters: {p: "(a)\\10"}
+        error: true
+      - note: "Refused: to a group the pattern doesn't have."
+        only: [sql]
+        cypher: "RETURN 'a2' =~ $p"
+        parameters: {p: "(a)\\2"}
+        error: true
+      - note: "Refused: to a group that follows it."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "\\1(a)"}
+        error: true
+      - note: "Refused: to a group that holds it."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(a\\1)"}
+        error: true
+      - note: "Refused: to a group in an alternative."
+        only: [sql]
+        cypher: "RETURN 'a' =~ $p"
+        parameters: {p: "(a)|\\1"}
+        error: true
+      - note: "Refused: to a group a quantifier lets match no times."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(a)?\\1"}
+        error: true
+      - note: "Refused: to a group in a lookaround."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(?=(a))\\1a"}
+        error: true
+      - note: "Refused: in a lookaround, where Postgres reads no backreference."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(a)(?=\\1)a"}
+        error: true
+      - note: "Refused: past a group in a lookaround, which Postgres doesn't number, so Java's second group here is its first."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(?=(a))(a)\\2"}
+        error: true
+      - note: "Refused: to a group repeated that may match nothing, which each engine repeats its own way once it has matched nothing: Java matches aba here."
+        only: [sql]
+        cypher: "RETURN 'aba' =~ $p"
+        parameters: {p: "(a?)+b\\1"}
+        error: true
+      - note: "Refused: in a pattern with a class within a class, which Postgres, reading no class within a class, reads as a group: Java matches acc here."
+        only: [sql]
+        cypher: "RETURN 'acc' =~ $p"
+        parameters: {p: "[[a](b)](c)\\1"}
+        error: true
+      - note: "Refused: in a pattern with a group of its own syntax, (?:…) among them, which Oracle reads none of, but for a leading flag group."
+        only: [sql]
+        cypher: "RETURN 'aca' =~ $p"
+        parameters: {p: "(a)(?:b|c)\\1"}
+        error: true
+      - note: "Refused: in a pattern with the flag x, where a space may stand between a group and its quantifier: Java reads this one as (a)?\\1."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $p"
+        parameters: {p: "(?x)(a) ?\\1"}
+        error: true
+      - note: "Refused as the statement runs: a pattern worked out then, here a parameter's key, which the compiler can't read for its form."
+        only: [sql]
+        cypher: "RETURN 'aa' =~ $m.p"
+        parameters: {m: {p: "(a)\\1"}}
+        error: true
+      - note: "Worked out from a text."
+        only: [sql]
+        cypher: "WITH '(a)' + $b AS p RETURN 'aa' =~ p"
+        parameters: {b: "\\1"}
+        error: true
+      - note: "A pattern worked out as the statement runs that writes no backreference is answered."
+        only: [neo4j, sql]
+        cypher: "WITH '(a)' + $b AS p RETURN ['aa' =~ p, 'a' =~ p]"
+        parameters: {b: "a"}
+        rows: [[true, false]]
   - name: "A regular expression over the empty text"
     description: "The empty text matches a pattern that matches it whole, as Java's matches() reads it, and no other; a pattern that is null makes null. Oracle's empty text is null as SQL text, so its regular expressions gave null there (drivine4j#416)."
     steps:
@@ -3314,8 +3425,8 @@ cases:
       - note: "So does a list a CALL sorts and limits."
         cypher: "CALL { UNWIND [[1, null], [1, 2], ['a']] AS xs RETURN xs ORDER BY xs LIMIT 2 } RETURN xs ORDER BY xs DESC"
         rows: [[1, 2], ["a"]]
-      - note: "A list read from a map, whose kind the statement leaves open. Postgres sorts such a value as jsonb sorts it (drivine4j#307), and Oracle as its JSON sorts it (drivine4j#798)."
-        except: [postgres, oracle]
+      - note: "A list read from a map, whose kind the statement leaves open. Oracle sorts such a value as its JSON sorts it (drivine4j#798)."
+        except: [oracle]
         cypher: "UNWIND [{l: [1, 'a']}, {l: ['a']}, {l: [1, null]}] AS m RETURN m.l ORDER BY m.l"
         rows: [["a"], [1, "a"], [1, null]]
       - note: "A list of lists compares each inner list item by item too."

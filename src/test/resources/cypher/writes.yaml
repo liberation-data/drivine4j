@@ -1897,3 +1897,55 @@ cases:
       - only: [neo4j, sql]
         cypher: "DROP CONSTRAINT cy_unique_dollar"
         rows: []
+  - name: "A list of nodes or relationships read by a key of another kind"
+    description: "A list of nodes or relationships is indexed by an integer, as any list is, and Neo4j fails a text, a float or a truth value as an index of one, as it plans the statement or as it runs. SQLite read a text as 0, and gave the list's first item, and a float or a truth value as an integer; Oracle gave null, and Postgres failed with another message (liberation-data/drivine-cypher-spec#232). A null index is null."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1})-[:R {i: 1}]->(:CyWrite {i: 2})"
+      - cypher: "MATCH (n:CyWrite) WITH n ORDER BY n.i WITH collect(n) AS l, 1 AS k RETURN l[k].i"
+        rows: [2]
+      - cypher: "MATCH (n:CyWrite) WITH collect(n) AS l, 'a' AS k RETURN l[k]"
+        error: true
+      - cypher: "MATCH ()-[r:R]->() WITH collect(r) AS l, 'a' AS k RETURN l[k]"
+        error: true
+      - note: "A key worked out for each row fails as the statement runs."
+        cypher: "MATCH (n:CyWrite) WITH collect(n) AS l UNWIND ['a'] AS k RETURN l[k]"
+        error: true
+      - cypher: "MATCH (n:CyWrite) WITH collect(n) AS l UNWIND [1.5] AS k RETURN l[k]"
+        error: true
+      - cypher: "MATCH (n:CyWrite) WITH collect(n) AS l UNWIND [true] AS k RETURN l[k]"
+        error: true
+      - note: "An integer or a null worked out for each row is read as any index is."
+        cypher: "MATCH (n:CyWrite) WITH n ORDER BY n.i WITH collect(n) AS l UNWIND [1, null] AS k RETURN l[k].i AS i ORDER BY i"
+        rows: [2, null]
+  - name: "Lists read from a property, ordered"
+    description: "A list read from a property, whose kind the statement leaves open, sorts and gives its least and greatest item by item, the shorter first only where one begins the other, as Neo4j has it. Postgres sorted them as jsonb sorts arrays, the shorter first, and SQLite's max read them as text (drivine4j#271)."
+    steps:
+      - cypher: "CREATE (:CyWrite {id: 'a', l: [1, 2]}), (:CyWrite {id: 'b', l: [3]}), (:CyWrite {id: 'c', l: [0, 9, 9]}), (:CyWrite {id: 'd', l: [10]}), (:CyWrite {id: 'e', l: [1]})"
+      - cypher: "MATCH (n:CyWrite) RETURN n.id ORDER BY n.l"
+        rows: ["c", "e", "a", "b", "d"]
+      - cypher: "MATCH (n:CyWrite) RETURN n.id ORDER BY n.l DESC"
+        rows: ["d", "b", "a", "e", "c"]
+      - cypher: "MATCH (n:CyWrite) RETURN [min(n.l), max(n.l)]"
+        rows: [[[0, 9, 9], [10]]]
+      - note: "Of texts, by their code points, and beside a value of another kind."
+        cypher: "CREATE (:CyWrite {id: 'f', l: ['b']}), (:CyWrite {id: 'g', l: ['a', 'z']}), (:CyWrite {id: 'h', l: 5})"
+      - note: "Oracle puts a list of numbers first, as its JSON orders kinds (drivine4j#798)."
+        except: [oracle]
+        cypher: "MATCH (n:CyWrite) WHERE n.id IN ['f', 'g', 'b'] RETURN n.id ORDER BY n.l"
+        rows: ["g", "f", "b"]
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['f', 'g'] RETURN [min(n.l), max(n.l)]"
+        rows: [[["a", "z"], ["b"]]]
+      - note: "A text by its code points, not as a collation orders it, and the empty list first."
+        cypher: "CREATE (:CyWrite {id: 'i', l: ['a']}), (:CyWrite {id: 'j', l: ['B']}), (:CyWrite {id: 'k', l: ['é']}), (:CyWrite {id: 'm', l: []})"
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['i', 'j', 'k', 'm'] RETURN n.id ORDER BY n.l"
+        rows: ["m", "j", "i", "k"]
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['i', 'j', 'k', 'm'] RETURN n.id ORDER BY n.l DESC"
+        rows: ["k", "i", "j", "m"]
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['i', 'j', 'k', 'm'] RETURN [min(n.l), max(n.l)]"
+        rows: [[[], ["é"]]]
+      - note: "A temporal value by its moment."
+        cypher: "CREATE (:CyWrite {id: 'p', l: [date('2020-01-02')]}), (:CyWrite {id: 'q', l: [date('2020-01-01'), date('2021-01-01')]}), (:CyWrite {id: 'r', l: [date('2020-01-01')]})"
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['p', 'q', 'r'] RETURN n.id ORDER BY n.l"
+        rows: ["r", "q", "p"]
+      - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['p', 'q', 'r'] WITH min(n.l) AS lo, max(n.l) AS hi RETURN [size(lo), toString(lo[0]), toString(hi[0])]"
+        rows: [[1, "2020-01-01", "2020-01-02"]]

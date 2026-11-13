@@ -62,6 +62,40 @@ class PostgresGraphIntegrationTest {
         assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM made_node")))
     }
 
+    /**
+     * A store drivine:8 made has the write function's find that took the id as text, which no layout-2 index answers and
+     * a temporal id's tag never matched (drivine-cypher-spec#245). Ensured by this version, it has only the find that
+     * takes the id's JSON, and a LocalDate id saved twice is one node.
+     */
+    @Test
+    fun `a store whose find took the id as text is given the find by the id's JSON when it is ensured`() {
+        PostgresGraph(graph).ensure(manager)
+        // As drivine:8 left it: the find took the id as text, and the node table says drivine:8.
+        manager.execute(spec("DROP FUNCTION made_find(jsonb, text, jsonb)"))
+        manager.execute(spec(
+            """
+            CREATE FUNCTION made_find(p_labels jsonb, p_key text, p_id text) RETURNS made_node AS ${'$'}fn${'$'}
+            BEGIN
+                RETURN NULL;
+            END
+            ${'$'}fn${'$'} LANGUAGE plpgsql
+            """
+        ))
+        manager.execute(spec("COMMENT ON TABLE made_node IS 'drivine:8'"))
+
+        PostgresGraph(graph).ensure(manager)
+        fun defined(signature: String) =
+            manager.query(spec("SELECT to_regprocedure('$signature') IS NOT NULL").transform(Boolean::class.java)).single()
+        assertTrue(defined("made_find(jsonb, text, jsonb)"), "the find by the id's JSON is made")
+        assertTrue(!defined("made_find(jsonb, text, text)"), "the find by the id's text is gone")
+
+        val objects = org.drivine.manager.StatelessGraphObjectManager(manager, org.drivine.mapper.Neo4jObjectMapper.instance, SubtypeRegistry())
+        val day = java.time.LocalDate.of(2026, 1, 2)
+        objects.save(org.drivine.manager.LookupDate(day, "first"))
+        objects.save(org.drivine.manager.LookupDate(day, "second"))
+        assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM made_node WHERE labels @> '[\"LookupDate\"]'")))
+    }
+
     @Test
     fun `processes that each find the store missing make it one after the other`() {
         val pool = Executors.newFixedThreadPool(8)
