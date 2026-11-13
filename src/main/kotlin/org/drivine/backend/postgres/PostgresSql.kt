@@ -162,6 +162,16 @@ internal object PostgresSql {
     fun hasId(alias: String, key: String, json: String): String = "${Shared.indexed(alias, key)} = CAST($json AS jsonb)"
 
     /**
+     * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
+     * text, as [hasId] compares one: the index answers it for each.
+     */
+    fun hasIdIn(alias: String, key: String, parameter: String): String =
+        "${Shared.indexed(alias, key)} = ANY(ARRAY(SELECT CAST(v.value #>> '{}' AS jsonb) FROM jsonb_array_elements(CAST($parameter AS jsonb)) v))"
+
+    /** The id held under [key] of the node [alias] as its text: a temporal value's tag read as its text `v` ([Shared.searchedProperty]). */
+    fun keyText(alias: String, key: String): String = Shared.searchedProperty(alias, key)
+
+    /**
      * [value] written into a statement as a literal, for a statement that is run where its values cannot
      * be bound: the query a `patch` step asks inside the write function. It is a value the query DSL was
      * given, as JDBC would bind it (see [JdbcParameterCoercer]): a number as itself, anything else as a

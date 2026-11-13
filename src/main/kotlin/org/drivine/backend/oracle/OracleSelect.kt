@@ -567,6 +567,8 @@ internal class OracleSelect(
     /**
      * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
      * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
+     * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [embeddings], no vector index has been made, and every pair of roots whose embeddings are
@@ -580,9 +582,9 @@ internal class OracleSelect(
     fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?, embeddings: String?, searchK: Int): GraphStatement {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val members = Query(
-            "c.nid, ${property("c", idProperty)} AS id, ${OracleSql.embedding("c", key)} AS embedding", Table(graph.nodes, "c"),
+            "c.nid, ${OracleSql.keyText("c", ValueLayout.escape(idProperty))} AS id, ${OracleSql.embedding("c", key)} AS embedding", Table(graph.nodes, "c"),
             listOfNotNull(
-                hasLabels("c", rootLabels()), OracleSql.hasProperty("c", key), "${property("c", idProperty)} IN (${OracleSql.values(scope.bound(ids), SqlKind.TEXT)})",
+                hasLabels("c", rootLabels()), OracleSql.hasProperty("c", key), OracleSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids)),
                 embeddings?.let { "c.nid IN (SELECT e.nid FROM $it e)" },
             ),
         )

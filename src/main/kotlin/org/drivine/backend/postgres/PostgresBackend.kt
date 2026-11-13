@@ -68,7 +68,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
-        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold, index.label, dimensions, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold, index.label, dimensions, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

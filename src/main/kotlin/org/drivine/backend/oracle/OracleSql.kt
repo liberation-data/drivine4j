@@ -60,6 +60,14 @@ internal object OracleSql {
         "${Shared.indexClass("$alias.props", key)} = ${Shared.valueClass(json)} AND ${Shared.indexKey("$alias.props", key)} = ${Shared.valueKey(json)}"
 
     /**
+     * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
+     * text, as [hasId] compares one: the index answers it for each.
+     */
+    fun hasIdIn(alias: String, key: String, parameter: String): String =
+        "(${Shared.indexClass("$alias.props", key)}, ${Shared.indexKey("$alias.props", key)}) IN " +
+            "(SELECT ${Shared.valueClass("JSON(i.v)")}, ${Shared.valueKey("JSON(i.v)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
+
+    /**
      * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
      * as its text `v`, anything else as `JSON_VALUE` reads it, as the module's Postgres write function reads a target's id
      * (`COALESCE(props -> key ->> 'v', props ->> key)`) and SQLite's writer does ([org.drivine.backend.sqlite.SqliteSql.keyText]).

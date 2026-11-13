@@ -74,6 +74,16 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         return statement.bindingId { given -> ids.json(model, given) }
     }
 
+    /**
+     * [given], the ids `loadNearestAmong` names its roots by, each as the JSON text a root of [select] holds it as, once:
+     * text is read as the `@NodeId` field's type first, as a load reads it, and text that is no value of it is left out,
+     * as it finds no node (see [NodeIds]).
+     */
+    protected fun idsJson(select: S, given: List<String>): List<String> {
+        val model = FragmentModel.from(select.rootFragment)
+        return given.mapNotNull { ids.json(model, it) }.distinct()
+    }
+
     override val cypherGrammar: CypherGrammar? = null
 
     override val supportsOrphanDelete: Boolean = true

@@ -6,6 +6,7 @@ import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.Root
+import org.drivine.annotation.VectorIndex
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.oracle.OracleBackend
@@ -48,6 +49,10 @@ data class LookupDate(@NodeId val id: LocalDate, val name: String)
 
 @NodeFragment(labels = ["LookupText"])
 data class LookupText(@NodeId val id: String, val name: String)
+
+/** A root with an embedding, which `loadNearestAmong` finds among others by their ids' text. */
+@NodeFragment(labels = ["LookupNear"])
+data class LookupNear(@NodeId val id: LocalDate, val name: String, @VectorIndex val embedding: List<Float>? = null)
 
 @NodeFragment(labels = ["LookupTarget"])
 data class LookupTarget(@NodeId val id: String, val name: String)
@@ -102,11 +107,12 @@ abstract class NodeIdLookupContract {
     @BeforeAll
     fun seed() {
         SqlCypherFixtures.clear(store)
-        listOf("LookupLong", "LookupDate", "LookupText", "LookupTarget").forEach { store.constraints.ensure(UniquenessConstraintSpec(it, "id")) }
+        listOf("LookupLong", "LookupDate", "LookupText", "LookupTarget", "LookupNear").forEach { store.constraints.ensure(UniquenessConstraintSpec(it, "id")) }
         // Enough nodes of each label that reading them whole costs more than the index does.
         listOf("LookupLong", "LookupDate", "LookupText").forEach { label ->
             pm.execute(QuerySpecification.withStatement("UNWIND range(1000, ${1000 + FILLERS - 1}) AS k CREATE (:$label {id: k, name: 'filler'})"))
         }
+        pm.execute(QuerySpecification.withStatement("UNWIND range(1000, ${1000 + FILLERS - 1}) AS k CREATE (:LookupNear {id: k, name: 'filler', embedding: [1.0, 0.0]})"))
         manager.save(LookupTarget("x", "the target"))
         // Every filler is joined to the target, so a relationship of the type is no rarer than the node it leaves.
         listOf("LookupLong", "LookupDate", "LookupText").forEach { label ->
@@ -263,6 +269,32 @@ abstract class NodeIdLookupContract {
         val related = backend.related(NodeRef(type, text), "POINTS_TO", Direction.OUTGOING, LookupTarget::class.java)
         val relatedPlan = plan(related.statement, related.bindings)
         assertTrue(readsIndex(relatedPlan, label), "loadRelated:\n$relatedPlan")
+    }
+
+    /**
+     * `loadNearestAmong` finds the roots of its ids as a load finds one, each id's text read as the `@NodeId` field's type,
+     * and gives each root and neighbour by the text of its id, a temporal one by its tag's text.
+     */
+    @Test
+    fun `loadNearestAmong finds roots of a LocalDate id by their text, and gives each by its text`() {
+        manager.save(LookupNear(LocalDate.of(2030, 1, 1), "a", listOf(1.0f, 0.0f)))
+        manager.save(LookupNear(LocalDate.of(2030, 1, 2), "b", listOf(0.8f, 0.6f)))
+        manager.save(LookupNear(LocalDate.of(2030, 1, 3), "c", listOf(0.0f, 1.0f)))
+
+        val found = manager.loadNearestAmong(LookupNear::class.java, listOf("2030-01-01", "2030-01-02", "2030-01-03", "2030-01-09", "abc"), 1)
+
+        assertEquals(
+            mapOf("2030-01-01" to listOf("2030-01-02"), "2030-01-02" to listOf("2030-01-01"), "2030-01-03" to listOf("2030-01-02")),
+            found.mapValues { (_, near) -> near.map { it.value } },
+        )
+    }
+
+    /** `loadNearestAmong` finds its roots through the index over their ids, as a load does, and does not read the label whole. */
+    @Test
+    fun `loadNearestAmong reads the index`() {
+        val statement = backend.nearestAmong(LookupNear::class.java, null, listOf("2030-01-01", "2030-01-02"), 1, null, 2)
+        val plan = plan(statement.statement, statement.bindings)
+        assertTrue(readsIndex(plan, "LookupNear"), "loadNearestAmong:\n$plan")
     }
 
     @Test

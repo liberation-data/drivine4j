@@ -76,7 +76,7 @@ internal class OracleBackend(
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
-        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold, embeddings, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold, embeddings, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

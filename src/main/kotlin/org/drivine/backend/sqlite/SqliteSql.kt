@@ -191,6 +191,15 @@ internal object SqliteSql {
         "${Shared.indexClass("$alias.props", path(key))} = ${Shared.valueClass(json)} AND ${Shared.indexKey("$alias.props", path(key))} = ${Shared.valueKey(json)}"
 
     /**
+     * Whether the node [alias] is a node of [nodes] of [labels] whose property [key] is one of the ids bound as [parameter],
+     * a JSON array of each id's JSON text, as [hasId] compares one. Each id finds its node, through the index, before the
+     * node is joined: SQLite reads no index for a pair of expressions `IN` a list.
+     */
+    fun hasIdIn(alias: String, key: String, parameter: String, nodes: String, labels: Collection<String>): String =
+        "$alias.nid IN (SELECT f.nid FROM json_each($parameter) v CROSS JOIN $nodes f WHERE " +
+            listOfNotNull(hasId("f", key, "v.value"), hasLabels("f", labels)).joinToString(" AND ") + ")"
+
+    /**
      * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
      * as its text `v` ([Shared.searchedProperty]), anything else as [property] reads it.
      */

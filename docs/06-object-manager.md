@@ -518,6 +518,8 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 
 - **Keys** are the ids whose root node has the embedding, in the order the ids were given. An id with
   no embedding, or no node, is not a key; an id whose neighbours were all dropped maps to an empty list.
+  On Oracle, Postgres and SQLite each id is read as `load` reads an id's text, as the `@NodeId` field's type, and found
+  through the index over the id; a key or a value is the id's text, a temporal id's its ISO text.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
   fails, as their index search refuses a vector of another size.

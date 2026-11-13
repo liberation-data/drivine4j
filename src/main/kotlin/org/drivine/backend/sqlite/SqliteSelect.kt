@@ -455,6 +455,8 @@ internal class SqliteSelect(
     /**
      * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
      * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
+     * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored by [SqliteSql.score], as [nearestTo] scores a node against a vector, and only
      * the roots are measured, so the answer is exact. A pair whose embeddings differ in size has no
      * score, and is left out.
@@ -465,10 +467,10 @@ internal class SqliteSelect(
     fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?): GraphStatement {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val members = Query(
-            "c.nid, ${property("c", idProperty)} AS id, c.props", Table(graph.nodes, "c"),
+            "c.nid, ${SqliteSql.keyText("c", ValueLayout.escape(idProperty))} AS id, c.props", Table(graph.nodes, "c"),
             listOfNotNull(
                 SqliteSql.hasLabels("c", rootLabels()), "${SqliteSql.type("c", key)} = 'array'",
-                "${property("c", idProperty)} IN (${SqliteSql.values(scope.bound(ids), SqlKind.TEXT)})",
+                SqliteSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids), graph.nodes, rootLabels()),
             ),
         )
         val scored = Query(

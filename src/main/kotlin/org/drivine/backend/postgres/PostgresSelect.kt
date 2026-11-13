@@ -463,6 +463,8 @@ internal class PostgresSelect(
     /**
      * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
      * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
+     * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
@@ -474,8 +476,8 @@ internal class PostgresSelect(
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val embedded = dimensions?.let { PostgresSql.holdsEmbedding("c", key, it) } ?: "jsonb_typeof(${PostgresSql.value("c", key)}) = 'array'"
         val members = Query(
-            "c.nid, ${property("c", idProperty)} AS id, c.props", Table(graph.nodes, "c"),
-            listOfNotNull(PostgresSql.hasLabels("c", rootLabels()), embedded, "${property("c", idProperty)} IN (${PostgresSql.values(scope.bound(ids), SqlKind.TEXT)})"),
+            "c.nid, ${PostgresSql.keyText("c", ValueLayout.escape(idProperty))} AS id, c.props", Table(graph.nodes, "c"),
+            listOfNotNull(PostgresSql.hasLabels("c", rootLabels()), embedded, PostgresSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids))),
         )
         val nearest = if (dimensions == null) {
             val distance = "${PostgresSql.embedding("o", key)} ${PostgresSql.distance(similarity)} ${PostgresSql.embedding("s", key)}"

@@ -61,7 +61,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
