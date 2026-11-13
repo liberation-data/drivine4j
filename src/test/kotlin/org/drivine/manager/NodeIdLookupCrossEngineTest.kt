@@ -313,6 +313,29 @@ abstract class NodeIdLookupContract {
         )
     }
 
+    /**
+     * An id given as two texts of one value is one root: each text is a key, and the root comes back as a neighbour by the
+     * first text given, never as its own.
+     */
+    @Test
+    fun `loadNearestAmong gives an id given as two texts under each, and finds its root once`() {
+        val first = LocalDateTime.of(2030, 1, 1, 10, 0)
+        val second = LocalDateTime.of(2030, 1, 1, 11, 0)
+        manager.save(LookupNearMoment(first, "a", listOf(1.0f, 0.0f)))
+        manager.save(LookupNearMoment(second, "b", listOf(0.8f, 0.6f)))
+
+        val found = manager.loadNearestAmong(LookupNearMoment::class.java, listOf("2030-01-01T10:00", "2030-01-01T10:00:00", "2030-01-01T11:00"), 2)
+
+        assertEquals(
+            mapOf(
+                "2030-01-01T10:00" to listOf("2030-01-01T11:00"),
+                "2030-01-01T10:00:00" to listOf("2030-01-01T11:00"),
+                "2030-01-01T11:00" to listOf("2030-01-01T10:00"),
+            ),
+            found.mapValues { (_, near) -> near.map { it.value } },
+        )
+    }
+
     /** `loadNearestAmong` finds its roots through the index over their ids, as a load does, and does not read the label whole. */
     @Test
     fun `loadNearestAmong reads the index`() {
