@@ -146,7 +146,10 @@ class JdbcConnection(
         return JdbcTypedValues.result(compiled.columns, ran.rows.map { it.values.single() })
     }
 
-    /** The SQL the Cypher statement [spec] compiles to, as [query] would run it, with nothing run. SQL as it is is refused. */
+    /**
+     * The SQL the Cypher statement [spec] compiles to, as [query] would run it, with nothing run: on Oracle the graph's
+     * labelled indexes are read first where they aren't kept (see OracleIndexedProperties). SQL as it is is refused.
+     */
     override fun explain(spec: QuerySpecification<*>): String {
         val given = spec.finalizedCopy(QueryLanguage.SQL)
         return cypherCompiled(given, typed = false)?.sql
