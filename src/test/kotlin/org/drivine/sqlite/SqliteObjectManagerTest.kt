@@ -742,10 +742,10 @@ class SqliteObjectManagerTest {
         // A boolean is compared with the text JSON writes it as, and not with SQLite's 1.
         assertEquals(listOf("c1"), ids(on("n.flag", ComparisonOperator.EQUALS, true)))
         assertEquals(listOf("c2"), ids(on("n.flag", ComparisonOperator.IN, listOf(false))))
-        // A number is compared with a number where one is stored; a text with the text of any value.
+        // A number is compared with a number, and a text with a text: as Cypher compares them, a number is never a text.
         assertEquals(listOf("c1"), ids(on("n.n", ComparisonOperator.EQUALS, 7)))
         assertEquals(listOf("c2"), ids(on("n.n", ComparisonOperator.IN, listOf(7.5))))
-        assertEquals(listOf("c1", "c3"), ids(on("n.n", ComparisonOperator.EQUALS, "7")))
+        assertEquals(listOf("c3"), ids(on("n.n", ComparisonOperator.EQUALS, "7")))
         // A list holds an element of the same JSON type.
         assertEquals(listOf("c1"), ids(org.drivine.query.dsl.WhereCondition.ListMembershipCondition("n.tags", 1)))
         assertEquals(emptyList(), ids(org.drivine.query.dsl.WhereCondition.ListMembershipCondition("n.tags", "1")))
@@ -874,7 +874,8 @@ class SqliteObjectManagerTest {
         fun at(path: String, operator: ComparisonOperator, value: Any) = PropertyCondition(path, operator, value)
         assertEquals(setOf("later", "offset"), temporals(at("n.instant", ComparisonOperator.GREATER_THAN, base.instant)).toSet())
         assertEquals(setOf("later", "offset"), temporals(at("n.zoned", ComparisonOperator.GREATER_THAN, base.zoned)).toSet())
-        assertEquals(listOf("base", "later", "offset"), temporals(orders = listOf(OrderSpec("n.zoned", OrderDirection.ASC), OrderSpec("n.id", OrderDirection.ASC))))
+        // One instant at two offsets is ordered as Neo4j orders it: by the instant, then the offset, the larger later.
+        assertEquals(listOf("base", "offset", "later"), temporals(orders = listOf(OrderSpec("n.zoned", OrderDirection.ASC), OrderSpec("n.id", OrderDirection.ASC))))
         assertEquals(emptyList(), temporals(at("n.date", ComparisonOperator.GREATER_THAN, base.date)))
         assertEquals(3, temporals(at("n.dateTime", ComparisonOperator.GREATER_THAN_OR_EQUAL, base.dateTime)).size)
         assertEquals(listOf("base"), temporals(at("n.instant", ComparisonOperator.EQUALS, base.instant)))
@@ -883,19 +884,21 @@ class SqliteObjectManagerTest {
         assertEquals(listOf("base"), temporals(at("n.instant", ComparisonOperator.LESS_THAN, base.instant.plusNanos(1_000))))
         assertEquals(emptyList(), temporals(at("n.dateTime", ComparisonOperator.LESS_THAN, base.dateTime)))
         assertEquals(3, temporals(at("n.dateTime", ComparisonOperator.LESS_THAN, base.dateTime.plusNanos(1_000))).size, "the three share one date-time")
-        // A list of moments is read as the property is: the instant each is, whatever its offset.
+        // A moment in a list equals one at the same instant and the same offset only, as Neo4j has them: another offset is another value.
         val east = offset.zoned.withZoneSameInstant(java.time.ZoneOffset.ofHours(5))
-        assertEquals(setOf("later", "offset"), temporals(at("n.zoned", ComparisonOperator.IN, listOf(east))).toSet())
-        assertEquals(listOf("base"), temporals(at("n.zoned", ComparisonOperator.NOT_IN, listOf(east))))
+        assertEquals(emptyList(), temporals(at("n.zoned", ComparisonOperator.IN, listOf(east))))
+        assertEquals(listOf("base", "later", "offset"), temporals(at("n.zoned", ComparisonOperator.NOT_IN, listOf(east))).sorted())
+        assertEquals(listOf("offset"), temporals(at("n.zoned", ComparisonOperator.IN, listOf(offset.zoned))))
         assertEquals(listOf("base"), temporals(at("n.instant", ComparisonOperator.IN, listOf(base.instant, base.instant.plusNanos(1_000)))))
         assertEquals(3, temporals(at("n.date", ComparisonOperator.IN, listOf(base.date))).size)
         assertEquals(3, temporals(at("n.dateTime", ComparisonOperator.IN, listOf(base.dateTime))).size)
-        // A seek past a moment at another offset leaves out the moments at or before the instant it is.
+        // A seek past a moment at another offset leaves out those before it as Neo4j orders them: base, at the same instant and
+        // a larger offset, is after it.
         val seek = stateless.loadAll(TemporalsNode::class.java, Any()) {
             orders += OrderSpec("n.zoned", OrderDirection.ASC)
             seekValues += SeekValueSpec("n.zoned", base.zoned.withZoneSameInstant(java.time.ZoneOffset.ofHours(-5)))
         }
-        assertEquals(setOf("later", "offset"), seek.map { it.id }.toSet())
+        assertEquals(setOf("base", "later", "offset"), seek.map { it.id }.toSet())
     }
 
     @Test

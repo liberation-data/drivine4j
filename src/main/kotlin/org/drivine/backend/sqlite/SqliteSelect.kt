@@ -1,5 +1,10 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.query.dsl.HavingCondition
+import org.drivine.query.dsl.GroupColumn
+import org.drivine.cypher.sql.SqliteCypherCompiler
+import org.drivine.connection.JacksonEncoder
+import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.annotation.Direction
@@ -63,7 +68,9 @@ internal class SqliteSelect(
     depthOverrides: Map<String, Int> = emptyMap(),
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = SqliteRowSources(graph, scope)
-    private val predicates = SqlitePredicates(scope, rows, rootAlias, root, rootModel, viewModel, depthOverrides)
+    /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
+    private val fragments = Fragments(SqliteCypherCompiler(graph.name, JacksonEncoder), scope)
+    private val predicates = SqlitePredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----
@@ -102,6 +109,13 @@ internal class SqliteSelect(
      * its rows: it filters them for a `having`, orders and pages them, and joins the node of a node key
      * back for its document.
      *
+     * A property key is the property's value as the store holds it ([Fragments.value]), so values Cypher
+     * tells apart are grouped apart, and a temporal value comes back as its kind. Where the groups are
+     * ordered by a property key, the grouped query also gives a node of the group that has its value
+     * (`k0r`); a least or greatest value is a node of the group that has it (`a0r`), the first in
+     * Cypher's order. The statement joins each back, and the module reads, orders and compares the value
+     * there as Cypher does.
+     *
      * A node key is a path, and a path gives a root once for each way to a key node. The roots are then
      * read as the distinct pairs of a root and its key nodes, by their ids, and each root's row is
      * joined to its pairs again where a key, an aggregate or a predicate reads it. SQLite has no lateral
@@ -113,23 +127,26 @@ internal class SqliteSelect(
         val nodes = paths.associateWith { scope.row(it.column) }
         val filtered = listOfNotNull(predicate(spec.conditions))
 
-        // A key is one column, and a text key no field declares is two: see keyColumns.
+        // The columns read through a node of the group that has the value: see the KDoc.
+        val held = (query.orders.map { it.column } + spec.aggregates).filter { column ->
+            when (column) {
+                is Key<*> -> (column.source as? KeySource.Property)?.propertyName?.let { it != Stamps.PROPERTY } == true
+                is Aggregate<*> -> column.function == GroupFunction.MIN || column.function == GroupFunction.MAX
+            }
+        }.toSet()
+
         val pairs = scope.row("pair")
         val keys = spec.keys.associateWith { key ->
             when (val from = key.source) {
-                is KeySource.Property -> keyColumns(query, key.column, from.propertyName)
-                is KeySource.Path -> listOf(key.column to "$pairs.${key.column}")
+                is KeySource.Property -> keyValue(from.propertyName)
+                is KeySource.Path -> "$pairs.${key.column}"
             }
         }
-        val selected = keys.values.flatten().map { (column, expression) -> "$expression AS $column" } +
-            spec.aggregates.map { "${aggregate(it)} AS ${it.column}" }
+        val selected = keys.map { (key, expression) -> "$expression AS ${key.column}" } +
+            spec.aggregates.map { "${aggregate(it)} AS ${it.column}${if (it in held) REPRESENTATIVE else ""}" } +
+            held.filterIsInstance<Key<*>>().map { "MIN($root.nid) AS ${it.column}$REPRESENTATIVE" }
         val select = selected.joinToString(",\n    ")
-        // A moment is grouped by the instant it is, and its text is the key's value: SQLite gives a column the
-        // GROUP BY does not name from a row of the group.
-        val momentKeys = spec.keys.filter { (it.source as? KeySource.Property)?.let { p -> isMoment(query, p.propertyName) } == true }.map { it.column }.toSet()
-        val grouping = "GROUP BY " + keys.values.flatten().joinToString(", ") { (column, expression) -> if (column in momentKeys) SqliteSql.epoch(expression) else expression }
-        // A least or greatest moment is its text too (see extreme), and is compared and ordered as the instant it is.
-        val moments = momentKeys + spec.aggregates.filter(::isMomentExtreme).map { it.column }
+        val grouping = "GROUP BY " + keys.values.joinToString(", ")
 
         val grouped = if (paths.isEmpty()) {
             // A grouped read's source is a fragment, which requires no relationship.
@@ -147,7 +164,7 @@ internal class SqliteSelect(
             val where = listOfNotNull(SqliteSql.hasLabels(root, rootLabels())) + filtered
             val distinct = "SELECT DISTINCT $root.nid, ${paths.joinToString(", ") { "${nodes.getValue(it)}.nid AS ${it.column}" }}\n" +
                 "FROM ${graph.nodes} $root$walked" + if (where.isEmpty()) "" else "\nWHERE ${where.joinToString("\n  AND ")}"
-            // The root's own row is read only where a key or an aggregate reads a property of it.
+            // The root's own row is read only where a key or an aggregate reads it.
             val readsRoot = selected.any { "$root." in it }
             val from = "(\n    ${distinct.under()}\n) $pairs" + if (readsRoot) "\nJOIN ${graph.nodes} $root ON $root.nid = $pairs.nid" else ""
             "SELECT $select\nFROM $from\n$grouping"
@@ -155,32 +172,43 @@ internal class SqliteSelect(
 
         val groups = scope.row("g")
         val keyNodes = paths.associateWith { scope.row("${it.column}_node") }
-        val entries = spec.keys.flatMap { key -> keyNodes[key]?.let { listOf(key.column to document(it)) } ?: keys.getValue(key).map { (column, _) -> column to "$groups.$column" } } +
-            spec.aggregates.map { it.column to "$groups.${it.column}" }
-        val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" }
+        // A group always has a node with its key's value, and may have none with a least or greatest one.
+        val holders = held.associateWith { scope.row("${it.column}_holder") }
+        // A value is JSON's text, which json() gives the document as the value it is.
+        val entries = spec.keys.map { key -> key.column to (keyNodes[key]?.let(::document) ?: keyEntry(key, "$groups.${key.column}")) } +
+            spec.aggregates.map { aggregate ->
+                aggregate.column to (holders[aggregate]?.let { "json(${fragments.value(it, Fragments.property(requireNotNull(aggregate.propertyName)))})" } ?: "$groups.${aggregate.column}")
+            }
+        val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" } +
+            holders.entries.joinToString("") { (column, holder) -> "\nLEFT JOIN ${graph.nodes} $holder ON $holder.nid = $groups.${column.column}$REPRESENTATIVE" }
         return GraphStatement(
             buildString {
                 append(SqliteSql.JSON_ROWS).append("\nSELECT ").append(SqliteSql.plainObject(entries)).append(" AS result")
                 append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
                 if (spec.havings.isNotEmpty()) {
-                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") {
-                        val column = "$groups.${it.aggregate.column}"
-                        val value = scope.bound(if (it.value is Boolean) it.value.toString() else it.value)
-                        if (it.aggregate.column in moments) "${SqliteSql.epoch(column)} ${it.operator.cypherOperator} ${SqliteSql.epoch(value)}"
-                        else "$column ${it.operator.cypherOperator} $value"
-                    })
+                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { having(it, groups, holders) })
                 }
-                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, keyNodes, keys[it.column].orEmpty().map { (column, _) -> column }, moments) })
+                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, keyNodes, holders) })
                 page(spec.skip, spec.limit)?.let { append("\n").append(it) }
             },
             bindings(),
         )
     }
 
+    /** A property key's value: as the store holds it, which tells apart what Cypher does. The stamp is a column of its own, a text. */
+    private fun keyValue(key: String): String =
+        if (key == Stamps.PROPERTY) property(root, key) else fragments.value(root, Fragments.property(key))
+
+    /** A property key's entry in a group's document: its JSON value, and the stamp's text. */
+    private fun keyEntry(key: Key<*>, column: String): String =
+        if ((key.source as KeySource.Property).propertyName == Stamps.PROPERTY) column else "json($column)"
+
     /**
      * An aggregate over the rows of a group, or over those that meet its filter. A filtered count is a
      * sum of ones and zeros; any other filtered aggregate skips the rows that do not meet the filter,
-     * as it skips a null. SQL's sum over no values is null, and a grouped read's is 0.
+     * as it skips a null. SQL's sum over no values is null, and a grouped read's is 0. A least or
+     * greatest value is the id of the group's first node by the property in Cypher's order, of those
+     * that have it and meet the filter; null where none does.
      */
     private fun aggregate(aggregate: Aggregate<*>): String {
         val filter = predicate(aggregate.filter)
@@ -188,81 +216,55 @@ internal class SqliteSelect(
             return if (filter == null) "COUNT(*)" else "COALESCE(SUM(CASE WHEN $filter THEN 1 ELSE 0 END), 0)"
         }
         val key = requireNotNull(aggregate.propertyName)
-        // A sum and a mean read a number; the least and the greatest are of the kind the field declares.
-        if (isMomentExtreme(aggregate)) return extreme(aggregate.function, key, filter)
-        val kind = if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) predicates.declaredKind(key) ?: SqlKind.TEXT else SqlKind.NUMBER
-        val stored = property(root, key, kind)
+        if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) {
+            val present = fragments.condition(root, rootLabels(), emptyMap()) { "${Fragments.property(key)} IS NOT NULL" }
+            val kept = listOfNotNull(present, filter).joinToString(" AND ")
+            val order = fragments.order(root, aggregate.function == GroupFunction.MAX) { Fragments.property(key) }.joinToString(", ")
+            return "(json_group_array($root.nid ORDER BY $order) FILTER (WHERE $kept)) ->> '$[0]'"
+        }
+        val stored = property(root, key, SqlKind.NUMBER)
         val value = if (filter == null) stored else "CASE WHEN $filter THEN $stored END"
         return if (aggregate.function == GroupFunction.SUM) "COALESCE(SUM($value), 0)" else "${aggregate.function.name}($value)"
     }
 
-    /** Whether [aggregate] is the least or the greatest of a property declared as a moment: see [extreme]. */
-    private fun isMomentExtreme(aggregate: Aggregate<*>): Boolean =
-        (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) &&
-            aggregate.propertyName?.let(predicates::declaredKind).let { it == SqlKind.INSTANT || it == SqlKind.LOCAL_DATE_TIME }
-
     /**
-     * The least or the greatest moment under [key], as the text it is stored as. Its nanoseconds since
-     * the epoch are written before the text at one width, a negative one after `0` and the rest after
-     * `1`, so the least of the two together is the text of the least moment.
+     * One condition of a `having`: a count, a sum or a mean is a number, compared as one; a least or
+     * greatest value is compared as Cypher compares it, by the module, on the node of the group that has
+     * it ([holders]), and is no match where the group has none.
      */
-    private fun extreme(function: GroupFunction, key: String, filter: String?): String {
-        val text = property(root, key)
-        val epoch = SqliteSql.epoch(text)
-        val ordered = "CASE WHEN $epoch < 0 THEN '0' || printf('%019d', $epoch + 9223372036854775807) ELSE '1' || printf('%019d', $epoch) END || $text"
-        val value = if (filter == null) ordered else "CASE WHEN $filter THEN $ordered END"
-        return "substr(${function.name}($value), 21)"
-    }
-
-    /**
-     * The columns a property key is grouped by, each with the expression that gives it: the key's own,
-     * `k0`, and for a property no field declares, `k0n`, its value where it is stored as a number and
-     * null for anything else: as text, a number would order `10` before `9`, and come back as text. A
-     * field that is no text is read as the kind it declares, and is one column.
-     */
-    private fun keyColumns(query: GroupQuery, column: String, key: String): List<Pair<String, String>> {
-        val field = query.field(key)
-        val plain = key == Stamps.PROPERTY || (field != null && field.type != String::class.java)
-        // A moment's value is its text, grouped by the instant it is: see groups.
-        if (isMoment(query, key)) return listOf(column to property(root, key))
-        if (plain) return listOf(column to property(root, key, predicates.declaredKind(key) ?: SqlKind.TEXT))
-        return listOfNotNull(column to property(root, key), if (field == null) "$column${GroupQuery.NUMBER}" to SqliteSql.number(root, key) else null)
-    }
-
-    /** Whether the field that declares the root property [key] holds a moment. */
-    private fun isMoment(query: GroupQuery, key: String): Boolean =
-        key != Stamps.PROPERTY && query.field(key)?.type?.let(SqlKind::ofType)?.let { it == SqlKind.INSTANT || it == SqlKind.LOCAL_DATE_TIME } == true
-
-    /**
-     * One term of a grouped read's order: a column of the row [groups], or for a node key the id of its
-     * node. A key no field declares is ordered as the graph engines order it, from the [columns] it is
-     * grouped by: the nodes with no value where the nulls go, and a number after every text. A key or
-     * an aggregate in [moments] is ordered as the instant it is.
-     */
-    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, columns: List<String>, moments: Set<String>): String {
-        if (columns.size > 1) {
-            val key = "$groups.${order.column.column}"
-            val number = "$key${GroupQuery.NUMBER}"
-            val ascending = order.direction == OrderDirection.ASC
-            val nullsFirst = order.nulls?.let { it == NullPlacement.FIRST } ?: !ascending
-            val absent = "CASE WHEN $key IS NULL THEN ${if (nullsFirst) 0 else 1} ELSE ${if (nullsFirst) 1 else 0} END"
-            return listOf(absent, "$number ${if (ascending) "ASC NULLS FIRST" else "DESC NULLS LAST"}", "$key ${SqliteSql.direction(ascending)}").joinToString(", ")
+    private fun having(having: HavingCondition, groups: String, holders: Map<GroupColumn<*>, String>): String {
+        val aggregate = having.aggregate
+        val holder = holders[aggregate] ?: return "$groups.${aggregate.column} ${having.operator.cypherOperator} ${scope.bound(if (having.value is Boolean) having.value.toString() else having.value)}"
+        val key = requireNotNull(aggregate.propertyName)
+        return fragments.condition(holder, rootLabels(), mapOf("value" to Fragments.value(having.operator, having.value))) { names ->
+            Fragments.compared(key, having.operator, names)
         }
-        val node = nodes[order.column]
-        val term = if (node == null) {
-            // A moment orders as the instant it is.
-            "$groups.${order.column.column}".let { if (order.column.column in moments) SqliteSql.epoch(it) else it }
-        } else {
+    }
+
+    /**
+     * One term of a grouped read's order: a count, a sum or a mean as the number it is; a property key or
+     * a least or greatest value as Cypher orders it, over the node of the group that has it ([holders]);
+     * a node key by its node's id.
+     */
+    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, holders: Map<GroupColumn<*>, String>): String {
+        val descending = order.direction == OrderDirection.DESC
+        holders[order.column]?.let { holder ->
+            val key = when (val column = order.column) {
+                is Key<*> -> (column.source as KeySource.Property).propertyName
+                is Aggregate<*> -> requireNotNull(column.propertyName)
+            }
+            return fragments.ordered(holder, Fragments.property(key), descending, order.nulls).joinToString(", ")
+        }
+        nodes[order.column]?.let { node ->
             val target = query.target((order.column as Key<*>).source as KeySource.Path)
-            val id = requireNotNull(target.nodeIdProperty)
-            property(node, id, SqlKind.ofType(target.fields.firstOrNull { it.propertyName == id }?.type))
+            return fragments.ordered(node, Fragments.property(requireNotNull(target.nodeIdProperty)), descending, order.nulls).joinToString(", ")
         }
         val nulls = when (order.nulls) {
             NullPlacement.FIRST -> "NULLS FIRST"
             NullPlacement.LAST -> "NULLS LAST"
             null -> null
         }
-        return "$term ${SqliteSql.direction(order.direction == OrderDirection.ASC, nulls)}"
+        return "$groups.${order.column.column} ${SqliteSql.direction(!descending, nulls)}"
     }
 
     /** What a load or a count asks of a root: its labels, [predicates], and the relationships the view requires. */
@@ -317,6 +319,10 @@ internal class SqliteSelect(
      */
     override fun predicate(conditions: List<WhereCondition>, indexed: Boolean): String? = predicates.predicate(conditions)
 
+    /** A collection sorted by a property of its nodes, as Cypher orders it, with the relationship's id to break a tie. */
+    override fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String =
+        (fragments.ordered(row, Fragments.property(sort.propertyName), !sort.ascending, null) + "$row.eid").joinToString(", ")
+
     /** The predicate that selects the rows after a keyset cursor. See [SqlitePredicates.after]. */
     override fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)
 
@@ -354,13 +360,14 @@ internal class SqliteSelect(
         val once = scope.row("once")
         val value = element(row, targetType, visits, relationship.fieldName)
         val order = pathOrder(relationship, steps, path)
+        val reached = rows.reached(SqliteRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty())
         val grouped = Query(
             "$path.nid${order?.selected.orEmpty()}",
-            rows.reached(SqliteRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty()),
+            order?.from(reached) ?: reached,
             tail = listOf("GROUP BY $path.nid"),
         ).text()
-        val source = OnceReached(grouped, once, graph.nodes, row)
-        val sort = order?.by(once) ?: "$row.nid"
+        val source = OnceReached(grouped, once, graph.nodes, row, order?.joined(once).orEmpty())
+        val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
             "COALESCE(${Query(arrayOf(value, sort), source).nested()}, $emptyArray)"
         } else {
@@ -370,51 +377,52 @@ internal class SqliteSelect(
 
     /**
      * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
-     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
-     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
-     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
-     * engines order them, every text comes before every number, lowest first; and a node of the hop
-     * that has no value comes last whichever way the path is read.
+     * first node of that hop that leads to it, by the hop's property as Cypher orders it, the lowest or,
+     * read highest first, the highest; a node of the hop that has no value is kept only where none has
+     * one, and comes last whichever way the path is read. The module orders the property, over the hop's
+     * node joined back by its id, as the node reached is ordered by the node it keeps.
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
         val hop = relationship.hops[i]
-        val node = rows.stepNode(steps, i, path)
-        val key = requireNotNull(hop.orderBy)
+        val key = Fragments.property(requireNotNull(hop.orderBy))
+        val step = scope.row("step")
+        val kept = scope.row("kept")
+        fun terms(row: String) = fragments.ordered(row, key, !hop.ascending, NullPlacement.LAST).joinToString(", ")
         return PathOrder(
-            listOf(
-                "order_number" to SqliteSql.number(node, key),
-                "order_text" to "CASE WHEN ${SqliteSql.type(node, key)} = 'text' THEN ${property(node, key)} END",
-            ),
-            hop.ascending,
-            path,
+            listOf(ORDER_NODE to "${rows.stepNode(steps, i, path)}.nid"),
+            path, graph.nodes, step, kept, terms(step), terms(kept),
         )
     }
 
     /**
-     * The order of a path, read from the [columns] of each way to a node and kept for the node by
-     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
-     * has no value; `order_number` is the value of a number, and `order_text` of a text.
+     * The order of a path, by the hop's node each way to a node reached keeps: [columns] give each way's
+     * node of the hop, a row [step] of [nodes] reads it while the ways are grouped by the node reached,
+     * which keeps the first by [stepTerms], and a row [kept] reads that one for the order [keptTerms].
      */
-    private class PathOrder(val columns: List<Pair<String, String>>, private val ascending: Boolean, private val path: String) {
-        private val keep = if (ascending) "MIN" else "MAX"
-        private val direction = if (ascending) "ASC" else "DESC"
+    private class PathOrder(
+        val columns: List<Pair<String, String>>,
+        private val path: String,
+        private val nodes: String,
+        private val step: String,
+        private val kept: String,
+        private val stepTerms: String,
+        private val keptTerms: String,
+    ) {
+        /** The ways to the nodes reached, each joined to its node of the hop. */
+        fun from(reached: RowSource): RowSource = object : RowSource {
+            override val alias: String get() = reached.alias
+            override fun reading(readers: List<String>): String = "${reached.reading(readers)}\nJOIN $nodes $step ON $step.nid = $path.$ORDER_NODE"
+        }
 
-        /** What the ways grouped by the node reached keep of the order. */
-        val selected: String
-            get() = listOf(
-                ", $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL THEN 0 END) AS order_kind",
-                ", $keep($path.order_number) AS order_number",
-                ", $keep($path.order_text) AS order_text",
-            ).joinToString(" ")
+        /** What the ways grouped by the node reached keep of the order: the first node of the hop. */
+        val selected: String get() = ", json_group_array($step.nid ORDER BY $stepTerms) ->> '$[0]' AS $ORDER_NODE"
 
-        /** The order of the row [row]: the nodes with no value last, texts before numbers, then the value, with the node's id last. */
-        fun by(row: String): String = listOf(
-            "$row.order_kind $direction NULLS LAST",
-            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END ${SqliteSql.direction(ascending)}",
-            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END ${SqliteSql.direction(ascending)}",
-            "$row.nid",
-        ).joinToString(", ")
+        /** The join of the node of the hop that the grouped row [once] keeps. */
+        fun joined(once: String): String = "\nJOIN $nodes $kept ON $kept.nid = $once.$ORDER_NODE"
+
+        /** The order of the node reached, the row [row]: by the node of the hop it keeps, then by its own id. */
+        fun by(row: String): String = "$keptTerms, $row.nid"
     }
 
     // ----- Scored search -----
@@ -567,6 +575,12 @@ internal class SqliteSelect(
 
         /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
         private const val MEMBERS = "members"
+
+        /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
+        private const val ORDER_NODE = "order_node"
+
+        /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
+        private const val REPRESENTATIVE = "r"
 
         /** What [nearestAmong] calls every pair of its roots, scored and numbered within the first of the pair. */
         private const val RANKED = "ranked"

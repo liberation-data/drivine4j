@@ -312,5 +312,5 @@ class OrderExpressionSqliteTest {
     fun clear() = SqliteTestDatabase.clear(pm)
 
     @Test
-    fun `roots are ranked by a computed score on SQLite`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = false)
+    fun `roots are ranked by a computed score on SQLite`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = true)
 }
