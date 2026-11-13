@@ -283,7 +283,7 @@ class PostgresPropertyKeyIndexTest : PropertyKeyIndexContract() {
     }
 
     override fun probesIndex(plan: String) =
-        Regex("""Index Cond: \(\(props ->> '(id|$IMPORT_ID)'::text\) = """).containsMatchIn(plan) && "Seq Scan on ${GRAPH}_node" !in plan
+        Regex("""Index Cond: \(\(props -> '(id|$IMPORT_ID)'::text\) = """).containsMatchIn(plan) && "Seq Scan on ${GRAPH}_node" !in plan
 
     override fun analyze() = PostgresTestDatabase.run("ANALYZE ${GRAPH}_node")
 
@@ -309,7 +309,7 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
      * label, nor a full scan of the nodes.
      */
     override fun probesIndex(plan: String) =
-        Regex("""INDEX (UNIQUE|RANGE) SCAN\s*\|\s*${GRAPH.uppercase()}_UQ_""").containsMatchIn(plan) &&
+        Regex("""INDEX (UNIQUE|RANGE) SCAN\s*\|\s*${GRAPH.uppercase()}_UQ2_""").containsMatchIn(plan) &&
             "${GRAPH.uppercase()}_NODE_LABELS" !in plan &&
             !Regex("""TABLE ACCESS (STORAGE )?FULL\s*\|\s*${GRAPH.uppercase()}_NODE\b""").containsMatchIn(plan)
 
