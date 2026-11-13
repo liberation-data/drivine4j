@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleIndexedProperties
 import org.drivine.backend.oracle.OracleStoredFunctions
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.sqlite.SqliteGraph
@@ -145,7 +146,10 @@ class JdbcConnection(
         return JdbcTypedValues.result(compiled.columns, ran.rows.map { it.values.single() })
     }
 
-    /** The SQL the Cypher statement [spec] compiles to, as [query] would run it, with nothing run. SQL as it is is refused. */
+    /**
+     * The SQL the Cypher statement [spec] compiles to, as [query] would run it, with nothing run: on Oracle the graph's
+     * labelled indexes are read first where they aren't kept (see OracleIndexedProperties). SQL as it is is refused.
+     */
     override fun explain(spec: QuerySpecification<*>): String {
         val given = spec.finalizedCopy(QueryLanguage.SQL)
         return cypherCompiled(given, typed = false)?.sql
@@ -310,6 +314,7 @@ class JdbcConnection(
                 nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
                 typed = typed,
+                indexedProperties = OracleIndexedProperties.leading(connection, graphName) { sql -> query(QuerySpecification.withStatement(sql)) },
             )
             DatabaseType.SQLITE -> {
                 // So is a SQLite older than 3.53.2, which the application's sqlite-jdbc may be: plain SQL runs on it.
