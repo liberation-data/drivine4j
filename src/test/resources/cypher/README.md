@@ -591,7 +591,7 @@ A library's object manager writes its own SQL for a view or a fragment: the join
 - `sql` is each store's terms, as the module gives them for the graph `graph`, with the file's `indexed` properties and `variables`. The module's `FragmentsTest` holds each target to them.
 - `rows` is what Neo4j gives for the same expression over `setup`'s nodes, by id: the nodes `MATCH (n:Person) WHERE <condition> RETURN n.id` keeps, or the order `MATCH (n:Person) RETURN n.id ORDER BY <order>, n.id` gives. A `value` has none.
 
-**A runner.** Each library's runner makes `setup`'s nodes on each SQL store, as a statement it compiles, and for each case asks for the fragment as its object manager does, then runs it in SQL of its own: `SELECT ... FROM <graph>_node people_ WHERE <Person among its labels> AND <condition>`, or `ORDER BY <the order's terms>, <its id>`, binding the fragment's parameters under the names it gives. The ids it keeps, or their order, are `rows`.
+**A runner.** Each library's runner makes `setup`'s nodes on each SQL store, as a statement it compiles, and for each case asks for the fragment as its object manager does, then runs it in SQL of its own: `SELECT /*+ <the fragment's hints> */ ... FROM <graph>_node people_ WHERE <Person among its labels> AND <condition>`, or `ORDER BY <the order's terms>, <its id>`, binding the fragment's parameters under the names it gives. Without its hints, Oracle may give a case the wrong rows. The ids it keeps, or their order, are `rows`.
 
 ## Changing the spec
 

@@ -88,23 +88,39 @@ abstract class FragmentsContract {
         val id = text(row, "id")
         var checked = 0
         val wrong = mutableListOf<String>()
-        for (case in spec["cases"]) {
-            val expected = case["rows"]?.map { it.asText() } ?: continue
-            val parameters = case["parameters"]?.fields()?.asSequence()?.associate { (k, v) -> k to value(v) } ?: emptyMap()
-            val sql = StringBuilder("SELECT $id AS id FROM ${graph(name).store.nodes} $row WHERE ${labelled.sql}")
-            val fragment = when {
-                case.has("condition") -> compiler.condition(case["condition"].asText(), variables, parameters).also { sql.append(" AND (${it.sql})").append(" ORDER BY $id") }
-                else -> compiler.order(case["order"].asText(), case["descending"]?.asBoolean() == true, variables, parameters)
-                    .also { sql.append(" ORDER BY ${(it.terms + id).joinToString()}") }
-            }
+        fun parameters(node: JsonNode?) = node?.fields()?.asSequence()?.associate { (k, v) -> k to value(v) } ?: emptyMap()
+        // One fragment run as the library runs it, its hints in the outermost SELECT, the ids it keeps or orders checked.
+        fun check(label: String, expected: List<String>, condition: String?, order: String?, descending: Boolean, given: Map<String, Any?>) {
+            val fragment = if (condition != null) compiler.condition(condition, variables, given) else compiler.order(order!!, descending, variables, given)
+            val hints = (labelled.hints + fragment.hints).distinct().takeIf { it.isNotEmpty() }?.let { "/*+ ${it.joinToString(" ")} */ " }.orEmpty()
+            val sql = StringBuilder("SELECT $hints$id AS id FROM ${graph(name).store.nodes} $row WHERE ${labelled.sql}")
+            if (condition != null) sql.append(" AND (${fragment.sql}) ORDER BY $id") else sql.append(" ORDER BY ${(fragment.terms + id).joinToString()}")
             val got = runCatching {
                 pm.query(QuerySpecification.withStatement(sql.toString()).bind(labelled.parameters + fragment.parameters)).map { (it as? Map<*, *>)?.values?.single() ?: it }.map { it.toString() }
             }.fold({ it }, { listOf("ERROR ${it.message?.take(300)}") })
-            if (got != expected) wrong += "${case["name"].asText()}: expected $expected, got $got\n    $sql"
+            if (got != expected) wrong += "$label: expected $expected, got $got\n    $sql"
             checked++
         }
-        assertTrue(wrong.isEmpty(), "${wrong.size} of $checked cases differ from Neo4j:\n${wrong.joinToString("\n")}")
-        assertEquals(25, checked, "fragments.yaml's cases with rows")
+        for (case in spec["cases"]) {
+            val expected = case["rows"]?.map { it.asText() } ?: continue
+            check(case["name"].asText(), expected, case["condition"]?.asText(), case["order"]?.asText(), case["descending"]?.asBoolean() == true, parameters(case["parameters"]))
+        }
+        // The table: each form in each position, each value as an order both ways.
+        val table = spec["table"]
+        val positions = table["positions"].map { it.asText() }
+        for (entry in table["conditions"]) {
+            val form = entry["form"].asText()
+            positions.forEachIndexed { at, position ->
+                val condition = position.replace("{f}", form)
+                check(condition, entry["rows"][at].map { it.asText() }, condition, null, false, parameters(entry["parameters"]))
+            }
+        }
+        for (entry in table["orders"]) {
+            val order = entry["value"].asText()
+            listOf(false, true).forEachIndexed { at, descending -> check("ORDER BY $order${if (descending) " DESC" else ""}", entry["rows"][at].map { it.asText() }, null, order, descending, emptyMap()) }
+        }
+        assertTrue(wrong.isEmpty(), "${wrong.size} of $checked differ from Neo4j:\n${wrong.joinToString("\n")}")
+        assertEquals(25 + table["conditions"].size() * positions.size + table["orders"].size() * 2, checked, "fragments.yaml's cases with rows and its table")
     }
 }
 
