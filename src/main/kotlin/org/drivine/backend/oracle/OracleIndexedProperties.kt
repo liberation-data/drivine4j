@@ -42,7 +42,10 @@ internal object OracleIndexedProperties {
      * transaction open on [connection] is left as it was.
      */
     fun leading(connection: Connection, graph: String, rows: (String) -> List<Any?>): Set<Pair<String, String>> {
-        val key = connection.metaData.let { "${it.url}\u0000${it.userName}\u0000${graph.lowercase()}" }
+        // A connection whose metadata can't be read, or a stand-in that has none, names no database or user to keep what is read
+        // for: its statement is compiled with no index, as one that can't read the catalog is, and nothing is read or kept.
+        val key = runCatching { connection.metaData?.let { "${it.url}\u0000${it.userName}\u0000${graph.lowercase()}" } }.getOrNull()
+            ?: return emptySet()
         val last = reads[key]
         val changes = LabelledIndexCatalog.changes(graph)
         val now = clock()

@@ -156,4 +156,23 @@ class OracleIndexedPropertiesTest {
         assertEquals(setOf("Person" to "name"), OracleIndexedProperties.leading(connection, graph, catalog.read))
         assertEquals(1, warnings.size)
     }
+
+    @Test
+    fun `a connection whose metadata is missing or can't be read gives none, and reads and keeps nothing`() {
+        val catalog = Catalog(listOf(row("Person", "name")))
+        val none = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, method, _ ->
+            if (method.name == "getMetaData") null else throw UnsupportedOperationException(method.name)
+        } as Connection
+        val closed = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(Connection::class.java)) { _, method, _ ->
+            if (method.name == "getMetaData") throw SQLException("Closed Connection", "08003", 17008) else throw UnsupportedOperationException(method.name)
+        } as Connection
+        listOf(none, closed).forEach { connection ->
+            assertEquals(emptySet(), OracleIndexedProperties.leading(connection, graph, catalog.read))
+        }
+        assertEquals(0, catalog.reads)
+        // A connection that names itself is read for as before: nothing was kept for the graph.
+        assertEquals(setOf("Person" to "name"), OracleIndexedProperties.leading(connection(), graph, catalog.read))
+        assertEquals(1, catalog.reads)
+        assertEquals(0, warnings.size)
+    }
 }
