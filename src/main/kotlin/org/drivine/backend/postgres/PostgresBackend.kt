@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.backend.sql.storedProperty
 import org.drivine.backend.sql.SqlBackend
 import org.drivine.query.dsl.CollectionSortSpec
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -52,9 +53,9 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         // Through the index for the label when one has been made for embeddings of the vector's size; else by measuring every node.
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
         val candidates = if (dimensions == vector.size) {
-            select.nearestThrough(index.label, index.property, dimensions, index.similarity, vector, searchK ?: topK)
+            select.nearestThrough(index.label, index.storedProperty, dimensions, index.similarity, vector, searchK ?: topK)
         } else {
-            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+            select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
@@ -65,7 +66,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, index.label, dimensions, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold, index.label, dimensions, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

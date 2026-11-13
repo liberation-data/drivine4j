@@ -284,3 +284,10 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         const val BATCH = 500
     }
 }
+
+/**
+ * The key a node's `props` holds the embedding at, as the module writes it ([ValueLayout.escape]): a name that begins
+ * with `$` is held as `$$…`. What a SQL store's search reads and its vector index is made over; the schema's catalog
+ * keeps the property's own name.
+ */
+internal val org.drivine.query.grammar.VectorQuerySpec.storedProperty: String get() = org.drivine.cypher.store.ValueLayout.escape(property)

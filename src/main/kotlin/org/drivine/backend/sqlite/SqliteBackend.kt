@@ -1,5 +1,6 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.backend.sql.storedProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.backend.GraphStatement
@@ -49,7 +50,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     ): ScoredSearchPlan {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
-        val candidates = select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        val candidates = select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
@@ -58,7 +59,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold)
+        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.storedProperty
 import org.drivine.backend.sql.SqlBackend
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.cypher.api.FullTextSearch
@@ -62,7 +63,7 @@ internal class OracleBackend(
         val candidates = if (embeddings != null) {
             select.nearestThrough(embeddings, index.similarity, vector, searchK ?: topK)
         } else {
-            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+            select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
@@ -73,7 +74,7 @@ internal class OracleBackend(
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, embeddings, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, ids, topK, threshold, embeddings, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

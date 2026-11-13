@@ -78,3 +78,14 @@ data class ParagraphElement(
     val body: String,
     @GraphProperty("leaf_section_id") val leafSectionId: String? = null,
 ) : Element
+
+/**
+ * A `@VectorIndex` on a property whose stored name begins with `$`, which layout 2 holds escaped, as `$$embedding`
+ * (drivine-cypher-spec#161): a SQL store's search must read the embedding there, and its index be made over it.
+ */
+@NodeFragment(labels = ["DollarEmbedded"])
+data class DollarEmbeddedNode(
+    @NodeId val id: String,
+    @GraphProperty("\$embedding") @VectorIndex(similarity = SimilarityFunction.COSINE)
+    val embedding: List<Float>? = null,
+)
