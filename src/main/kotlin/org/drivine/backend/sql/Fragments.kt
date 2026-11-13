@@ -11,7 +11,11 @@ import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
 import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.cypher.sql.SqlCypherCompiler
+import org.drivine.cypher.sql.SqlFragment
 import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.CypherGenerator
+import org.drivine.query.dsl.WhereCondition
+import org.drivine.model.GraphViewModel
 
 /**
  * The parts of one statement the object manager writes whose values the compiler's module compares, sorts and binds
@@ -28,6 +32,9 @@ import org.drivine.query.dsl.ComparisonOperator
  */
 internal class Fragments(private val compiler: SqlCypherCompiler, private val scope: StatementScope) {
     private var count = 0
+
+    /** How many parameters the DSL's conditions written so far ([where]) bind: the next are numbered on from it. */
+    private var conditionParameters = 0
 
     /** The optimizer hints the fragments written so far ask the statement's outermost `SELECT` to carry. */
     val hints = linkedSetOf<String>()
@@ -46,22 +53,61 @@ internal class Fragments(private val compiler: SqlCypherCompiler, private val sc
         return bound(fragment)
     }
 
+    /**
+     * The condition the query DSL's [conditions] make on the node [row], which they call [alias]: the Cypher the DSL writes
+     * them as for Neo4j ([written]), compiled whole, so a condition on a related node is the module's `EXISTS` and a negation
+     * is Cypher's. [labels] are the node's, for the index of an equality it must pass. Null where there are none.
+     */
+    fun where(row: String, alias: String, labels: List<String>, conditions: List<WhereCondition>, viewModel: GraphViewModel?, depthOverrides: Map<String, Int>): String? =
+        written(conditions, viewModel, depthOverrides)?.let { (cypher, parameters) -> take(compiled(row, alias, labels, cypher, parameters)) }
+
+    /**
+     * The Cypher the query DSL writes [conditions] as for Neo4j ([CypherGenerator]), with the parameters it binds, numbered on
+     * from those of the conditions written before; null where there are none.
+     *
+     * @param viewModel the view whose relationship fields a condition may name; null for a fragment
+     * @param depthOverrides the depths the query reads relationship fields to, which a condition on one walks too
+     */
+    fun written(conditions: List<WhereCondition>, viewModel: GraphViewModel?, depthOverrides: Map<String, Int>): Pair<String, Map<String, Any?>>? {
+        if (conditions.isEmpty()) return null
+        val start = conditionParameters
+        val written = CypherGenerator.buildWhereClause(conditions, viewModel, Neo4j5Grammar(ApocSortMapsEmitter()), false, start, depthOverrides)
+        check(written.prologs.isEmpty() && written.bridgeVariables.isEmpty()) { "Neo4j's Cypher of a condition needs no clause before it: ${written.prologs}" }
+        val cypher = written.whereClause ?: return null
+        val parameters = CypherGenerator.extractBindings(conditions, viewModel, start)
+        conditionParameters += CypherGenerator.parameterCount(conditions, viewModel)
+        return cypher to parameters
+    }
+
+    /** The condition [cypher] of the node [row], which it calls [alias], of [labels], compiled and not yet [take]n. */
+    fun compiled(row: String, alias: String, labels: List<String>, cypher: String, parameters: Map<String, Any?>): SqlFragment =
+        compiler.condition(cypher, mapOf(alias to FragmentVariable.Node(row, labels)), parameters)
+
+    /** [fragment], a condition [compiled] for the statement: its term, its parameters bound and its hints kept. */
+    fun take(fragment: SqlFragment): String = bound(fragment)
+
     /** The terms an `ORDER BY` sorts by [cypher], over the node [row], `n` in it, descending where [descending]. */
     fun order(row: String, descending: Boolean, parameters: Map<String, Any?> = emptyMap(), cypher: (Names) -> String): List<String> {
         val names = Names(++count)
         val fragment = compiler.order(cypher(names), descending, mapOf(NODE to FragmentVariable.Node(row)), names.given(parameters))
-        bound(fragment)
+        taken(fragment)
         return fragment.terms
     }
 
     /** The value [cypher] gives over the node [row], `n` in it, as the store's JSON holds it: for a statement to group or bind by, never to compare. */
     fun value(row: String, cypher: String): String = bound(compiler.value(cypher, mapOf(NODE to FragmentVariable.Node(row)), emptyMap()))
 
-    private fun bound(fragment: org.drivine.cypher.sql.SqlFragment): String {
+    /** The one term of [fragment], a condition or a value, once [taken]. */
+    private fun bound(fragment: SqlFragment): String {
+        taken(fragment)
+        return fragment.terms.single()
+    }
+
+    /** [fragment]'s parameters bound in the statement, and its hints and whether it may give NaN kept for it. */
+    private fun taken(fragment: SqlFragment) {
         scope.boundAs(fragment.parameters)
         hints += fragment.hints
         nonFinite = nonFinite || fragment.nonFinite
-        return fragment.terms.single()
     }
 
     /** The names of one fragment's parameters: [invoke] gives `$f<n>_<name>`, apart from every other fragment's. */

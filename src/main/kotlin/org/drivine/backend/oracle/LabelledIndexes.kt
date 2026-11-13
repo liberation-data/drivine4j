@@ -31,6 +31,9 @@ internal class LabelledIndexes(indexes: List<LabelledIndex>) {
     /** A uniqueness constraint's index first: where both are there, it is the one Oracle answers from by a unique scan. */
     private val indexes = indexes.sortedByDescending { it.unique }
 
+    /** Each label and the property an index on it begins with: what the module's compiler reads an equality through. */
+    val leading: Set<Pair<String, String>> get() = indexes.map { it.label to it.properties.first() }.toSet()
+
     /** Whether an index on [label] begins with [key], so that a comparison with [key] alone can be answered by it. */
     fun leads(label: String, key: String): Boolean = indexes.any { it.label == label && it.properties.first() == key }
 

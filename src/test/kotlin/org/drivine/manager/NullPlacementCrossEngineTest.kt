@@ -244,36 +244,12 @@ class NullPlacementOracleTest {
     @Test
     fun `nulls go where the order says on Oracle`() = verify(buildGom(pm, registry))
 
-    /**
-     * A property no field declares is ordered as a number and then as text, and a row with a text
-     * is null as a number. Placing the nulls moves the rows with no value, and leaves the texts and
-     * the numbers where the order without a placement has them.
-     */
+    /** As Neo4j orders it: see [verifyMixedKinds]. */
     @Test
-    fun `placing the nulls of a property no field declares moves the rows without a value, and no others`() {
+    fun `a property of texts and numbers is ordered texts first, and placing its nulls moves only them`() {
         OracleTestDatabase.clear(pm)
-        OracleTestDatabase.seed(
-            pm,
-            """
-            CREATE (a:Ranked {id: 'a', rank: 2})
-            CREATE (b:Ranked {id: 'b', rank: 'x'})
-            CREATE (c:Ranked {id: 'c'})
-            CREATE (d:Ranked {id: 'd', rank: 10})
-            CREATE (e:Ranked {id: 'e', rank: 'y'})
-            """,
-        )
-        val gom = buildGom(pm, registry)
-        val rank = PropertyReference<Any>("n", "rank")
-        fun ids(spec: GraphQuerySpec<RankedNodeQueryDsl>.() -> Unit) =
-            gom.loadAll(RankedNode::class.java, RankedNodeQueryDsl.INSTANCE, spec).map { it.id }
-
-        assertEquals(listOf("c", "e", "b", "d", "a"), ids { orderBy { rank.desc() } })
-        assertEquals(listOf("e", "b", "d", "a", "c"), ids { orderBy { rank.desc().nullsLast() } })
-        assertEquals(listOf("c", "e", "b", "d", "a"), ids { orderBy { rank.desc().nullsFirst() } })
-
-        assertEquals(listOf("a", "d", "b", "e", "c"), ids { orderBy { rank.asc() } })
-        assertEquals(listOf("c", "a", "d", "b", "e"), ids { orderBy { rank.asc().nullsFirst() } })
-        assertEquals(listOf("a", "d", "b", "e", "c"), ids { orderBy { rank.asc().nullsLast() } })
+        OracleTestDatabase.seed(pm, MIXED_KINDS)
+        verifyMixedKinds(buildGom(pm, registry))
     }
 }
 

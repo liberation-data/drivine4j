@@ -1,5 +1,10 @@
 package org.drivine.backend.oracle
 
+import org.drivine.query.dsl.HavingCondition
+import org.drivine.query.dsl.GroupColumn
+import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.connection.JacksonEncoder
+import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.backend.sql.CypherShorthand
@@ -28,7 +33,6 @@ import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.GroupQuery
 import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.CollectionSortSpec
-import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GroupFunction
 import org.drivine.query.dsl.GroupOrder
 import org.drivine.query.dsl.Key
@@ -72,7 +76,11 @@ internal class OracleSelect(
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
     private val rows = OracleRowSources(graph, scope)
-    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled, depthOverrides)
+    /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]): see [hinted]. */
+    private val fragments = Fragments(
+        OracleCypherCompiler(graph.name, nullsEqualStored = true, eraStored = true, indexedProperties = labelled.leading, encoder = JacksonEncoder), scope,
+    )
+    private val predicates = OraclePredicates(scope, rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----
@@ -91,12 +99,12 @@ internal class OracleSelect(
             skip?.let { "OFFSET ${scope.bound(it)} ROWS" },
             limit?.let { "FETCH NEXT ${scope.bound(it)} ROWS ONLY" },
         )
-        return GraphStatement(Query(result, roots(), selected, page).text(), bindings())
+        return GraphStatement(hinted(Query(result, roots(), selected, page).text()), bindings())
     }
 
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     override fun count(predicates: List<String>): GraphStatement =
-        GraphStatement(Query("COUNT(*)", roots(), predicates + requiredRelationships()).text(), bindings())
+        GraphStatement(hinted(Query("COUNT(*)", roots(), predicates + requiredRelationships()).text()), bindings())
 
     /**
      * The grouped read [query] asks of the roots: one JSON document for each group, a key under `k0…`
@@ -105,6 +113,13 @@ internal class OracleSelect(
      * The groups are made by a query of their own, `GROUP BY` over the roots, and the statement reads
      * its rows: it filters them for a `having`, orders and pages them, and joins the node of a node key
      * back for its document, which is JSON and no key a `GROUP BY` takes.
+     *
+     * A property key is the property's value as the store holds it ([Fragments.value]), so values Cypher
+     * tells apart are grouped apart, and a temporal value comes back as its kind. Where the groups are
+     * ordered by a property key, the grouped query also gives a node of the group that has its value
+     * (`k0r`); a least or greatest value is a node of the group that has it (`a0r`), the first in
+     * Cypher's order. The statement joins each back, by the keys Oracle keeps ([OracleSql.sameKey]), and
+     * the module reads, orders and compares the value there as Cypher does.
      *
      * A node key is a path, and a path gives a root once for each way to a key node. The roots are
      * then read as the distinct pairs of a root and its key nodes, by their ids, and each root's row
@@ -116,80 +131,99 @@ internal class OracleSelect(
         val paths = spec.keys.filter { it.source is KeySource.Path }
         val pairs = scope.row("pair")
         val nodes = paths.associateWith { scope.row(it.column) }
+        val filtered = listOfNotNull(predicate(spec.conditions))
 
-        // A pattern holds no subquery (`ORA-40988`), and a predicate on the rows of a traversal is to be kept from: see OracleRowSources.exists.
-        val (onRows, inPattern) = if (paths.isEmpty()) spec.conditions to emptyList() else spec.conditions.partition { predicates.holdsSubquery(it) || holdsList(it) }
-        // A labelled index answers a condition on the roots where they are read by their labels, and not where they are reached by a path.
-        val filtered = listOfNotNull(predicate(onRows, indexed = paths.isEmpty()))
+        // The columns read through a node of the group that has the value: see the KDoc.
+        val held = (query.orders.map { it.column } + spec.aggregates).filter { column ->
+            when (column) {
+                is Key<*> -> (column.source as? KeySource.Property)?.propertyName?.let { it != Stamps.PROPERTY } == true
+                is Aggregate<*> -> column.function == GroupFunction.MIN || column.function == GroupFunction.MAX
+            }
+        }.toSet()
 
-        // A key is one column, and a text key is two or three: see keyColumns.
         val keys = spec.keys.associateWith { key ->
             when (val from = key.source) {
-                is KeySource.Property -> keyColumns(query, key.column, from.propertyName)
-                is KeySource.Path -> listOf(key.column to "$pairs.${key.column}")
+                is KeySource.Property -> keyValue(from.propertyName)
+                is KeySource.Path -> "$pairs.${key.column}"
             }
         }
-        val selected = keys.values.flatten().map { (column, expression) -> "$expression AS $column" } +
-            spec.aggregates.map { "${aggregate(it)} AS ${it.column}" }
+        // The node of a least or greatest value is the first of its group by a window over the rows before they are grouped,
+        // and not `KEEP (DENSE_RANK FIRST …)`: ordered by a value of JSON, that ends Oracle's (23.26) server process (`ORA-03113`).
+        val firsts = spec.aggregates.filter { it.function == GroupFunction.MIN || it.function == GroupFunction.MAX }.associateWith(::first)
+        // Over the rows of the window, a node key is a column of each: see below.
+        val grouped = keys.mapValues { (key, expression) -> if (firsts.isNotEmpty() && key.source is KeySource.Path) "$root.${key.column}" else expression }
+        val selected = grouped.map { (key, expression) -> "$expression AS ${key.column}" } +
+            spec.aggregates.map { aggregate ->
+                val value = firsts[aggregate]?.let { "CASE WHEN COUNT(CASE WHEN ${it.kept} THEN 1 END) > 0 THEN MIN($root.${aggregate.column}$FIRST) END" } ?: aggregate(aggregate)
+                "$value AS ${aggregate.column}${if (aggregate in held) REPRESENTATIVE else ""}"
+            } +
+            held.filterIsInstance<Key<*>>().map { "MIN($root.nid) AS ${it.column}$REPRESENTATIVE" }
         val select = selected.joinToString(",\n    ")
-        val grouping = listOf("GROUP BY " + keys.values.flatten().joinToString(", ") { it.second })
+        val grouping = listOf("GROUP BY " + grouped.values.joinToString(", "))
+        val windows = firsts.map { (aggregate, first) ->
+            "FIRST_VALUE($root.nid) OVER (PARTITION BY ${keys.values.joinToString(", ")} ORDER BY CASE WHEN ${first.kept} THEN 0 ELSE 1 END, ${first.order}) AS ${aggregate.column}$FIRST"
+        }
+        // The rows grouped, with the windows' columns where there are any: the root's own, a node key's, and each window's.
+        fun windowed(source: RowSource, where: List<String>): RowSource {
+            if (windows.isEmpty()) return source
+            val columns = listOf("$root.nid", "$root.labels", "$root.props", "$root.stamp") + paths.map { "$pairs.${it.column} AS ${it.column}" } + windows
+            return Derived(Query(columns.joinToString(",\n    "), source, where).text(), root)
+        }
 
-        val grouped = if (paths.isEmpty()) {
-            Query(select, roots(), filtered, grouping).text()
+        val groupedRows = if (paths.isEmpty()) {
+            val source = windowed(roots(), filtered)
+            Query(select, source, if (windows.isEmpty()) filtered else emptyList(), grouping).text()
         } else {
             val matched = rows.graphTable(
-                pattern(query, paths, nodes, listOfNotNull(predicate(inPattern))),
+                pattern(query, paths, nodes),
                 listOf(GraphTable.Column("nid", "$root.nid")) + paths.map { GraphTable.Column(it.column, "${nodes.getValue(it)}.nid") },
                 "r",
             )
             val distinct = "SELECT DISTINCT r.nid, ${paths.joinToString(", ") { "r.${it.column}" }}\nFROM ${matched.whole()}"
-            // The root's own row is read only where a key, an aggregate or a predicate reads a property of it.
-            val readsRoot = (selected + filtered).any { "$root." in it }
-            val from = "(\n    ${distinct.under()}\n) $pairs" + if (readsRoot) "\nJOIN ${graph.nodes} $root ON $root.nid = $pairs.nid" else ""
-            buildString {
-                append("SELECT ").append(select).append("\nFROM ").append(from)
-                if (filtered.isNotEmpty()) append("\nWHERE ").append(filtered.joinToString("\n  AND "))
-                append("\n").append(grouping.single())
+            // The root's own row is read only where a key, an aggregate, a window or a predicate reads a property of it.
+            val readsRoot = (selected + filtered + windows).any { "$root." in it }
+            val joined = "(\n    ${distinct.under()}\n) $pairs" + if (readsRoot) "\nJOIN ${graph.nodes} $root ON ${OracleSql.sameKey("$root.nid", "$pairs.nid")}" else ""
+            val source = object : RowSource {
+                override val alias: String get() = pairs
+                override fun reading(readers: List<String>): String = joined
             }
+            val windowedSource = windowed(source, filtered)
+            Query(select, windowedSource, if (windows.isEmpty()) filtered else emptyList(), grouping).text()
         }
 
         val groups = scope.row("g")
-        val entries = spec.keys.flatMap { key -> nodes[key]?.let { listOf(key.column to OracleSql.transform(it)) } ?: keys.getValue(key).map { (column, _) -> column to "$groups.$column" } } +
-            spec.aggregates.map { it.column to "$groups.${it.column}" }
-        val joins = nodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" }
+        // A group always has a node with its key's value, and may have none with a least or greatest one.
+        val holders = held.associateWith { scope.row("${it.column}_holder") }
+        val entries = spec.keys.map { key -> key.column to (nodes[key]?.let(OracleSql::transform) ?: "$groups.${key.column}") } +
+            spec.aggregates.map { aggregate ->
+                aggregate.column to (holders[aggregate]?.let { fragments.value(it, Fragments.property(requireNotNull(aggregate.propertyName))) } ?: "$groups.${aggregate.column}")
+            }
+        val joins = nodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" } +
+            holders.entries.joinToString("") { (column, holder) ->
+                "\nLEFT JOIN ${graph.nodes} $holder ON ${OracleSql.sameKey("$holder.nid", "$groups.${column.column}$REPRESENTATIVE")}"
+            }
         return GraphStatement(
-            buildString {
+            hinted(buildString {
                 append("SELECT ").append(jsonObject(entries)).append(" AS result")
-                append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
+                append("\nFROM (\n    ").append(groupedRows.under()).append("\n) ").append(groups).append(joins)
                 if (spec.havings.isNotEmpty()) {
-                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { "$groups.${it.aggregate.column} ${it.operator.cypherOperator} ${scope.bound(if (it.value is Boolean) it.value.toString() else it.value)}" })
+                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { having(it, groups, holders) })
                 }
-                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, nodes, keys[it.column].orEmpty().map { (column, _) -> column }) })
+                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, nodes, holders) })
                 spec.skip?.let { append("\nOFFSET ${scope.bound(it)} ROWS") }
                 spec.limit?.let { append("\nFETCH NEXT ${scope.bound(it)} ROWS ONLY") }
-            },
+            }),
             bindings(),
         )
     }
 
     /**
-     * Whether [condition] tests a list property for a value. Nothing has written that test inside a
-     * pattern, so a grouped read asks it of the root's own row, where a load asks it.
+     * The pattern of a grouped read by node keys: the root and from it the way to each key's node,
+     * named as [nodes] names it. The root is named in each way, and is one node. Its conditions are
+     * asked of its row of the node table: see [groups].
      */
-    private fun holdsList(condition: WhereCondition): Boolean = when (condition) {
-        is WhereCondition.ListMembershipCondition -> true
-        is WhereCondition.PropertyCondition -> condition.operator == ComparisonOperator.HAS_ELEMENT
-        is WhereCondition.OrCondition -> condition.conditions.any(::holdsList)
-        is WhereCondition.NotCondition -> condition.conditions.any(::holdsList)
-        else -> false
-    }
-
-    /**
-     * The pattern of a grouped read by node keys: the root, which meets [where], and from it the way
-     * to each key's node, named as [nodes] names it. The root is named in each way, and is one node.
-     */
-    private fun pattern(query: GroupQuery, paths: List<Key<*>>, nodes: Map<Key<*>, String>, where: List<String>): String {
-        val met = (listOfNotNull(scope.rootHasLabels(root, rootLabels())) + where).joinToString(" AND ")
+    private fun pattern(query: GroupQuery, paths: List<Key<*>>, nodes: Map<Key<*>, String>): String {
+        val met = scope.rootHasLabels(root, rootLabels())
         return paths.mapIndexed { index, key ->
             val path = key.source as KeySource.Path
             buildString {
@@ -218,10 +252,28 @@ internal class OracleSelect(
         return if (apart.isEmpty()) "" else "\n    WHERE " + apart.joinToString(" AND ")
     }
 
+    /** A property key's value: as the store holds it, which tells apart what Cypher does. The stamp is a column of its own, a text. */
+    private fun keyValue(key: String): String =
+        if (key == Stamps.PROPERTY) property(root, key) else fragments.value(root, Fragments.property(key))
+
     /**
-     * An aggregate over the rows of a group, or over those that meet its filter. A filtered count is a
-     * sum of ones and zeros; any other filtered aggregate skips the rows that do not meet the filter,
-     * as it skips a null. SQL's sum over no values is null, and a grouped read's is 0.
+     * A least or greatest value of a group: the rows [kept] for it, those that have the property and meet the aggregate's
+     * filter, and the [order] whose first of them has it, as Cypher orders the property. See [groups].
+     */
+    private class First(val kept: String, val order: String)
+
+    /** The rows and the order [aggregate], a least or greatest value, is the first of: see [First]. */
+    private fun first(aggregate: Aggregate<*>): First {
+        val key = requireNotNull(aggregate.propertyName)
+        val present = fragments.condition(root, rootLabels(), emptyMap()) { "${Fragments.property(key)} IS NOT NULL" }
+        val order = fragments.order(root, aggregate.function == GroupFunction.MAX) { Fragments.property(key) }.joinToString(", ")
+        return First(listOfNotNull(present, predicate(aggregate.filter)).joinToString(" AND "), order)
+    }
+
+    /**
+     * An aggregate over the rows of a group, or over those that meet its filter: a count, a sum or a mean. A filtered count
+     * is a sum of ones and zeros; any other filtered aggregate skips the rows that do not meet the filter, as it skips a
+     * null. SQL's sum over no values is null, and a grouped read's is 0. A least or greatest value is [first]'s.
      */
     private fun aggregate(aggregate: Aggregate<*>): String {
         val filter = predicate(aggregate.filter)
@@ -229,61 +281,49 @@ internal class OracleSelect(
             return if (filter == null) "COUNT(*)" else "COALESCE(SUM(CASE WHEN $filter THEN 1 ELSE 0 END), 0)"
         }
         val key = requireNotNull(aggregate.propertyName)
-        // A sum and a mean read a number; the least and the greatest are of the kind the field declares.
-        val kind = if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) predicates.declaredKind(key) ?: SqlKind.TEXT else SqlKind.NUMBER
-        val stored = property(root, key, kind)
+        val stored = property(root, key, SqlKind.NUMBER)
         val value = if (filter == null) stored else "CASE WHEN $filter THEN $stored END"
         return if (aggregate.function == GroupFunction.SUM) "COALESCE(SUM($value), 0)" else "${aggregate.function.name}($value)"
     }
 
     /**
-     * The columns a property key is grouped by, each with the expression that gives it: the key's own,
-     * `k0`, and beside it what Oracle's reading of a text leaves out.
-     *
-     * A field that is no text is read as the kind it declares, and is one column. A text is read by
-     * `JSON_VALUE`, which reads a stored `""` as null: `k0e` says whether the property is stored
-     * empty, so the nodes with `""` and the nodes with no value are two groups, as they are on the
-     * graph engines. A property no field declares may hold a number, which as text would order `10`
-     * before `9`: `k0n` is its value where it is stored as a number, and null for anything else.
+     * One condition of a `having`: a count, a sum or a mean is a number, compared as one; a least or
+     * greatest value is compared as Cypher compares it, by the module, on the node of the group that has
+     * it ([holders]), and is no match where the group has none.
      */
-    private fun keyColumns(query: GroupQuery, column: String, key: String): List<Pair<String, String>> {
-        val field = query.field(key)
-        val plain = key == Stamps.PROPERTY || (field != null && field.type != String::class.java)
-        if (plain) return listOf(column to property(root, key, predicates.declaredKind(key) ?: SqlKind.TEXT))
-        val empty = "CASE WHEN JSON_EXISTS($root.props, ${path(key, "?(@ == \"\")")}) THEN 1 ELSE 0 END"
-        val number = SqlKind.NUMBER.read("$root.props", path(key, ".numberOnly()"))
-        return listOfNotNull(column to property(root, key), "$column${GroupQuery.EMPTY}" to empty, if (field == null) "$column${GroupQuery.NUMBER}" to number else null)
+    private fun having(having: HavingCondition, groups: String, holders: Map<GroupColumn<*>, String>): String {
+        val aggregate = having.aggregate
+        val holder = holders[aggregate] ?: return "$groups.${aggregate.column} ${having.operator.cypherOperator} ${scope.bound(if (having.value is Boolean) having.value.toString() else having.value)}"
+        val key = requireNotNull(aggregate.propertyName)
+        return fragments.condition(holder, rootLabels(), mapOf("value" to Fragments.value(having.operator, having.value))) { names ->
+            Fragments.compared(key, having.operator, names)
+        }
     }
 
     /**
-     * One term of a grouped read's order: a column of the row [groups], or for a node key the id of its
-     * node. A text key is ordered as the graph engines order it, from the [columns] it is grouped by:
-     * the nodes with no value where the nulls go, a number after every text, and `""` before every
-     * other text.
+     * One term of a grouped read's order: a count, a sum or a mean as the number it is; a property key or
+     * a least or greatest value as Cypher orders it, over the node of the group that has it ([holders]);
+     * a node key by its node's id.
      */
-    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, columns: List<String>): String {
-        if (columns.size > 1) {
-            val key = "$groups.${order.column.column}"
-            val ascending = order.direction == OrderDirection.ASC
-            val nullsFirst = order.nulls?.let { it == NullPlacement.FIRST } ?: !ascending
-            val absent = "CASE WHEN $key IS NULL AND $key${GroupQuery.EMPTY} = 0 THEN ${if (nullsFirst) 0 else 1} ELSE ${if (nullsFirst) 1 else 0} END"
-            val number = if ("${order.column.column}${GroupQuery.NUMBER}" in columns) "$key${GroupQuery.NUMBER} ${if (ascending) "ASC NULLS FIRST" else "DESC NULLS LAST"}" else null
-            return listOfNotNull(absent, number, "$key${GroupQuery.EMPTY} ${if (ascending) "DESC" else "ASC"}", "$key ${order.direction.name}").joinToString(", ")
+    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, holders: Map<GroupColumn<*>, String>): String {
+        val descending = order.direction == OrderDirection.DESC
+        holders[order.column]?.let { holder ->
+            val key = when (val column = order.column) {
+                is Key<*> -> (column.source as KeySource.Property).propertyName
+                is Aggregate<*> -> requireNotNull(column.propertyName)
+            }
+            return fragments.ordered(holder, Fragments.property(key), descending, order.nulls).joinToString(", ")
         }
-        val node = nodes[order.column]
-        val term = if (node == null) {
-            "$groups.${order.column.column}"
-        } else {
+        nodes[order.column]?.let { node ->
             val target = query.target((order.column as Key<*>).source as KeySource.Path)
-            val id = requireNotNull(target.nodeIdProperty)
-            property(node, id, SqlKind.ofType(target.fields.firstOrNull { it.propertyName == id }?.type))
+            return fragments.ordered(node, Fragments.property(requireNotNull(target.nodeIdProperty)), descending, order.nulls).joinToString(", ")
         }
         val nulls = when (order.nulls) {
             NullPlacement.FIRST -> " NULLS FIRST"
             NullPlacement.LAST -> " NULLS LAST"
             null -> ""
         }
-        return "$term ${order.direction.name}$nulls"
+        return "$groups.${order.column.column} ${order.direction.name}$nulls"
     }
 
     /**
@@ -330,7 +370,7 @@ internal class OracleSelect(
     override fun meeting(conditions: List<WhereCondition>): String? {
         scope.narrowed = true
         val predicate = predicate(conditions) ?: return null
-        return "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$$NID\n  AND ${selecting(listOf(predicate))}"
+        return hinted("SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$$NID\n  AND ${selecting(listOf(predicate))}")
     }
 
     /**
@@ -338,6 +378,25 @@ internal class OracleSelect(
      * when every root the statement reads by its labels meets it. See [OraclePredicates.predicate].
      */
     override fun predicate(conditions: List<WhereCondition>, indexed: Boolean): String? = predicates.predicate(conditions, indexed)
+
+    /**
+     * [sql], one statement this select's predicates and orders are in, with the optimizer hints their fragments ask for
+     * ([Fragments.hints]) in its first `SELECT` or `DELETE`, the outermost: without `NO_JSON_TABLE_TRANSFORM`, Oracle 23 can
+     * give a comparison the wrong truth. Called once the statement is written, when every fragment in it is.
+     */
+    fun hinted(sql: String): String {
+        if (fragments.hints.isEmpty()) return sql
+        val keyword = LEADING_KEYWORD.find(sql) ?: error("No SELECT or DELETE begins the statement to hint: $sql")
+        val at = keyword.range.last + 1
+        return sql.substring(0, at) + hint() + sql.substring(at)
+    }
+
+    /** The comment of [hinted]'s hints, with a space before it, for a statement written elsewhere; empty where there are none. */
+    fun hint(): String = if (fragments.hints.isEmpty()) "" else " /*+ ${fragments.hints.joinToString(" ")} */"
+
+    /** A collection sorted by a property of its nodes, as Cypher orders it, with the relationship's id to break a tie. */
+    override fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String =
+        (fragments.ordered(row, Fragments.property(sort.propertyName), !sort.ascending, null) + "$row.eid").joinToString(", ")
 
     /** The predicate that selects the rows after a keyset cursor. See [OraclePredicates.after]. */
     override fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)
@@ -468,7 +527,7 @@ internal class OracleSelect(
         val result = "${jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
         val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
         val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "FETCH FIRST ${scope.bound(it)} ROWS ONLY" })
-        return GraphStatement(Query(result, Derived(candidates, root), filters, best).text(), bindings())
+        return GraphStatement(hinted(Query(result, Derived(candidates, root), filters, best).text()), bindings())
     }
 
     /** The root's nodes that also carry [also] and meet [where], each with its columns and `score`, ordered and cut by [tail]. */
@@ -604,7 +663,7 @@ internal class OracleSelect(
                 "$row.nid NOT IN (\n    ${reachedFromRoots(within, predicates).under()})",
                 "$row.nid NOT IN (\n    ${parents.under()})",
             )
-            recursion to Query("COUNT(DISTINCT $row.nid)", rows.reached(root, beyond, row, trail = false), left).text()
+            recursion to hinted(Query("COUNT(DISTINCT $row.nid)", rows.reached(root, beyond, row, trail = false), left).text())
         }
     }
 
@@ -646,6 +705,15 @@ internal class OracleSelect(
 
         /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
         private const val MEMBERS = "members"
+
+        /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
+        private const val REPRESENTATIVE = "r"
+
+        /** What follows a least or greatest value's name for the column of the window that gives its node: see [groups]. */
+        private const val FIRST = "_first"
+
+        /** The keyword a statement [hinted] begins with, after any blank: the hints follow it. */
+        private val LEADING_KEYWORD = Regex("^\\s*(SELECT|DELETE)\\b", RegexOption.IGNORE_CASE)
 
         /** What [nearestAmong] calls each root's neighbours, scored and numbered best first. */
         private const val RANKED = "ranked"

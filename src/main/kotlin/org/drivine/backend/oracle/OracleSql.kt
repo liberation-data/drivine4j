@@ -117,6 +117,13 @@ internal object OracleSql {
     /** The columns a row of a node carries, each as [alias]'s, `doc` among them. */
     fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
 
+    /**
+     * The node keys [a] and [b] equal, compared with `+ 0` on one side and again the other way round, as the module's compiler
+     * joins a node back to the node table: compared column to column, Oracle (23.26) may eliminate the join and read the
+     * other row by the key it dropped, or end the server process where a filter reads an indexed property of it (`ORA-07445`).
+     */
+    fun sameKey(a: String, b: String): String = "($a = $b + 0 AND $b = $a + 0)"
+
     /** One node in a `MATCH` pattern, named [variable], that meets [where] when there is one. */
     fun node(variable: String, where: String? = null): String = "($variable IS node${where?.let { " WHERE $it" }.orEmpty()})"
 
