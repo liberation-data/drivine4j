@@ -194,7 +194,7 @@ class OraclePredicatesTest {
         )))
         // One related node, of the field's labels, tied to the root, meets both.
         assertEquals(1, exists(sql), sql)
-        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
+        assertTrue(sql.startsWith("EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
         assertTrue(tied(sql, "claim_") && "e2.type = 'MENTIONS'" in sql, sql)
         assertTrue("n1.props, '$.name'" in sql && "n1.props, '$.id'" in sql, sql)
         assertEquals(listOf<Any?>("\"ada\"", "\"h1\""), select.bindings().values.toList())
@@ -208,7 +208,7 @@ class OraclePredicatesTest {
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
         )))
         val list = select.bindings().entries.single { it.value == "[\"h1\",\"h2\"]" }.key
-        assertEquals(1, exists(sql.replace("EXISTS (SELECT 1 FROM JSON_TABLE(JSON(\$$list)", "")), sql)
+        assertEquals(1, exists(sql.replace("EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM JSON_TABLE(JSON(\$$list)", "")), sql)
         assertTrue("JSON_TABLE(JSON(\$$list), '$[*]'" in sql, sql)
         assertEquals(2, select.bindings().size)
     }
@@ -224,7 +224,7 @@ class OraclePredicatesTest {
             WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))),
         )) {
             val sql = asked(condition)
-            assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
+            assertTrue(sql.startsWith("EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
             assertTrue(" OR " in sql && tied(sql, "claim_"), sql)
         }
     }
@@ -235,7 +235,7 @@ class OraclePredicatesTest {
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))
         assertEquals(2, exists(sql), sql)
         // Each level tests only the nodes its field loads, a claim and then a human, each tied to the level above.
-        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Claim\")')"), sql)
+        assertTrue(sql.startsWith("EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Claim\")')"), sql)
         assertTrue(tied(sql, "memo_") && "e2.type = 'COVERS'" in sql, sql)
         assertTrue("JSON_EXISTS(n3.labels, '$[*]?(@ == \"Human\")')" in sql && tied(sql, "n1") && "e4.type = 'MENTIONS'" in sql, sql)
     }

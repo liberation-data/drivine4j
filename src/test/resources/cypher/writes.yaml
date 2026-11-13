@@ -456,6 +456,28 @@ cases:
       - cypher: "MATCH (n:CyWrite) RETURN [n.id, n.e] ORDER BY n.id"
         rows: [[1, false], [2, true], [3, true]]
 
+  - name: "Two subqueries of one condition"
+    description: "An OR or an AND of two correlated EXISTS { }, NOT EXISTS { } or COUNT { }, each testing the related node's label, keeps each row either one or both keep (#252)."
+    steps:
+      - cypher: "CREATE (g1:CyWrite:GuideUser {uuid: 'g1'})-[:IS_WEB_USER]->(:CyWrite:Anonymous), (g2:CyWrite:GuideUser {uuid: 'g2'})-[:IS_WEB_USER]->(:CyWrite:Registered), (:CyWrite:GuideUser {uuid: 'g3'})"
+      - note: "Oracle 23.26 coalesced the two subqueries wrongly where the index over labels answered each one's label test, and kept only g1, the rows of the first."
+        cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } OR EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g1", "g2"]
+      - cypher: "MATCH (g:GuideUser) WHERE COUNT { (g)-[:IS_WEB_USER]->(:Anonymous) } > 0 OR COUNT { (g)-[:IS_WEB_USER]->(:Registered) } > 0 RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g1", "g2"]
+      - cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } OR NOT EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g1", "g3"]
+      - cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } AND EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: []
+      - cypher: "CREATE (g4:CyWrite:GuideUser {uuid: 'g4'})-[:IS_WEB_USER]->(:CyWrite:Anonymous), (g4)-[:IS_WEB_USER]->(:CyWrite:Registered)"
+        rows: []
+      - cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } AND EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g4"]
+      - cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } OR EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g1", "g2", "g4"]
+      - cypher: "MATCH (g:GuideUser) WHERE EXISTS { (g)-[:IS_WEB_USER]->(:Anonymous) } OR NOT EXISTS { (g)-[:IS_WEB_USER]->(:Registered) } RETURN g.uuid ORDER BY g.uuid"
+        rows: ["g1", "g3", "g4"]
+
   - name: "SET from a subquery inside a list expression"
     description: "A COUNT { } or EXISTS { } inside any(), a list comprehension or reduce() in a write reads the row being written."
     steps:

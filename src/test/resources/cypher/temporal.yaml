@@ -1029,6 +1029,42 @@ cases:
       - cypher: "UNWIND [{day: 3, year: 2020, hours: 4, timezone: 'x'}] AS r RETURN {day: r.day, year: r.year, hours: r.hours, timezone: r.timezone}"
         rows: [{day: 3, year: 2020, hours: 4, timezone: "x"}]
 
+  - name: "Arithmetic on temporal values read from the store"
+    description: "+, -, * and / of a temporal value read from the store, where the statement doesn't know its kind: Neo4j works it out. The SQL stores write temporal arithmetic only where a side is known to be temporal, so with both sides read from the store, or a duration read from the store times or divided by a number, they gave null; they now fail by name until it is compiled (drivine4j#418). A side written in the statement is still worked out."
+    steps:
+      - cypher: "CREATE (:CyTemporal {id: 'a', d1: duration('P1DT2H'), d2: duration('PT30M'), at: datetime('2024-01-01T10:00Z'), n: 5})"
+      - note: "A side written in the statement: worked out on every store."
+        cypher: "MATCH (n:CyTemporal) RETURN [toString(n.d1 + duration('PT30M')), toString(n.d1 - duration('PT30M')), toString(n.at + duration('P1D')), n.n + 1]"
+        rows: [["P1DT2H30M", "P1DT1H30M", "2024-01-02T10:00:00Z", 6]]
+      - note: "Two durations read from the store, added."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.d1 + n.d2"
+        error: true
+      - note: "Subtracted."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.d1 - n.d2"
+        error: true
+      - note: "A moment and a duration read from the store, added."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.at + n.d2"
+        error: true
+      - note: "Subtracted."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.at - n.d2"
+        error: true
+      - note: "A duration read from the store, times a number."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.d1 * 2"
+        error: true
+      - note: "Divided by one."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.d1 / 2"
+        error: true
+      - note: "What Neo4j gives for each."
+        only: [neo4j]
+        cypher: "MATCH (n:CyTemporal) RETURN [toString(n.d1 + n.d2), toString(n.d1 - n.d2), toString(n.at + n.d2), toString(n.at - n.d2), toString(n.d1 * 2), toString(n.d1 / 2)]"
+        rows: [["P1DT2H30M", "P1DT1H30M", "2024-01-01T10:30:00Z", "2024-01-01T09:30:00Z", "P2DT4H", "PT13H"]]
+
   - name: "Temporal functions on stored values"
     description: "A temporal value read from the store truncates, becomes a duration, and gives the duration between it and another."
     steps:

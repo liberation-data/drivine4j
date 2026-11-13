@@ -402,7 +402,7 @@ class OracleBackendTest {
 
         // The fragment's hints in the DELETE, and the related node's condition the module's EXISTS, its value the block's bind.
         assertContains(sql, "EXECUTE IMMEDIATE 'DELETE /*+ NO_JSON_TABLE_TRANSFORM */ FROM g_node claim_ WHERE")
-        assertContains(sql, "AND EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
+        assertContains(sql, "AND EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
         assertContains(sql, "e2.src = claim_.nid")
         assertContains(sql, "e2.type = ''MENTIONS''")
         assertContains(sql, "= JSON(:b0)")
@@ -540,7 +540,7 @@ class OracleBackendTest {
         val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         // The fragments' hints in the query's SELECT, and a condition on a related node the module's EXISTS.
         assertContains(asked.squashed(), "SELECT /*+ NO_JSON_TABLE_TRANSFORM */ COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
-        assertContains(asked, "EXISTS (SELECT 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
+        assertContains(asked, "EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
         // Inside the text a quote is doubled, and no parameter of the block is named.
         assertContains(asked, "e2.type = ''MENTIONS''")
         assertFalse("\$_cy" in asked)

@@ -139,7 +139,7 @@ cases:
       postgres:
         - "EXISTS (SELECT 1 FROM jsonb_array_elements(CAST($_cy_l AS jsonb)) WITH ORDINALITY i1 (item, item_no) WHERE i1.item = (people_.props -> 'name'))"
       oracle:
-        - "((JSON_VALUE(people_.props, '$.name') IS NOT NULL OR NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') <> 'string') AND EXISTS (SELECT 1 FROM JSON_TABLE(JSON($_cy_l), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE i1.item = COALESCE(JSON_QUERY(people_.props, '$?(@.name.type() != \"string\" || @.name.length() <= 4000).name' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.name') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.name') RETURNING CLOB EXTENDED), '$.name' RETURNING CLOB) EXTENDED) END)))"
+        - "((JSON_VALUE(people_.props, '$.name') IS NOT NULL OR NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') <> 'string') AND EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM JSON_TABLE(JSON($_cy_l), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE i1.item = COALESCE(JSON_QUERY(people_.props, '$?(@.name.type() != \"string\" || @.name.length() <= 4000).name' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.name') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.name') RETURNING CLOB EXTENDED), '$.name' RETURNING CLOB) EXTENDED) END)))"
       sqlite:
         - "EXISTS (SELECT 1 FROM json_each($_cy_l) AS i1 WHERE drivine_equal((CASE i1.type WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'null' THEN 'null' WHEN 'array' THEN i1.value WHEN 'object' THEN i1.value ELSE json_quote(i1.value) END), (people_.props -> '$.\"name\"')))"
   - name: "A property not in a list given"
@@ -150,7 +150,7 @@ cases:
       postgres:
         - "(NOT ((EXISTS (SELECT 1 FROM jsonb_array_elements(CAST($_cy_l AS jsonb)) WITH ORDINALITY i1 (item, item_no) WHERE i1.item = (people_.props -> 'name')) OR CASE WHEN NOT COALESCE(jsonb_typeof((people_.props -> 'name')), 'null') = 'null' THEN FALSE END)))"
       oracle:
-        - "(NOT ((((JSON_VALUE(people_.props, '$.name') IS NOT NULL OR NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') <> 'string') AND EXISTS (SELECT 1 FROM JSON_TABLE(JSON($_cy_l), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE i1.item = COALESCE(JSON_QUERY(people_.props, '$?(@.name.type() != \"string\" || @.name.length() <= 4000).name' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.name') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.name') RETURNING CLOB EXTENDED), '$.name' RETURNING CLOB) EXTENDED) END))) OR CASE WHEN NOT NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') = 'null' THEN FALSE END)))"
+        - "(NOT ((((JSON_VALUE(people_.props, '$.name') IS NOT NULL OR NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') <> 'string') AND EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM JSON_TABLE(JSON($_cy_l), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE i1.item = COALESCE(JSON_QUERY(people_.props, '$?(@.name.type() != \"string\" || @.name.length() <= 4000).name' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.name') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.name') RETURNING CLOB EXTENDED), '$.name' RETURNING CLOB) EXTENDED) END))) OR CASE WHEN NOT NVL(JSON_VALUE(people_.props, '$.name.type()'), 'null') = 'null' THEN FALSE END)))"
       sqlite:
         - "(NOT ((EXISTS (SELECT 1 FROM json_each($_cy_l) AS i1 WHERE drivine_equal((CASE i1.type WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'null' THEN 'null' WHEN 'array' THEN i1.value WHEN 'object' THEN i1.value ELSE json_quote(i1.value) END), (people_.props -> '$.\"name\"'))) OR CASE WHEN NOT COALESCE(json_type((people_.props -> '$.\"name\"')), 'null') = 'null' THEN FALSE END)))"
   - name: "A text that starts with one"
@@ -216,7 +216,7 @@ cases:
       postgres:
         - "EXISTS (SELECT 1 FROM jsonb_array_elements((people_.props -> 'tags')) WITH ORDINALITY i1 (item, item_no) WHERE i1.item = CAST($_cy_t AS jsonb))"
       oracle:
-        - "EXISTS (SELECT 1 FROM JSON_TABLE(COALESCE(JSON_QUERY(people_.props, '$?(@.tags.type() != \"string\" || @.tags.length() <= 4000).tags' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.tags') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.tags') RETURNING CLOB EXTENDED), '$.tags' RETURNING CLOB) EXTENDED) END), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE (CASE WHEN JSON_VALUE(i1.item, '$') IS NOT NULL AND JSON_VALUE(JSON($_cy_t), '$') IS NOT NULL THEN i1.item = JSON($_cy_t) WHEN JSON_VALUE(i1.item, '$.type()') = 'string' AND JSON_VALUE(JSON($_cy_t), '$.type()') = 'string' THEN NVL(DBMS_LOB.COMPARE(TO_CLOB(JSON_VALUE(i1.item, '$' RETURNING CLOB)), TO_CLOB(JSON_VALUE(JSON($_cy_t), '$' RETURNING CLOB))), SIGN(NVL(LENGTH(TO_CLOB(JSON_VALUE(i1.item, '$' RETURNING CLOB))), 0) - NVL(LENGTH(TO_CLOB(JSON_VALUE(JSON($_cy_t), '$' RETURNING CLOB))), 0))) = 0 WHEN JSON_VALUE(i1.item, '$.type()') IS NULL OR JSON_VALUE(JSON($_cy_t), '$.type()') IS NULL THEN NULL WHEN JSON_VALUE(i1.item, '$.type()') = 'string' OR JSON_VALUE(JSON($_cy_t), '$.type()') = 'string' THEN FALSE ELSE i1.item = JSON($_cy_t) END AND NOT ((JSON_VALUE(i1.item, '$.type()') = 'double' AND JSON_VALUE(i1.item, '$' RETURNING BINARY_DOUBLE) IS NAN) OR JSON_VALUE(i1.item, '$.type()') IN ('array', 'object') AND INSTR(JSON_SERIALIZE(i1.item RETURNING CLOB EXTENDED), '{\"$numberDouble\":\"Nan\"}') > 0)))"
+        - "EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM JSON_TABLE(COALESCE(JSON_QUERY(people_.props, '$?(@.tags.type() != \"string\" || @.tags.length() <= 4000).tags' RETURNING JSON), CASE WHEN JSON_EXISTS(people_.props, '$.tags') THEN JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(people_.props, KEEP '$.tags') RETURNING CLOB EXTENDED), '$.tags' RETURNING CLOB) EXTENDED) END), '$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '$')) i1 WHERE (CASE WHEN JSON_VALUE(i1.item, '$') IS NOT NULL AND JSON_VALUE(JSON($_cy_t), '$') IS NOT NULL THEN i1.item = JSON($_cy_t) WHEN JSON_VALUE(i1.item, '$.type()') = 'string' AND JSON_VALUE(JSON($_cy_t), '$.type()') = 'string' THEN NVL(DBMS_LOB.COMPARE(TO_CLOB(JSON_VALUE(i1.item, '$' RETURNING CLOB)), TO_CLOB(JSON_VALUE(JSON($_cy_t), '$' RETURNING CLOB))), SIGN(NVL(LENGTH(TO_CLOB(JSON_VALUE(i1.item, '$' RETURNING CLOB))), 0) - NVL(LENGTH(TO_CLOB(JSON_VALUE(JSON($_cy_t), '$' RETURNING CLOB))), 0))) = 0 WHEN JSON_VALUE(i1.item, '$.type()') IS NULL OR JSON_VALUE(JSON($_cy_t), '$.type()') IS NULL THEN NULL WHEN JSON_VALUE(i1.item, '$.type()') = 'string' OR JSON_VALUE(JSON($_cy_t), '$.type()') = 'string' THEN FALSE ELSE i1.item = JSON($_cy_t) END AND NOT ((JSON_VALUE(i1.item, '$.type()') = 'double' AND JSON_VALUE(i1.item, '$' RETURNING BINARY_DOUBLE) IS NAN) OR JSON_VALUE(i1.item, '$.type()') IN ('array', 'object') AND INSTR(JSON_SERIALIZE(i1.item RETURNING CLOB EXTENDED), '{\"$numberDouble\":\"Nan\"}') > 0)))"
       sqlite:
         - "EXISTS (SELECT 1 FROM json_each((people_.props -> '$.\"tags\"')) AS i1 WHERE drivine_equal((CASE i1.type WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'null' THEN 'null' WHEN 'array' THEN i1.value WHEN 'object' THEN i1.value ELSE json_quote(i1.value) END), $_cy_t))"
   - name: "A property whose key begins with $"
@@ -343,11 +343,11 @@ table:
     - form: "n.name IN $l"
       parameters: {"l": ["Ada", "Grace"]}
       rows: [["p1", "p2"], ["p3", "p4"], ["p1", "p2", "p5"], ["p1", "p2"]]
-      digests: {"postgres": ["b7028a085a097ab8", "1e0ce5b6314ec76a", "72f62c473187d97d", "a468f7c291a588d1"], "oracle": ["315488fdd565a142", "d094bd3f0bcf2745", "cb1596a2ab3a200f", "ff342a562f7c9f23"], "sqlite": ["fffec6a2bff80969", "5aed69db05581667", "2d575c8a54c98d1f", "698ba16a73d12938"]}
+      digests: {"postgres": ["b7028a085a097ab8", "1e0ce5b6314ec76a", "72f62c473187d97d", "a468f7c291a588d1"], "oracle": ["0ca16b04729b1567", "d3ef48cea4b30ff7", "860c2856931bf085", "eb5e47a7d48cf89e"], "sqlite": ["fffec6a2bff80969", "5aed69db05581667", "2d575c8a54c98d1f", "698ba16a73d12938"]}
     - form: "$t IN n.tags"
       parameters: {"t": "navy"}
       rows: [["p2"], ["p1", "p4"], ["p2", "p5"], ["p2"]]
-      digests: {"postgres": ["8a1e98993c631c59", "bf190afc0e206dd7", "17db7891724c8a57", "eba6c92351b495a8"], "oracle": ["f3458c4d74d9aaad", "afaaf5ad2b67f375", "2384e11e7a89bbd5", "4b9b635926567ff4"], "sqlite": ["9083e8d6d0879af6", "62c37718e262bc1d", "3e5c540e223bd616", "33c01c833cc0f71a"]}
+      digests: {"postgres": ["8a1e98993c631c59", "bf190afc0e206dd7", "17db7891724c8a57", "eba6c92351b495a8"], "oracle": ["fe813d9d877c7b6e", "437df5b49548e4bc", "f53e83180f5099a4", "7acf1a1be04c053f"], "sqlite": ["9083e8d6d0879af6", "62c37718e262bc1d", "3e5c540e223bd616", "33c01c833cc0f71a"]}
     - form: "n.age IS NULL"
       rows: [["p4", "p5"], ["p1", "p2", "p3"], ["p4", "p5"], []]
       digests: {"postgres": ["68bcb20536da24ec", "657c6626d9313057", "ac43a7d839756550", "cfb125e5c24db09e"], "oracle": ["aa00ff3aa40f901e", "69bcdcff866543e9", "2830a0fd4d46b869", "d850deda685b5e9e"], "sqlite": ["ceaaa2986ebaa2c6", "6dee3cc507ed9128", "d6c426e9965779df", "615bdb98bf32b13a"]}
@@ -384,27 +384,27 @@ table:
     - form: "any(x IN labels(n) WHERE x IN $ls)"
       parameters: {"ls": ["Admin"]}
       rows: [["p2"], ["p1", "p3", "p4", "p5"], ["p2", "p5"], ["p2"]]
-      digests: {"postgres": ["6fd80a2e2631e857", "9714e436721a198c", "fbf10695b7debeed", "d50c10e0c0c49772"], "oracle": ["40d7b3538495e64e", "e40d01921535965c", "cb5a8d7f416b3e82", "662883d3add9efed"], "sqlite": ["190c145283a54f51", "aacaded47b6db136", "5786c64ca9e82b35", "a82a2ba4e280fffe"]}
+      digests: {"postgres": ["6fd80a2e2631e857", "9714e436721a198c", "fbf10695b7debeed", "d50c10e0c0c49772"], "oracle": ["4524d1f80754868f", "f3c4cd64ac853d96", "550a0143c37eb362", "fd7ec67c1c0aa8e5"], "sqlite": ["190c145283a54f51", "aacaded47b6db136", "5786c64ca9e82b35", "a82a2ba4e280fffe"]}
     - form: "EXISTS { (n)-[:KNOWS]->(m:Person) WHERE m.age > $a }"
       parameters: {"a": 40}
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["766f7aae0254fc3c", "e17c73f3dc30f847", "0422e3dafda6e927", "0c3cc6749eb10416"], "oracle": ["b6c6edf27c7710b0", "b6e79b3af59ff3e2", "cf7126bcf8ab2767", "49e29d19173f575c"], "sqlite": ["c77ebe8eed9c072e", "2d65d1c7510bf229", "55f40d6a79c552d0", "3263bae396540f01"]}
+      digests: {"postgres": ["766f7aae0254fc3c", "e17c73f3dc30f847", "0422e3dafda6e927", "0c3cc6749eb10416"], "oracle": ["8119e01f08c65060", "437c8e3acc9a35d1", "7f1badf44ba60064", "7f074c4352f3e073"], "sqlite": ["c77ebe8eed9c072e", "2d65d1c7510bf229", "55f40d6a79c552d0", "3263bae396540f01"]}
     - form: "EXISTS { (n)-[:KNOWS*1..2]->(m:Person {name: $p}) }"
       parameters: {"p": "ada"}
       rows: [["p1", "p2"], ["p3", "p4", "p5"], ["p1", "p2", "p5"], ["p1", "p2"]]
-      digests: {"postgres": ["c672174a99bd73b1", "06db17a4a655e13f", "5a4304e9c32f788d", "d1367627a7fc9d0a"], "oracle": ["8ed36538e504ad59", "9af37bc8b4a9d5f4", "33f482c0baacbbea", "27750fb72f3d2e9f"], "sqlite": ["97d315a30779de6b", "932346b035e3a015", "58910ccca5722d57", "9a5480b12598802a"]}
+      digests: {"postgres": ["c672174a99bd73b1", "06db17a4a655e13f", "5a4304e9c32f788d", "d1367627a7fc9d0a"], "oracle": ["690247dd059db36e", "ef83016150910144", "cff1df317ce3674e", "9434514e601bd44b"], "sqlite": ["97d315a30779de6b", "932346b035e3a015", "58910ccca5722d57", "9a5480b12598802a"]}
     - form: "all(x IN n.tags WHERE x <> $t)"
       parameters: {"t": "navy"}
       rows: [["p1", "p4"], ["p2"], ["p1", "p4", "p5"], ["p1"]]
-      digests: {"postgres": ["f23c26d9b4875cc4", "1cad8406ac4364fc", "62350f4878782f67", "fc29f673949e9978"], "oracle": ["7e5b07e8e4dc16cb", "60f6972a1f65f3db", "26bbb30d5dae5729", "0588b843172574a4"], "sqlite": ["a5499ff5e70cb3cf", "6b3a51e08946a65d", "c8ab2bcd8921469f", "3e830cd35ad1656c"]}
+      digests: {"postgres": ["f23c26d9b4875cc4", "1cad8406ac4364fc", "62350f4878782f67", "fc29f673949e9978"], "oracle": ["3661e0583986b96c", "3a667165f85b242e", "2a9345b4169ef7b9", "df71b6e17ef1e1fd"], "sqlite": ["a5499ff5e70cb3cf", "6b3a51e08946a65d", "c8ab2bcd8921469f", "3e830cd35ad1656c"]}
     - form: "none(x IN n.tags WHERE x = $t)"
       parameters: {"t": "math"}
       rows: [["p2", "p4"], ["p1"], ["p2", "p4", "p5"], ["p2"]]
-      digests: {"postgres": ["f23c26d9b4875cc4", "e2226beb5ae58b67", "62350f4878782f67", "fc29f673949e9978"], "oracle": ["7e5b07e8e4dc16cb", "470d258913d96704", "26bbb30d5dae5729", "0588b843172574a4"], "sqlite": ["a5499ff5e70cb3cf", "c832fa80150b15c0", "c8ab2bcd8921469f", "3e830cd35ad1656c"]}
+      digests: {"postgres": ["f23c26d9b4875cc4", "e2226beb5ae58b67", "62350f4878782f67", "fc29f673949e9978"], "oracle": ["3661e0583986b96c", "5b2b5bc92e20e6e0", "2a9345b4169ef7b9", "df71b6e17ef1e1fd"], "sqlite": ["a5499ff5e70cb3cf", "c832fa80150b15c0", "c8ab2bcd8921469f", "3e830cd35ad1656c"]}
     - form: "coalesce(n.age, 0) * 2 > $a"
       parameters: {"a": 60}
       rows: [["p1", "p2", "p3"], ["p4", "p5"], ["p1", "p2", "p3", "p5"], ["p1", "p2", "p3"]]
-      digests: {"postgres": ["513ec0214b5e67d9", "f681d1b70064bd7f", "811c45a0953b1067", "6739b089cac65500"], "oracle": ["5771f9983b7686a4", "55edecfdae465b9d", "0b6fd0af9941bd25", "ec38bc463da06e9e"], "sqlite": ["01afdd75272f27b5", "fd17ef0fa03be0cf", "82827e5586ba1d88", "5107ef45d7f9e0aa"]}
+      digests: {"postgres": ["ac81250cf9d94944", "a04d15b8cfc58e70", "a5d5c84402681cee", "314e79794b0d94d3"], "oracle": ["c1119bc1d4768afe", "13b6e99405d323bc", "ffaef86a9364042e", "33379839a8f23a5a"], "sqlite": ["063bc95a36d6bce5", "12c81651ebbfe5e5", "cc3f5ad89179bbce", "dc6e408a66730f99"]}
     - form: "CASE WHEN n.age IS NULL THEN 'none' ELSE 'some' END = $w"
       parameters: {"w": "none"}
       rows: [["p4", "p5"], ["p1", "p2", "p3"], ["p4", "p5"], []]
@@ -412,11 +412,11 @@ table:
     - form: "n.age / 2 + 1 > $a"
       parameters: {"a": 20}
       rows: [["p2"], ["p1", "p3"], ["p2", "p5"], ["p2"]]
-      digests: {"postgres": ["d964c4d97ff492af", "8ccf509ab03ce2f0", "a7fcda929886aba6", "f519baef10cdd8e3"], "oracle": ["a82f600b56ef32ef", "b86d23202b76f93a", "f118f809652a4217", "135c9ba627e80d8d"], "sqlite": ["08f26ce1d0bc4128", "f5b538bc0be5a8cb", "2dd783093bc0ff7d", "4910aabb7dfdb9ce"]}
+      digests: {"postgres": ["b49da49f8a2088f5", "85b4be5e4018203e", "2477ac34364d43b5", "1397a08f5f959445"], "oracle": ["bf7cc911a4f53d96", "12f50d56d7a5c2d8", "2d57a6f659001b59", "8c541b32e5d8886b"], "sqlite": ["6d04a4bb962ac1cd", "d34feb3fb289d52f", "0989cb553e374f08", "d1acc0ef43962f86"]}
     - form: "abs(n.age - 50) < $a"
       parameters: {"a": 20}
       rows: [["p1", "p3"], ["p2"], ["p1", "p3", "p5"], ["p1", "p3"]]
-      digests: {"postgres": ["6bdc9a6421115ec6", "f1a99e7a36b5d0f5", "c4b85c415be6768f", "e35846f67b95b440"], "oracle": ["f05195fd8db01e1e", "5a123c0ae0138b69", "1fd39757926354f8", "f0000f93d3005251"], "sqlite": ["209eac7fa194002a", "4705c8822189041b", "933ffeff0f54c1e6", "00de4b53acc5e818"]}
+      digests: {"postgres": ["9628c7cdf2e40cc0", "08711af8a9214241", "57d9a042dc496ef2", "9a80a247b4eed7aa"], "oracle": ["c9a59e8bd48c9f31", "0dedb68271e4f046", "dc4780a594c11675", "38c6cfb23efc6d78"], "sqlite": ["af75da3968d810f7", "af5c6e97693443f8", "c80399a34cc86b40", "79620feff97de950"]}
     - form: "toString(n.age) = $s"
       parameters: {"s": "36"}
       rows: [["p1"], ["p2", "p3"], ["p1", "p5"], ["p1"]]
@@ -428,7 +428,7 @@ table:
     - form: "floor(n.age / 7) = $f"
       parameters: {"f": 5}
       rows: [["p1", "p3"], ["p2"], ["p1", "p3", "p5"], ["p1", "p3"]]
-      digests: {"postgres": ["eb3eace5732905db", "26576687a3ba9791", "fc0a08d5de3d4ce9", "cdfe0246f4f833fe"], "oracle": ["a417bce01fdd125d", "23a594df7676bf1b", "b91999da561f8056", "dda9d250842a0e18"], "sqlite": ["6acdd6961f33ca43", "412c918af8b993a6", "127e1f6b8cec0c8a", "d4e28aa139d3719f"]}
+      digests: {"postgres": ["d1a6cb37d2ba6baf", "6b640239f48f6dea", "23741b8bb8b33da2", "893212f257728699"], "oracle": ["1a6db4e7321e5a2e", "237186dba4972b62", "2514e3ce71ce8104", "830867433d9f5095"], "sqlite": ["f7c1e2a2dcb621a4", "2c5fb397974a3fac", "488dbf0fa55afaa0", "7e4717b6f8096346"]}
     - form: "toInteger(n.age) = $i AND toFloat(n.age) = $x"
       parameters: {"i": 36, "x": 36.0}
       rows: [["p1", "p3"], ["p2"], ["p1", "p3", "p5"], ["p1", "p3"]]
@@ -448,7 +448,7 @@ table:
     - form: "exp(n.age - n.age) = $one"
       parameters: {"one": 1.0}
       rows: [["p1", "p2", "p3"], [], ["p1", "p2", "p3", "p5"], ["p1", "p2", "p3"]]
-      digests: {"postgres": ["dcb8ef04c94a07d7", "c2b22df8c24f3d6d", "8906c81ada859f98", "ef755caa18fa3f40"], "oracle": ["14e80f8d79fcb691", "99ad02b00e72b81c", "357e9e40e6ee8742", "6f86ec7cf87bea26"], "sqlite": ["31cb76f9b82c5c48", "0736e9d968668755", "e6d558ea40be8b08", "bfc715a3758e4f62"]}
+      digests: {"postgres": ["e4206ecd2c467ec9", "a64af515efe868d5", "980c08b0f99976a6", "293f10dd5e17ff03"], "oracle": ["48728849f025138f", "b2bbf419ea81d911", "95f9d878d829134d", "beb7812d5a6fe464"], "sqlite": ["7feaa914edb21694", "fa08f8172883e3f3", "5d73f046eaf8ddd6", "d75a6ced8135af3e"]}
     - form: "-n.age < $a"
       parameters: {"a": -40}
       rows: [["p2"], ["p1", "p3"], ["p2", "p5"], ["p2"]]
@@ -460,22 +460,22 @@ table:
     - form: "n.name IN [$p, 'Grace']"
       parameters: {"p": "ada"}
       rows: [["p2", "p3"], ["p1", "p4"], ["p2", "p3", "p5"], ["p2", "p3"]]
-      digests: {"postgres": ["a806ba9936024e55", "84d26f28bdd9d237", "4fc33277364335b5", "ff7aa9dd0bc3c7bc"], "oracle": ["322eaddb21ae72ad", "45fb56301a9bcb89", "576011e78e3471f1", "bb93f11b57e8349b"], "sqlite": ["81fdb6b5bdb40623", "77a12bb5e0408207", "45298e37c77373a0", "db2ea7b0bb1c0797"]}
+      digests: {"postgres": ["a806ba9936024e55", "84d26f28bdd9d237", "4fc33277364335b5", "ff7aa9dd0bc3c7bc"], "oracle": ["875af98c0da3a9c1", "9846a663fdf6232e", "ce444423da04ff52", "019dcbe7951d9391"], "sqlite": ["81fdb6b5bdb40623", "77a12bb5e0408207", "45298e37c77373a0", "db2ea7b0bb1c0797"]}
     - form: "n:Person:Admin"
       rows: [["p2"], ["p1", "p3", "p4", "p5"], ["p2", "p5"], ["p2"]]
       digests: {"postgres": ["dd075ace4b3c861a", "f33abca7fbb911fc", "177703f4ec149de6", "0d3694c17c0734fb"], "oracle": ["7d8feee9955a8c91", "32ab58f21c2f68b5", "7ad4d76962e01641", "5807bb8907666990"], "sqlite": ["83a1d53c09fedfd4", "a925e806ed8ef8fe", "9c3a0f8ab527725d", "e4efbcb1a85f2497"]}
     - form: "any(x IN $l WHERE n.name STARTS WITH x)"
       parameters: {"l": ["G", "a"]}
       rows: [["p2", "p3"], ["p1"], ["p2", "p3", "p5"], ["p2", "p3"]]
-      digests: {"postgres": ["c4b02dfee313412d", "65c654076c43d28a", "204b40e299f42f3c", "fe2ce3a83a995f39"], "oracle": ["2decf15ada2c9eb3", "2b1246ca0d8917e4", "1d1b4131bed96ee5", "2ff53dfa904b8d52"], "sqlite": ["89e7cdbce662c471", "b2bc946ced5d4985", "5c59d87232b68661", "49e7c72d106e7c66"]}
+      digests: {"postgres": ["c4b02dfee313412d", "65c654076c43d28a", "204b40e299f42f3c", "fe2ce3a83a995f39"], "oracle": ["1062ac7ec980c900", "6ca736c01444597d", "06a2d367d27a138a", "4b7211dd0960321e"], "sqlite": ["89e7cdbce662c471", "b2bc946ced5d4985", "5c59d87232b68661", "49e7c72d106e7c66"]}
     - form: "EXISTS { (n)-[:KNOWS]->(m:Person) WHERE EXISTS { (m)-[:KNOWS]->(o:Person) WHERE o.name = $p } }"
       parameters: {"p": "ada"}
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["241fb699ec91595c", "6ca47c8a2e3c2e2c", "5bb38ad57d2664b0", "762f3cb5e9e54700"], "oracle": ["79f0d9aa3220bfa0", "a9f993b7054fd086", "2f8bdd294a7ebd67", "a89121f751de5499"], "sqlite": ["b0ee057353952427", "36ef47eee001c8b3", "ae4883538526498e", "2949af929cdb532a"]}
+      digests: {"postgres": ["241fb699ec91595c", "6ca47c8a2e3c2e2c", "5bb38ad57d2664b0", "762f3cb5e9e54700"], "oracle": ["1d21521b846dec93", "a736233e79bf4d67", "5c246d9aac54871d", "46c7cb6012ccd1d9"], "sqlite": ["b0ee057353952427", "36ef47eee001c8b3", "ae4883538526498e", "2949af929cdb532a"]}
     - form: "EXISTS { (n)-[r:KNOWS]->(m:Person) WHERE r.since > $y }"
       parameters: {"y": 1980}
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["2814780c3eda7434", "431ef7f98764f05c", "ea70a3929d5efcd4", "81e4b655819ba457"], "oracle": ["a9508072e8e05172", "3cb63c16ca2694bf", "566909e3849b0aff", "1cdfdeaa5bd04ff3"], "sqlite": ["a65ccd52e28279eb", "a7262cb4c1196497", "ecf7dcad94668bbb", "148229f38848c812"]}
+      digests: {"postgres": ["2814780c3eda7434", "431ef7f98764f05c", "ea70a3929d5efcd4", "81e4b655819ba457"], "oracle": ["19711806985cb1d8", "a62fe0c8c7b16e93", "e43ac3c57ca5ad91", "893022aaa60fffd4"], "sqlite": ["a65ccd52e28279eb", "a7262cb4c1196497", "ecf7dcad94668bbb", "148229f38848c812"]}
     - form: "CASE n.age WHEN $a THEN 'y' ELSE 'n' END = $w"
       parameters: {"a": 36, "w": "y"}
       rows: [["p1", "p3"], ["p2", "p4", "p5"], ["p1", "p3", "p5"], ["p1", "p3"]]
@@ -491,7 +491,7 @@ table:
     - form: "floor(-n.age / 7) = $f"
       parameters: {"f": -5}
       rows: [["p1"], ["p2", "p3"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["9d7093bb48050be3", "baaac6305a3cf31f", "fc600a7685e26c07", "254c2333a8e1d297"], "oracle": ["882d7e3f593ff1f3", "04458aa70fd49a8f", "00cda9283988c9a2", "aed688e5871090f2"], "sqlite": ["abb53f0d62581aa5", "2c53d79463f199a7", "5bfe403fc28eab47", "159eb98df13b0a7e"]}
+      digests: {"postgres": ["19f623e3f91d5d62", "25d26a3e171ed985", "5c633709c67d6738", "63ca91ae11e5b976"], "oracle": ["9b64664cf9afecc4", "2b8fe1b76cbc00df", "e66de6b19b06f99a", "acbe1cde1d283c5a"], "sqlite": ["54d8c0dab8f8d6d0", "bdee8d5711c79660", "14c6c3e3acc9c961", "7b819cb6c30d5a5d"]}
     - form: "exp(-n.age) < $e"
       parameters: {"e": 1.0e-20}
       rows: [["p2"], ["p1", "p3"], ["p2", "p5"], ["p2"]]
@@ -499,7 +499,7 @@ table:
     - form: "n.seen.epochMillis / 1000.0 > $s"
       parameters: {"s": 0}
       rows: [["p2", "p3"], ["p1"], ["p2", "p3", "p5"], ["p2", "p3"]]
-      digests: {"postgres": ["ef569ef6f441ce61", "60445b2db8ec1dc1", "cf2a31d068d3f06f", "7f709f2eca0b332c"], "oracle": ["b510fdf160ee8ad0", "d6ecb64bbaeebb1f", "85c6e8eda9bf4e40", "e92ae66800247f97"], "sqlite": ["3934189d5a2b635f", "ad6b5308da6ba7a2", "91e77f54b689fb3b", "b4236ad354258eb8"]}
+      digests: {"postgres": ["d5bb924ba5793021", "dd7bebb1634c4b9c", "369dd7a253b968bf", "27aea039faf8afcd"], "oracle": ["cd733efe5975a086", "d926658a6a357674", "6bdd97253f216713", "bf2dcfc7f4db628c"], "sqlite": ["5f8db4dc29c6f228", "04a03142067d5579", "7f7357982c1e4d78", "90433efc3ec3b7c5"]}
     - form: "n.age >= $a"
       parameters: {"a": 36}
       rows: [["p1", "p2", "p3"], [], ["p1", "p2", "p3", "p5"], ["p1", "p2", "p3"]]
@@ -511,39 +511,39 @@ table:
     - form: "EXISTS { (n)<-[:KNOWS {since: $y}]-(m:Person) }"
       parameters: {"y": 1990}
       rows: [["p2"], ["p1", "p3", "p4", "p5"], ["p2", "p5"], ["p2"]]
-      digests: {"postgres": ["7e2b97fd392c5d8d", "f7425aac92316414", "821712d187f0ab62", "9708b40746daf25d"], "oracle": ["0cf83b24f469be05", "2fd89ba89e059769", "ffc6066214d62ddf", "bec714053dc48923"], "sqlite": ["cb4f3556a1683129", "b2a07b9a4c1d9824", "c995bb9184a754bd", "145843695b372cb2"]}
+      digests: {"postgres": ["7e2b97fd392c5d8d", "f7425aac92316414", "821712d187f0ab62", "9708b40746daf25d"], "oracle": ["3b4e6093269cd4bd", "585b939fb4bfc4c3", "945918e649e32709", "3374000ae17a7354"], "sqlite": ["cb4f3556a1683129", "b2a07b9a4c1d9824", "c995bb9184a754bd", "145843695b372cb2"]}
     - form: "EXISTS { (n)-[:KNOWS*2..2]-(m:Person) WHERE m.age >= $a }"
       parameters: {"a": 36}
       rows: [["p1", "p3"], ["p2", "p4", "p5"], ["p1", "p3", "p5"], ["p1", "p3"]]
-      digests: {"postgres": ["8f886d6eec5e961c", "ad8fc1ab2dfbbc5f", "8f376f75d1b18389", "526b8fe4cab1c766"], "oracle": ["3450f754cf9f743a", "bed5c0a1b7eb614b", "624342f43045eb5b", "4e7c3419b2526a17"], "sqlite": ["509542754deb1fe3", "aa85264e57769973", "eda0f6527b3e0133", "a9ad22f6f628473a"]}
+      digests: {"postgres": ["8f886d6eec5e961c", "ad8fc1ab2dfbbc5f", "8f376f75d1b18389", "526b8fe4cab1c766"], "oracle": ["8bb167fc6ff0f3bf", "fb363e3f903f23d6", "d1004350f66704a7", "1d825d623c659368"], "sqlite": ["509542754deb1fe3", "aa85264e57769973", "eda0f6527b3e0133", "a9ad22f6f628473a"]}
     - form: "EXISTS { (n)-[:KNOWS]-(:Person)-[:KNOWS]-(m:Person) }"
       rows: [["p1", "p3"], ["p2", "p4", "p5"], ["p1", "p3", "p5"], ["p1", "p3"]]
-      digests: {"postgres": ["d50b6f7529949eca", "6ca9b1fb1e2ba8c8", "7d52435da6106538", "eede1868773529c3"], "oracle": ["e62f49b4c1eb71cd", "366f2e4b7edc4508", "582f7017fc2ab23e", "c5c139882c37840c"], "sqlite": ["001f9d8ac533d02a", "00c82ac161a0ab59", "2cdcc803e4416580", "3e921716a7d50e74"]}
+      digests: {"postgres": ["d50b6f7529949eca", "6ca9b1fb1e2ba8c8", "7d52435da6106538", "eede1868773529c3"], "oracle": ["b433c569b85808cf", "d743b20abf315d1a", "0ac9035b55434435", "5cfc1649922b2c87"], "sqlite": ["001f9d8ac533d02a", "00c82ac161a0ab59", "2cdcc803e4416580", "3e921716a7d50e74"]}
     - form: "EXISTS { MATCH (n)-[:KNOWS]->(m:Person) WHERE m.age > $a }"
       parameters: {"a": 40}
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["6d682601f76ded31", "5a31033a57457fb7", "fa2faad2f519c0dd", "ea0d7a13accaedd0"], "oracle": ["144ee5e33d05c245", "a98a25dd0e77773b", "5df46d83a1f93974", "7147321c5eef54a0"], "sqlite": ["c41506566969a275", "00596115936ac10f", "361cbc3951d424d1", "1ab9e9350bc54c7b"]}
+      digests: {"postgres": ["6d682601f76ded31", "5a31033a57457fb7", "fa2faad2f519c0dd", "ea0d7a13accaedd0"], "oracle": ["c52393203e51d0f5", "a9a82f5aead0b1c2", "bd883c4384d8a022", "7e6e7b8a2991bdda"], "sqlite": ["c41506566969a275", "00596115936ac10f", "361cbc3951d424d1", "1ab9e9350bc54c7b"]}
     - form: "EXISTS { (n)-[:KNOWS*1..2]->(_:Person:Admin) }"
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["0ac1b221498395b2", "56a37023d415339b", "d3fcc56643661fa1", "714b2c73bc0b9734"], "oracle": ["aa0497a96ee0a3f5", "1a2bac51f780176a", "eeb743f520cd6fd0", "e9a22ffcd1379a9f"], "sqlite": ["b55d6e8fb9b4e541", "10d1983ef88eb5bd", "4f1bdb2854348782", "da4103457230a581"]}
+      digests: {"postgres": ["0ac1b221498395b2", "56a37023d415339b", "d3fcc56643661fa1", "714b2c73bc0b9734"], "oracle": ["366b26b1dc2eacbb", "8982af882303ef2a", "bab250ce33e73668", "a9b57299e87fae16"], "sqlite": ["b55d6e8fb9b4e541", "10d1983ef88eb5bd", "4f1bdb2854348782", "da4103457230a581"]}
     - form: "EXISTS { MATCH (n)<-[:KNOWS]-(_x0:Person:Admin) }"
       rows: [["p3"], ["p1", "p2", "p4", "p5"], ["p3", "p5"], ["p3"]]
-      digests: {"postgres": ["6cb209490f4541e2", "fb754f3a8ec6826e", "be15ab27a1a1a6c2", "8e520f5dad7020ac"], "oracle": ["da12b893cc46e3b0", "6d9bdcedf921dc06", "e5159d2cf2d0e97f", "0f5273af599945c6"], "sqlite": ["3c60d4d7e246c6c5", "b88cc604d6b299fd", "2e20e2eadcb79ffb", "121d84da2c39f594"]}
+      digests: {"postgres": ["6cb209490f4541e2", "fb754f3a8ec6826e", "be15ab27a1a1a6c2", "8e520f5dad7020ac"], "oracle": ["fff7e1eb4b12c9d3", "6df8ceae9c49bfb0", "114f8443ce704399", "1e345a4fe07bdb34"], "sqlite": ["3c60d4d7e246c6c5", "b88cc604d6b299fd", "2e20e2eadcb79ffb", "121d84da2c39f594"]}
     - form: "EXISTS { MATCH (n)-[:KNOWS*1..2]->(_x0:Person) WHERE _x0.name = $p }"
       parameters: {"p": "ada"}
       rows: [["p1", "p2"], ["p3", "p4", "p5"], ["p1", "p2", "p5"], ["p1", "p2"]]
-      digests: {"postgres": ["9bfcb4bc5df26994", "79c6ef407086e31b", "c0f38bbe9c543866", "401b5ecadccec878"], "oracle": ["85c0edaa2b458dfa", "07e516156aaddfda", "794830634c3a4de6", "28df844eca313d32"], "sqlite": ["faf8b77a99176003", "ea100085811a6792", "0571b433da482d30", "77ee92f19ec4ce9b"]}
+      digests: {"postgres": ["9bfcb4bc5df26994", "79c6ef407086e31b", "c0f38bbe9c543866", "401b5ecadccec878"], "oracle": ["ab8d081011245a0a", "e2c28c77081a353b", "b12d21a1aba76494", "35d5dbc4c2969d66"], "sqlite": ["faf8b77a99176003", "ea100085811a6792", "0571b433da482d30", "77ee92f19ec4ce9b"]}
     - form: "EXISTS { MATCH (n)-[_r1:KNOWS]-(_x0:Person) WHERE _r1.since > $y }"
       parameters: {"y": 1980}
       rows: [["p1", "p2"], ["p3", "p4", "p5"], ["p1", "p2", "p5"], ["p1", "p2"]]
-      digests: {"postgres": ["4f76b36e8df7822c", "a033fb4c0f44b017", "4bb94ff5999b98e7", "5cc30b716c77673b"], "oracle": ["c3a0df9d8469ce7d", "d40bc38ff3252d0a", "06d9a19743b59ff2", "4a5228fc6794df83"], "sqlite": ["6a728cd33efed705", "3f2556b4469230c8", "b6a5968bfa05c4bc", "f4952dcdf581ba52"]}
+      digests: {"postgres": ["4f76b36e8df7822c", "a033fb4c0f44b017", "4bb94ff5999b98e7", "5cc30b716c77673b"], "oracle": ["718e830efbb3d81e", "6f91a0f3c735c205", "de4d19ac58a96a2a", "667338aa2bb3b82a"], "sqlite": ["6a728cd33efed705", "3f2556b4469230c8", "b6a5968bfa05c4bc", "f4952dcdf581ba52"]}
     - form: "EXISTS { MATCH (n)-[:KNOWS]->(:Person)-[:KNOWS]->(_p1) WHERE _p1:Person }"
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["41057f2aa3ec58e4", "436f81aaadade705", "7da84955c5711c62", "944fccd6d78c6252"], "oracle": ["f6ae103bb7a2e10b", "fcb9bb5b4208dd8d", "170ed185016dd374", "159b1c7063a2fa90"], "sqlite": ["0fdd288aad26b1a3", "2a6ef8e264c79ab9", "781b3a52afaf33a9", "faf3f9077463c7de"]}
+      digests: {"postgres": ["41057f2aa3ec58e4", "436f81aaadade705", "7da84955c5711c62", "944fccd6d78c6252"], "oracle": ["abdf38841a7a8324", "9250550d6a114a9a", "f80ee491b716bef9", "c15b3ba54d75fb97"], "sqlite": ["0fdd288aad26b1a3", "2a6ef8e264c79ab9", "781b3a52afaf33a9", "faf3f9077463c7de"]}
     - form: "EXISTS { MATCH (n)-[:KNOWS]->(_x0:Person) WHERE EXISTS { MATCH (_x0)-[:KNOWS]->(_x1:Person) WHERE _x1.name = $p } }"
       parameters: {"p": "ada"}
       rows: [["p1"], ["p2", "p3", "p4", "p5"], ["p1", "p5"], ["p1"]]
-      digests: {"postgres": ["b05e4f5c5606e43e", "d5aa1f275cc4be31", "d913210f432e118d", "facb9ffb38d9f7b1"], "oracle": ["b3a902a921538f21", "503add02c3297116", "186034c77793fdba", "df06cf22ebed63f3"], "sqlite": ["434fb44dc30dd084", "a718b7f71ec784a1", "d6e8f3dd4b5e8a3e", "d2c4aacdea9145fc"]}
+      digests: {"postgres": ["b05e4f5c5606e43e", "d5aa1f275cc4be31", "d913210f432e118d", "facb9ffb38d9f7b1"], "oracle": ["cbdb99495f1d1730", "495b8ca9df9de12a", "e9478b93367b9b9c", "df57f5fe89898a75"], "sqlite": ["434fb44dc30dd084", "a718b7f71ec784a1", "d6e8f3dd4b5e8a3e", "d2c4aacdea9145fc"]}
   orders:
     - value: "n.age"
       rows: [["p1", "p3", "p2", "p4", "p5"], ["p4", "p5", "p2", "p1", "p3"]]
@@ -565,10 +565,10 @@ table:
       digests: {"postgres": ["192f7eedd8465276", "f9b3a967e587777a"], "oracle": ["a4bf4ef2d0ff8c26", "b121b79751804b79"], "sqlite": ["69cefd4ee00e8b15", "431c56601a20fbb3"]}
     - value: "n.age * -1"
       rows: [["p2", "p1", "p3", "p4", "p5"], ["p4", "p5", "p1", "p3", "p2"]]
-      digests: {"postgres": ["63384fdac7a18188", "db5ad0461b3141b8"], "oracle": ["d639e8e608882236", "b906707d79f44774"], "sqlite": ["d0a0fa9ebd094d3a", "fa1eb45138a3ba65"]}
+      digests: {"postgres": ["687a085c72c91afd", "5f5ebd038f3eac8f"], "oracle": ["9b0b1fe947ff36ad", "759c83ac7c087824"], "sqlite": ["9243db82fdce525a", "fdd1ea8d4eeb78a8"]}
     - value: "n.seen.epochMillis / 1000.0"
       rows: [["p1", "p2", "p3", "p4", "p5"], ["p4", "p5", "p3", "p2", "p1"]]
-      digests: {"postgres": ["5ff698b6298ed5dc", "3d98d7be550c68f9"], "oracle": ["30a1c2ac89266365", "94a18b78605dc5a5"], "sqlite": ["215bf5f8aae6c14a", "9db391f2a336d6cb"]}
+      digests: {"postgres": ["69c7c6aa758c9c7a", "9c1cb75a8da61889"], "oracle": ["fc63af61ab797bb2", "06bb8e3f516cad14"], "sqlite": ["28b2a8755fc67a10", "7246cb82c13089a4"]}
     - value: "n.bio"
       rows: [["p1", "p2", "p3", "p4", "p5"], ["p3", "p4", "p5", "p2", "p1"]]
       digests: {"postgres": ["500a6da88f8bfaef", "dbe06a40b7e2bfa2"], "oracle": ["ea072f2f14360e88", "2404a7364fd2dcfd"], "sqlite": ["4b0a2d8f891e8b60", "d55857a0441bc7a9"]}

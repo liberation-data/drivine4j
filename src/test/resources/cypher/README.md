@@ -147,7 +147,7 @@ Each case's `stores` hold, for `postgres`, `oracle`, `sqlite`, `neo4j`, `memgrap
 A library saves to a SQL store by a plan, a JSON array of steps, which Postgres's write function `<graph>_write` carries out (`PostgresWriteFunctions`) and each library carries out itself on Oracle and SQLite, alike. A step that finds a node by its id, `node`, `ref` or `patch`, names its shape `s`, an index into the plan's `shapes` (`{labels, key}`, `key` the id's stored key, `$`-escaped as every key is), and carries the id twice:
 
 - `id`: the id as the node holds it, the JSON the store layout writes ([Values in the store](#values-in-the-store)): a text, a number, a truth value, or a temporal value's tag. The node is found by `id`, compared as the store's range index or uniqueness constraint is made over the property (Postgres: `props -> key`; Oracle and SQLite: its class and key), so the index answers it; a node made is written with it.
-- `k`: the id's text, which keys the nodes within one plan: a temporal id's tag's text `v`, any other id as `->>` reads it.
+- `k`: the id's text: a temporal id's tag's text `v`, any other id as `->>` reads it. Postgres's function reads no `k`: it finds a node, and keys the nodes one plan makes, by `id`.
 
 A `node`, `ref` or `patch` step without `id` is refused by name (drivine-cypher-spec#245): libraries that wrote plans before 0.48.1 sent `ref` and `patch` steps only `k`, and must add `id` when they take it. An `unlink` step names the targets of a relationship field it keeps or removes by their ids' texts, `ids` and `held`, read from each target as `k` is written: a temporal target's tag's `v`, any other as `->>` reads it.
 
