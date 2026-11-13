@@ -2,7 +2,6 @@ package org.drivine.backend.postgres
 
 import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.RelationshipConditions
-import org.drivine.backend.sql.KeysetPredicate
 import org.drivine.annotation.GraphView
 import org.drivine.backend.postgres.PostgresSql.property
 import org.drivine.backend.sql.SqlKind
@@ -10,19 +9,11 @@ import org.drivine.backend.sql.StatementScope
 import org.drivine.backend.sql.Step
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
-import org.drivine.model.Stamps
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CypherGenerator
-import org.drivine.query.dsl.ExpressionOrder
-import org.drivine.query.dsl.NullPlacement
-import org.drivine.query.dsl.OrderExpression
-import org.drivine.query.dsl.OrderExpressionWriter
-import org.drivine.query.dsl.OrderFunction
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
-import org.drivine.query.dsl.PropertyUse
 import org.drivine.query.dsl.SeekValueSpec
-import org.drivine.query.dsl.UnsupportedOrderFunctionException
 import org.drivine.query.dsl.WhereCondition
 
 /**
@@ -180,75 +171,8 @@ internal class PostgresPredicates(
 
     // ----- Ordering and keyset paging -----
 
-    /** The kind the field that declares the root property [key] is ordered as; null when no field does. */
-    fun declaredKind(key: String): SqlKind? = rootModel.fields.firstOrNull { it.propertyName == key }?.type?.let(SqlKind::ofType)
-
-    /**
-     * A root property as it is ordered: by the type of the field that holds it; when no field does,
-     * as the value a seek compares it with, and as text when there is none.
-     */
-    private fun ordered(key: String): String {
-        val declared = declaredKind(key)
-        if (declared != null) return property(root, key, declared)
-        return property(root, key, scope.inferredKinds[key] ?: SqlKind.TEXT)
-    }
-
-    /**
-     * The `ORDER BY` terms for [order]. A property no field declares, and no cursor says the kind of,
-     * is ordered as a number first and as text after, so that a page of numbers is in the order a
-     * seek with one of them as its cursor compares in, and anything else is in the order of its text.
-     * Where an order of two terms places its nulls, it says so first: a text is null as a number, and a
-     * placement on the number would move the texts with the rows that have no value.
-     */
+    /** The `ORDER BY` terms for [order], as Cypher orders it, compiled by the module ([Fragments.orderTerms]). */
     fun orderTerms(order: OrderTerm): String = fragments.orderTerms(root, rootAlias, order).joinToString()
-
-    /**
-     * Where a term of one value puts its nulls, as SQL says so after the direction. With none asked for,
-     * SQL puts them where Cypher does: last when ascending, first when descending.
-     */
-    private fun placement(nulls: NullPlacement?): String = when (nulls) {
-        NullPlacement.FIRST -> " NULLS FIRST"
-        NullPlacement.LAST -> " NULLS LAST"
-        null -> ""
-    }
-
-    private val expressions = PostgresOrderExpressions()
-
-    /**
-     * Writes an order expression in SQL. A property is read as the field that declares it is ordered;
-     * one no field declares, as the kind of the value it is compared with in a case, as text in a test
-     * for a value, and as a number anywhere else, where it is a term of arithmetic.
-     */
-    private inner class PostgresOrderExpressions : OrderExpressionWriter(rootAlias) {
-
-        override fun property(property: OrderExpression.Property, use: PropertyUse): String {
-            val key = property.propertyName
-            if (key == Stamps.PROPERTY || declaredKind(key) != null) return ordered(key)
-            val kind = when (use) {
-                PropertyUse.Plain -> SqlKind.NUMBER
-                is PropertyUse.ComparedWith -> SqlKind.ofValue(use.value)
-                PropertyUse.TestedForValue -> SqlKind.TEXT
-            }
-            return property(root, key, kind)
-        }
-
-        override fun bind(value: Any): String = scope.bound(scalar(value))
-
-        /** A division of numbers, as real numbers: an integer divided by one is not cut to an integer. */
-        override fun divide(left: String, right: String): String = "(($left)::double precision / ($right))"
-
-        override fun function(function: OrderFunction): String = function.written
-
-        /** The moment a property holds as seconds since the epoch. Only a property a field declares as a moment is read as one. */
-        override fun epochSeconds(moment: OrderExpression.Property): String {
-            if (declaredKind(moment.propertyName) != SqlKind.INSTANT) {
-                throw UnsupportedOrderFunctionException(
-                    "epochSeconds", "Postgres", "it reads a moment only from a property a field declares as a moment, and ${moment.path} is not one.",
-                )
-            }
-            return "EXTRACT(EPOCH FROM ${ordered(moment.propertyName)})"
-        }
-    }
 
     /** The predicate that selects the rows after a cursor, as Cypher compares the root's properties with the cursor's values. */
     fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String =
