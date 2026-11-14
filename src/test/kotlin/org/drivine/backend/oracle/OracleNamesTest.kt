@@ -148,18 +148,23 @@ class OracleNamesTest {
         assertTrue(ensuring.contains("SELECT COUNT(*) INTO v_made FROM user_tables WHERE table_name = 'MYGRAPH_COUNT2';"), ensuring)
         assertTrue(ensuring.contains("make('ALTER TABLE myGraph_node ADD (words JSON)');"), ensuring)
         assertEquals(graph.ddl.size + countStore.size + 1, Regex("\\bmake\\('").findAll(ensuring).count())
-        // The graph's functions are made after the tables, whether or not the tables were there, where they are missing or
-        // not valid. Each replaces one another process made, and a user who may not make one still has the store (#270).
-        val functionsChecked = ensuring.indexOf("SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = 'MYGRAPH_NULLS_EQUAL' AND status = 'VALID';")
+        // The graph's functions are made after the tables, whether or not the tables were there, where they are missing, not
+        // valid, or not of their version, which each one's first line ends with (drivine-cypher-spec#251). Each replaces one
+        // another process made, and a user who may not make one still has the store (#270).
+        fun check(name: String) = "SELECT COUNT(*) INTO v_made FROM user_objects o WHERE o.object_type = 'FUNCTION' AND o.object_name = '${name.uppercase()}' AND o.status = 'VALID'"
+        val functionsChecked = ensuring.indexOf(check("myGraph_nulls_equal"))
         assertTrue(functionsChecked > ensuring.lastIndexOf("make(${OracleSql.literal(graph.ddl.last())});"), ensuring)
         assertTrue(ensuring.contains("PRAGMA EXCEPTION_INIT(e_denied, -1031);"))
-        val names = listOf("myGraph_nulls_equal", "myGraph_era", "myGraph_era_date", "myGraph_temporal_key")
+        val names = listOf("myGraph_nulls_equal", "myGraph_era", "myGraph_era_date", "myGraph_temporal_key", "myGraph_temporal_arith")
         assertEquals(names, graph.functions.map { it.substringAfter("FUNCTION ").substringBefore('(') })
         // Each is looked for, and made, on its own: a store an earlier version made may have one and not the others.
         for ((name, statement) in names.zip(graph.functions)) {
             assertTrue(statement.startsWith("CREATE OR REPLACE FUNCTION "), statement)
-            val checked = ensuring.indexOf("SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${name.uppercase()}' AND status = 'VALID';")
-            val wrapped = ensuring.indexOf("BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(statement)}; EXCEPTION WHEN e_denied THEN NULL; END;")
+            val checked = ensuring.indexOf(check(name))
+            val version = "-- drivine:" + graph.store.versions.getValue(name)
+            assertTrue(ensuring.indexOf("INSTR(s.text, '$version') > 0", checked) > checked, "checks the version of $name: $version")
+            // A long one, as the function of temporal arithmetic, in CLOB pieces a PL/SQL literal holds.
+            val wrapped = ensuring.indexOf("BEGIN EXECUTE IMMEDIATE ${org.drivine.cypher.store.OracleSql.clob(statement)}; EXCEPTION WHEN e_denied THEN NULL; END;")
             assertTrue(checked >= functionsChecked && wrapped > checked, "wraps: $statement")
         }
         assertEquals(graph.functions.size, Regex("BEGIN EXECUTE IMMEDIATE ").findAll(ensuring).count())

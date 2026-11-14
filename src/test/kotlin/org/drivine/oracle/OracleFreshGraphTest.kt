@@ -141,10 +141,9 @@ class OracleFreshGraphTest {
             val manager = NonTransactionalPersistenceManager(
                 JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
             )
+            // As a store an earlier version made, before the key function: no session has asked of the functions yet.
             OracleGraph(g).ensure(manager)
-            assertTrue(OracleStoredFunctions.era(connection, g))
             OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalKey}")
-            OracleStoredFunctions.ensured(g)
             assertFalse(OracleStoredFunctions.era(connection, g))
             fun query(cypher: String) = manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
             query("UNWIND [2, 3, 1] AS i CREATE (:Moment {i: i, at: datetime({year: 2024, month: 1, day: i, timezone: '+02:00'})})")
@@ -159,19 +158,18 @@ class OracleFreshGraphTest {
             val manager = NonTransactionalPersistenceManager(
                 JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
             )
+            // As a store an earlier version made, before the function: no session has asked of it yet.
             OracleGraph(g).ensure(manager)
-            assertTrue(OracleStoredFunctions.temporalArithmetic(connection, g))
+            OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalArithmetic}")
             fun query(cypher: String) = manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
             query("CREATE (:Moment {at: datetime('2024-01-01T10:00:00Z'), d: duration('PT30M')})")
-            assertEquals(listOf("2024-01-01T10:30:00Z"), query("MATCH (n:Moment) RETURN toString(n.at + n.d)"))
-            // A store an earlier version made has no such function: the statement is compiled not to call it, and fails by name.
-            OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalArithmetic}")
-            OracleStoredFunctions.ensured(g)
+            // The statement is compiled not to call it, and fails by name.
             assertFalse(OracleStoredFunctions.temporalArithmetic(connection, g))
             val refused = assertFails { query("MATCH (n:Moment) RETURN toString(n.at + n.d)") }
             assertTrue("compiled to SQL yet (drivine4j#418)" in generateSequence(refused) { it.cause }.joinToString { it.message.orEmpty() }, refused.toString())
-            // Ensured again, the store gains it.
+            // Ensured again, the store gains it, and the sessions ask of it again.
             OracleGraph(g).ensure(manager)
+            assertTrue(OracleStoredFunctions.temporalArithmetic(connection, g))
             assertEquals(listOf("2024-01-01T10:30:00Z"), query("MATCH (n:Moment) RETURN toString(n.at + n.d)"))
         }
 
