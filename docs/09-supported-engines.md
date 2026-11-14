@@ -225,7 +225,7 @@ by (see the notes below), `<graph>_era` and `<graph>_era_date`, which renumber a
 numbering and Oracle's as a date or a moment is read and written, `<graph>_temporal_key`, which works out the key a
 temporal value sorts by, and `<graph>_temporal_arith`, which works out `+`, `-`, `*` and `/` of a temporal value read
 from the store. Making them takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
-`CREATE TABLE` the tables take. A store an earlier version made gains those it lacks before the datasource's first connection, as a new one gains its tables. Where the
+`CREATE TABLE` the tables take. A store an earlier version made gains those it lacks before the datasource's first connection, as a new one gains its tables, and has one made again where it is not of the version this Drivine makes: each function's first line names its version, a digest of what makes it. Where the
 user that makes the graph may not make a function, the graph is made without them, and Drivine logs a warning once
 for the graph when a statement would call one, and looks for it again a minute later. Without `<graph>_nulls_equal`, a statement that writes, or the step of a `reduce`, compares two
 lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
