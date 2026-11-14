@@ -249,8 +249,8 @@ constraint holds a property as layout 2 holds it, not as its text:
 
 - **Postgres:** the JSON value, `(props -> 'id')`. A test of `props ->> 'id'`, the text, reads no index.
 - **Oracle and SQLite:** two columns, the value's class and its key (`CASE JSON_VALUE(props, '$.id.type()' …) …` on
-  Oracle). A plain `JSON_VALUE(props, '$.id')` reads no index, and there is no longer an index over a property of
-  every node regardless of its label.
+  Oracle). A plain `JSON_VALUE(props, '$.id')` reads no index. On SQLite the index holds the label's nodes alone; on
+  Oracle one does, beside one over the property of every node, both in that form.
 
 So a hand-written statement, or a raw `whereClause`, that finds a node by its id the layout-1 way now reads every node
 of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went from 0.25 ms to 23 ms on Postgres and from

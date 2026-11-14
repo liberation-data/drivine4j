@@ -79,6 +79,18 @@ class StoreDdlGoldenTest {
     }
 
     @Test
+    fun `each generated function is what store yaml's digests pin, and each Oracle function is of the version it pins`() {
+        // The test above expands a marker with the module drivine4j runs, so it can't tell a function changed from the one the
+        // spec's tag pinned: the digests can.
+        val generated = store["generated"]
+        for (form in GeneratedFunctions.FORMS) {
+            assertEquals(generated["digests"][form].textValue(), GeneratedFunctions.digest(form, graph), "digest of $form")
+        }
+        val pinned = generated["oracleVersions"].properties().associate { (name, version) -> name to version.textValue() }
+        assertEquals(pinned, oracle.store.versions)
+    }
+
+    @Test
     fun `each index and constraint is made and dropped on each store as drivine4j made and dropped it`() {
         var checked = 0
         for (case in store["cases"]) {
