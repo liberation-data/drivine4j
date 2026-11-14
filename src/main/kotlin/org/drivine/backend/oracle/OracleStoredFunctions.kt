@@ -62,17 +62,19 @@ internal object OracleStoredFunctions {
     }
 
     /**
-     * Whether [connection] may call both the functions the graph [graph] renumbers a year that may be BC by, as [nullsEqual]
-     * asks of its own. They are asked of together, as a statement that calls either is compiled to call neither where the
-     * session may not call one: the graph is made with both at once, and a store that has neither gives the same rows,
-     * planned more slowly. They are asked of apart from [nullsEqual]'s, which a store made by a version before them has.
+     * Whether [connection] may call both the functions the graph [graph] renumbers a year that may be BC by, and its function
+     * of a temporal value's sort key, as [nullsEqual] asks of its own. The compiler calls all three on the one flag,
+     * `eraStored`, so they are asked of together: a statement that calls any is compiled to call none where the session may
+     * not call one (#808). A store that has none gives the same rows, planned more slowly. They are asked of apart from
+     * [nullsEqual]'s, which a store made by a version before them has.
      *
      * @throws SQLException where calling them fails for any reason but there being no function it may call
      */
     fun era(connection: Connection, graph: String): Boolean {
         val era = OracleCypherCompiler.eraName(graph)
         val eraDate = OracleCypherCompiler.eraDateName(graph)
-        return callable(connection, graph, "$era and $eraDate", "SELECT $era('0000-01-01'), $eraDate('-0001-01-01') FROM DUAL") {
+        val temporalKey = OracleCypherCompiler.temporalKeyName(graph)
+        return callable(connection, graph, "$era, $eraDate and $temporalKey", "SELECT $era('0000-01-01'), $eraDate('-0001-01-01'), $temporalKey('date', '2024-01-01') FROM DUAL") {
             "Until the graph is ensured by such a user, Oracle takes longer to plan a Cypher statement that reads or writes " +
                 "a date or a moment whose year may be before 1000; it gives the same rows."
         }

@@ -131,6 +131,26 @@ class OracleFreshGraphTest {
     }
 
     @Test
+    fun `a store with the era functions and no temporal key function is taken to call none of the three, and sorts moments inline`() =
+        withSession("fresh_key") { connection ->
+            // The compiler calls the era functions and the temporal key function on the one flag (#808): a store that has
+            // the first two and not the third would be given statements that call it.
+            val g = "fresh_key"
+            val manager = NonTransactionalPersistenceManager(
+                JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
+            )
+            OracleGraph(g).ensure(manager)
+            assertTrue(OracleStoredFunctions.era(connection, g))
+            OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalKey}")
+            OracleStoredFunctions.ensured(g)
+            assertFalse(OracleStoredFunctions.era(connection, g))
+            fun query(cypher: String) = manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+            query("UNWIND [2, 3, 1] AS i CREATE (:Moment {i: i, at: datetime({year: 2024, month: 1, day: i, timezone: '+02:00'})})")
+            assertEquals(listOf(1L, 2L, 3L), query("MATCH (n:Moment) RETURN n.i ORDER BY n.at"))
+            assertEquals(listOf(2L, 3L), query("MATCH (n:Moment) WHERE n.at > datetime('2024-01-01T21:00:00Z') RETURN n.i ORDER BY n.i"))
+        }
+
+    @Test
     fun `a function of the graph's name that is not valid is made again`() {
         val f = OracleGraph(graph).nullsEqual
         OracleTestDatabase.run("BEGIN EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION $f RETURN NUMBER IS BEGIN RETURN nope; END;'; EXCEPTION WHEN OTHERS THEN NULL; END;")
@@ -169,7 +189,7 @@ class OracleFreshGraphTest {
 
     /** A connection of the test user's own, as a statement's session is, and [graph]'s function made by nothing. */
     private fun withSession(graph: String, block: (java.sql.Connection) -> Unit) {
-        val functions = OracleGraph(graph).let { listOf(it.nullsEqual, it.era, it.eraDate) }.map { "FUNCTION $it" }.toTypedArray()
+        val functions = OracleGraph(graph).functions.map { "FUNCTION " + it.removePrefix("CREATE OR REPLACE FUNCTION ").substringBefore('(') }.toTypedArray()
         OracleTestDatabase.drop(*functions)
         val clock = OracleStoredFunctions.clock
         try {
