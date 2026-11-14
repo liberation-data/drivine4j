@@ -38,7 +38,13 @@ internal class OracleGraph(name: String) : SqlGraph(name) {
     /** See [era]. */
     val eraDate: String = store.eraDate
 
-    /** What makes [nullsEqual], [era] and [eraDate]: safe to run again. */
+    /** The function a compiled Cypher statement works out a temporal value's sort key by, called where [era]'s are: see [OracleDdl.temporalKey]. */
+    val temporalKey: String = store.temporalKey
+
+    /** The function a compiled Cypher statement works out `+`, `-`, `*` and `/` of a temporal value read from the store by: see [OracleDdl.temporalArithmetic]. */
+    val temporalArithmetic: String = store.temporalArithmetic
+
+    /** What makes each function the store keeps: safe to run again. */
     val functions: List<String> = store.functions
 
     /**

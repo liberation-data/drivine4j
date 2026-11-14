@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -115,12 +116,13 @@ class OracleFreshGraphTest {
             s.executeQuery("SELECT LISTAGG(object_name, ',') WITHIN GROUP (ORDER BY object_name) FROM user_objects WHERE object_type = 'FUNCTION' AND status = 'VALID' AND object_name LIKE 'FRESH\\_UPGRADE\\_%' ESCAPE '\\'")
                 .use { it.next(); it.getString(1) }
         }
-        // Layout 2's store keeps a temporal value's key function beside them (drivine-cypher-spec#161).
-        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_KEY", made())
+        // Layout 2's store keeps a temporal value's key function beside them (drivine-cypher-spec#161), and its function of
+        // temporal arithmetic (drivine4j#418).
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_ARITH,FRESH_UPGRADE_TEMPORAL_KEY", made())
         // One of the two missing is made on its own; asked of together, the two are callable once both are there.
         OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).eraDate}")
         OracleGraph(g).ensure(ensuring)
-        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_KEY", made())
+        assertEquals("FRESH_UPGRADE_ERA,FRESH_UPGRADE_ERA_DATE,FRESH_UPGRADE_NULLS_EQUAL,FRESH_UPGRADE_TEMPORAL_ARITH,FRESH_UPGRADE_TEMPORAL_KEY", made())
     }
 
     @Test
@@ -129,6 +131,47 @@ class OracleFreshGraphTest {
         connection.createStatement().use { it.execute(OracleGraph(g).functions[1]) }
         assertFalse(OracleStoredFunctions.era(connection, g))
     }
+
+    @Test
+    fun `a store with the era functions and no temporal key function is taken to call none of the three, and sorts moments inline`() =
+        withSession("fresh_key") { connection ->
+            // The compiler calls the era functions and the temporal key function on the one flag (#808): a store that has
+            // the first two and not the third would be given statements that call it.
+            val g = "fresh_key"
+            val manager = NonTransactionalPersistenceManager(
+                JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
+            )
+            // As a store an earlier version made, before the key function: no session has asked of the functions yet.
+            OracleGraph(g).ensure(manager)
+            OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalKey}")
+            assertFalse(OracleStoredFunctions.era(connection, g))
+            fun query(cypher: String) = manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+            query("UNWIND [2, 3, 1] AS i CREATE (:Moment {i: i, at: datetime({year: 2024, month: 1, day: i, timezone: '+02:00'})})")
+            assertEquals(listOf(1L, 2L, 3L), query("MATCH (n:Moment) RETURN n.i ORDER BY n.at"))
+            assertEquals(listOf(2L, 3L), query("MATCH (n:Moment) WHERE n.at > datetime('2024-01-01T21:00:00Z') RETURN n.i ORDER BY n.i"))
+        }
+
+    @Test
+    fun `a store without the function of temporal arithmetic has its statements compiled to fail by name, and gains it when ensured`() =
+        withSession("fresh_arith") { connection ->
+            val g = "fresh_arith"
+            val manager = NonTransactionalPersistenceManager(
+                JdbcConnectionProvider(g, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = g), g, DatabaseType.ORACLE, SubtypeRegistry(),
+            )
+            // As a store an earlier version made, before the function: no session has asked of it yet.
+            OracleGraph(g).ensure(manager)
+            OracleTestDatabase.drop("FUNCTION ${OracleGraph(g).temporalArithmetic}")
+            fun query(cypher: String) = manager.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+            query("CREATE (:Moment {at: datetime('2024-01-01T10:00:00Z'), d: duration('PT30M')})")
+            // The statement is compiled not to call it, and fails by name.
+            assertFalse(OracleStoredFunctions.temporalArithmetic(connection, g))
+            val refused = assertFails { query("MATCH (n:Moment) RETURN toString(n.at + n.d)") }
+            assertTrue("compiled to SQL yet (drivine4j#418)" in generateSequence(refused) { it.cause }.joinToString { it.message.orEmpty() }, refused.toString())
+            // Ensured again, the store gains it, and the sessions ask of it again.
+            OracleGraph(g).ensure(manager)
+            assertTrue(OracleStoredFunctions.temporalArithmetic(connection, g))
+            assertEquals(listOf("2024-01-01T10:30:00Z"), query("MATCH (n:Moment) RETURN toString(n.at + n.d)"))
+        }
 
     @Test
     fun `a function of the graph's name that is not valid is made again`() {
@@ -169,7 +212,7 @@ class OracleFreshGraphTest {
 
     /** A connection of the test user's own, as a statement's session is, and [graph]'s function made by nothing. */
     private fun withSession(graph: String, block: (java.sql.Connection) -> Unit) {
-        val functions = OracleGraph(graph).let { listOf(it.nullsEqual, it.era, it.eraDate) }.map { "FUNCTION $it" }.toTypedArray()
+        val functions = OracleGraph(graph).functions.map { "FUNCTION " + it.removePrefix("CREATE OR REPLACE FUNCTION ").substringBefore('(') }.toTypedArray()
         OracleTestDatabase.drop(*functions)
         val clock = OracleStoredFunctions.clock
         try {

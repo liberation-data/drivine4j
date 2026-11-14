@@ -35,8 +35,8 @@ internal object CypherCompile {
 
     /**
      * [cypher] compiled for Oracle, calling the functions the graph's store keeps where the statement needs one and the
-     * session may call it, and compiled again to call none where it may not: [nullsEqualStored] and [eraStored] are asked
-     * only of a statement that calls that function. See OracleStoredFunctions. [indexedProperties] are the leading
+     * session may call it, and compiled again to call none where it may not: [nullsEqualStored], [eraStored] and
+     * [temporalArithmeticStored] are asked only of a statement that calls that function. See OracleStoredFunctions. [indexedProperties] are the leading
      * property of each labelled index the graph's store has, by label, so a key equality is read through its index: compiled
      * without them, a keyed `MATCH` read every node of the label (#805). See OracleIndexedProperties.
      */
@@ -46,6 +46,7 @@ internal object CypherCompile {
         parameters: Map<String, Any?>,
         nullsEqualStored: () -> Boolean,
         eraStored: () -> Boolean,
+        temporalArithmeticStored: () -> Boolean,
         typed: Boolean = false,
         indexedProperties: Set<Pair<String, String>> = emptySet(),
     ): CompiledCypher = refusing {
@@ -55,7 +56,9 @@ internal object CypherCompile {
         // Each is asked of apart: a store an earlier version made may have the one and not the others.
         val nullsEqual = !compiler.callsStoredNullsEqual || nullsEqualStored()
         val era = !compiler.callsStoredEra || eraStored()
-        if (nullsEqual && era) compiled else OracleCypherCompiler(graph, nullsEqual, era, indexedProperties = indexedProperties, encoder = JacksonEncoder).compile(cypher, values, typed)
+        val arithmetic = !compiler.callsStoredTemporalArithmetic || temporalArithmeticStored()
+        if (nullsEqual && era && arithmetic) return@refusing compiled
+        OracleCypherCompiler(graph, nullsEqual, era, indexedProperties, JacksonEncoder, false, false, false, arithmetic).compile(cypher, values, typed)
     }
 
     /** The compiler of one Postgres statement's fragments over the graph [graph]: see [FragmentCompiler]. */

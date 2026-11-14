@@ -48,8 +48,13 @@ abstract class CypherTemporalContract {
     @BeforeEach
     fun graph() = clear()
 
+    /** Steps a store of this runner's own fails where others pass, beside those held everywhere: see [CypherSpec.Hold]. */
+    internal open val held: Map<String, List<CypherSpec.Hold>> = emptyMap()
+
     @TestFactory
-    fun spec() = CypherSpec.load("temporal.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
+    fun spec() = CypherSpec.load("temporal.yaml").let { spec ->
+        spec.tests(CypherSpec.storeOf(pm.type), before = ::clear, held = spec.held() + held) { step -> query(step.cypher, step.parameters) }
+    }
 
     @Test
     fun `a parameter of a java time type is a temporal value of its kind`() {
@@ -530,6 +535,15 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    /**
+     * The function of temporal arithmetic calls the era functions, so on this store it is not valid, and arithmetic of a
+     * temporal value read from the store fails by name, as on a store made before the function (drivine4j#418, #811).
+     */
+    override val held = mapOf(
+        "Arithmetic on temporal values read from the store" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3, 4, 5, 6, 7, 14))),
+        "A duration divided, and its seconds written" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3))),
+    )
 
     @Test
     fun `a statement that would call the era functions and nulls_equal is compiled to call only nulls_equal`() {
