@@ -12,7 +12,7 @@ class CypherCompileIteratorTest {
     private fun compiled(store: String, cypher: String, parameters: Map<String, Any?>): Map<String, Any?> = when (store) {
         "postgres" -> CypherCompile.postgres("g", cypher, parameters).parameters
         "sqlite" -> CypherCompile.sqlite("g", cypher, parameters).parameters
-        else -> CypherCompile.oracle("g", cypher, parameters, { true }, { true }).parameters
+        else -> CypherCompile.oracle("g", cypher, parameters, { true }, { true }, { true }).parameters
     }
 
     @ParameterizedTest
@@ -55,7 +55,7 @@ class CypherCompileIteratorTest {
         val cypher = "MATCH (n) WHERE n.id IN \$p.ids " +
             "RETURN n, datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: 3}).hour AS h"
         val asked = mutableListOf<String>()
-        fun compiled(ids: Any) = CypherCompile.oracle("g", cypher, mapOf("p" to mapOf("ids" to ids)), { true }, { asked += "era"; false })
+        fun compiled(ids: Any) = CypherCompile.oracle("g", cypher, mapOf("p" to mapOf("ids" to ids)), { true }, { asked += "era"; false }, { true })
         val listed = compiled(listOf("a", "b"))
         val iterated = compiled(listOf("a", "b").iterator())
         assertEquals(listOf("era", "era"), asked)

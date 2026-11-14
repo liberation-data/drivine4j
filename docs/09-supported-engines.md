@@ -220,15 +220,20 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
 the `stamp` column, and a load returns it as `__drivine.stamp`. Deleting a node's row deletes its
 relationships with it. A third table, `<graph>_schema`, records the indexes and constraints Drivine
 made: see [Schema Management](10-schema-management.md#schema-management-indexes--constraints). Beside the tables the graph is made with
-three functions: `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
-by (see the notes below), and `<graph>_era` and `<graph>_era_date`, which renumber a year before 1 between Cypher's
-numbering and Oracle's as a date or a moment is read and written. Making them takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
+five functions: `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
+by (see the notes below), `<graph>_era` and `<graph>_era_date`, which renumber a year before 1 between Cypher's
+numbering and Oracle's as a date or a moment is read and written, `<graph>_temporal_key`, which works out the key a
+temporal value sorts by, and `<graph>_temporal_arith`, which works out `+`, `-`, `*` and `/` of a temporal value read
+from the store. Making them takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
 `CREATE TABLE` the tables take. A store an earlier version made gains those it lacks before the datasource's first connection, as a new one gains its tables. Where the
 user that makes the graph may not make a function, the graph is made without them, and Drivine logs a warning once
 for the graph when a statement would call one, and looks for it again a minute later. Without `<graph>_nulls_equal`, a statement that writes, or the step of a `reduce`, compares two
 lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
-declares the function itself. Without the era functions, a statement gives the same rows, renumbering a year inline,
-but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a minute for a moment two `CALL`s deep.
+declares the function itself. Without the era functions or `<graph>_temporal_key`, a statement calls none of the three
+and gives the same rows, renumbering a year and working out a key inline, but Oracle takes longer to plan one of temporal
+arithmetic: seconds, and over a minute for a moment two `CALL`s deep. Without `<graph>_temporal_arith`, which calls the
+other three and so is not valid without them, `+`, `-`, `*` or `/` of a temporal value read from the store fails by name
+as the statement runs.
 
 **A graph an earlier Drivine wrote.** Oracle, Postgres and SQLite hold each value in store layout 2, as the shared
 compiler writes it: a temporal value as a tagged map of its ISO 8601 text and the key it orders by, and a property whose

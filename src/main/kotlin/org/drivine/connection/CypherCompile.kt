@@ -46,7 +46,7 @@ internal object CypherCompile {
         parameters: Map<String, Any?>,
         nullsEqualStored: () -> Boolean,
         eraStored: () -> Boolean,
-        temporalArithmeticStored: () -> Boolean = { true },
+        temporalArithmeticStored: () -> Boolean,
         typed: Boolean = false,
         indexedProperties: Set<Pair<String, String>> = emptySet(),
     ): CompiledCypher = refusing {

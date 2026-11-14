@@ -29,6 +29,7 @@ class CypherCompileTest {
             graph, cypher, parameters,
             nullsEqualStored = { asked += "nullsEqual"; kept },
             eraStored = { asked += "era"; kept },
+            temporalArithmeticStored = { asked += "arithmetic"; kept },
         ).sql
         return sql to asked
     }
@@ -87,12 +88,12 @@ class CypherCompileTest {
             "datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: 3}).hour AS h"
         val asked = mutableListOf<String>()
         // The era functions kept, nulls-equal not.
-        val sql = CypherCompile.oracle(graph, cypher, emptyMap(), { asked += "nullsEqual"; false }, { asked += "era"; true }).sql
+        val sql = CypherCompile.oracle(graph, cypher, emptyMap(), { asked += "nullsEqual"; false }, { asked += "era"; true }, { true }).sql
         assertEquals(listOf("nullsEqual", "era"), asked)
         assertFalse(nullsEqual in sql, sql)
         assertTrue(era in sql, sql)
         // And the other way about.
-        val other = CypherCompile.oracle(graph, cypher, emptyMap(), { true }, { false }).sql
+        val other = CypherCompile.oracle(graph, cypher, emptyMap(), { true }, { false }, { true }).sql
         assertTrue(nullsEqual in other, other)
         assertFalse(era in other, other)
     }
@@ -103,11 +104,11 @@ class CypherCompileTest {
         val cypher = "MATCH (c:Claim {id: \$id}) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l) AS same"
         val throughIndex = StoreSql.labelledIndex("n1", "Claim", "id")
         for (kept in listOf(true, false)) {
-            val sql = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { kept }, { kept }, indexedProperties = setOf("Claim" to "id")).sql
+            val sql = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { kept }, { kept }, { kept }, indexedProperties = setOf("Claim" to "id")).sql
             assertTrue(throughIndex.all { it in sql }, sql)
             assertEquals(kept, nullsEqual in sql, sql)
         }
-        val unindexed = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { true }, { true }).sql
+        val unindexed = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { true }, { true }, { true }).sql
         assertFalse(throughIndex.any { it in unindexed }, unindexed)
     }
 }

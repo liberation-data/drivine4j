@@ -77,8 +77,8 @@ class CompilerBoundaryTest {
         val compiles = mapOf(
             "postgres" to { CypherCompile.postgres("g", step.cypher, parameters) },
             "sqlite" to { CypherCompile.sqlite("g", step.cypher, parameters) },
-            "oracle" to { CypherCompile.oracle("g", step.cypher, parameters, { true }, { true }) },
-            "oracle, its functions not stored" to { CypherCompile.oracle("g", step.cypher, parameters, { false }, { false }) },
+            "oracle" to { CypherCompile.oracle("g", step.cypher, parameters, { true }, { true }, { true }) },
+            "oracle, its functions not stored" to { CypherCompile.oracle("g", step.cypher, parameters, { false }, { false }, { false }) },
         )
         for ((store, compile) in compiles) {
             val thrown = assertThrows<Throwable>("$case on $store") { compile() }
