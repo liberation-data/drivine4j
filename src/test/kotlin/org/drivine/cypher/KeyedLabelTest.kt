@@ -81,7 +81,7 @@ class KeyedLabelTest {
         // A JSON_TABLE over a value given is estimated at 8,168 rows: the nodes were read once and hashed, not each by its key.
         for (statement in listOf("MATCH (n:Item) WHERE id(n) IN \$ids RETURN n.k", "MATCH (n) WHERE id(n) IN [1, 2] RETURN n.k")) {
             val sql = oracle(statement)
-            assertTrue(Regex("""IN \(SELECT /\*\+ CARDINALITY\(k\d+ ${OracleCypherCompiler.FEW_ROWS}\) \*/ """).containsMatchIn(sql), "$statement\n$sql")
+            assertTrue(Regex("""IN \(SELECT /\*\+ CARDINALITY\(k\d+ ${OracleCypherCompiler.FEW_ROWS}\)(?: NO_COALESCE_SQ)? \*/ """).containsMatchIn(sql), "$statement\n$sql")
         }
         for (statement in listOf(
             "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i RETURN count(*)",
@@ -89,7 +89,7 @@ class KeyedLabelTest {
             "UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i RETURN DISTINCT n.k",
         )) {
             val sql = oracle(statement)
-            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u1 ${OracleCypherCompiler.FEW_ROWS}\) \*/ """).containsMatchIn(sql), "$statement\n$sql")
+            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u1 ${OracleCypherCompiler.FEW_ROWS}\)(?: NO_COALESCE_SQ)? \*/ """).containsMatchIn(sql), "$statement\n$sql")
         }
         // A statement that writes reads its rows in a step of its own, and a DELETE its ids in a subquery: each keeps the hint.
         for (statement in listOf(
@@ -105,7 +105,7 @@ class KeyedLabelTest {
             "MATCH (a:Small) WHERE EXISTS { UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = i } RETURN a.s",
         )) {
             val sql = oracle(statement)
-            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u\d+ ${OracleCypherCompiler.FEW_ROWS}\) \*/ 1\n""").containsMatchIn(sql), "$statement\n$sql")
+            assertTrue(Regex("""SELECT /\*\+ CARDINALITY\(u\d+ ${OracleCypherCompiler.FEW_ROWS}\)(?: NO_COALESCE_SQ)? \*/ 1\n""").containsMatchIn(sql), "$statement\n$sql")
         }
         // An UNWIND beside an id compared with something else.
         val beside = oracle("UNWIND \$ids AS i MATCH (n:Item) WHERE id(n) = \$id RETURN count(*)")
