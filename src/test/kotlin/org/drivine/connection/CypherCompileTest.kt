@@ -61,6 +61,27 @@ class CypherCompileTest {
     }
 
     @Test
+    fun `arithmetic of values read from the store asks of the temporal arithmetic function alone, and calls it only where it is kept`() {
+        // drivine4j#418: a store without it, as one an earlier version made, has the statement fail by name as it runs.
+        val cypher = "MATCH (n:Claim) RETURN n.at + n.d AS later"
+        val function = "${graph}_temporal_arith("
+        val asked = mutableListOf<String>()
+        val kept = CypherCompile.oracle(graph, cypher, emptyMap(), { asked += "nullsEqual"; true }, { asked += "era"; true }, { asked += "arithmetic"; true }).sql
+        assertEquals(listOf("arithmetic"), asked)
+        assertTrue(function in kept, kept)
+        val missing = CypherCompile.oracle(graph, cypher, emptyMap(), { true }, { true }, { false }).sql
+        assertFalse(function in missing, missing)
+        assertTrue("compiled to SQL yet (drivine4j#418)" in missing, missing)
+        // A statement that does no such arithmetic doesn't ask of it.
+        asked.clear()
+        CypherCompile.oracle(graph, "MATCH (n:Claim) RETURN n.a + 1 AS b, duration('P1D') * 2 AS d", emptyMap(), { true }, { true }, { asked += "arithmetic"; true })
+        assertEquals(listOf("arithmetic"), asked, "n.a + 1 may be a tag's, so the statement calls the function")
+        asked.clear()
+        CypherCompile.oracle(graph, "MATCH (n:Claim) RETURN size(n.l) + 1 AS b", emptyMap(), { true }, { true }, { asked += "arithmetic"; true })
+        assertEquals(emptyList(), asked)
+    }
+
+    @Test
     fun `each function is asked of apart, so a store with one and not the other keeps calling the one`() {
         val cypher = "MATCH (c:Claim) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l) AS same, " +
             "datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: 3}).hour AS h"

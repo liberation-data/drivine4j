@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.cypher.sql.TemporalArithmeticFunction
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
@@ -77,6 +78,21 @@ internal object OracleStoredFunctions {
         return callable(connection, graph, "$era, $eraDate and $temporalKey", "SELECT $era('0000-01-01'), $eraDate('-0001-01-01'), $temporalKey('date', '2024-01-01') FROM DUAL") {
             "Until the graph is ensured by such a user, Oracle takes longer to plan a Cypher statement that reads or writes " +
                 "a date or a moment whose year may be before 1000; it gives the same rows."
+        }
+    }
+
+    /**
+     * Whether [connection] may call the function the graph [graph] works out `+`, `-`, `*` and `/` of a temporal value read
+     * from the store by (drivine4j#418), as [era] asks of its own. It calls the era functions and the temporal key function,
+     * so a store without those has it, but not valid, and a statement is compiled to call it only where it may be called:
+     * else such arithmetic fails by name as the statement runs (drivine-cypher-spec#250).
+     *
+     * @throws SQLException where calling it fails for any reason but there being no function it may call
+     */
+    fun temporalArithmetic(connection: Connection, graph: String): Boolean {
+        val name = TemporalArithmeticFunction.name(graph)
+        return callable(connection, graph, name, "SELECT JSON_SERIALIZE($name('+', JSON('{\"\$t\":\"date\",\"v\":\"2024-01-01\"}'), JSON('{\"\$t\":\"duration\",\"v\":\"P1D\"}'))) FROM DUAL") {
+            "Until the graph is ensured by such a user, `+`, `-`, `*` and `/` of a temporal value read from the store fail by name."
         }
     }
 

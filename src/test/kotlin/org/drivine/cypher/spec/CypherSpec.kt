@@ -103,6 +103,9 @@ data class CypherSpec(
      */
     internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
 
+    /** The steps of this file held on a store everywhere ([HELD]), to which a runner of a store of its own adds its own. */
+    internal fun held(): Map<String, List<Hold>> = HELD[file].orEmpty()
+
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
      * the store fails. A step not run on [store] is passed over; one held there ([held], by case name) is checked to
