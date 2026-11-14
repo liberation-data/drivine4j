@@ -239,6 +239,19 @@ One that holds the application's nodes is refused, on that connection and every 
 `StoreLayoutException` that names the graph and says what to do: export it with the Drivine version that wrote it, and
 import it with this one. Nothing is migrated. A graph a later Drivine stamped with a later layout is refused too.
 
+**Hand-written SQL and the indexes.** In layout 2, the index Drivine makes for a range index or a uniqueness
+constraint holds a property as layout 2 holds it, not as its text:
+
+- **Postgres:** the JSON value, `(props -> 'id')`. A test of `props ->> 'id'`, the text, reads no index.
+- **Oracle and SQLite:** two columns, the value's class and its key (`CASE JSON_VALUE(props, '$.id.type()' …) …` on
+  Oracle). A plain `JSON_VALUE(props, '$.id')` reads no index, and there is no longer an index over a property of
+  every node regardless of its label.
+
+So a hand-written statement, or a raw `whereClause`, that finds a node by its id the layout-1 way now reads every node
+of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went from 0.25 ms to 23 ms on Postgres and from
+0.42 ms to 238 ms on Oracle. Cypher, and the query DSL, write the indexed form: write the lookup in Cypher, or test
+`props -> 'id'` against a JSON value on Postgres.
+
 **Notes:**
 - Each Oracle session Drivine uses makes no adaptive plan (`ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE`).
   Drivine's pool runs it as it opens a session, and drops a session it fails in; a session of a `DataSource` you gave
@@ -756,6 +769,11 @@ relationships with it.
   again, as on Neo4j, Memgraph and Oracle.
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own, in one
   transaction; `patchAll` writes 500 nodes to a statement.
+- A compiled walk of several hops over a large graph can be planned as a parallel hash join. That join can need more
+  shared memory than Docker gives a container by default (64 MB of `/dev/shm`), and then Postgres fails with
+  `could not resize shared memory segment … No space left on device`. Graph Bench's 4-hop walk over 1.5 million
+  relationships does. Give the container more shared memory (`docker run --shm-size=1g`, or `shm_size` in Compose), or
+  turn parallel query down for such statements (`max_parallel_workers_per_gather = 0`).
 - A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
 - A compiled `MATCH` that compares a property by `=` with a value a row holds (`UNWIND $rows AS row MATCH (n:Person {id:
   row.id})`, `UNWIND $ids AS id MATCH (n:Person {id: id})`, or `WHERE n.id = row.id`) is read through the range index or the uniqueness constraint over the property,
