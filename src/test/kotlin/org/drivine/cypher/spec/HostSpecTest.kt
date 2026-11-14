@@ -145,7 +145,7 @@ class HostSpecTest {
 
     @Test
     fun `drivine_host_version's steps alone pair nothing`() {
-        val version = mapOf("function" to UNPAIRED, "args" to emptyList<Any>(), "result" to 1L)
+        val version = mapOf("function" to UNPAIRED, "args" to emptyList<Any>(), "result" to 2L)
         check(case(version, pairs = emptyMap()))
         val add = mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "3")
         assertContains(assertFails { check(Case("a case", steps = listOf(version, add))) }.message!!, "pairs no store case")

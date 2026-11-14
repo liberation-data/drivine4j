@@ -985,10 +985,74 @@ cases:
         args: ["2024-03-15T10:30:05.000000", null]
         result: null
 
+  - name: "drivine_temporal_arithmetic"
+    description: "drivine_temporal_arithmetic(operator, x, y) is Cypher's x + y, x - y, x * y or x / y where either is the tag of a temporal value read from the store, of a kind the statement doesn't know: the tag the arithmetic makes, as JSON text, as Postgres and Oracle work it out by the function they keep (drivine4j#418). A moment moved by a duration's months, then its days and time, a date taking the time in whole days; two durations added or taken away; a duration times or divided by a number, each part divided. x and y are JSON texts, or SQL numbers; null where either is SQL's or JSON's null. A pair Cypher has no arithmetic of fails, naming it, as does a date or a moment with a date moved past the year 9999 or before -9999, as the inline SQL fails (#263)."
+    pairs:
+      temporal.yaml: ["Arithmetic on temporal values read from the store", "A duration divided, and its seconds written"]
+    steps:
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"date","v":"2024-01-31","s":"10000020240131"}', '{"$t":"duration","v":"P1M"}']
+        result: '{"$t":"date","v":"2024-02-29","s":"10000020240229"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['-', '{"$t":"localdatetime","v":"2024-02-29T12:00:00","s":"10000020240229120000000000000"}', '{"$t":"duration","v":"P1Y"}']
+        result: '{"$t":"localdatetime","v":"2023-02-28T12:00:00","s":"10000020230228120000000000000"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"date","v":"2024-01-01","s":"10000020240101"}', '{"$t":"duration","v":"P-1M-2DT-3H"}']
+        result: '{"$t":"date","v":"2023-11-29","s":"10000020231129"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"localtime","v":"23:30:00","s":"84600000000000"}', '{"$t":"duration","v":"PT45M"}']
+        result: '{"$t":"localtime","v":"00:15:00","s":"00900000000000"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"time","v":"10:00:00+02:00","s":"093600000000000072000"}', '{"$t":"duration","v":"PT14H"}']
+        result: '{"$t":"time","v":"00:00:00+02:00","s":"057600000000000072000"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"localdatetime","v":"2024-01-31T23:59:59.500","s":"10000020240131235959500000000"}', '{"$t":"duration","v":"P1MT0.5S"}']
+        result: '{"$t":"localdatetime","v":"2024-03-01T00:00:00","s":"10000020240301000000000000000"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['-', '{"$t":"datetime","v":"2024-01-01T10:00:00Z","s":"10000020240101100000000000000064800"}', '{"$t":"duration","v":"PT30M"}']
+        result: '{"$t":"datetime","v":"2024-01-01T09:30:00Z","s":"10000020240101093000000000000064800"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"duration","v":"P1M2DT3H"}', '{"$t":"duration","v":"P-2M-1DT-30M"}']
+        result: '{"$t":"duration","v":"P-1M1DT2H30M"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['-', '{"$t":"duration","v":"PT1S"}', '{"$t":"duration","v":"P1D"}']
+        result: '{"$t":"duration","v":"P-1DT1S"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['*', '{"$t":"duration","v":"PT1S"}', '0.5']
+        result: '{"$t":"duration","v":"PT0.5S"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['*', '1.5', '{"$t":"duration","v":"P1M"}']
+        result: '{"$t":"duration","v":"P1M15DT5H14M33S"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['/', '{"$t":"duration","v":"P1M"}', '3']
+        result: '{"$t":"duration","v":"P10DT3H29M42S"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['/', '{"$t":"duration","v":"P1Y"}', '3']
+        result: '{"$t":"duration","v":"P4M"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"duration","v":"PT30M"}', '{"$t":"datetime","v":"2024-01-01T10:00:00Z","s":"10000020240101100000000000000064800"}']
+        result: '{"$t":"datetime","v":"2024-01-01T10:30:00Z","s":"10000020240101103000000000000064800"}'
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"duration","v":"P1D"}', null]
+        result: null
+      - function: "drivine_temporal_arithmetic"
+        args: ['-', 'null', '{"$t":"duration","v":"P1D"}']
+        result: null
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"date","v":"2024-01-01","s":"10000020240101"}', '{"$t":"date","v":"2024-01-01","s":"10000020240101"}']
+        error: "Cypher has no temporal arithmetic of the operator, kinds or values"
+      - function: "drivine_temporal_arithmetic"
+        args: ['/', '2', '{"$t":"duration","v":"P1D"}']
+        error: "Cypher has no temporal arithmetic of the operator, kinds or values"
+      - note: "A date moved past the years SQLite's text writes fails by name, as the inline SQL does (#263)."
+        function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"date","v":"9999-12-31","s":"10000099991231"}', '{"$t":"duration","v":"P1D"}']
+        error: "A year the store doesn't hold, past 9999 or before its first"
+
   - name: "drivine_host_version"
     description: "drivine_host_version() is the version of the drivine_ functions' contract, the forms of their arguments and results this file pins, as the compiler's SqliteFunctions.HOST_VERSION is. A library checks it once on each connection it registers the functions on, and fails where it is not the compiler's, or the function is missing: then the functions are not those the compiled SQL calls. No compiled statement calls it, so its case pairs no store case."
     pairs: {}
     steps:
       - function: "drivine_host_version"
         args: []
-        result: 1
+        result: 2

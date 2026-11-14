@@ -1030,40 +1030,105 @@ cases:
         rows: [{day: 3, year: 2020, hours: 4, timezone: "x"}]
 
   - name: "Arithmetic on temporal values read from the store"
-    description: "+, -, * and / of a temporal value read from the store, where the statement doesn't know its kind: Neo4j works it out. The SQL stores write temporal arithmetic only where a side is known to be temporal, so with both sides read from the store, or a duration read from the store times or divided by a number, they gave null; they now fail by name until it is compiled (drivine4j#418). A side written in the statement is still worked out."
+    description: "+, -, * and / of a temporal value read from the store, where the statement doesn't know its kind: Neo4j works it out, and so does each SQL store: Postgres and Oracle by the function of temporal arithmetic each keeps, whose body is its own arithmetic of values the statement knows to be temporal, and SQLite by the host function each library registers (drivine4j#418). Before, the SQL stores gave null."
     steps:
-      - cypher: "CREATE (:CyTemporal {id: 'a', d1: duration('P1DT2H'), d2: duration('PT30M'), at: datetime('2024-01-01T10:00Z'), n: 5})"
-      - note: "A side written in the statement: worked out on every store."
+      - only: [neo4j, sql]
+        cypher: |
+          CREATE (:CyTemporal {id: 'a', d1: duration('P1DT2H'), d2: duration('PT30M'), at: datetime('2024-01-01T10:00Z'), n: 5,
+                               endOfJanuary: date('2024-01-31'), newYear: date('2024-01-01'), leapNoon: localdatetime('2024-02-29T12:00:00'),
+                               lateEvening: localtime('23:30:00'), ten: time('10:00:00+02:00'), month: duration('P1M'), year: duration('P1Y'),
+                               back: duration('-P1M2DT3H'), threeQuarters: duration('PT45M'), fourteen: duration('PT14H'), second: duration('PT1S'),
+                               mixed: duration('P1M2DT3H'), behind: duration('-P2M1DT30M'), k: 3, half: 0.5, ratio: 2.5})
+      - note: "A side written in the statement: worked out on every store, as before."
+        only: [neo4j, sql]
         cypher: "MATCH (n:CyTemporal) RETURN [toString(n.d1 + duration('PT30M')), toString(n.d1 - duration('PT30M')), toString(n.at + duration('P1D')), n.n + 1]"
         rows: [["P1DT2H30M", "P1DT1H30M", "2024-01-02T10:00:00Z", 6]]
-      - note: "Two durations read from the store, added."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.d1 + n.d2"
-        error: true
-      - note: "Subtracted."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.d1 - n.d2"
-        error: true
-      - note: "A moment and a duration read from the store, added."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.at + n.d2"
-        error: true
-      - note: "Subtracted."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.at - n.d2"
-        error: true
-      - note: "A duration read from the store, times a number."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.d1 * 2"
-        error: true
-      - note: "Divided by one."
-        only: [sql]
-        cypher: "MATCH (n:CyTemporal) RETURN n.d1 / 2"
-        error: true
-      - note: "What Neo4j gives for each."
-        only: [neo4j]
+      - note: "Two durations, a moment and a duration, and a duration and a number, each read from the store."
+        only: [neo4j, sql]
         cypher: "MATCH (n:CyTemporal) RETURN [toString(n.d1 + n.d2), toString(n.d1 - n.d2), toString(n.at + n.d2), toString(n.at - n.d2), toString(n.d1 * 2), toString(n.d1 / 2)]"
         rows: [["P1DT2H30M", "P1DT1H30M", "2024-01-01T10:30:00Z", "2024-01-01T09:30:00Z", "P2DT4H", "PT13H"]]
+      - note: "The end of a month, a leap day, a negative duration on a date, a time of day past midnight, a time with its offset."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [toString(n.endOfJanuary + n.month), toString(n.leapNoon - n.year), toString(n.newYear + n.back), toString(n.lateEvening + n.threeQuarters), toString(n.ten + n.fourteen)]"
+        rows: [["2024-02-29", "2023-02-28T12:00:00", "2023-11-29", "00:15:00", "00:00:00+02:00"]]
+      - note: "A month divided, its fraction spilt into days and seconds; a second halved; a duration and a negative one."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [toString(n.month / n.k), toString(n.second * n.half), toString(n.mixed + n.behind)]"
+        rows: [["P10DT3H29M42S", "PT0.5S", "P-1M1DT2H30M"]]
+      - note: "The duration first, or the number first."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [toString(n.d2 + n.at), toString(n.k * n.month)]"
+        rows: [["2024-01-01T10:30:00Z", "P3M"]]
+      - note: "Null beside a temporal value read from the store gives null."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [n.d1 + n.missing, n.missing - n.d1, n.d1 * n.missing]"
+        rows: [[null, null, null]]
+      - note: "Two moments added, as no kind is: refused, as Neo4j refuses it."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN n.at + n.at"
+        error: true
+      - note: "A duration divided by a float: Neo4j works it out in binary floating point (liberation-data/drivine-cypher-spec#254)."
+        only: [neo4j]
+        cypher: "MATCH (n:CyTemporal) RETURN toString(n.month / n.ratio)"
+        rows: ["P12DT4H11M38.399999999S"]
+      - note: "The SQL stores work it out exactly, and keep the exact answer: a known difference (README.md, Values)."
+        only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN toString(n.month / n.ratio)"
+        rows: ["P12DT4H11M38.4S"]
+
+  - name: "A year past 9999 or before -9999"
+    description: "A date or a moment worked out as a statement runs whose year is past 9999, or before the first year the store holds, fails on the SQL stores, where Neo4j gives it (#263). Postgres holds years from -4712 (4713 BC), Oracle from -4711, SQLite from -9999, each up to 9999. A value made of fields of a year the store doesn't hold fails by name; so does one worked out on Postgres or SQLite whose year is past 9999, where their texts wrote it wrong (####, or unsigned), or on SQLite before -9999; Oracle fails on such a year as it works it out, and Postgres and Oracle on one before their first. Working such years out is #264. A text written in the statement is read as it is."
+    steps:
+      - note: "The last year, worked out and made, and the bounds written, on every store."
+        only: [neo4j, sql]
+        cypher: "RETURN [toString(date('9999-12-01') + duration('P30D')), toString(date({year: 9999, month: 12, day: 31})), toString(datetime('9999-12-31T22:00:00Z') + duration('PT1H59M')), toString(date('9999-12-31')), toString(date('-9999-01-01'))]"
+        rows: [["9999-12-31", "9999-12-31", "9999-12-31T23:59:00Z", "9999-12-31", "-9999-01-01"]]
+      - note: "SQLite's first year, worked out: Postgres and Oracle hold no year so early, and fail on it as they work it out (liberation-data/drivine-cypher-spec#264)."
+        only: [neo4j, sqlite]
+        cypher: "RETURN toString(date('-9999-01-31') - duration('P30D'))"
+        rows: ["-9999-01-01"]
+      - note: "A text past the bounds, written in the statement, is read as it is."
+        only: [neo4j, sql]
+        cypher: "RETURN toString(date('+10000-01-01'))"
+        rows: ["+10000-01-01"]
+      - note: "A moment made of fields of a year before Postgres's and Oracle's first, which SQLite holds."
+        only: [neo4j, sqlite]
+        cypher: "RETURN toString(localdatetime({year: -5000, month: 6, day: 15, hour: 10}))"
+        rows: ["-5000-06-15T10:00:00"]
+      - note: "Postgres and Oracle refuse it by name, where it gave null (#263)."
+        only: [postgres, oracle]
+        cypher: "RETURN toString(localdatetime({year: -5000, month: 6, day: 15, hour: 10}))"
+        error: true
+      - note: "Past the bounds: Neo4j gives each."
+        only: [neo4j]
+        cypher: "RETURN [toString(date('9999-12-01') + duration('P1M')), toString(datetime('9999-12-31T23:00:00Z') + duration('PT2H')), toString(date({year: 10000, month: 1, day: 1})), toString(date('-9999-01-15') - duration('P1M'))]"
+        rows: [["+10000-01-01", "+10000-01-01T01:00:00Z", "+10000-01-01", "-10000-12-15"]]
+      - note: "The SQL stores fail on each (liberation-data/drivine-cypher-spec#264 works them out)."
+        only: [sql]
+        cypher: "RETURN toString(date('9999-12-01') + duration('P1M'))"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString(datetime('9999-12-31T23:00:00Z') + duration('PT2H'))"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString(date({year: 10000, month: 1, day: 1}))"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString(date('-9999-01-15') - duration('P1M'))"
+        error: true
+
+  - name: "A duration divided, and its seconds written"
+    description: "A duration divided by a number is each of its parts divided, as Cypher divides it, not times the number's reciprocal, whose rounding lost a whole month on Postgres (#260). Its seconds are rounded to the nine places a duration's text writes before they are split into hours and minutes, so a hair under a whole minute is no 59M60S, nor a hair over a whole time a 0S (#261)."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "RETURN [toString(duration('P1Y') / 3), toString(duration('P1Y') / 1.5), toString(duration('P1W') / 3), toString(duration('P1M') / 3)]"
+        rows: [["P4M", "P8M", "P2DT8H", "P10DT3H29M42S"]]
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyTemporal {id: 'q', y: duration('P1Y'), w: duration('P1W'), k: 3, k15: 1.5})"
+      - note: "Read from the store, worked out by the store's function, or SQLite's host function (drivine4j#418)."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal {id: 'q'}) RETURN [toString(n.y / n.k), toString(n.y / n.k15), toString(n.w / n.k)]"
+        rows: [["P4M", "P8M", "P2DT8H"]]
 
   - name: "Temporal functions on stored values"
     description: "A temporal value read from the store truncates, becomes a duration, and gives the duration between it and another."

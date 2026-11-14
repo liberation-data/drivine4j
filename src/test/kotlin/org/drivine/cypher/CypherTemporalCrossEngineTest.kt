@@ -541,7 +541,7 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
      * temporal value read from the store fails by name, as on a store made before the function (drivine4j#418, #811).
      */
     override val held = mapOf(
-        "Arithmetic on temporal values read from the store" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3, 4, 5, 6, 7, 14))),
+        "Arithmetic on temporal values read from the store" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3, 4, 5, 6, 7, 10))),
         "A duration divided, and its seconds written" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3))),
     )
 
