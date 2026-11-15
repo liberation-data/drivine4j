@@ -99,17 +99,20 @@ pull requests. Each job writes the report to its summary and keeps `build/tck/` 
 
 ## Pass rates
 
-On `main` when the baselines were written, of 3,896 scenarios. The baselines hold the lenient passes.
+On compiler 0.48.3 and the store layout 2, when the baselines were last written (2026-11-16), of 3,896 scenarios. The baselines hold the lenient passes.
 
 | store | lenient pass | strict pass | refused on purpose | wrong result | wrong or missing error | crash or stall | harness limitation |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Neo4j | 3,821 (98.1%) | 3,821 (98.1%) | 0 | 2 | 9 | 5 | 59 |
-| Postgres | 3,122 (80.1%) | 3,085 (79.2%) | 356 | 199 | 152 | 8 | 59 |
-| Oracle | 3,104 (79.7%) | 3,072 (78.9%) | 356 | 220 | 156 | 1 | 59 |
-| SQLite | 3,088 (79.3%) | 3,082 (79.1%) | 356 | 205 | 183 | 5 | 59 |
+| Postgres | 3,069 (78.8%) | 3,057 (78.5%) | 661 | 3 | 102 | 2 | 59 |
+| Oracle | 3,068 (78.7%) | 3,057 (78.5%) | 661 | 4 | 103 | 1 | 59 |
+| SQLite | 3,070 (78.8%) | 3,059 (78.5%) | 661 | 3 | 103 | 0 | 59 |
 
 Neo4j is the ceiling: the 16 scenarios it fails beside the harness's 59 are where Neo4j itself differs from
-the TCK, an error it doesn't raise or one it raises where the TCK expects rows. On the SQL stores most of the
-gap is what Drivine's compiler refuses on purpose (356), its own errors on statements the TCK runs (75 on
-Postgres), and statements it runs where the TCK expects an error (77 on Postgres).
+the TCK, an error it doesn't raise or one it raises where the TCK expects rows. On the SQL stores the gap is almost
+all what Drivine refuses on purpose. 355 statements are refused by design. The other 306 give a temporal value a fraction of a
+second past the microsecond, which the store can't keep (drivine4j#421). They are refused until
+drivine-cypher-spec#302 keeps such a fraction where no store timestamp holds the value, and 185 of them passed before: counted
+as passing, Postgres would pass 3,254 (83.5%). Few answers are wrong (3 on Postgres, from about 200 before the layout 2),
+and the rest are errors (102 on Postgres): Drivine's own on statements the TCK runs, or none where the TCK expects one.
 `build/tck/report.md` has the pass rate of each area.
