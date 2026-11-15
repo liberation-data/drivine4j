@@ -73,7 +73,12 @@ data class CypherSpec(
          * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
          * taken out when the fix lands. One that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
+            // drivine-cypher-spec#296: Neo4j 2026.10.1 refuses toString() of a list of one kind when it plans the statement,
+            // and Bolt sends a relationship the statement deleted with an empty type, where these steps pin answers.
+            "queries.yaml" to mapOf("toString() of a list or a map" to listOf(Hold(296, listOf("neo4j"), steps = listOf(4)))),
+            "results.yaml" to mapOf("A node and a relationship the statement deleted" to listOf(Hold(296, listOf("neo4j"), steps = listOf(1)))),
+        )
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
