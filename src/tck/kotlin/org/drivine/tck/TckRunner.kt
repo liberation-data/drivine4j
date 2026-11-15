@@ -373,7 +373,7 @@ fun subMicrosecondRefused(message: String, query: String?): Boolean =
  * is of its seconds (`0.000000001S`), so a number's places (`0.0999999`) are none.
  */
 fun subMicrosecond(query: String): Boolean =
-    Regex("""nanoseconds?\s*:\s*(\d+)""").findAll(query).any { it.groupValues[1].toLong() % 1000 != 0L } ||
+    Regex("""nanoseconds?\s*:\s*-?(\d+)""").findAll(query).any { it.groupValues[1].takeLast(3).toInt() != 0 } ||
         Regex("""(?::\d\d|\d{6})[.,](\d{7,9})(?!\d)|\d[.,](\d{7,9})S""").findAll(query)
             .any { m -> m.groupValues.drop(1).first { it.isNotEmpty() }.drop(6).any { it != '0' } }
 

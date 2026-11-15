@@ -20,6 +20,9 @@ class RefusalTest {
     fun `a query gives a fraction past the microsecond by a nanosecond field or a text of more than six places`() {
         assertTrue(subMicrosecond("RETURN localtime({hour: 12, nanosecond: 645876123})"))
         assertTrue(subMicrosecond("RETURN duration({nanoseconds: 1})"))
+        assertTrue(subMicrosecond("RETURN duration({seconds: -2, nanoseconds: -1})"), "a negative field")
+        assertFalse(subMicrosecond("RETURN duration({nanoseconds: -2000})"), "a negative whole number of microseconds")
+        assertTrue(subMicrosecond("RETURN duration({nanoseconds: 99999999999999999999})"), "a field past a Long")
         assertTrue(subMicrosecond("RETURN localtime('12:31:14.645876123')"))
         assertTrue(subMicrosecond("RETURN duration('PT0.000000001S')"))
         assertFalse(subMicrosecond("RETURN localtime({hour: 12, nanosecond: 645876000})"))
