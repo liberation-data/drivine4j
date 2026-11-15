@@ -36,7 +36,7 @@ Each scenario comes to one of these:
 | outcome | code | means |
 |---|---|---|
 | passed | `pass` | the rows, error and side effects the TCK expects |
-| refused on purpose | `a` | Drivine says it doesn't compile the statement to SQL (yet) |
+| refused on purpose | `a` | Drivine says it doesn't compile the statement to SQL (yet), or the store refuses a temporal value's fraction of a second past the microsecond, which it can't keep (drivine4j#421) |
 | wrong result | `b` | rows or side effects other than the expected ones |
 | wrong or missing error | `c` | no error where one is expected, or Drivine's own error where the query should run |
 | crash or stall | `d` | the database failed on what Drivine sent it, or no answer in time |

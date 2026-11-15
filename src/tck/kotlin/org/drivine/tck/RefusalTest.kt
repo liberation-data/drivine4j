@@ -2,6 +2,7 @@ package org.drivine.tck
 
 import org.drivine.DrivineException
 import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -24,7 +25,14 @@ class RefusalTest {
         assertFalse(subMicrosecond("RETURN localtime({hour: 12, nanosecond: 645876000})"))
         assertFalse(subMicrosecond("RETURN localtime('12:31:14.645876000')"))
         assertFalse(subMicrosecond("RETURN localtime('12:31:14.645876')"))
+        assertTrue(subMicrosecond("RETURN localtime('123114.645876123')"), "a time's basic form")
+        assertTrue(subMicrosecond("RETURN datetime('2015-07-21T21:40:32.142000001+0100')"))
+        assertTrue(subMicrosecond("RETURN duration('P1DT2H3M14.645876123S')"))
+        assertTrue(subMicrosecond("RETURN localtime(\$t)  PARAMS {t=12:31:14.645876123}"), "a parameter's text")
+        assertFalse(subMicrosecond("RETURN duration('PT0.000001S')"))
         assertFalse(subMicrosecond("RETURN 3.1415926535"), "a number's places of no temporal value")
+        assertFalse(subMicrosecond("UNWIND [0.0999999, 0.00000001, 10.12345678] AS f RETURN f"), "a number's seven to nine places")
+        assertFalse(subMicrosecond("RETURN '0.0999999'"), "a text that is no time")
     }
 
     @Test
@@ -33,5 +41,14 @@ class RefusalTest {
         assertTrue(isRefusal(DrivineException(oracle), "RETURN localtime({hour: 12, nanosecond: 645876123})"))
         assertFalse(isRefusal(DrivineException(oracle), "RETURN localtime({hour: 12, nanosecond: 645876000})"), "another failure by name")
         assertFalse(isRefusal(DrivineException(oracle)), "no query to tell it by")
+        assertFalse(isRefusal(DrivineException(oracle), "UNWIND [0.00000001] AS f RETURN toInteger(f)"), "a number's places")
+    }
+
+    @Test
+    fun `a setup query or a statement that the store refuses so is refused on purpose, by its own query`() {
+        val query = "CREATE ({t: localtime({hour: 12, nanosecond: 645876123})})"
+        assertEquals("refused-setup", errorVerdict(DrivineException(oracle), "setup", query).kind)
+        assertEquals(Outcome.REFUSED, errorVerdict(DrivineException(words), "query").outcome)
+        assertEquals(Outcome.WRONG_ERROR, errorVerdict(DrivineException(oracle), "query", "RETURN 1").outcome, "another failure by name")
     }
 }
