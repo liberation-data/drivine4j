@@ -542,7 +542,7 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
      */
     override val held = mapOf(
         "Arithmetic on temporal values read from the store" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3, 4, 5, 6, 7, 10))),
-        "A duration divided, and its seconds written" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(3))),
+        "A duration divided, and its seconds written" to listOf(CypherSpec.Hold(418, listOf("oracle"), steps = listOf(5))),
     )
 
     @Test

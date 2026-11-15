@@ -108,6 +108,26 @@ class PostgresGraphIntegrationTest {
         assertEquals(org.drivine.connection.layoutTables("made"), tables())
     }
 
+    /**
+     * A store drivine:10 made has no function a sort of a list read from a property calls (drivine-cypher-spec#284). Ensured by
+     * this version, it has it, and lists sort item by item, as Cypher sorts them, where `jsonb` would sort the shorter first.
+     */
+    @Test
+    fun `a store without the function a sort of a list calls gains it when it is ensured, and sorts lists by their items`() {
+        PostgresGraph(graph).ensure(manager)
+        // As drivine:10 left it: no function for a list's sort key.
+        manager.execute(spec("DROP FUNCTION made_list_key(jsonb)"))
+        manager.execute(spec("COMMENT ON TABLE made_node IS 'drivine:10'"))
+
+        PostgresGraph(graph).ensure(manager)
+        assertEquals(listOf(true), manager.query(spec("SELECT to_regprocedure('made_list_key(jsonb)') IS NOT NULL").transform(Boolean::class.java)))
+
+        val fixtures = SqlCypherFixtures.over(manager)
+        fixtures.execute(spec("CREATE (:Box {id: 'a', l: [10]}), (:Box {id: 'b', l: [2, 1]}), (:Box {id: 'c', l: [1]}), (:Box {id: 'd', l: [1, 5]})"))
+        assertEquals(listOf("c", "d", "b", "a"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l").transform(String::class.java)))
+        assertEquals(listOf("a", "b", "d", "c"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l DESC").transform(String::class.java)))
+    }
+
     @Test
     fun `a node carries any number of labels, and the index over labels answers whether it carries one`() {
         PostgresGraph(graph).ensure(manager)

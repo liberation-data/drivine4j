@@ -986,9 +986,9 @@ cases:
         result: null
 
   - name: "drivine_temporal_arithmetic"
-    description: "drivine_temporal_arithmetic(operator, x, y) is Cypher's x + y, x - y, x * y or x / y where either is the tag of a temporal value read from the store, of a kind the statement doesn't know: the tag the arithmetic makes, as JSON text, as Postgres and Oracle work it out by the function they keep (drivine4j#418). A moment moved by a duration's months, then its days and time, a date taking the time in whole days; two durations added or taken away; a duration times or divided by a number, each part divided. x and y are JSON texts, or SQL numbers; null where either is SQL's or JSON's null. A pair Cypher has no arithmetic of fails, naming it, as does a date or a moment with a date moved past the year 9999 or before -9999, as the inline SQL fails (#263)."
+    description: "drivine_temporal_arithmetic(operator, x, y) is Cypher's x + y, x - y, x * y or x / y where either is the tag of a temporal value read from the store, of a kind the statement doesn't know, or is a duration the statement scales by a number (#262), or two durations it adds or takes one from the other (#275): the tag the arithmetic makes, as JSON text, as Postgres and Oracle work it out by the function they keep (drivine4j#418). A moment moved by a duration's months, then its days and time, a date taking the time in whole days; two durations added or taken away; a duration times or divided by a number, each part divided, and by zero failing as Neo4j fails a number divided by zero. A moment of a nanosecond past the microsecond, or one but a date moved by a duration of one, fails by name, as the inline SQL fails it (drivine4j#421). x and y are JSON texts, or SQL numbers; null where either is SQL's or JSON's null. A pair Cypher has no arithmetic of fails, naming it, as does a date or a moment with a date moved past the year 9999 or before -9999, as the inline SQL fails (#263)."
     pairs:
-      temporal.yaml: ["Arithmetic on temporal values read from the store", "A duration divided, and its seconds written"]
+      temporal.yaml: ["Adding durations", "Arithmetic on temporal values read from the store", "A duration divided, and its seconds written", "A nanosecond past the microsecond"]
     steps:
       - function: "drivine_temporal_arithmetic"
         args: ['+', '{"$t":"date","v":"2024-01-31","s":"10000020240131"}', '{"$t":"duration","v":"P1M"}']
@@ -1017,6 +1017,10 @@ cases:
       - function: "drivine_temporal_arithmetic"
         args: ['-', '{"$t":"duration","v":"PT1S"}', '{"$t":"duration","v":"P1D"}']
         result: '{"$t":"duration","v":"P-1DT1S"}'
+      - note: "Exactly, a nanosecond beside ten thousand years of hours, which SQLite's doubles lost (#275)."
+        function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"duration","v":"PT87660000H"}', '{"$t":"duration","v":"PT0.000000001S"}']
+        result: '{"$t":"duration","v":"PT87660000H0.000000001S"}'
       - function: "drivine_temporal_arithmetic"
         args: ['*', '{"$t":"duration","v":"PT1S"}', '0.5']
         result: '{"$t":"duration","v":"PT0.5S"}'
@@ -1048,6 +1052,21 @@ cases:
         function: "drivine_temporal_arithmetic"
         args: ['+', '{"$t":"date","v":"9999-12-31","s":"10000099991231"}', '{"$t":"duration","v":"P1D"}']
         error: "A year the store doesn't hold, past 9999 or before its first"
+      - note: "A duration divided by zero fails, as Postgres, Oracle and Neo4j do, in Neo4j's words for a number (#262)."
+        function: "drivine_temporal_arithmetic"
+        args: ['/', '{"$t":"duration","v":"P1D"}', '0']
+        error: "/ by zero"
+      - note: "A moment of a nanosecond past the microsecond, or moved by a duration of one, fails by name: SQLite's timestamp keeps microseconds (drivine4j#421)."
+        function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"localdatetime","v":"2024-01-01T00:00:00.000000001"}', '{"$t":"duration","v":"PT1S"}']
+        error: "A fraction of a second past the microsecond"
+      - function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"localdatetime","v":"2024-01-01T00:00:00"}', '{"$t":"duration","v":"PT0.000000001S"}']
+        error: "A fraction of a second past the microsecond"
+      - note: "A date takes the whole days of a duration's time alone, so its nanoseconds are no matter there."
+        function: "drivine_temporal_arithmetic"
+        args: ['+', '{"$t":"date","v":"2024-01-01","s":"10000020240101"}', '{"$t":"duration","v":"PT0.000000001S"}']
+        result: '{"$t":"date","v":"2024-01-01","s":"10000020240101"}'
 
   - name: "drivine_host_version"
     description: "drivine_host_version() is the version of the drivine_ functions' contract, the forms of their arguments and results this file pins, as the compiler's SqliteFunctions.HOST_VERSION is. A library checks it once on each connection it registers the functions on, and fails where it is not the compiler's, or the function is missing: then the functions are not those the compiled SQL calls. No compiled statement calls it, so its case pairs no store case."

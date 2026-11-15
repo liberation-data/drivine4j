@@ -77,6 +77,18 @@ cases:
         columns: ["m"]
         rows: [{$t: "node", labels: ["CyTest", "Movie"], properties: {title: "The Matrix", released: 1999}}]
 
+  - name: "A node and a relationship the statement deleted"
+    description: "A relationship the statement deleted is still given with its type and no properties, and a node with no labels and no properties, as untyped it is {}; a SQL store gave null for each, as their rows were gone (liberation-data/drivine4j#420, liberation-data/drivine4j#427)."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "MATCH (:Person {name: 'Keanu'})-[k:KNOWS]->() DELETE k RETURN k"
+        columns: ["k"]
+        rows: [{$t: "relationship", type: "KNOWS", properties: {}}]
+      - only: [neo4j, sql]
+        cypher: "MATCH (p:Person {name: 'Carrie'}) DETACH DELETE p RETURN p"
+        columns: ["p"]
+        rows: [{$t: "node", labels: [], properties: {}}]
+
   - name: "A list of nodes or relationships"
     description: "collect() of nodes or relationships gives each with its labels or type, in a list."
     steps:

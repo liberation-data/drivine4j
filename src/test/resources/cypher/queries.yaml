@@ -1135,6 +1135,57 @@ cases:
         cypher: "WITH '(a)' + $b AS p RETURN ['aa' =~ p, 'a' =~ p]"
         parameters: {b: "a"}
         rows: [[true, false]]
+  - name: "A regular expression with a group that captures nothing"
+    description: "A group that captures nothing, (?:…), groups as in Java. Oracle reads no group of its own syntax but a leading flag group, so it matched nothing where a pattern wrote one; the compiler now writes each (?: there as (, the same match where the pattern writes no backreference, as one that writes both is refused (#242). Oracle refuses by name every other group of its own syntax, a lookaround among them, a (?: written in a character class, and any group of its own syntax in a pattern worked out as the statement runs."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "RETURN ['x' =~ '(?:x)', 'xb' =~ 'x(?:b)', 'x?:b' =~ 'x(?:b)', 'abab' =~ '(?:ab)+', 'ac' =~ 'a(?:b|c)', 'abab' =~ '(?:(?:a)b)+', 'XB' =~ '(?i)x(?:b)']"
+        rows: [[true, true, false, true, true, true, true]]
+      - note: "Bound, and a (?: that a backslash escapes, which is the text (?: and no group."
+        only: [neo4j, sql]
+        cypher: "RETURN ['xb' =~ $p, 'a(?:b' =~ $q, 'ab' =~ $q, $t =~ $r]"
+        parameters: {p: "x(?:b)", q: "a\\(\\?:b", r: "a\\\\(?:b)", t: "a\\b"}
+        rows: [[true, true, false, true]]
+      - note: "Over the empty text, which Oracle asks of a line break of its own."
+        only: [neo4j, sql]
+        cypher: "RETURN ['' =~ '(?:a)?', '' =~ '(?:a)', $e =~ $p]"
+        parameters: {e: "", p: "(?:a|b?)"}
+        rows: [[true, false, true]]
+      - note: "A lookaround: answered where the store reads one."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN 'ab' =~ $p"
+        parameters: {p: "a(?=b)b"}
+        rows: [true]
+      - note: "Refused on Oracle, which reads no lookaround."
+        only: [oracle]
+        cypher: "RETURN 'ab' =~ $p"
+        parameters: {p: "a(?=b)b"}
+        error: true
+      - note: "(?: in a character class is three characters of it."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN [':' =~ $p, 'x' =~ $p]"
+        parameters: {p: "[(?:]"}
+        rows: [[true, false]]
+      - note: "Refused on Oracle: the rewrite of each (?: can't tell one in a class from a group."
+        only: [oracle]
+        cypher: "RETURN ':' =~ $p"
+        parameters: {p: "[(?:]"}
+        error: true
+      - note: "Worked out as the statement runs."
+        only: [neo4j, postgres, sqlite]
+        cypher: "WITH '(?:' + $b AS p RETURN 'x' =~ p"
+        parameters: {b: "x)"}
+        rows: [true]
+      - note: "Refused on Oracle as the statement runs, as the compiler can't read its form."
+        only: [oracle]
+        cypher: "WITH '(?:' + $b AS p RETURN 'x' =~ p"
+        parameters: {b: "x)"}
+        error: true
+      - note: "A leading flag group alone is answered on every store, worked out as the statement runs too."
+        only: [neo4j, sql]
+        cypher: "WITH '(?i)' + $b AS p RETURN ['X' =~ p, 'X' =~ '(?i)x']"
+        parameters: {b: "x"}
+        rows: [[true, true]]
   - name: "A regular expression over the empty text"
     description: "The empty text matches a pattern that matches it whole, as Java's matches() reads it, and no other; a pattern that is null makes null. Oracle's empty text is null as SQL text, so its regular expressions gave null there (drivine4j#416)."
     steps:
@@ -2481,6 +2532,105 @@ cases:
         only: [neo4j, sql]
         rows: [["X", 2], ["Y", 1]]
 
+  - name: "Items of a WITH named without AS"
+    description: "A variable, one in parentheses, and a map projection are items of a WITH without an alias, named after their variable, as Neo4j takes them; any other item has one (see refusals.yaml, \"Expression in WITH without an alias\")."
+    steps:
+      - cypher: "MATCH (p:Person) WITH (p) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Hugo", "Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) WITH p {.name} RETURN 1"
+        rows: [1, 1, 1, 1]
+      - cypher: "MATCH (p:Person) WITH p, p.born + 1 AS b RETURN p.name, b ORDER BY p.name"
+        rows: [["Carrie", 1968], ["Hugo", null], ["Keanu", 1965], ["Laurence", 1962]]
+
+  - name: "Order by a key's expression beside an aggregate"
+    description: "The ORDER BY of a WITH or a RETURN that aggregates, or is DISTINCT, orders by a term that holds an aggregate beside a key's expression written out, a key's item, or a variable or an expression the items don't keep within an aggregate, as Neo4j 2026.10.1 takes each (liberation-data/drivine4j#714; the openCypher TCK expects ReturnOrderBy6 [5] and WithOrderBy4 [13], [14] and [20] refused)."
+    steps:
+      - note: "The openCypher TCK's ReturnOrderBy6 [5]."
+        cypher: "MATCH (me:Person)--(you:Person) RETURN me.born + you.born, count(*) AS cnt ORDER BY me.born + you.born + count(*)"
+        rows: [[3925, 2], [3931, 2]]
+      - note: "The openCypher TCK's WithOrderBy4 [20], its key named."
+        cypher: "MATCH (me:Person)--(you:Person) WITH me.born + you.born AS s, count(*) AS cnt ORDER BY me.born + you.born + count(*) RETURN s, cnt"
+        rows: [[3925, 2], [3931, 2]]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN DISTINCT me.born + you.born AS s ORDER BY me.born + you.born + count(*)"
+        rows: [3925, 3931]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN me.born + you.born AS s, count(*) AS cnt ORDER BY (me.born + you.born) * count(*)"
+        rows: [[3925, 2], [3931, 2]]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN me.born + you.born AS s, count(*) AS cnt ORDER BY [me.born + you.born, count(*)]"
+        rows: [[3925, 2], [3931, 2]]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN me.born + you.born AS s, count(*) AS cnt ORDER BY s + count(*)"
+        rows: [[3925, 2], [3931, 2]]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN me.born AS b, count(*) AS cnt ORDER BY me.born + count(*)"
+        rows: [[1961, 1], [1964, 2], [1967, 1]]
+      - cypher: "MATCH (me:Person)--(you:Person) RETURN me, count(*) AS cnt ORDER BY me.born + count(*)"
+        rows: [[{name: "Laurence", born: 1961}, 1], [{name: "Keanu", born: 1964}, 2], [{name: "Carrie", born: 1967}, 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN toUpper(p.name) AS u, count(*) AS c ORDER BY toUpper(p.name) + count(*)"
+        rows: [["CARRIE", 2], ["KEANU", 3], ["LAURENCE", 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY p.name + toString(count(*))"
+        rows: [["Carrie", 2], ["Keanu", 3], ["Laurence", 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p, count(*) AS c ORDER BY p.name + toString(count(*))"
+        rows: [[{name: "Carrie", born: 1967}, 2], [{name: "Keanu", born: 1964}, 3], [{name: "Laurence", born: 1961}, 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, count(*) AS c ORDER BY p.born + count(*) RETURN p.name, c"
+        rows: [["Laurence", 1], ["Keanu", 3], ["Carrie", 2]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY min(m.released) + count(*), n"
+        rows: [["Keanu", 3], ["Laurence", 1], ["Carrie", 2]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY max(p.born), n"
+        rows: [["Laurence", 1], ["Keanu", 3], ["Carrie", 2]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, collect(m.title) AS ts ORDER BY size(collect(m.title)), n"
+        unorderedLists: true
+        rows: [["Laurence", ["The Matrix"]], ["Carrie", ["The Matrix", "The Matrix Reloaded"]], ["Keanu", ["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"]]]
+      - note: "The openCypher TCK's WithOrderBy4 [13], over its graph's values: a variable the WITH drops, aggregated."
+        cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH a, a.num + a.num2 AS sum WITH a.num2 % 3 AS mod, min(sum) AS min ORDER BY sum(sum) LIMIT 2 RETURN mod, min"
+        rows: [[2, 7], [1, 5]]
+      - note: "The openCypher TCK's WithOrderBy4 [14]: an expression the WITH drops, aggregated."
+        cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH a.num2 % 3 AS mod, min(a.num + a.num2) AS min ORDER BY sum(a.num + a.num2) LIMIT 2 RETURN mod, min"
+        rows: [[2, 7], [1, 5]]
+      - cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH a, a.num + a.num2 AS sum RETURN a.num2 % 3 AS mod, min(sum) AS min ORDER BY sum(sum) LIMIT 2"
+        rows: [[2, 7], [1, 5]]
+      - cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a RETURN a.num2 % 3 AS mod, min(a.num + a.num2) AS min ORDER BY sum(a.num + a.num2) LIMIT 2"
+        rows: [[2, 7], [1, 5]]
+      - cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH a.num2 % 3 AS mod, min(a.num) AS min ORDER BY sum(a.num2) LIMIT 2 RETURN mod, min"
+        rows: [[2, 5], [0, 3]]
+      - cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH a.num2 % 3 AS mod, count(*) AS c ORDER BY sum(a.num) LIMIT 2 RETURN mod, c"
+        rows: [[2, 1], [1, 2]]
+      - cypher: "UNWIND [{num: 1, num2: 4}, {num: 5, num2: 2}, {num: 9, num2: 0}, {num: 3, num2: 3}, {num: 7, num2: 1}] AS a WITH DISTINCT a.num2 % 3 AS mod ORDER BY sum(a.num + a.num2) RETURN mod"
+        rows: [2, 1, 0]
+
+  - name: "Pattern as a condition in a projection"
+    description: "In a WITH's or a RETURN's items and order, a pattern is a condition where Neo4j takes one: an operand of NOT, AND, OR or XOR, a searched CASE's WHEN, and a comprehension's, a quantifier's or a subquery's WHERE, within a reduce()'s step too; a pattern comprehension, EXISTS { … } and COUNT { … } give its matches. Elsewhere a pattern as a value is refused (see refusals.yaml, \"Pattern used as a value\")."
+    steps:
+      - cypher: "MATCH (n:Person) RETURN NOT (n)-[:KNOWS]->() AS p ORDER BY n.name"
+        rows: [true, true, false, false]
+      - cypher: "MATCH (n:Person) RETURN (n)-[:KNOWS]->() AND true AS p ORDER BY n.name"
+        rows: [false, false, true, true]
+      - cypher: "MATCH (n:Person) RETURN (n)-[:KNOWS]->() OR (n)<-[:KNOWS]-() AS p ORDER BY n.name"
+        rows: [true, false, true, true]
+      - cypher: "MATCH (n:Person) RETURN CASE WHEN (n)-[:KNOWS]->() THEN 1 ELSE 0 END AS p ORDER BY n.name"
+        rows: [0, 0, 1, 1]
+      - cypher: "MATCH (n:Person) RETURN [x IN [1] WHERE (n)-[:KNOWS]->()] AS p ORDER BY n.name"
+        rows: [[], [], [1], [1]]
+      - cypher: "MATCH (n:Person) RETURN any(x IN [1] WHERE (n)-[:KNOWS]->()) AS p ORDER BY n.name"
+        rows: [false, false, true, true]
+      - cypher: "MATCH (n:Person) WITH n, NOT (n)-[:KNOWS]->() AS k RETURN n.name, k ORDER BY n.name"
+        rows: [["Carrie", true], ["Hugo", true], ["Keanu", false], ["Laurence", false]]
+      - cypher: "MATCH (n:Person) RETURN n.name, EXISTS { (n)-[:KNOWS]->() } AS k ORDER BY n.name"
+        rows: [["Carrie", false], ["Hugo", false], ["Keanu", true], ["Laurence", true]]
+      - cypher: "MATCH (n:Person) RETURN n.name, COUNT { (n)-[:KNOWS]->() } AS k ORDER BY n.name"
+        rows: [["Carrie", 0], ["Hugo", 0], ["Keanu", 1], ["Laurence", 1]]
+      - cypher: "MATCH (n:Person) RETURN n.name, [(n)-[:KNOWS]->(m) | m.name] AS k ORDER BY n.name"
+        rows: [["Carrie", []], ["Hugo", []], ["Keanu", ["Carrie"]], ["Laurence", ["Keanu"]]]
+      - note: "Unordered: the rows come in the order the nodes are read."
+        cypher: "MATCH (n:Person) RETURN (n)-->() XOR n.born > 1960 AS c"
+        unordered: true
+        rows: [false, false, false, null]
+      - note: "On Oracle a reduce()'s step runs as a function of its own, which reads no node of the row's: there the compiler refuses it, saying n is not a node."
+        cypher: "MATCH (n:Person) RETURN reduce(a = false, x IN [1] | a OR (n)-->()) AS c"
+        except: [oracle]
+        unordered: true
+        rows: [true, true, true, false]
+      - cypher: "MATCH (n:Person) RETURN EXISTS { MATCH (n)-->(m) WHERE (m)-->() } AS c"
+        unordered: true
+        rows: [true, false, true, false]
+
   - name: "Aggregate beside a WHERE"
     description: "A WHERE over what an aggregate gave, and one in a subquery's or a CALL's own query, which aggregates in its projection, filters as Neo4j does. An aggregate in the WHERE of a WITH that groups is in \"Aggregate in the WHERE of a WITH that groups\"; in any other WHERE it is refused (see refusals.yaml, \"Aggregate in a WHERE\")."
     steps:
@@ -3061,6 +3211,42 @@ cases:
         parameters: {f: 2.0}
         rows: [["2.5", "3", "a", "4.0"]]
 
+  - name: "toString() of a list or a map"
+    description: "toString() of a list of items of many kinds, or of a map, that the statement makes is its text, as Neo4j's Cypher 25 writes it, where the SQL stores refused it (liberation-data/drivine4j#420): each item as toString() writes it, a text without quotes, null as null, after ', ', and each entry as key: value, in the order of the keys' code points, as Neo4j orders them, not as written. A list of items of one kind is refused, as Neo4j refuses it (see \"toString of a list or a map\")."
+    steps:
+      - note: "Neo4j 2026.10.1 gives these three."
+        cypher: "RETURN [toString([1, 'a']), size(toString([1, 'a'])), toString({a: 1, b: 'x'}), toString([1.0, true, null])]"
+        rows: [["[1, a]", 6, "{a: 1, b: x}", "[1.0, true, null]"]]
+      - note: "Neo4j 2026.10.1 gives these, its map's keys sorted."
+        cypher: "RETURN [toString([[1, 'x'], {k: [true, 2.5]}, [], {}]), toString([]), toString({}), toString({b: 1, a: 2})]"
+        rows: [["[[1, x], {k: [true, 2.5]}, [], {}]", "[]", "{}", "{a: 2, b: 1}"]]
+      - cypher: "RETURN toString({b: 'x', a: [{d: 1, c: 2.5}], c: null})"
+        rows: ["{a: [{c: 2.5, d: 1}], b: x, c: null}"]
+      - cypher: "MATCH (p:Person) WITH p ORDER BY p.name RETURN toString(collect(p.born))"
+        rows: ["[1967, 1964, 1961]"]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [toString([p.name, p.born, p.born / 2.0, p.nope]), toString(p {.name}), toString({n: p.name, l: [p.born]})]"
+        rows: [["[Keanu, 1964, 982.0, null]", "{name: Keanu}", "{l: [1964], n: Keanu}"]]
+      - note: "A map projection's entry written key: value and its variable, beside a property it selects, in the order of their keys."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) WITH p, 'K' AS s RETURN toString(p {.name, b: p.born, s})"
+        rows: ["{b: 1964, name: Keanu, s: K}"]
+      - note: "A map projection of no entries is {}: a SQL store's SQL was no SQL."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [toString(p {}), toString([p {}, p.born])]"
+        rows: [["{}", "[{}, 1964]"]]
+      - note: "A text the statement makes of one kind, but not as one written, among items of other kinds."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) WITH p, 'K' AS s RETURN toString([s, CASE WHEN p.born > 1960 THEN 'old' ELSE 'new' END, p.born])"
+        rows: ["[K, old, 1964]"]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString(CASE WHEN p.born > 2000 THEN [1, 'a'] END)"
+        rows: [null]
+      - note: "A list given as a parameter, of one kind or many, as Neo4j plans a parameter of any kind; a SQL store gave its JSON text."
+        only: [neo4j, sql]
+        cypher: "RETURN [toString($l), toString($k)]"
+        parameters: {l: [1, "a", [2, [true, null]], 2.5], k: [1, 2]}
+        rows: [["[1, a, [2, [true, null]], 2.5]", "[1, 2]"]]
+      - note: "Neo4j 2026.10.1 gives a map a WITH binds as it gives one written; a SQL store refuses it by name, as it knows no keys of it when compiling (see refusals.yaml)."
+        only: [neo4j]
+        cypher: "WITH {a: 1} AS m RETURN toString(m)"
+        rows: ["{a: 1}"]
+
   - name: "A walk sorted in a WITH"
     description: "A walk sorted by an expression of where it ends in a WITH, skipped and limited, keeps that order in the query that reads it."
     steps:
@@ -3594,8 +3780,8 @@ cases:
         cypher: "RETURN [toInteger($p), toInteger($i) = 9223372036854775807, toInteger($n) < -9223372036854775807, toFloat($p), toFloat($i), toFloat($n)]"
         parameters: {p: {$float: "NaN"}, i: {$float: "Infinity"}, n: {$float: "-Infinity"}}
         rows: [[0, true, true, {$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]]
-      - note: "SQLite writes a list's text as its JSON, and Oracle gives none."
-        only: [neo4j, postgres]
+      - note: "SQLite wrote a list's text as its JSON before liberation-data/drivine4j#420. Oracle's is not checked yet."
+        only: [neo4j, postgres, sqlite]
         cypher: "RETURN toString($l)"
         parameters: {l: [1.0, {$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]}
         rows: ["[1.0, NaN, Infinity, -Infinity]"]
@@ -4174,6 +4360,23 @@ cases:
         cypher: "RETURN [1.0 / toFloat('-0'), 1.0 / toFloat('-0.0'), 1.0 / toFloat('-0x0p0')]"
         rows: [[{$float: "-Infinity"}, {$float: "-Infinity"}, {$float: "-Infinity"}]]
 
+  - name: "toInteger() of a list"
+    description: "toInteger() of a list the statement makes fails each row it reads, as Neo4j plans it and fails it, where the SQL stores gave null (liberation-data/drivine4j#420); over no rows nothing fails, and of a list that is null it is null. Neo4j 2026.10.1: Invalid input for function 'toInteger()': Expected a String, Float, Integer or Boolean, got: List{…}."
+    steps:
+      - cypher: "RETURN toInteger([])"
+        error: true
+      - cypher: "WITH [1] AS l RETURN toInteger(l)"
+        error: true
+      - cypher: "RETURN [x IN [[1]] | toInteger(x)]"
+        error: true
+      - cypher: "MATCH (n:None) RETURN toInteger([])"
+        rows: []
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toInteger(CASE WHEN p.born > 2000 THEN [1] END)"
+        rows: [null]
+      - note: "Neo4j 2026.10.1 gives null."
+        cypher: "RETURN toInteger(CASE WHEN false THEN [1] END)"
+        rows: [null]
+
   - name: "Round by a mode"
     description: "round(value, precision, mode) rounds in decimal by one of Java's rounding modes, as Neo4j does, so 2.345 is halfway; a null gives null."
     steps:
@@ -4453,21 +4656,55 @@ cases:
         error: "Two lists compared with <, <=, > or >= do not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL."
 
   - name: "toString of a list or a map"
-    description: "toString() of a list or a map the statement makes is refused, as Neo4j refuses it, and of a value whose kind it leaves open is run."
+    description: "toString() of a list of items of one kind is refused, as Neo4j refuses it, written, bound by a WITH or gathered by collect(); of a map, its text (liberation-data/drivine4j#420); and of a value whose kind the statement leaves open, as a list of properties, it is run."
     steps:
-      - note: "The compiler refuses both as Neo4j refuses them under Cypher 5. Neo4j 2026.10's default language, Cypher 25, gives toString({a: 1}) as '{a: 1}', and toString([1, 'a']) as '[1, a]' though it refuses toString([1, 2])."
+      - note: "Neo4j refuses both under Cypher 5. Neo4j 2026.10's default language, Cypher 25, gives toString({a: 1}) as '{a: 1}', and toString([1, 'a']) as '[1, a]' though it refuses toString([1, 2])."
         only: [neo4j]
         cypher: "CYPHER 5 RETURN toString([1, 2])"
         error: true
       - only: [neo4j]
         cypher: "CYPHER 5 RETURN toString({a: 1})"
         error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([1, 2])"
+        error: true
       - only: [sql]
         cypher: "RETURN toString([1, 2])"
-        error: "toString() takes a number, a text, a truth value or a temporal value, not a list, as in Neo4j."
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - note: "Neo4j 2026.10.1 refuses each of these when it plans them: Type mismatch: expected Boolean, Float, Integer, Point, String, …, List<Any>, Map, Node, Relationship or Path but was List<Integer>. A SQL store refused each of them, as it refused any list."
+        only: [neo4j]
+        cypher: "RETURN toString(['a', 'b'])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([1.0E20, 0.001, -2.5, 1.0E-7])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([date('2024-01-02')])"
+        error: true
+      - only: [neo4j]
+        cypher: "WITH [1, 2] AS l RETURN toString(l)"
+        error: true
+      - only: [neo4j]
+        cypher: "UNWIND [1964, 1967] AS b WITH collect(b) AS c RETURN toString(c)"
+        error: true
       - only: [sql]
+        cypher: "RETURN toString(['a', 'b'])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([1.0E20, 0.001, -2.5, 1.0E-7])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([date('2024-01-02')])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "WITH [1, 2] AS l RETURN toString(l)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "UNWIND [1964, 1967] AS b WITH collect(b) AS c RETURN toString(c)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [neo4j, sql]
         cypher: "RETURN toString({a: 1})"
-        error: "toString() takes a number, a text, a truth value or a temporal value, not a map, as in Neo4j."
+        rows: ["{a: 1}"]
       - cypher: "UNWIND [1, 'a'] AS x RETURN toString(x)"
         rows: ["1", "a"]
 

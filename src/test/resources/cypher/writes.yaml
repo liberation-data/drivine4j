@@ -264,6 +264,93 @@ cases:
       - cypher: "MATCH (:CyWrite {k: 'a'})-[:T]->(c:CyWrite) RETURN c.k"
         rows: ["c"]
 
+  - name: "A node read after the statement deletes it"
+    description: "A property or the labels of a node the statement deleted earlier fail, as Neo4j fails them, where the node is there to delete; the node itself is still bound, with no keys and no properties (liberation-data/drivine4j#420). Over no rows nothing fails."
+    steps:
+      - cypher: "MATCH (n:CyWrite) DELETE n RETURN n.num"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) DELETE n RETURN labels(n)"
+        rows: []
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - note: "A SQL store gave null (drivine4j#420). Neo4j 2026.10.1: Node with id N has been deleted in this transaction."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n RETURN n.num"
+        error: true
+      - note: "The statement failed, so the node is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a node it creates."
+        only: [neo4j, postgres, sqlite]
+        cypher: "MATCH (n:CyWrite) RETURN count(n)"
+        rows: [1]
+      - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n WITH n RETURN n.num"
+        error: true
+      - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n RETURN labels(n)"
+        error: true
+      - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - note: "A SQL store gave null for each of these (drivine4j#420)."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n RETURN keys(n)"
+        rows: [[]]
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n RETURN properties(n)"
+        rows: [{}]
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) DELETE n RETURN n"
+        rows: [{}]
+      - cypher: "MATCH (n:CyWrite) RETURN count(n)"
+        rows: [0]
+
+  - name: "A relationship read after the statement deletes it"
+    description: "type() of a relationship the statement deleted earlier, or whose node it deleted with DETACH DELETE, is still its type, and a property of it fails, as in Neo4j (liberation-data/drivine4j#420, liberation-data/drivine4j#427). Over no rows nothing fails."
+    steps:
+      - cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN type(r)"
+        rows: []
+      - cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN r.num"
+        rows: []
+      - cypher: "CREATE (:CyWrite)-[:T {num: 1}]->(:CyWrite)"
+      - note: "A SQL store gave null (drivine4j#420). Neo4j 2026.10.1: Relationship with id N has been deleted in this transaction."
+        only: [neo4j, sql]
+        cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN r.num"
+        error: true
+      - note: "The statement failed, so the relationship is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a relationship it creates."
+        only: [neo4j, postgres, sqlite]
+        cypher: "MATCH (:CyWrite)-[r]->() RETURN count(r)"
+        rows: [1]
+      - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
+      - cypher: "CREATE (:CyWrite)-[:T {num: 1}]->(:CyWrite)"
+      - only: [neo4j, sql]
+        cypher: "MATCH (a:CyWrite)-[r]->() DETACH DELETE a RETURN r.num"
+        error: true
+      - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
+      - cypher: "CREATE (:CyWrite)-[:T {num: 1}]->(:CyWrite)"
+      - note: "A SQL store gave null: its rows held the relationship's id alone, and its row was gone (drivine4j#427)."
+        only: [neo4j, sql]
+        cypher: "MATCH (a:CyWrite)-[r]->() DETACH DELETE a RETURN type(r)"
+        rows: ["T"]
+      - cypher: "CREATE (:CyWrite)-[:T {num: 1}]->(:CyWrite)"
+      - only: [neo4j, sql]
+        cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN type(r)"
+        rows: ["T"]
+      - cypher: "CREATE (:CyWrite)-[:T {num: 1}]->(:CyWrite)"
+      - note: "A SQL store gave null here too: the type is held by the relationship, whatever name a WITH gives it."
+        only: [neo4j, sql]
+        cypher: "MATCH (:CyWrite)-[r]->() DELETE r WITH r AS x RETURN type(x)"
+        rows: ["T"]
+      - cypher: "CREATE (:CyWrite {num: 2})-[:T {num: 1}]->(:CyWrite)"
+      - note: "A node the statement didn't delete still reads, and so does a relationship OPTIONAL MATCH found none of."
+        only: [neo4j, sql]
+        cypher: "MATCH (a:CyWrite {num: 2})-[r]->() OPTIONAL MATCH (a)-[s:NONE]->() DELETE r, s RETURN [a.num, s.num, type(s)]"
+        rows: [[2, null, null]]
+      - cypher: "MATCH (:CyWrite)-[r]->() RETURN count(r)"
+        rows: [0]
+
   - name: "An id is not used again by a later statement"
     description: "On the SQL stores, a node or relationship made after another was deleted, in a later statement, never takes the deleted one's id."
     steps:
@@ -441,6 +528,15 @@ cases:
       - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
       - cypher: "MATCH (n:CyWrite) SET n.degree = COUNT { (n)--() }, n.leaf = NOT EXISTS { MATCH (n)-[:NEXT]->() } RETURN [n.id, n.degree, n.leaf] ORDER BY n.id"
         rows: [["a", 2, false], ["b", 2, false], ["c", 1, true], ["d", 1, true]]
+
+  - name: "SET from a pattern as a condition"
+    description: "A SET's value holds a pattern as a condition, as Neo4j 2026.10.1 takes it (liberation-data/drivine4j#714): as a value it is refused (see refusals.yaml, \"Pattern used as a value\")."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "MATCH (n:CyWrite) SET n.f = NOT (n)-->() RETURN count(n)"
+        rows: [4]
+      - cypher: "MATCH (n:CyWrite) RETURN [n.id, n.f] ORDER BY n.id"
+        rows: [["a", false], ["b", false], ["c", true], ["d", true]]
 
   - name: "SET and MERGE with EXISTS { } over UNWIND"
     description: "An EXISTS { } whose body unwinds a list, in a write's WHERE, SET or MERGE, reads the row being written (drivine4j#449)."
