@@ -1216,6 +1216,96 @@ cases:
         cypher: "MATCH (n:CyTemporal {id: 'ns2'}) RETURN n.g + duration('PT1S')"
         error: true
 
+  - name: "A sum or an average of durations, or of other kinds"
+    description: "Neo4j's sum() and avg() take integers, floats and durations, and pass nulls by: a duration's they work out, and any other kind fails. The SQL stores' sum adds numbers alone, so it gave 0, and the average null, for any other item (#281). Now each fails by name there: a duration as not yet worked out (#282), any other kind as Neo4j fails it. Where the statement makes the items, it fails as it compiles; where it reads one from the store or is given it, as it runs."
+    steps:
+      - note: "Neo4j gives each a duration."
+        only: [neo4j]
+        cypher: "UNWIND [duration('PT0.1S'), duration('PT0.2S')] AS d RETURN [toString(sum(d)), toString(avg(d))]"
+        rows: [["PT0.3S", "PT0.15S"]]
+      - note: "The SQL stores fail on each."
+        only: [sql]
+        cypher: "UNWIND [duration('PT0.1S'), duration('PT0.2S')] AS d RETURN sum(d)"
+        error: true
+      - only: [sql]
+        cypher: "UNWIND [duration('PT0.1S'), duration('PT0.2S')] AS d RETURN avg(d)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "CREATE (:CyTemporal {id: 'a', d: duration('PT87660000H'), n: 1, s: 'a', b: true, l: [1], day: date('2024-01-01'), at: localdatetime('2024-01-01T00:00'), f: 0.5}), (:CyTemporal {id: 'b', d: duration('PT0.000000001S'), n: 2, f: 2.25})"
+      - note: "Read from the store, of a kind the statement doesn't know."
+        only: [neo4j]
+        cypher: "MATCH (n:CyTemporal) RETURN toString(sum(n.d))"
+        rows: ["PT87660000H0.000000001S"]
+      - only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN sum(n.d)"
+        error: true
+      - only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN avg(n.d)"
+        error: true
+      - only: [sql]
+        cypher: "MATCH (n:CyTemporal) RETURN sum(DISTINCT n.d)"
+        error: true
+      - note: "Any other kind fails on every store, read from the store: a text, a truth value, a list, a date, a moment."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN sum(n.s)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN avg(n.b)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN sum(n.l)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN sum(n.day)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN avg(n.at)"
+        error: true
+      - note: "Or written: a text, a truth value, a list, a map, a date, a time."
+        only: [neo4j, sql]
+        cypher: "UNWIND ['a'] AS x RETURN sum(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [true] AS x RETURN avg(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [[1]] AS x RETURN sum(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [{a: 1}] AS x RETURN sum(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [date('2024-01-01')] AS x RETURN sum(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [time('12:00Z')] AS x RETURN avg(x)"
+        error: true
+      - note: "Beside a number: a text or a duration fails on every store."
+        only: [neo4j, sql]
+        cypher: "UNWIND [1, 'a'] AS x RETURN sum(x)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) UNWIND [n.d, n.n] AS x RETURN sum(x)"
+        error: true
+      - note: "Numbers alone are summed and averaged as before, nulls passed by, and none is 0 and null."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [sum(n.n), avg(n.n)]"
+        rows: [[3, 1.5]]
+      - note: "Floats read from the store, which Oracle holds as doubles, are numbers too."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) RETURN [sum(n.f), avg(n.f)]"
+        rows: [[2.75, 1.375]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1, null, 2.5] AS x RETURN [sum(x), avg(x)]"
+        rows: [[3.5, 1.75]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal) WHERE n.id = 'none' RETURN [sum(n.d), avg(n.s)]"
+        rows: [[0, null]]
+      - note: "An item of a list with none is no text nor list to refuse: its sum is 0, written as such."
+        only: [neo4j, sql]
+        cypher: "UNWIND [] AS x RETURN [sum(x), avg(x), toString(sum(x))]"
+        rows: [[0, null, "0"]]
+
   - name: "A duration divided, and its seconds written"
     description: "A duration divided by a number is each of its parts divided, as Cypher divides it, not times the number's reciprocal, whose rounding lost a whole month on Postgres (#260). Its seconds are rounded to the nine places a duration's text writes before they are split into hours and minutes, so a hair under a whole minute is no 59M60S, nor a hair over a whole time a 0S (#261)."
     steps:

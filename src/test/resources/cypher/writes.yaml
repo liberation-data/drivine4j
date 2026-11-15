@@ -2106,3 +2106,29 @@ cases:
         rows: ["r", "q", "p"]
       - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['p', 'q', 'r'] WITH min(n.l) AS lo, max(n.l) AS hi RETURN [size(lo), toString(lo[0]), toString(hi[0])]"
         rows: [[1, "2020-01-01", "2020-01-02"]]
+
+  - name: "A walk and a list of relationships bound before"
+    description: "A walk compared to a list of relationships bound before it finds the walk the list is. Neo4j walks such a list named as the walk's own variable, `-[rs*]->`, which the compiler refuses as not compiled yet (see refusals.yaml, \"Read not compiled yet\", drivine4j#427)."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}), (c:CyWrite {id: 'c'}) CREATE (a)-[:Y]->(b), (b)-[:Y]->(c)"
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH (first)-[r*]->(second) WHERE r = rs RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH p = (first)-[*]->(second) WHERE relationships(p) = rs RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH (first)-[r*]->(second) WHERE size(r) = size(rs) AND all(i IN range(0, size(rs) - 1) WHERE r[i] = rs[i]) RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH (first)-[r*]->(second) WITH r MATCH (x)-[r2*]->(y) WHERE r2 = r RETURN count(*)"
+        only: [neo4j, sql]
+        rows: [3]
+      - cypher: "MATCH (first)-[r*]->(second) RETURN first.id, second.id, size(r) AS n ORDER BY n, first.id"
+        only: [neo4j, sql]
+        rows: [["a", "b", 1], ["b", "c", 1], ["a", "c", 2]]
+      - cypher: "MATCH p = (first)-[r*]->(second) WHERE size(r) = 2 RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH (first {id: 'a'})-[r*]->(second) RETURN second.id ORDER BY size(r)"
+        only: [neo4j, sql]
+        rows: ["b", "c"]
