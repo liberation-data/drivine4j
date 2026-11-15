@@ -369,12 +369,13 @@ fun subMicrosecondRefused(message: String, query: String?): Boolean =
 /**
  * Whether [query] gives a temporal value a fraction of a second past the microsecond: a `nanosecond` or `nanoseconds` field
  * that is no whole number of microseconds, or a time's or a duration's text with seven to nine places of its fraction, not
- * all zero after the sixth. A time's fraction follows its seconds (`:14.`, or `123114.` in the basic form) and a duration's
- * is of its seconds (`0.000000001S`), so a number's places (`0.0999999`) are none.
+ * all zero after the sixth. A time's fraction follows its hours, minutes and seconds (`12:31:14.`, or `123114.` in the
+ * basic form) and a duration's is of its seconds (`0.000000001S`), so a number's places (`0.0999999`, `1234567.1234567`,
+ * `{num:12.1234567}`) are none.
  */
 fun subMicrosecond(query: String): Boolean =
     Regex("""nanoseconds?\s*:\s*-?(\d+)""").findAll(query).any { it.groupValues[1].takeLast(3).toInt() != 0 } ||
-        Regex("""(?::\d\d|\d{6})[.,](\d{7,9})(?!\d)|\d[.,](\d{7,9})S""").findAll(query)
+        Regex("""(?<!\d)(?:\d\d:\d\d:\d\d|\d{6})[.,](\d{7,9})(?!\d)|\d[.,](\d{7,9})S""").findAll(query)
             .any { m -> m.groupValues.drop(1).first { it.isNotEmpty() }.drop(6).any { it != '0' } }
 
 /** Whether [e] came from the database, not from Drivine. */

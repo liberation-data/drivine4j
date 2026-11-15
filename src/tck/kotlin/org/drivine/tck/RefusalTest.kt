@@ -36,6 +36,8 @@ class RefusalTest {
         assertFalse(subMicrosecond("RETURN 3.1415926535"), "a number's places of no temporal value")
         assertFalse(subMicrosecond("UNWIND [0.0999999, 0.00000001, 10.12345678] AS f RETURN f"), "a number's seven to nine places")
         assertFalse(subMicrosecond("RETURN '0.0999999'"), "a text that is no time")
+        assertFalse(subMicrosecond("RETURN 1234567.1234567"), "a number of seven digits before its places")
+        assertFalse(subMicrosecond("RETURN {num:12.1234567}"), "a number after a map key's colon")
     }
 
     @Test
