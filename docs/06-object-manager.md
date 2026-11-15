@@ -235,7 +235,7 @@ data class SessionStarter(
 )
 ```
 
-A node of the ordered hop that has no value for the property comes last, whichever way the path is read; an empty text is a value, and the lowest text. Targets whose first values are equal come in no set order. The property should hold values of one type: every backend reads the order the same way where it does, and a text of digits such as `'0100'` is ordered as text. Where it holds texts on some nodes and numbers on others, Neo4j, FalkorDB, Oracle and Memgraph 3.14 and later read every text before every number, lowest first; an earlier Memgraph refuses to compare them.
+A node of the ordered hop that has no value for the property comes last, whichever way the path is read; an empty text is a value, and the lowest text. Targets whose first values are equal come in no set order. The property should hold values of one type: every backend reads the order the same way where it does, and a text of digits such as `'0100'` is ordered as text. Where it holds texts on some nodes and numbers on others, Neo4j, FalkorDB, Oracle, Postgres, SQLite and Memgraph 3.14 and later read every text before every number, lowest first; an earlier Memgraph refuses to compare them.
 
 #### 6. Aggregates - Counting & Summarizing Without Loading
 
@@ -280,6 +280,8 @@ fun getPerson(uuid: String): PersonCareer? {
     return graphObjectManager.load<PersonCareer>(uuid)
 }
 ```
+
+On Oracle, Postgres and SQLite the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id finds its node the same way. The graph engines compare the text as it is given.
 
 #### Count
 
@@ -516,6 +518,9 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 
 - **Keys** are the ids whose root node has the embedding, in the order the ids were given. An id with
   no embedding, or no node, is not a key; an id whose neighbours were all dropped maps to an empty list.
+  On Oracle, Postgres and SQLite each id is read as `load` reads an id's text, as the `@NodeId` field's type, and found
+  through the index over the id; a key or a value is the text the id was given as, though the store holds other
+  text of it, as `2030-01-01T10:00:00` for a `LocalDateTime` given as `2030-01-01T10:00`.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
   fails, as their index search refuses a vector of another size.
@@ -1256,16 +1261,11 @@ The key comes back as the node itself, hydrated as a load of its fragment hydrat
 - A path walks a relationship once: two hops of one type are two relationships, so a path there and back does not lead a node to itself. Two path keys may be reached over the same relationship.
 - A read of keys alone gives each key once.
 - An aggregate's filter never takes a node out of its group. A group none of whose nodes meet it is still returned, with 0.
-- `sum`, `avg`, `min` and `max` skip a node with no value. Over no values `sum` is 0 and the others are null.
+- `sum`, `avg`, `min` and `max` skip a node with no value. Over no values `sum` is 0 and the others are null. An empty text is a value, and the lowest text.
+- A text is ordered by its characters' code points, as Cypher orders it, on Oracle too whatever the session's `NLS_SORT`: `"B"` comes before `"a"`.
 - Ties are broken by the key. Every order ends with the keys it left out, ascending, so a top 5 is the same five on every engine.
+- A key is the value as it is stored, and is ordered, and `min`, `max` and `having` compare it, as Cypher does: a number and a text are two keys, never equal, and every text comes before every number. One instant written at two offsets is two keys, ordered by the instant and then by the offset.
 - Every value is bound as a parameter, and each condition has its own.
-
-Where Oracle differs, and stays different:
-
-- `min` and `max` of a text skip a value stored as `""`, which Oracle reads as no value. A key does not: `""` is a key of its own everywhere.
-- `min` and `max` of a property no field declares compare it as text, so `"10"` is less than `"9"`. A key no field declares reads as a number where a number is stored.
-- A key no field declares is text or a number there: a boolean reads as `"true"`, a whole `10.0` as `10`, and a list, a map or a text past 4000 bytes as no value.
-- A text key is ordered by the session's `NLS_SORT`, which is binary unless it has been set otherwise.
 
 On Oracle and Postgres, a `sum` or an `avg` of a `Double` is worked out in exact decimal, so it is more accurate: 0.1 + 0.2 is 0.3 there, where doubles give 0.30000000000000004. It differs from a graph engine's only around its 16th significant digit, and is still a `Double`.
 

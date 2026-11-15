@@ -30,7 +30,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.io.PrintWriter
 import java.sql.DatabaseMetaData
 import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.sql.ResultSetMetaData
 import java.sql.SQLException
+import java.sql.Types
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -235,10 +238,61 @@ class JdbcConnectionProviderTest {
 
     // ----- The graph's tables, made before the first connection -----
 
-    /** A connection whose statements run and return nothing, and which records them; an Oracle session it sets is set. */
+    /**
+     * A connection whose statements run and return nothing, and which records them; an Oracle session it sets is set. The
+     * look of the store's catalog for the graph's table of nodes ([looksForTables]), which the store layout's check asks
+     * first, finds none: the graph is new, so its layout has nothing to judge and its tables are made.
+     */
     private fun recording(): java.sql.Connection = Mockito.mock(java.sql.Connection::class.java).also { connection ->
-        `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
+        `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
+            if (looksForTables(invocation.getArgument(0))) noTables() else Mockito.mock(PreparedStatement::class.java)
+        }
         `when`(connection.createStatement()).thenAnswer { Mockito.mock(java.sql.Statement::class.java) }
+    }
+
+    /**
+     * A [recording] connection whose first statements after the look for the tables ([looksForTables]) fail with
+     * [failures], one each, in turn; the look and every statement after them run.
+     */
+    private fun failingFirst(vararg failures: SQLException): java.sql.Connection = recording().also { connection ->
+        val left = ArrayDeque(failures.toList())
+        `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
+            val statement: String = invocation.getArgument(0)
+            val failure = synchronized(left) { if (looksForTables(statement)) null else left.removeFirstOrNull() }
+            when {
+                looksForTables(statement) -> noTables()
+                failure != null -> throw failure
+                else -> Mockito.mock(PreparedStatement::class.java)
+            }
+        }
+    }
+
+    /** Whether [statement] is a graph's look of the store's catalog for its table of nodes: one count, `made`. */
+    private fun looksForTables(statement: String) = statement.startsWith("SELECT") && " AS made FROM " in statement
+
+    /** A statement whose one row is a count, `made`, of none. */
+    private fun noTables(): PreparedStatement {
+        val meta = Mockito.mock(ResultSetMetaData::class.java).also {
+            `when`(it.columnCount).thenReturn(1)
+            `when`(it.getColumnLabel(1)).thenReturn("made")
+            `when`(it.getColumnType(1)).thenReturn(Types.BIGINT)
+        }
+        val rows = Mockito.mock(ResultSet::class.java).also {
+            `when`(it.metaData).thenReturn(meta)
+            `when`(it.next()).thenReturn(true, false)
+            `when`(it.getObject(1)).thenReturn(0L)
+        }
+        return Mockito.mock(PreparedStatement::class.java).also {
+            `when`(it.execute()).thenReturn(true)
+            `when`(it.resultSet).thenReturn(rows)
+        }
+    }
+
+    /** The statements run on [connection] to make the graph's tables, after the look for them ([looksForTables]), which is asked first. */
+    private fun madeOn(connection: java.sql.Connection): List<String> {
+        val statements = statementsOn(connection)
+        assertTrue(statements.isNotEmpty() && looksForTables(statements.first()), "The store's catalog is looked in first: $statements")
+        return statements.drop(1)
     }
 
     private fun statementsOn(connection: java.sql.Connection): List<String> =
@@ -254,7 +308,7 @@ class JdbcConnectionProviderTest {
         repeat(3) { provider.connect().release() }
 
         // The statement as it is sent: trimmed of the blank its text begins with.
-        assertEquals(listOf(OracleGraph("ledger").ensuring.trim()), statementsOn(ensuring))
+        assertEquals(listOf(OracleGraph("ledger").ensuring.trim()), madeOn(ensuring))
         verify(ensuring).close()
         assertEquals(emptyList(), statementsOn(handedOut))
         verify(source, times(4)).connection
@@ -272,7 +326,7 @@ class JdbcConnectionProviderTest {
 
         val order = Mockito.inOrder(ensuringStatement, ensuring)
         order.verify(ensuringStatement).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
-        order.verify(ensuring).prepareStatement(Mockito.anyString())
+        order.verify(ensuring, Mockito.atLeastOnce()).prepareStatement(Mockito.anyString())
         verify(handedOutStatement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
     }
 
@@ -285,7 +339,12 @@ class JdbcConnectionProviderTest {
         JdbcConnectionProvider("default", DatabaseType.SQLITE, source, graphName = "g").connect()
 
         val graph = SqliteGraph("g")
-        assertEquals(listOf(graph.made) + graph.ddl, statementsOn(ensuring))
+        // A store an earlier Drivine made is refused by the look first, then the store layout's check looks in the catalog for
+        // the table of nodes, and the store is looked for again as it is made.
+        val statements = statementsOn(ensuring)
+        assertEquals(graph.made, statements[0])
+        assertTrue(looksForTables(statements[1]), statements[1])
+        assertEquals(listOf(graph.made) + graph.ddl, statements.drop(2))
         assertContains(graph.made, "'g_node', 'g_edge', 'g_schema', 'g_edge_src', 'g_edge_dst'")
     }
 
@@ -297,7 +356,7 @@ class JdbcConnectionProviderTest {
 
         JdbcConnectionProvider("default", DatabaseType.POSTGRES, source, graphName = "tenant_a").connect()
 
-        assertEquals(listOf(PostgresGraph("tenant_a").ensuring.trim()), statementsOn(ensuring))
+        assertEquals(listOf(PostgresGraph("tenant_a").ensuring.trim()), madeOn(ensuring))
     }
 
     @Test
@@ -315,7 +374,7 @@ class JdbcConnectionProviderTest {
             pool.shutdown()
         }
 
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(ensuring).size)
         verify(source, times(9)).connection
     }
 
@@ -339,7 +398,7 @@ class JdbcConnectionProviderTest {
         provider.connect()
         provider.connect()
 
-        assertEquals(listOf(OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim()), statementsOn(ensuring))
+        assertEquals(listOf(OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim()), madeOn(ensuring))
         verify(ensuring).close()
         assertEquals(emptyList(), statementsOn(handedOut))
         verify(source, times(5)).connection
@@ -375,16 +434,14 @@ class JdbcConnectionProviderTest {
     @Test
     fun `tables turned away by another session's on Oracle are made again on the same connection, and once made are not made again`() {
         val deadlock = SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.DRIVINE_NODE", "61000", 4020)
-        val ensuring = recording().also {
-            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(deadlock).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
-        }
+        val ensuring = failingFirst(deadlock)
         val handedOut = recording()
         val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
         val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
 
         repeat(3) { provider.connect().release() }
 
-        assertEquals(List(2) { OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim() }, statementsOn(ensuring))
+        assertEquals(List(2) { OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim() }, madeOn(ensuring))
         verify(ensuring).close()
         verify(source, times(4)).connection
     }
@@ -449,16 +506,14 @@ class JdbcConnectionProviderTest {
     @Test
     fun `tables turned away by a deadlock on Postgres are made again on the same connection`() {
         val deadlock = SQLException("ERROR: deadlock detected", "40P01")
-        val ensuring = recording().also {
-            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(deadlock).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
-        }
+        val ensuring = failingFirst(deadlock)
         val handedOut = recording()
         val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
         val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source, graphName = "tenant_a")
 
         repeat(2) { provider.connect().release() }
 
-        assertEquals(List(2) { PostgresGraph("tenant_a").ensuring.trim() }, statementsOn(ensuring))
+        assertEquals(List(2) { PostgresGraph("tenant_a").ensuring.trim() }, madeOn(ensuring))
         verify(source, times(3)).connection
     }
 
@@ -468,11 +523,7 @@ class JdbcConnectionProviderTest {
      */
     @Test
     fun `threads waiting on a first connection whose tables failed are handed out, and the first of them makes the tables`() {
-        val shared = recording().also {
-            `when`(it.prepareStatement(Mockito.anyString()))
-                .thenThrow(SQLException("ORA-04021: timeout occurred while waiting to lock object", "61000", 4021))
-                .thenAnswer { Mockito.mock(PreparedStatement::class.java) }
-        }
+        val shared = failingFirst(SQLException("ORA-04021: timeout occurred while waiting to lock object", "61000", 4021))
         val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(shared) }
         val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
 
@@ -485,8 +536,8 @@ class JdbcConnectionProviderTest {
         }
         provider.connect().release()
 
-        // Once failed, once made; then a flag is read.
-        assertEquals(2, statementsOn(shared).size)
+        // Once failed, once made, each after a look for the tables; then a flag is read.
+        assertEquals(2, statementsOn(shared).count { !looksForTables(it) })
         verify(source, times(11)).connection
     }
 
@@ -501,7 +552,7 @@ class JdbcConnectionProviderTest {
         assertSame(refused, assertFailsWith<SQLException> { provider.connect() })
         provider.connect()
 
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(ensuring).size)
     }
 
     @Test
@@ -516,8 +567,8 @@ class JdbcConnectionProviderTest {
         assertSame(broken, assertFailsWith<SQLException> { provider.connect() })
         provider.connect()
 
-        assertEquals(1, statementsOn(unclosable).size)
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(unclosable).size)
+        assertEquals(1, madeOn(ensuring).size)
         assertEquals(emptyList(), statementsOn(handedOut))
     }
 
@@ -548,7 +599,7 @@ class JdbcConnectionProviderTest {
 
         val order = Mockito.inOrder(ensuring)
         order.verify(ensuring).autoCommit = true
-        order.verify(ensuring).prepareStatement(Mockito.anyString())
+        order.verify(ensuring, times(2)).prepareStatement(Mockito.anyString())
         order.verify(ensuring).autoCommit = false
         order.verify(ensuring).close()
     }
@@ -562,7 +613,7 @@ class JdbcConnectionProviderTest {
 
         JdbcConnectionProvider("default", DatabaseType.POSTGRES, source).connect()
 
-        verify(ensuring).prepareStatement(Mockito.anyString())
+        assertEquals(1, madeOn(ensuring).size)
         verify(ensuring, never()).autoCommit = Mockito.anyBoolean()
     }
 
@@ -580,7 +631,7 @@ class JdbcConnectionProviderTest {
         assertEquals(emptyList(), statementsOn(unsettable))
         provider.connect()
 
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(ensuring).size)
     }
 
     @Test
@@ -601,7 +652,7 @@ class JdbcConnectionProviderTest {
         order.verify(refusing).prepareStatement(Mockito.anyString())
         order.verify(refusing).autoCommit = false
         order.verify(refusing).close()
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(ensuring).size)
         verify(source, times(4)).connection
     }
 
@@ -618,8 +669,8 @@ class JdbcConnectionProviderTest {
         verify(unrestorable).close()
         provider.connect()
 
-        assertEquals(1, statementsOn(unrestorable).size)
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(unrestorable).size)
+        assertEquals(1, madeOn(ensuring).size)
         assertEquals(emptyList(), statementsOn(handedOut))
     }
 
@@ -816,13 +867,16 @@ class JdbcConnectionProviderTest {
         verify(held, never()).autoCommit = Mockito.anyBoolean()
         verify(held, never()).commit()
         verify(held, never()).close()
-        assertEquals(listOf("INSERT INTO t VALUES (1)"), statementsOn(held))
+        // Only read there: the look for the tables, which the store layout's check asks, and the application's own.
+        val onHeld = statementsOn(held)
+        assertTrue(looksForTables(onHeld.first()), onHeld.first())
+        assertEquals(listOf("INSERT INTO t VALUES (1)"), onHeld.drop(1))
 
         provider.connect().apply {
             query(insert)
             release()
         }
-        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(1, madeOn(ensuring).size)
         val order = Mockito.inOrder(fresh)
         order.verify(fresh).autoCommit = true
         order.verify(fresh).prepareStatement(Mockito.anyString())
@@ -838,8 +892,12 @@ class JdbcConnectionProviderTest {
     fun `on a Spring transaction's connection, Cypher that finds no tables fails saying they are not made on it, and another failure is thrown as it is`() {
         val missing = SQLException("relation \"drivine_node\" does not exist", "42P01")
         val other = SQLException("duplicate key value", "23505")
+        // The look for the tables, which the store layout's check asks on each such connection, finds none; the statements fail in turn.
+        val failures = ArrayDeque(listOf(missing, other, missing))
         val held = moded(committing = false).also { c ->
-            `when`(c.prepareStatement(Mockito.anyString())).thenThrow(missing, other, missing)
+            `when`(c.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
+                if (looksForTables(invocation.getArgument(0))) noTables() else throw failures.removeFirst()
+            }
         }
         val source = Mockito.mock(DataSource::class.java)
         val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(source))

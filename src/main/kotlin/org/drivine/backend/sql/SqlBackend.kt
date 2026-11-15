@@ -41,8 +41,11 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     /** How a plan of steps is carried out. */
     protected abstract val blocks: WriteBlocks
 
+    /** An id given to find a node by, as the JSON the node holds it as. */
+    private val ids = NodeIds(objectMapper)
+
     /** Plans a save, and a batch of fragments, as the steps of a plan. */
-    private val saves by lazy { SqlSavePlan(blocks, objectMapper, ::key) }
+    private val saves by lazy { SqlSavePlan(blocks, objectMapper, ::key, ids) }
 
     /**
      * The statements for [graphClass], with the sorts of its relationship collections and the depths it
@@ -56,8 +59,36 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         indexed: Boolean = false,
     ): S
 
-    /** An id as the store keeps it: the text of a node's key property. */
+    /**
+     * An id as the text a write plan keys its node by, within the plan, and reads a target's stored id back as. A node is
+     * found by its id's JSON ([NodeIds]), not by this text.
+     */
     protected abstract fun key(id: Any): String
+
+    /**
+     * [statement], which finds the root of [select] by the id bound as [GraphBackend.ID_PARAM], binding the id it is given as
+     * the JSON the root's node holds it as: text is read as the `@NodeId` field's type first (see [NodeIds]).
+     */
+    private fun byId(select: S, statement: GraphStatement): GraphStatement {
+        val model = FragmentModel.from(select.rootFragment)
+        return statement.bindingId { given -> ids.json(model, given) }
+    }
+
+    /**
+     * [given], the ids `loadNearestAmong` names its roots by, each as the JSON text a root of [select] holds it as, once:
+     * text is read as the `@NodeId` field's type first, as a load reads it, and text that is no value of it is left out,
+     * as it finds no node (see [NodeIds]).
+     */
+    protected fun idsJson(select: S, given: List<String>): List<String> {
+        val model = FragmentModel.from(select.rootFragment)
+        return given.mapNotNull { ids.json(model, it) }.distinct()
+    }
+
+    /** Each id's text as the JSON text a root holds it as, as [idsJson] reads it. */
+    override fun nearestAmongIds(graphClass: Class<*>): (String) -> Any? {
+        val model = FragmentModel.from(select(graphClass).rootFragment)
+        return { ids.json(model, it) }
+    }
 
     override val cypherGrammar: CypherGrammar? = null
 
@@ -66,8 +97,8 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     override val orphanDeleteLimit: String? = null
 
     /**
-     * A range index reads a property as text. An order by a number or a moment reads it as that, and is
-     * not served by the index, so no index is advised for an order.
+     * An order sorts as Cypher does, by the module's fragments, which no range index holds: a range index is over a
+     * property's JSON (Postgres) or its class and key (Oracle and SQLite). So no index is advised for an order.
      */
     override val supportsIndexBackedOrdering: Boolean = false
 
@@ -101,7 +132,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
 
     override fun load(graphClass: Class<*>): GraphStatement {
         val select = select(graphClass)
-        return select.load(listOf(select.hasId(GraphBackend.ID_PARAM)))
+        return byId(select, select.load(listOf(select.hasId(GraphBackend.ID_PARAM))))
     }
 
     override fun count(graphClass: Class<*>, where: String?): GraphStatement =
@@ -122,7 +153,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         val source = shapeOf(from)
         val select = select(targetClass)
         val statement = select.load(listOf(select.relatedTo(source.labels, source.key, FROM_PARAM, type, direction)))
-        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to key(from.id)))
+        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to ids.json(FragmentModel.from(from.fragmentClass), from.id)))
     }
 
     /** A seek walks an order, which a count or a delete does not have: it would be ignored, and a delete would take every match. */
@@ -135,13 +166,13 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         val select = select(graphClass)
         val predicates = byId(select, where)
         val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
-        return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
+        return byId(select, if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN))
     }
 
     override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
         val select = select(graphClass)
         val checks = select.cascadeDepthChecks(byId(select, where))
-        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, GraphStatement(sql, select.bindings())) }
+        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, byId(select, GraphStatement(sql, select.bindings()))) }
     }
 
     /** The predicates a delete by id selects its root by: the checks it runs first read the same root. */
@@ -202,8 +233,9 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
             val plan = WritePlan(blocks)
             val shape = plan.shape(model.labels, idProperty)
             chunk.forEach { row ->
+                val id = ids.of(model, row.id)
                 plan.patch(
-                    shape, key(row.id), row.index.toString(),
+                    shape, key(id ?: row.id), id, row.index.toString(),
                     set = row.values.filterValues { it != null },
                     unset = if (clears) row.values.filterValues { it == null }.keys.toList() else emptyList(),
                     lower = model.lowerCopied,
@@ -223,8 +255,9 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         val model = FragmentModel.from(select.rootFragment)
         val idProperty = requireNotNull(model.nodeIdProperty) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
         val plan = WritePlan(blocks)
+        val stored = ids.of(model, id)
         plan.patch(
-            plan.shape(model.labels, idProperty), key(id), "0",
+            plan.shape(model.labels, idProperty), key(stored ?: id), stored, "0",
             set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(), lower = model.lowerCopied,
         )
         val patchedIf = select.meeting(conditions)
@@ -239,7 +272,8 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     /** The step that finds the node [ref] names, which must be there. Gives the number later steps know it by. */
     private fun WritePlan.found(ref: NodeRef): Int {
         val node = shapeOf(ref)
-        return ref(shape(node.labels, node.key), key(ref.id))
+        val id = ids.of(FragmentModel.from(ref.fragmentClass), ref.id)
+        return ref(shape(node.labels, node.key), key(id ?: ref.id), id)
     }
 
     /**
@@ -277,10 +311,17 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     }
 
     private companion object {
-        /** The parameter [related] binds the stored id of the node it starts from as. */
+        /** The parameter [related] binds the id of the node it starts from as, as the JSON the node holds it as. */
         const val FROM_PARAM = "_fromId"
 
         /** The fragments one statement saves: enough that a round trip is not what a batch costs, and a plan stays small. */
         const val BATCH = 500
     }
 }
+
+/**
+ * The key a node's `props` holds the embedding at, as the module writes it ([ValueLayout.escape]): a name that begins
+ * with `$` is held as `$$…`. What a SQL store's search reads and its vector index is made over; the schema's catalog
+ * keeps the property's own name.
+ */
+internal val org.drivine.query.grammar.VectorQuerySpec.storedProperty: String get() = org.drivine.cypher.store.ValueLayout.escape(property)

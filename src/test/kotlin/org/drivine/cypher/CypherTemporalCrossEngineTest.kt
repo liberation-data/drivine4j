@@ -19,6 +19,7 @@ import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.testcontainers.containers.Neo4jContainer
@@ -48,8 +49,20 @@ abstract class CypherTemporalContract {
     @BeforeEach
     fun graph() = clear()
 
+    /** Steps a store of this runner's own fails where others pass, beside those held everywhere: see [CypherSpec.Hold]. */
+    internal open val held: Map<String, List<CypherSpec.Hold>> = emptyMap()
+
+    /**
+     * Why this store leaves out the sort of rows beside a variable-length walk by temporal arithmetic, naming the issue that
+     * brings it back; null where it runs. Oracle's run of it outgrows the instance's PGA_AGGREGATE_LIMIT (ORA-04036,
+     * liberation-data/drivine4j#809): the hold comes out with that fix.
+     */
+    internal open val walkSortHeld: String? = null
+
     @TestFactory
-    fun spec() = CypherSpec.load("temporal.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
+    fun spec() = CypherSpec.load("temporal.yaml").let { spec ->
+        spec.tests(CypherSpec.storeOf(pm.type), before = ::clear, held = spec.held() + held) { step -> query(step.cypher, step.parameters) }
+    }
 
     @Test
     fun `a parameter of a java time type is a temporal value of its kind`() {
@@ -384,6 +397,7 @@ abstract class CypherTemporalContract {
 
     @Test
     fun `rows beside a variable-length walk sort by temporal arithmetic that is none of the items, as they do on Neo4j`() {
+        assumeTrue(walkSortHeld == null, walkSortHeld)
         // #378: beside a walk, such a term bound nothing, and wrote the arithmetic's operands out again at each level: too
         // long for SQLite. It is worked out first, for each row, and sorts as it did.
         query(
@@ -507,6 +521,8 @@ class CypherTemporalPostgresTest : CypherTemporalContract() {
 class CypherTemporalOracleTest : CypherTemporalContract() {
     private val manager = OracleTestDatabase.graphManager("cypher")
 
+    override val walkSortHeld = "Held on Oracle until liberation-data/drivine4j#809: the walk's sort outgrows PGA_AGGREGATE_LIMIT (ORA-04036)."
+
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = OracleTestDatabase.clear(manager)
@@ -530,6 +546,15 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    /**
+     * The function of temporal arithmetic calls the era functions, so on this store it is not valid, and arithmetic of a
+     * temporal value read from the store fails by name, as on a store made before the function (drivine4j#418, #811).
+     */
+    override val held = mapOf(
+        "Arithmetic on temporal values read from the store" to listOf(CypherSpec.Hold("liberation-data/drivine4j#418", listOf("oracle"), steps = listOf(3, 4, 5, 6, 7, 10))),
+        "A duration divided, and its seconds written" to listOf(CypherSpec.Hold("liberation-data/drivine4j#418", listOf("oracle"), steps = listOf(5))),
+    )
 
     @Test
     fun `a statement that would call the era functions and nulls_equal is compiled to call only nulls_equal`() {

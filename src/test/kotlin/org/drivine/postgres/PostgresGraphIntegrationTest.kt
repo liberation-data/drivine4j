@@ -38,7 +38,7 @@ class PostgresGraphIntegrationTest {
     @Test
     fun `ensuring makes the tables and marks them, and ensuring again changes nothing`() {
         PostgresGraph(graph).ensure(manager)
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
         val comment = PostgresTestDatabase.pm.getOne(spec("SELECT obj_description(to_regclass('made_node'), 'pg_class')").transform(String::class.java))
         assertEquals(PostgresGraph.VERSION, comment)
 
@@ -62,6 +62,40 @@ class PostgresGraphIntegrationTest {
         assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM made_node")))
     }
 
+    /**
+     * A store drivine:8 made has the write function's find that took the id as text, which no layout-2 index answers and
+     * a temporal id's tag never matched (drivine-cypher-spec#245). Ensured by this version, it has only the find that
+     * takes the id's JSON, and a LocalDate id saved twice is one node.
+     */
+    @Test
+    fun `a store whose find took the id as text is given the find by the id's JSON when it is ensured`() {
+        PostgresGraph(graph).ensure(manager)
+        // As drivine:8 left it: the find took the id as text, and the node table says drivine:8.
+        manager.execute(spec("DROP FUNCTION made_find(jsonb, text, jsonb)"))
+        manager.execute(spec(
+            """
+            CREATE FUNCTION made_find(p_labels jsonb, p_key text, p_id text) RETURNS made_node AS ${'$'}fn${'$'}
+            BEGIN
+                RETURN NULL;
+            END
+            ${'$'}fn${'$'} LANGUAGE plpgsql
+            """
+        ))
+        manager.execute(spec("COMMENT ON TABLE made_node IS 'drivine:8'"))
+
+        PostgresGraph(graph).ensure(manager)
+        fun defined(signature: String) =
+            manager.query(spec("SELECT to_regprocedure('$signature') IS NOT NULL").transform(Boolean::class.java)).single()
+        assertTrue(defined("made_find(jsonb, text, jsonb)"), "the find by the id's JSON is made")
+        assertTrue(!defined("made_find(jsonb, text, text)"), "the find by the id's text is gone")
+
+        val objects = org.drivine.manager.StatelessGraphObjectManager(manager, org.drivine.mapper.Neo4jObjectMapper.instance, SubtypeRegistry())
+        val day = java.time.LocalDate.of(2026, 1, 2)
+        objects.save(org.drivine.manager.LookupDate(day, "first"))
+        objects.save(org.drivine.manager.LookupDate(day, "second"))
+        assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM made_node WHERE labels @> '[\"LookupDate\"]'")))
+    }
+
     @Test
     fun `processes that each find the store missing make it one after the other`() {
         val pool = Executors.newFixedThreadPool(8)
@@ -71,7 +105,27 @@ class PostgresGraphIntegrationTest {
         } finally {
             pool.shutdown()
         }
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
+    }
+
+    /**
+     * A store drivine:10 made has no function a sort of a list read from a property calls (drivine-cypher-spec#284). Ensured by
+     * this version, it has it, and lists sort item by item, as Cypher sorts them, where `jsonb` would sort the shorter first.
+     */
+    @Test
+    fun `a store without the function a sort of a list calls gains it when it is ensured, and sorts lists by their items`() {
+        PostgresGraph(graph).ensure(manager)
+        // As drivine:10 left it: no function for a list's sort key.
+        manager.execute(spec("DROP FUNCTION made_list_key(jsonb)"))
+        manager.execute(spec("COMMENT ON TABLE made_node IS 'drivine:10'"))
+
+        PostgresGraph(graph).ensure(manager)
+        assertEquals(listOf(true), manager.query(spec("SELECT to_regprocedure('made_list_key(jsonb)') IS NOT NULL").transform(Boolean::class.java)))
+
+        val fixtures = SqlCypherFixtures.over(manager)
+        fixtures.execute(spec("CREATE (:Box {id: 'a', l: [10]}), (:Box {id: 'b', l: [2, 1]}), (:Box {id: 'c', l: [1]}), (:Box {id: 'd', l: [1, 5]})"))
+        assertEquals(listOf("c", "d", "b", "a"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l").transform(String::class.java)))
+        assertEquals(listOf("a", "b", "d", "c"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l DESC").transform(String::class.java)))
     }
 
     @Test
@@ -113,7 +167,7 @@ class PostgresGraphIntegrationTest {
     @Test
     fun `a test's cleanup deletes the nodes it tagged, on a graph it makes if it must`() {
         TestCleanup.beforeEach(manager, "tagged")
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
         SqlCypherFixtures.run(manager, "CREATE (:Thing {createdBy: 'tagged'}), (:Thing {createdBy: 'kept'})")
 
         TestCleanup.beforeEach(manager, "tagged")

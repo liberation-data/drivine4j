@@ -1,5 +1,6 @@
 package org.drivine.backend.sql
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSelect
 import org.drivine.backend.postgres.PostgresGraph
@@ -33,9 +34,12 @@ class DeepNestedWhereSqlTest {
     private fun assertThreeLevels(view: Class<*>, path: String, vararg types: String) {
         selects(view).forEach { (store, select) ->
             val sql = assertNotNull(select.predicate(listOf(eq(path, "Paris"))), store)
-            assertEquals(3, Regex("EXISTS").findAll(sql).count(), "$store: $sql")
+            // An EXISTS of its own for each level, a JSON_EXISTS of a label aside.
+            assertEquals(3, Regex("\\bEXISTS\\b").findAll(sql).count(), "$store: $sql")
             types.forEach { assertTrue("'$it'" in sql, "$store: $sql") }
-            assertEquals(listOf<Any?>("Paris"), select.bindings().values.toList(), store)
+            // The one value, as the module binds a fragment's value on every SQL store: as JSON text.
+            val bound = select.bindings().values.single()
+            assertEquals("Paris", ObjectMapper().readValue(bound as String, String::class.java), store)
         }
     }
 

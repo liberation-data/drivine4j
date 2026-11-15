@@ -4,7 +4,6 @@ import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.StepKind
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.oracle.OracleSql.hasLabels
-import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
@@ -160,9 +159,21 @@ DECLARE
     e_absent  EXCEPTION;
 """.trim('\n')
 
-    /** `find`: a node of a shape by its id, locked. */
+    /** `id_of` and `find`: a node of a shape by its id, locked. */
     private fun finding(): String = """
-    -- Finds the node of a shape by its id, and locks it. A null o_nid says there is none.
+    -- The id a step finds its node by, as the JSON the node holds it as: a temporal value as its tag. Null where the step
+    -- gives none, or gives JSON's null, which finds no node.
+    FUNCTION id_of(op JSON_OBJECT_T) RETURN VARCHAR2 IS
+    BEGIN
+        IF NOT op.has('id') OR op.get('id').is_null THEN
+            RETURN NULL;
+        END IF;
+        RETURN op.get('id').to_string;
+    END;
+
+    -- Finds the node of a shape by its id, p_id, the JSON it holds its id as, and locks it. A null o_nid says there is none.
+    -- The id's class and key are compared with the property's, as the index over the property of every node is made over
+    -- them, so that index answers the lookup, and a temporal id's tag is equal only to the same value's.
     --
     -- The node is found without a lock, then locked by its key and looked at again. To lock it as it
     -- is found would wait for another writer's lock while holding the page of the index it was found
@@ -493,7 +504,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_kept      NUMBER;
     BEGIN
         LOOP
-            find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
+            find(op.get_number('s'), id_of(op), v_nid, v_stamp, v_labels, v_props);
             v_made := v_nid IS NULL;
             IF v_made THEN
                 -- A checked save does not make the node again: it is gone, and the object is stale.
@@ -599,7 +610,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_labels VARCHAR2(4000);
         v_props  CLOB;
     BEGIN
-        find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
+        find(op.get_number('s'), id_of(op), v_nid, v_stamp, v_labels, v_props);
         IF v_nid IS NULL THEN
             RAISE e_absent;
         END IF;
@@ -811,7 +822,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_same      NUMBER;
         v_met       NUMBER := 1;
     BEGIN
-        find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
+        find(op.get_number('s'), id_of(op), v_nid, v_stamp, v_labels, v_props);
         IF v_nid IS NULL THEN
             RETURN;
         END IF;${patchedIf?.let { "\n${meeting(it)}" }.orEmpty()}
@@ -876,9 +887,12 @@ END;
     private fun eachShape(arm: (Int, NodeShape) -> String): String =
         shapes.withIndex().joinToString("\n") { (index, shape) -> arm(index, shape) }
 
-    /** Whether the node [alias] is the one of [shape] whose id is `p_id`. */
+    /**
+     * Whether the node [alias] is the one of [shape] whose id is `p_id`, the JSON the node holds it as: its class and key
+     * compared with the property's ([OracleSql.hasId]), which the index over the property of every node answers.
+     */
     private fun identified(alias: String, shape: NodeShape): String =
-        listOfNotNull("JSON_VALUE($alias.props, ${path(shape.key)}) = p_id", hasLabels(alias, shape.labels)).joinToString(" AND ")
+        listOfNotNull(OracleSql.hasId(alias, shape.key, "JSON(p_id)"), hasLabels(alias, shape.labels)).joinToString(" AND ")
 
     /** [stamp] where it is two tokens, as every save leaves one, and null where it is not. */
     private fun twoTokens(stamp: String): String = "CASE WHEN LENGTH($stamp) = 33 AND SUBSTR($stamp, 17, 1) = ':' THEN $stamp END"
@@ -898,11 +912,12 @@ END;
     /**
      * The arm of `joined` that reads the relationships to the targets of [shape]: those that leave the
      * node when [outgoing], else those that reach it. A relationship from the node to itself is read
-     * as leaving it, and so once when both directions are read.
+     * as leaving it, and so once when both directions are read. Each target's id is read as the text the
+     * plan keys it by in `ids` and `held` ([OracleSql.keyText]): a temporal value's tag as its text.
      */
     private fun joiner(index: Int, shape: NodeShape, outgoing: Boolean): String = """
                 WHEN $index THEN
-                    SELECT e.eid, t.nid, JSON_VALUE(t.props, ${path(shape.key)}) BULK COLLECT INTO v_eids, v_nids, v_keys
+                    SELECT e.eid, t.nid, ${OracleSql.keyText("t", shape.key)} BULK COLLECT INTO v_eids, v_nids, v_keys
                     FROM ${graph.edges} e JOIN ${graph.nodes} t ON t.nid = e.${if (outgoing) "dst" else "src"}
                     WHERE e.${if (outgoing) "src" else "dst"} = p_from AND e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()}${if (outgoing) "" else " AND (p_dir = 'IN' OR e.src <> p_from)"};
     """.trimEnd().trimStart('\n')

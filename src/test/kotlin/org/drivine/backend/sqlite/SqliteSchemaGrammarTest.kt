@@ -21,11 +21,15 @@ class SqliteSchemaGrammarTest {
     private fun texts(statements: List<SchemaStatement>) = statements.map { (it as SchemaStatement.Cypher).statement }
 
     @Test
-    fun `a range index is a partial index over the property as a statement reads it, for the nodes of its label`() {
+    fun `a range index is a partial index over the property's class and key as a statement reads them, for the nodes of its label`() {
         val made = texts(grammar.createIndex(RangeIndexSpec("Person", listOf("email"))))
         val name = graph.objectName("ix", listOf("Person", "email"))
+        assertTrue(name.startsWith("g_ix2_"), "the name carries the store layout: $name")
         assertEquals(graph.ddl, made.take(graph.ddl.size), "the store is made first")
-        assertEquals("CREATE INDEX IF NOT EXISTS $name ON g_node (${SqliteSql.property("", "email")}) WHERE ${SqliteSql.hasLabel("", "Person")}", made[graph.ddl.size])
+        // The property's class and then its key, as the module reads a value a range index holds.
+        val columns = graph.store.indexColumns(listOf("email"))
+        assertEquals(2, columns.size)
+        assertEquals("CREATE INDEX IF NOT EXISTS $name ON g_node (${columns.joinToString(", ")}) WHERE ${SqliteSql.hasLabel("", "Person")}", made[graph.ddl.size])
         assertTrue("INSERT INTO g_schema" in made.last() && "'$name'" in made.last(), made.last())
     }
 

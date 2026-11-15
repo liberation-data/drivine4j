@@ -34,6 +34,13 @@ class PostgresSchemaManagementIntegrationTest {
      * are indexes the planner would rather use, dropped for the plan in a transaction that is rolled
      * back: what is left to it shows whether another index can answer.
      */
+    /**
+     * A lookup of the node `n` by its property [key] equal to the text `x`, as layout 2 indexes it
+     * (drivine-cypher-spec#161): the property's JSON, `props -> 'key'`, which a range index and a
+     * uniqueness constraint's index are made over.
+     */
+    private fun lookup(key: String) = "(n.props -> '${key.replace("'", "''")}') = '\"x\"'::jsonb"
+
     private fun plan(sql: String, without: List<String> = emptyList()): String {
         val connection = PostgresTestDatabase.provider.connect()
         try {
@@ -64,8 +71,8 @@ class PostgresSchemaManagementIntegrationTest {
         assertTrue(manager.indexes.drop(RangeIndexSpec("Article", "slug")))
         assertNull(manager.indexes.find(RangeIndexSpec("Article", "slug")))
         assertNotNull(manager.indexes.find(RangeIndexSpec("Page", "slug")), "the other label's index is its own")
-        val page = plan("SELECT nid FROM schema_node n WHERE (n.props ->> 'slug') = 'x' AND n.labels @> '[\"Page\"]'")
-        assertTrue("schema_ix_pageslug" in page, page)
+        val page = plan("SELECT nid FROM schema_node n WHERE ${lookup("slug")} AND n.labels @> '[\"Page\"]'")
+        assertTrue("schema_ix2_pageslug" in page, page)
     }
 
     @Test
@@ -75,8 +82,8 @@ class PostgresSchemaManagementIntegrationTest {
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
 
-        val plan = plan("SELECT nid FROM schema_node n WHERE (n.props ->> 'metadata.context') = 'x' AND n.labels @> '[\"BagNode\"]'")
-        assertTrue("schema_ix_bagnodemetadatacontext" in plan, "expected an index scan, got:\n$plan")
+        val plan = plan("SELECT nid FROM schema_node n WHERE ${lookup("metadata.context")} AND n.labels @> '[\"BagNode\"]'")
+        assertTrue("schema_ix2_bagnodemetadatacontext" in plan, "expected an index scan, got:\n$plan")
     }
 
     @Test
@@ -84,8 +91,8 @@ class PostgresSchemaManagementIntegrationTest {
         manager.indexes.ensure(RangeIndexSpec("Author", "handle"))
 
         // What the write function asks to find a node of the shape [Author, Person] by its handle.
-        val plan = plan("SELECT min(n.nid) FROM schema_node n WHERE (n.props ->> 'handle') = 'x' AND n.labels @> '[\"Author\"]' AND n.labels @> '[\"Person\"]'")
-        assertTrue("schema_ix_authorhandle" in plan, plan)
+        val plan = plan("SELECT min(n.nid) FROM schema_node n WHERE ${lookup("handle")} AND n.labels @> '[\"Author\"]' AND n.labels @> '[\"Person\"]'")
+        assertTrue("schema_ix2_authorhandle" in plan, plan)
     }
 
     @Test
@@ -101,8 +108,8 @@ class PostgresSchemaManagementIntegrationTest {
         execute("CREATE (:Transcript {sessionId: 'session-1'})")
         execute("CREATE (:ChatSession {title: 'a'}), (:ChatSession {title: 'b'})")
         // The constraint's index finds a node, as a range index does.
-        val plan = plan("SELECT nid FROM schema_node n WHERE (n.props ->> 'sessionId') = 'x' AND n.labels @> '[\"ChatSession\"]'")
-        assertTrue("schema_uq_chatsessionsessionid" in plan, plan)
+        val plan = plan("SELECT nid FROM schema_node n WHERE ${lookup("sessionId")} AND n.labels @> '[\"ChatSession\"]'")
+        assertTrue("schema_uq2_chatsessionsessionid" in plan, plan)
     }
 
     @Test
@@ -254,7 +261,7 @@ class PostgresSchemaManagementIntegrationTest {
         val search = "SELECT s.nid FROM schema_node s WHERE s.labels @> '[\"Passage\"]' AND jsonb_typeof((s.props -> 'embedding')) = 'array' " +
             "AND jsonb_array_length((s.props -> 'embedding')) = 3 ORDER BY CAST(CAST((s.props -> 'embedding') AS text) AS vector(3)) <=> CAST('[1,0,0]' AS vector(3)) LIMIT 5"
         val plan = plan(search)
-        assertTrue("schema_v_passageembedding" in plan, plan)
+        assertTrue("schema_v2_passageembedding" in plan, plan)
     }
 
     @Test
@@ -271,7 +278,7 @@ class PostgresSchemaManagementIntegrationTest {
         val text = "lower(COALESCE((c.props ->> 'title'), '') || ' ' || COALESCE((c.props ->> 'body'), ''))"
         // Over a few hundred nodes the planner reads the label's through the index over labels; without it, the trigrams answer.
         val plan = plan("SELECT c.nid FROM schema_node c WHERE c.labels @> '[\"Essay\"]' AND ($text LIKE '%graph%')", without = listOf("schema_node_labels"))
-        assertTrue("schema_t_essaytitlebody" in plan, plan)
+        assertTrue("schema_t2_essaytitlebody" in plan, plan)
         assertTrue(manager.indexes.drop(spec))
         assertNull(manager.indexes.find(spec))
     }
@@ -280,7 +287,7 @@ class PostgresSchemaManagementIntegrationTest {
     fun `an index dropped by hand is not listed, and is made again when asked for`() {
         val spec = RangeIndexSpec("Note", "topic")
         manager.indexes.ensure(spec)
-        manager.indexes.run("DROP INDEX schema_ix_Notetopic_${Integer.toHexString("Note\u0000topic".hashCode())}")
+        manager.indexes.run("DROP INDEX schema_ix2_Notetopic_${Integer.toHexString("Note\u0000topic".hashCode())}")
 
         assertNull(manager.indexes.find(spec))
         assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)

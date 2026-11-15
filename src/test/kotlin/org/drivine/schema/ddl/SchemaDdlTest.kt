@@ -214,7 +214,7 @@ class SchemaDdlTest {
         // Through CypherCompile, where a connection compiles, which throws the compiler's refusal as a DrivineException.
         val compiles: List<(String) -> Any> = listOf(
             { cypher -> CypherCompile.postgres("g", cypher, emptyMap()) },
-            { cypher -> CypherCompile.oracle("g", cypher, emptyMap(), { true }, { true }) },
+            { cypher -> CypherCompile.oracle("g", cypher, emptyMap(), { true }, { true }, { true }) },
             { cypher -> CypherCompile.sqlite("g", cypher, emptyMap()) },
         )
         compiles.forEach { compile ->

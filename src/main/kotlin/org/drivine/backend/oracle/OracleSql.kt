@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlKind
 import org.drivine.model.Stamps
 import org.drivine.query.SqlParameters
@@ -34,10 +35,12 @@ internal object OracleSql {
     fun literal(text: String): String = Shared.literal(text)
 
     /**
-     * The id [id] as the text a node is found by. A property is read back as text, and Oracle keeps a
-     * JSON number as a number, so `3.0` is read as `3`: a number is written as its plain, shortest form.
+     * The id [id] as the text a write plan keys its node by, within the plan, and reads a target's stored id back as. A
+     * property is read back as text, and Oracle keeps a JSON number as a number, so `3.0` is read as `3`: a number is
+     * written as its plain, shortest form. A temporal value is held as its tag, and keyed by the tag's text, as the module
+     * writes it ([NodeIds.temporalText]). A node is found by its id's JSON, not by this text: see [NodeIds].
      */
-    fun key(id: Any): String = when (id) {
+    fun key(id: Any): String = NodeIds.temporalText(id) ?: when (id) {
         is Float, is Double -> BigDecimal(id.toString()).stripTrailingZeros().toPlainString()
         is BigDecimal -> id.stripTrailingZeros().toPlainString()
         else -> id.toString()
@@ -45,6 +48,32 @@ internal object OracleSql {
 
     /** As [Shared.path], which the compiler calls too. */
     fun path(key: String, suffix: String = ""): String = Shared.path(key, suffix)
+
+    /**
+     * Whether the property [key] (as stored, [org.drivine.cypher.store.ValueLayout.escape]d) of the node [alias] is the id
+     * whose JSON, as the node holds it ([NodeIds]), is [json], a JSON value: its class and key, as the index over the
+     * property of every node is made over them ([Shared.indexClass], [Shared.indexKey]; `OracleDdl.sharedColumns`),
+     * compared with the id's ([Shared.valueClass], [Shared.valueKey]), so that index answers it, and a temporal id's tag
+     * is equal only to the same value's. A null [json] is equal to no id.
+     */
+    fun hasId(alias: String, key: String, json: String): String =
+        "${Shared.indexClass("$alias.props", key)} = ${Shared.valueClass(json)} AND ${Shared.indexKey("$alias.props", key)} = ${Shared.valueKey(json)}"
+
+    /**
+     * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
+     * text, as [hasId] compares one: the index answers it for each.
+     */
+    fun hasIdIn(alias: String, key: String, parameter: String): String =
+        "(${Shared.indexClass("$alias.props", key)}, ${Shared.indexKey("$alias.props", key)}) IN " +
+            "(SELECT ${Shared.valueClass("JSON(i.v)")}, ${Shared.valueKey("JSON(i.v)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
+
+    /**
+     * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
+     * as its text `v`, anything else as `JSON_VALUE` reads it, as the module's Postgres write function reads a target's id
+     * (`COALESCE(props -> key ->> 'v', props ->> key)`) and SQLite's writer does ([org.drivine.backend.sqlite.SqliteSql.keyText]).
+     */
+    fun keyText(alias: String, key: String): String =
+        "COALESCE(JSON_VALUE($alias.props, ${path(key, ".${org.drivine.cypher.store.ValueLayout.TEXT}")}), JSON_VALUE($alias.props, ${path(key)}))"
 
     /** As [Shared.path], which the compiler calls too. */
     fun path(keys: List<String>, suffix: String = ""): String = Shared.path(keys, suffix)
@@ -65,9 +94,6 @@ internal object OracleSql {
 
     /** As [Shared.labelled], which the compiler calls too. */
     fun labelled(alias: String, label: String, key: String): String = Shared.labelled(alias, label, key)
-
-    /** As [Shared.unique], which the compiler calls too. */
-    fun unique(alias: String, label: String, keys: List<String>, key: String): String = Shared.unique(alias, label, keys, key)
 
     /** As [Shared.quoted], which the compiler calls too. */
     internal fun quoted(text: String): String = Shared.quoted(text)
@@ -111,6 +137,13 @@ internal object OracleSql {
 
     /** The columns a row of a node carries, each as [alias]'s, `doc` among them. */
     fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
+
+    /**
+     * The node keys [a] and [b] equal, compared with `+ 0` on one side and again the other way round, as the module's compiler
+     * joins a node back to the node table: compared column to column, Oracle (23.26) may eliminate the join and read the
+     * other row by the key it dropped, or end the server process where a filter reads an indexed property of it (`ORA-07445`).
+     */
+    fun sameKey(a: String, b: String): String = "($a = $b + 0 AND $b = $a + 0)"
 
     /** One node in a `MATCH` pattern, named [variable], that meets [where] when there is one. */
     fun node(variable: String, where: String? = null): String = "($variable IS node${where?.let { " WHERE $it" }.orEmpty()})"

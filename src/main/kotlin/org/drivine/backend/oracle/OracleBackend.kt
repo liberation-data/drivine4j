@@ -1,6 +1,9 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.storedProperty
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
@@ -62,7 +65,7 @@ internal class OracleBackend(
         val candidates = if (embeddings != null) {
             select.nearestThrough(embeddings, index.similarity, vector, searchK ?: topK)
         } else {
-            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+            select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
@@ -73,7 +76,7 @@ internal class OracleBackend(
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, embeddings, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold, embeddings, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
@@ -115,7 +118,7 @@ internal class OracleBackend(
      */
     override fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
         GraphStatement(
-            OracleSql.counted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"),
+            OracleSql.counted(select.hinted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}")),
             select.bindings(),
         )
 
@@ -130,6 +133,8 @@ internal class OracleBackend(
     override fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
         val roots = "FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
         val everything = "SELECT ${select.root}.nid\n$roots\nUNION\n$cascaded"
+        // The hints the roots' predicates ask for, on each statement of the block that reads them.
+        val hint = select.hint()
         // Lines joined, not a template: what is put in has lines of its own, each laid out under the one that opens it.
         val body = if (orphansOnly) {
             // The far end of the edge e from the kept node k.
@@ -160,8 +165,8 @@ internal class OracleBackend(
                 ") CYCLE nid SET looped TO 'Y' DEFAULT 'N'",
             ).joinToString("\n")
             listOf(
-                "$orphans\nSELECT nid BULK COLLECT INTO v_ids FROM cascade_targets WHERE nid NOT IN (SELECT nid FROM cascade_kept);",
-                "DELETE $roots;",
+                "$orphans\nSELECT$hint nid BULK COLLECT INTO v_ids FROM cascade_targets WHERE nid NOT IN (SELECT nid FROM cascade_kept);",
+                "DELETE$hint $roots;",
                 "v_count := SQL%ROWCOUNT;",
                 "FORALL i IN 1 .. v_ids.COUNT",
                 "    DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);",
@@ -169,7 +174,7 @@ internal class OracleBackend(
             )
         } else {
             listOf(
-                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${everything.under()});",
+                "SELECT$hint nid BULK COLLECT INTO v_ids FROM (\n    ${everything.under()});",
                 "FORALL i IN 1 .. v_ids.COUNT",
                 "    DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);",
                 "v_count := v_ids.COUNT;",
@@ -183,11 +188,14 @@ internal class OracleBackend(
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to OracleSql.key(root.id)),
+            listOfNotNull(OracleSql.hasId("n", ValueLayout.escape(root.idProperty), "JSON(\$id)"), OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

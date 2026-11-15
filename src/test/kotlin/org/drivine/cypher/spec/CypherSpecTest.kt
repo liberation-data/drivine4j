@@ -24,7 +24,7 @@ class CypherSpecTest {
         spec.tests(store, before = {}, held = held, run = rows).single().executable.execute()
 
     private val step = Step(cypher = "RETURN 1", rows = listOf(1L))
-    private val heldOnSql = mapOf("a case" to listOf(Hold(1, listOf("sql"), listOf(1))))
+    private val heldOnSql = mapOf("a case" to listOf(Hold("#1", listOf("sql"), listOf(1))))
 
     @Test
     fun `a held step that passes fails the case, naming the step and its issue`() {
@@ -52,7 +52,7 @@ class CypherSpecTest {
 
     @Test
     fun `a skipped step is not run, nor any step after it on that store`() {
-        val skipped = mapOf("a case" to listOf(Hold(1, listOf("sql"), listOf(2), skip = true)))
+        val skipped = mapOf("a case" to listOf(Hold("#1", listOf("sql"), listOf(2), skip = true)))
         val ran = mutableListOf<String>()
         run(spec(step, Step(cypher = "RETURN 2"), Step(cypher = "RETURN 3")), "postgres", skipped) { ran += it.cypher; listOf(1L) }
         assertEquals(listOf("RETURN 1"), ran)
@@ -63,7 +63,7 @@ class CypherSpecTest {
 
     @Test
     fun `a skip wins over another hold of the step, and a passing hold before it is still reported`() {
-        val held = mapOf("a case" to listOf(Hold(1, listOf("sql")), Hold(2, listOf("postgres"), listOf(2), skip = true)))
+        val held = mapOf("a case" to listOf(Hold("#1", listOf("sql")), Hold("#2", listOf("postgres"), listOf(2), skip = true)))
         val ran = mutableListOf<String>()
         val failure = assertThrows<AssertionError> {
             run(spec(step, Step(cypher = "RETURN 2"), Step(cypher = "RETURN 3")), "postgres", held) { ran += it.cypher; listOf(1L) }
@@ -80,18 +80,18 @@ class CypherSpecTest {
     @Test
     fun `a hold naming a step or a case the file has not fails at once`() {
         val past = assertThrows<IllegalArgumentException> {
-            spec(step).tests("postgres", before = {}, held = mapOf("a case" to listOf(Hold(1, listOf("sql"), listOf(1, 2))))) { listOf(1L) }
+            spec(step).tests("postgres", before = {}, held = mapOf("a case" to listOf(Hold("#1", listOf("sql"), listOf(1, 2))))) { listOf(1L) }
         }
         assertContains(past.message!!, "test.yaml, a case has no step [2] to hold: it has 1")
         val missing = assertThrows<IllegalArgumentException> {
-            spec(step).tests("postgres", before = {}, held = mapOf("another case" to listOf(Hold(1, listOf("sql"))))) { listOf(1L) }
+            spec(step).tests("postgres", before = {}, held = mapOf("another case" to listOf(Hold("#1", listOf("sql"))))) { listOf(1L) }
         }
         assertContains(missing.message!!, "test.yaml has no case \"another case\" to hold")
     }
 
     @Test
     fun `the holds here name cases and steps the spec has`() {
-        listOf("queries.yaml", "writes.yaml", "temporal.yaml", "refusals.yaml").forEach { file ->
+        listOf("queries.yaml", "writes.yaml", "temporal.yaml", "refusals.yaml", "results.yaml").forEach { file ->
             assertDoesNotThrow { CypherSpec.load(file).tests("postgres", before = {}) { emptyList() } }
         }
     }

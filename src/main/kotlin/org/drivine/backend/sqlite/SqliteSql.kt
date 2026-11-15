@@ -177,8 +177,33 @@ internal object SqliteSql {
         return "SELECT $read FROM json_each($parameter) v"
     }
 
-    /** An id as the text a node is found by: see [PostgresSql.key], whose text the stores share. */
+    /** An id as the text a write plan keys its node by: see [PostgresSql.key], whose text the stores share. */
     fun key(id: Any): String = PostgresSql.key(id)
+
+    /**
+     * Whether the property [key] (as stored, [org.drivine.cypher.store.ValueLayout.escape]d) of the node [alias] is the id
+     * whose JSON, as the node holds it ([org.drivine.backend.sql.NodeIds]), is [json], JSON text: its class and key, as a
+     * range index or a uniqueness constraint is made over them ([Shared.indexClass], [Shared.indexKey];
+     * `SqliteDdl.indexColumns`), compared with the id's ([Shared.valueClass], [Shared.valueKey]), so the index answers it,
+     * and a temporal id's tag is equal only to the same value's. A null [json] is equal to no id.
+     */
+    fun hasId(alias: String, key: String, json: String): String =
+        "${Shared.indexClass("$alias.props", path(key))} = ${Shared.valueClass(json)} AND ${Shared.indexKey("$alias.props", path(key))} = ${Shared.valueKey(json)}"
+
+    /**
+     * Whether the node [alias] is a node of [nodes] of [labels] whose property [key] is one of the ids bound as [parameter],
+     * a JSON array of each id's JSON text, as [hasId] compares one. Each id finds its node, through the index, before the
+     * node is joined: SQLite reads no index for a pair of expressions `IN` a list.
+     */
+    fun hasIdIn(alias: String, key: String, parameter: String, nodes: String, labels: Collection<String>): String =
+        "$alias.nid IN (SELECT f.nid FROM json_each($parameter) v CROSS JOIN $nodes f WHERE " +
+            listOfNotNull(hasId("f", key, "v.value"), hasLabels("f", labels)).joinToString(" AND ") + ")"
+
+    /**
+     * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
+     * as its text `v` ([Shared.searchedProperty]), anything else as [property] reads it.
+     */
+    fun keyText(alias: String, key: String): String = Shared.searchedProperty(alias, key)
 
     /**
      * [value] written into a statement as a literal, for the query a `patch` step asks inside the write

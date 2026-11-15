@@ -1,6 +1,5 @@
 package org.drivine.manager
 
-import java.math.BigDecimal
 import java.util.function.Function
 import kotlin.reflect.KProperty1
 import org.drivine.mapper.Neo4jObjectMapper
@@ -8,7 +7,6 @@ import org.drivine.mapper.TransformPostProcessor
 import org.drivine.model.FragmentModel
 import org.drivine.model.Stamps
 import org.drivine.query.FragmentQueryBuilder
-import org.drivine.query.GroupQuery
 import org.drivine.query.fieldStoredAs
 import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.GroupColumn
@@ -117,7 +115,7 @@ class GroupOperations internal constructor(
             return when (column) {
                 is Key<*> -> when (val from = column.source) {
                     is KeySource.Property -> {
-                        val read = text(column, row) ?: declared(from.propertyName, value)
+                        val read = declared(from.propertyName, value)
                         check(read != null || column.nullable) {
                             "A ${source.clazz.simpleName} has no value for '${from.propertyName}', which key(…) reads as never null. Use keyOrNull(…)."
                         }
@@ -132,19 +130,6 @@ class GroupOperations internal constructor(
                     else -> declared(requireNotNull(column.propertyName), value)
                 }
             }
-        }
-
-        /**
-         * What Oracle's reading of a text key leaves to the columns beside it: `""` for a property
-         * stored empty, which comes back as null, and the number of a property no field declares.
-         * Null where neither column says anything, as on a graph engine, which has neither.
-         */
-        private fun text(key: Key<*>, row: Map<String, Any?>): Any? {
-            (row["${key.column}${GroupQuery.NUMBER}"] as? Number)?.let { number ->
-                // A whole number is a Long, as the graph engines give one.
-                return BigDecimal(number.toString()).let { if (it.stripTrailingZeros().scale() <= 0) it.toLong() else it.toDouble() }
-            }
-            return if (row[key.column] == null && (row["${key.column}${GroupQuery.EMPTY}"] as? Number)?.toInt() == 1) "" else null
         }
 
         /** [value] as the field stored as [propertyName] declares it; as it came, when no field does. */

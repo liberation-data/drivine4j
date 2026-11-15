@@ -11,7 +11,10 @@ import org.slf4j.LoggerFactory
  * 3.53.0.0 and 3.53.1.0 write `json_array(0.1 + 0.2)` as `[0.3]`, and 3.53.2.0 on as `[0.30000000000000004]`. 3.49
  * refuses a `CALL` subquery that groups by a variable it imports; and before 3.47, `-> -1`, which `last()` and a
  * negative list index compile to, is refused (#565). There a Cypher statement is refused with why ([refusal]), before
- * it is compiled. Plain SQL, the schema manager and the object managers, which write SQL of their own, run as before.
+ * it is compiled. Plain SQL, the schema manager and the object managers, which write SQL of their own, are not refused,
+ * though the object managers' conditions and orders are compiled by the module too, and a grouped read's least or
+ * greatest value and a path's order are an ordered aggregate (`json_group_array(… ORDER BY …)`), which SQLite before 3.44
+ * refuses.
  */
 internal class SqliteVersion {
 

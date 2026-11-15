@@ -1,9 +1,12 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.backend.sql.storedProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.backend.GraphStatement
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.backend.sql.under
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.FullTextIndexResolver
@@ -49,7 +52,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     ): ScoredSearchPlan {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
-        val candidates = select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        val candidates = select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
@@ -58,7 +61,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
@@ -71,11 +74,14 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${SqliteSql.property("n", root.idProperty)} = CAST(\$id AS TEXT)", SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to SqliteSql.key(root.id)),
+            listOfNotNull(SqliteSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

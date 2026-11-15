@@ -85,7 +85,8 @@ abstract class TablesOnFirstConnectionContract {
     private fun names(pm: PersistenceManager): List<String> =
         pm.query(cypher("MATCH (p:Person) RETURN p.name ORDER BY p.name").transform(String::class.java))
 
-    private fun tablesOf(graph: String) = listOf("${graph}_edge", "${graph}_node", "${graph}_schema")
+    /** The tables a graph is made with, as the module names them on every SQL store (drivine-cypher-spec#161). */
+    private fun tablesOf(graph: String) = layoutTables(graph)
 
     @Test
     fun `Cypher through a persistence manager alone writes and reads on a store with no graph`() {
@@ -399,3 +400,10 @@ abstract class TablesOnFirstConnectionContract {
         managers.forEachIndexed { i, pm -> if (i in objectManagers || !writesAtOnce) write(i, pm) }
     }
 }
+
+/**
+ * The tables [graph] is made with on a SQL store, in name order: its nodes, its edges, its catalog, its count store and
+ * its lock, as the module names them (the names are one on every SQL store, the layout in those that carry it).
+ */
+internal fun layoutTables(graph: String): List<String> =
+    org.drivine.cypher.store.ddl.PostgresDdl(graph).let { listOf(it.nodes, it.edges, it.catalog, it.counts, it.countDeltas, it.lock) }.sorted()

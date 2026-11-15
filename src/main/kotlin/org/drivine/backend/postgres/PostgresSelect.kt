@@ -1,5 +1,8 @@
 package org.drivine.backend.postgres
 
+import org.drivine.cypher.store.ValueLayout
+import org.drivine.connection.CypherCompile
+import org.drivine.backend.sql.Fragments
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
 import org.drivine.annotation.Direction
@@ -27,7 +30,9 @@ import org.drivine.query.SqlParameters
 import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GroupFunction
+import org.drivine.query.dsl.GroupColumn
 import org.drivine.query.dsl.GroupOrder
+import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.Key
 import org.drivine.query.dsl.KeySource
 import org.drivine.query.dsl.NullPlacement
@@ -60,8 +65,10 @@ internal class PostgresSelect(
     depthOverrides: Map<String, Int> = emptyMap(),
 ) : SqlViewSelect<StatementScope>(graphClass, collectionSorts, depthOverrides, StatementScope(MAX_NAME)) {
     private val rows = PostgresRowSources(graph, scope)
-    private val predicates = PostgresPredicates(scope, rows, rootAlias, root, rootModel, viewModel, depthOverrides)
-    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
+    /** The values this statement's conditions and orders compare, compiled by the module ([Fragments]). */
+    private val fragments = Fragments(CypherCompile.postgresFragments(graph.name), scope)
+    private val predicates = PostgresPredicates(rootAlias, root, rootModel, viewModel, ::rootLabels, depthOverrides, fragments)
+    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> PostgresSql.keyText(row, ValueLayout.escape(key)) }
 
     // ----- Statements -----
 
@@ -93,6 +100,12 @@ internal class PostgresSelect(
      * its rows: it filters them for a `having`, orders and pages them, and joins the node of a node key
      * back for its document.
      *
+     * A property key is the property's value as the store holds it ([Fragments.value]), so values Cypher
+     * tells apart are grouped apart, and a temporal value comes back as its kind. Where the groups are
+     * ordered by a property key, or ordered or filtered by a least or greatest value, the grouped query
+     * also gives a node of the group that has that value (`k0r`, `a0r`), which the statement joins back,
+     * so the module orders and compares the value as Cypher does, over a row of its own.
+     *
      * A node key is a path, and a path gives a root once for each way to a key node. The roots are then
      * read as the distinct pairs of a root and its key nodes, by their ids, each path walked from the
      * root's row, and each root's row is joined to its pairs again where a key, an aggregate or a
@@ -104,18 +117,28 @@ internal class PostgresSelect(
         val nodes = paths.associateWith { scope.row(it.column) }
         val filtered = listOfNotNull(predicate(spec.conditions))
 
-        // A key is one column, and a text key no field declares is two: see keyColumns.
+        // The columns the groups are ordered or filtered by through a node that has the value: see the KDoc.
+        val compared = (query.orders.map { it.column } + spec.havings.map { it.aggregate }).filter { column ->
+            when (column) {
+                is Key<*> -> (column.source as? KeySource.Property)?.propertyName?.let { it != Stamps.PROPERTY } == true
+                is Aggregate<*> -> column.function == GroupFunction.MIN || column.function == GroupFunction.MAX
+            }
+        }.toSet()
+
         val pairs = scope.row("pair")
         val keys = spec.keys.associateWith { key ->
             when (val from = key.source) {
-                is KeySource.Property -> keyColumns(query, key.column, from.propertyName)
-                is KeySource.Path -> listOf(key.column to "$pairs.${key.column}")
+                is KeySource.Property -> keyValue(from.propertyName)
+                is KeySource.Path -> "$pairs.${key.column}"
             }
         }
-        val selected = keys.values.flatten().map { (column, expression) -> "$expression AS $column" } +
-            spec.aggregates.map { "${aggregate(it)} AS ${it.column}" }
+        val representatives = compared.filterIsInstance<Key<*>>().map { "MIN($root.nid) AS ${it.column}$REPRESENTATIVE" }
+        val selected = keys.map { (key, expression) -> "$expression AS ${key.column}" } +
+            spec.aggregates.flatMap { aggregate ->
+                aggregate(aggregate).let { (value, node) -> listOf("$value AS ${aggregate.column}") + if (aggregate in compared) listOf("$node AS ${aggregate.column}$REPRESENTATIVE") else emptyList() }
+            } + representatives
         val select = selected.joinToString(",\n    ")
-        val grouping = "GROUP BY " + keys.values.flatten().joinToString(", ") { it.second }
+        val grouping = "GROUP BY " + keys.values.joinToString(", ")
 
         val grouped = if (paths.isEmpty()) {
             // A grouped read's source is a fragment, which requires no relationship.
@@ -133,7 +156,7 @@ internal class PostgresSelect(
             val where = listOfNotNull(PostgresSql.hasLabels(root, rootLabels())) + filtered
             val distinct = "SELECT DISTINCT $root.nid, ${paths.joinToString(", ") { "${nodes.getValue(it)}.nid AS ${it.column}" }}\n" +
                 "FROM ${graph.nodes} $root$walked" + if (where.isEmpty()) "" else "\nWHERE ${where.joinToString("\n  AND ")}"
-            // The root's own row is read only where a key or an aggregate reads a property of it.
+            // The root's own row is read only where a key or an aggregate reads it.
             val readsRoot = selected.any { "$root." in it }
             val from = "(\n    ${distinct.under()}\n) $pairs" + if (readsRoot) "\nJOIN ${graph.nodes} $root ON $root.nid = $pairs.nid" else ""
             "SELECT $select\nFROM $from\n$grouping"
@@ -141,17 +164,20 @@ internal class PostgresSelect(
 
         val groups = scope.row("g")
         val keyNodes = paths.associateWith { scope.row("${it.column}_node") }
-        val entries = spec.keys.flatMap { key -> keyNodes[key]?.let { listOf(key.column to document(it)) } ?: keys.getValue(key).map { (column, _) -> column to "$groups.$column" } } +
+        // A group always has a node with its key's value, and may have none with a least or greatest one.
+        val holders = compared.associateWith { scope.row("${it.column}_holder") }
+        val entries = spec.keys.map { key -> key.column to (keyNodes[key]?.let(::document) ?: "$groups.${key.column}") } +
             spec.aggregates.map { it.column to "$groups.${it.column}" }
-        val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" }
+        val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" } +
+            holders.entries.joinToString("") { (column, holder) -> "\nLEFT JOIN ${graph.nodes} $holder ON $holder.nid = $groups.${column.column}$REPRESENTATIVE" }
         return GraphStatement(
             buildString {
                 append("SELECT ").append(PostgresSql.jsonObject(entries)).append(" AS result")
                 append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
                 if (spec.havings.isNotEmpty()) {
-                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { "$groups.${it.aggregate.column} ${it.operator.cypherOperator} ${scope.bound(if (it.value is Boolean) it.value.toString() else it.value)}" })
+                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { having(it, groups, holders) })
                 }
-                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, keyNodes, keys[it.column].orEmpty().map { (column, _) -> column }) })
+                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, keyNodes, holders) })
                 spec.skip?.let { append("\nOFFSET ${scope.bound(it)} ROWS") }
                 spec.limit?.let { append("\nFETCH NEXT ${scope.bound(it)} ROWS ONLY") }
             },
@@ -160,65 +186,80 @@ internal class PostgresSelect(
     }
 
     /**
-     * An aggregate over the rows of a group, or over those that meet its filter. A filtered count is a
-     * sum of ones and zeros; any other filtered aggregate skips the rows that do not meet the filter,
-     * as it skips a null. SQL's sum over no values is null, and a grouped read's is 0.
+     * A property key's value: as the store holds it, which tells apart what Cypher does. The stamp is a
+     * column of its own, a text.
      */
-    private fun aggregate(aggregate: Aggregate<*>): String {
+    private fun keyValue(key: String): String =
+        if (key == Stamps.PROPERTY) property(root, key) else fragments.value(root, Fragments.property(key))
+
+    /**
+     * An aggregate over the rows of a group, or over those that meet its filter, and for a least or
+     * greatest value the id of a node that has it. A filtered count is a sum of ones and zeros; any
+     * other filtered aggregate skips the rows that do not meet the filter, as it skips a null. SQL's sum
+     * over no values is null, and a grouped read's is 0. A least or greatest value is the first of the
+     * group's values as Cypher orders them, nulls left out.
+     */
+    private fun aggregate(aggregate: Aggregate<*>): Pair<String, String?> {
         val filter = predicate(aggregate.filter)
         if (aggregate.function == GroupFunction.COUNT) {
-            return if (filter == null) "COUNT(*)" else "COALESCE(SUM(CASE WHEN $filter THEN 1 ELSE 0 END), 0)"
+            return (if (filter == null) "COUNT(*)" else "COALESCE(SUM(CASE WHEN $filter THEN 1 ELSE 0 END), 0)") to null
         }
         val key = requireNotNull(aggregate.propertyName)
-        // A sum and a mean read a number; the least and the greatest are of the kind the field declares.
-        val kind = if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) predicates.declaredKind(key) ?: SqlKind.TEXT else SqlKind.NUMBER
-        val stored = property(root, key, kind)
-        val value = if (filter == null) stored else "CASE WHEN $filter THEN $stored END"
-        return if (aggregate.function == GroupFunction.SUM) "COALESCE(SUM($value), 0)" else "${aggregate.function.name}($value)"
-    }
-
-    /**
-     * The columns a property key is grouped by, each with the expression that gives it: the key's own,
-     * `k0`, and for a property no field declares, `k0n`, its value where it is stored as a number and
-     * null for anything else: as text, a number would order `10` before `9`, and come back as text. A
-     * field that is no text is read as the kind it declares, and is one column.
-     */
-    private fun keyColumns(query: GroupQuery, column: String, key: String): List<Pair<String, String>> {
-        val field = query.field(key)
-        val plain = key == Stamps.PROPERTY || (field != null && field.type != String::class.java)
-        if (plain) return listOf(column to property(root, key, predicates.declaredKind(key) ?: SqlKind.TEXT))
-        return listOfNotNull(column to property(root, key), if (field == null) "$column${GroupQuery.NUMBER}" to PostgresSql.number(root, key) else null)
-    }
-
-    /**
-     * One term of a grouped read's order: a column of the row [groups], or for a node key the id of its
-     * node. A key no field declares is ordered as the graph engines order it, from the [columns] it is
-     * grouped by: the nodes with no value where the nulls go, and a number after every text.
-     */
-    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, columns: List<String>): String {
-        if (columns.size > 1) {
-            val key = "$groups.${order.column.column}"
-            val number = "$key${GroupQuery.NUMBER}"
-            val ascending = order.direction == OrderDirection.ASC
-            val nullsFirst = order.nulls?.let { it == NullPlacement.FIRST } ?: !ascending
-            val absent = "CASE WHEN $key IS NULL THEN ${if (nullsFirst) 0 else 1} ELSE ${if (nullsFirst) 1 else 0} END"
-            return listOf(absent, "$number ${if (ascending) "ASC NULLS FIRST" else "DESC NULLS LAST"}", "$key ${order.direction.name}").joinToString(", ")
+        if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) {
+            val present = fragments.condition(root, rootLabels(), emptyMap()) { "${Fragments.property(key)} IS NOT NULL" }
+            val kept = listOfNotNull(present, filter).joinToString(" AND ")
+            val order = fragments.order(root, aggregate.function == GroupFunction.MAX) { Fragments.property(key) }.joinToString(", ")
+            fun first(of: String) = "(array_agg($of ORDER BY $order) FILTER (WHERE $kept))[1]"
+            return first(fragments.value(root, Fragments.property(key))) to first("$root.nid")
         }
-        val node = nodes[order.column]
-        val term = if (node == null) {
-            "$groups.${order.column.column}"
-        } else {
+        val stored = property(root, key, SqlKind.NUMBER)
+        val value = if (filter == null) stored else "CASE WHEN $filter THEN $stored END"
+        return (if (aggregate.function == GroupFunction.SUM) "COALESCE(SUM($value), 0)" else "${aggregate.function.name}($value)") to null
+    }
+
+    /**
+     * One condition of a `having`: a count, a sum or a mean is a number, compared as one; a least or
+     * greatest value is compared as Cypher compares it, by the module, on the node of the group that has
+     * it ([holders]), and is no match where the group has none.
+     */
+    private fun having(having: HavingCondition, groups: String, holders: Map<GroupColumn<*>, String>): String {
+        val aggregate = having.aggregate
+        val holder = holders[aggregate] ?: return "$groups.${aggregate.column} ${having.operator.cypherOperator} ${scope.bound(if (having.value is Boolean) having.value.toString() else having.value)}"
+        val key = requireNotNull(aggregate.propertyName)
+        return fragments.condition(holder, rootLabels(), mapOf("value" to Fragments.value(having.operator, having.value))) { names ->
+            Fragments.compared(key, having.operator, names)
+        }
+    }
+
+    /**
+     * One term of a grouped read's order: a count, a sum or a mean as the number it is; a property key or
+     * a least or greatest value as Cypher orders it, over the node of the group that has it ([holders]);
+     * a node key by its node's id.
+     */
+    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, holders: Map<GroupColumn<*>, String>): String {
+        val descending = order.direction == OrderDirection.DESC
+        holders[order.column]?.let { holder ->
+            val key = when (val column = order.column) {
+                is Key<*> -> (column.source as KeySource.Property).propertyName
+                is Aggregate<*> -> requireNotNull(column.propertyName)
+            }
+            return fragments.ordered(holder, Fragments.property(key), descending, order.nulls).joinToString(", ")
+        }
+        nodes[order.column]?.let { node ->
             val target = query.target((order.column as Key<*>).source as KeySource.Path)
-            val id = requireNotNull(target.nodeIdProperty)
-            property(node, id, SqlKind.ofType(target.fields.firstOrNull { it.propertyName == id }?.type))
+            return fragments.ordered(node, Fragments.property(requireNotNull(target.nodeIdProperty)), descending, order.nulls).joinToString(", ")
         }
         val nulls = when (order.nulls) {
             NullPlacement.FIRST -> " NULLS FIRST"
             NullPlacement.LAST -> " NULLS LAST"
             null -> ""
         }
-        return "$term ${order.direction.name}$nulls"
+        return "$groups.${order.column.column} ${order.direction.name}$nulls"
     }
+
+    /** A collection sorted by a property of its nodes, as Cypher orders it, with the relationship's id to break a tie. */
+    override fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String =
+        (fragments.ordered(row, Fragments.property(sort.propertyName), !sort.ascending, null) + "$row.eid").joinToString(", ")
 
     /** What a load or a count asks of a root: its labels, [predicates], and the relationships the view requires. */
     private fun selected(predicates: List<String>): List<String> =
@@ -243,12 +284,12 @@ internal class PostgresSelect(
     override fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
 
     /**
-     * The root whose id is bound as [parameter]. A property is read as text, so the id is compared as
-     * its text: a number bound as one is not compared with a text.
+     * The root whose id is bound as [parameter], as the JSON the node holds it as ([org.drivine.backend.sql.NodeIds]): the
+     * property's JSON is compared with it, which a range index or a uniqueness constraint answers.
      */
     override fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        return "${property(root, idProperty)} = CAST(\$$parameter AS text)"
+        return PostgresSql.hasId(root, ValueLayout.escape(idProperty), "\$$parameter")
     }
 
     /**
@@ -287,7 +328,7 @@ internal class PostgresSelect(
 
     override fun withTarget(row: String, field: String, target: String): String = "($row.eprops || jsonb_build_object(${PostgresSql.literal(field)}, $target))"
 
-    override fun property(row: String, key: String, kind: SqlKind): String = PostgresSql.property(row, key, kind)
+    override fun property(row: String, key: String, kind: SqlKind): String = PostgresSql.property(row, ValueLayout.escape(key), kind)
 
     override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)
 
@@ -304,13 +345,14 @@ internal class PostgresSelect(
         val once = scope.row("once")
         val value = element(row, targetType, visits, relationship.fieldName)
         val order = pathOrder(relationship, steps, path)
+        val reached = rows.reached(PostgresRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty())
         val grouped = Query(
             "$path.nid${order?.selected.orEmpty()}",
-            rows.reached(PostgresRowSources.Anchor.row(parent), steps, path, extra = order?.columns.orEmpty()),
+            order?.from(reached) ?: reached,
             tail = listOf("GROUP BY $path.nid"),
         ).text()
-        val source = OnceReached(grouped, once, graph.nodes, row)
-        val sort = order?.by(once) ?: "$row.nid"
+        val source = OnceReached(grouped, once, graph.nodes, row, order?.joined(once).orEmpty())
+        val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
             "COALESCE(${Query(arrayOf(value, sort), source).nested()}, $emptyArray)"
         } else {
@@ -320,51 +362,52 @@ internal class PostgresSelect(
 
     /**
      * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
-     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
-     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
-     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
-     * engines order them, every text comes before every number, lowest first; and a node of the hop
-     * that has no value comes last whichever way the path is read.
+     * first node of that hop that leads to it, by the hop's property as Cypher orders it, the lowest or,
+     * read highest first, the highest; a node of the hop that has no value is kept only where none has
+     * one, and comes last whichever way the path is read. The module orders the property, over the hop's
+     * node joined back by its id, as the node reached is ordered by the node it keeps.
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
         val hop = relationship.hops[i]
-        val node = rows.stepNode(steps, i, path)
-        val key = requireNotNull(hop.orderBy)
+        val key = Fragments.property(requireNotNull(hop.orderBy))
+        val step = scope.row("step")
+        val kept = scope.row("kept")
+        fun terms(row: String) = fragments.ordered(row, key, !hop.ascending, NullPlacement.LAST).joinToString(", ")
         return PathOrder(
-            listOf(
-                "order_number" to PostgresSql.number(node, key),
-                "order_text" to "CASE WHEN jsonb_typeof(${PostgresSql.value(node, key)}) = 'string' THEN ${property(node, key)} END",
-            ),
-            hop.ascending,
-            path,
+            listOf(ORDER_NODE to "${rows.stepNode(steps, i, path)}.nid"),
+            path, graph.nodes, step, kept, terms(step), terms(kept),
         )
     }
 
     /**
-     * The order of a path, read from the [columns] of each way to a node and kept for the node by
-     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
-     * has no value; `order_number` is the value of a number, and `order_text` of a text.
+     * The order of a path, by the hop's node each way to a node reached keeps: [columns] give each way's
+     * node of the hop, a row [step] of [nodes] reads it while the ways are grouped by the node reached,
+     * which keeps the first by [stepTerms], and a row [kept] reads that one for the order [keptTerms].
      */
-    private class PathOrder(val columns: List<Pair<String, String>>, private val ascending: Boolean, private val path: String) {
-        private val keep = if (ascending) "MIN" else "MAX"
-        private val direction = if (ascending) "ASC" else "DESC"
+    private class PathOrder(
+        val columns: List<Pair<String, String>>,
+        private val path: String,
+        private val nodes: String,
+        private val step: String,
+        private val kept: String,
+        private val stepTerms: String,
+        private val keptTerms: String,
+    ) {
+        /** The ways to the nodes reached, each joined to its node of the hop. */
+        fun from(reached: RowSource): RowSource = object : RowSource {
+            override val alias: String get() = reached.alias
+            override fun reading(readers: List<String>): String = "${reached.reading(readers)}\nJOIN $nodes $step ON $step.nid = $path.$ORDER_NODE"
+        }
 
-        /** What the ways grouped by the node reached keep of the order. */
-        val selected: String
-            get() = listOf(
-                ", $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL THEN 0 END) AS order_kind",
-                ", $keep($path.order_number) AS order_number",
-                ", $keep($path.order_text) AS order_text",
-            ).joinToString(" ")
+        /** What the ways grouped by the node reached keep of the order: the first node of the hop. */
+        val selected: String get() = ", (array_agg($step.nid ORDER BY $stepTerms))[1] AS $ORDER_NODE"
 
-        /** The order of the row [row]: the nodes with no value last, texts before numbers, then the value, with the node's id last. */
-        fun by(row: String): String = listOf(
-            "$row.order_kind $direction NULLS LAST",
-            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END $direction",
-            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END $direction",
-            "$row.nid",
-        ).joinToString(", ")
+        /** The join of the node of the hop that the grouped row [once] keeps. */
+        fun joined(once: String): String = "\nJOIN $nodes $kept ON $kept.nid = $once.$ORDER_NODE"
+
+        /** The order of the node reached, the row [row]: by the node of the hop it keeps, then by its own id. */
+        fun by(row: String): String = "$keptTerms, $row.nid"
     }
 
     // ----- Scored search -----
@@ -420,6 +463,8 @@ internal class PostgresSelect(
     /**
      * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
      * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
+     * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
@@ -431,8 +476,8 @@ internal class PostgresSelect(
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val embedded = dimensions?.let { PostgresSql.holdsEmbedding("c", key, it) } ?: "jsonb_typeof(${PostgresSql.value("c", key)}) = 'array'"
         val members = Query(
-            "c.nid, ${property("c", idProperty)} AS id, c.props", Table(graph.nodes, "c"),
-            listOfNotNull(PostgresSql.hasLabels("c", rootLabels()), embedded, "${property("c", idProperty)} IN (${PostgresSql.values(scope.bound(ids), SqlKind.TEXT)})"),
+            "c.nid, ${PostgresSql.keyText("c", ValueLayout.escape(idProperty))} AS id, c.props", Table(graph.nodes, "c"),
+            listOfNotNull(PostgresSql.hasLabels("c", rootLabels()), embedded, PostgresSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids))),
         )
         val nearest = if (dimensions == null) {
             val distance = "${PostgresSql.embedding("o", key)} ${PostgresSql.distance(similarity)} ${PostgresSql.embedding("s", key)}"
@@ -525,13 +570,13 @@ internal class PostgresSelect(
     // ----- A traversal on its own -----
 
     /**
-     * Whether the root is a node that the node of [labels] whose id is bound as [parameter] is related
-     * to by a relationship of [type] in [direction].
+     * Whether the root is a node that the node of [labels] whose id is bound as [parameter], as the JSON the node holds it
+     * as, is related to by a relationship of [type] in [direction].
      */
     override fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
         val from = scope.row("from")
         val row = scope.row("related")
-        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull("${property(from, key)} = CAST(\$$parameter AS text)", PostgresSql.hasLabels(from, labels)))
+        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull(PostgresSql.hasId(from, ValueLayout.escape(key), "\$$parameter"), PostgresSql.hasLabels(from, labels)))
         val reached = rows.reached(PostgresRowSources.Anchor.among(found.text()), listOf(Step(type, direction, emptyList())), row)
         return "$root.nid IN ${Query("$row.nid", reached).nested()}"
     }
@@ -542,5 +587,11 @@ internal class PostgresSelect(
 
         /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
         private const val MEMBERS = "members"
+
+        /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
+        private const val ORDER_NODE = "order_node"
+
+        /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
+        private const val REPRESENTATIVE = "r"
     }
 }

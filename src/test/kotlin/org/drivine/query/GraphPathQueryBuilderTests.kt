@@ -262,6 +262,36 @@ fun assertMixedOrderedPaths(load: (String, Class<*>) -> Any?) {
     assertEquals("Bergman", (load("mx", ActorLatestDirector::class.java) as ActorLatestDirector).director?.name)
 }
 
+/**
+ * Movies whose `year` is a moment: two at one instant at two offsets, and one an hour later. As text, `10:00+02:00`
+ * would sort after `09:00Z`; as Neo4j orders moments, by the instant and then the offset, the larger later, it is
+ * between `08:00Z` and `09:00Z`.
+ */
+const val TEMPORAL_SEED = """
+    CREATE (tm:PActor {id: 'tm', name: 'Timed', createdBy: 'path-test'})
+    CREATE (t1:PMovie {id: 't1', title: 'Plus two', year: datetime('2020-01-01T10:00:00+02:00'), createdBy: 'path-test'})
+    CREATE (t2:PMovie {id: 't2', title: 'Later', year: datetime('2020-01-01T09:00:00Z'), createdBy: 'path-test'})
+    CREATE (t3:PMovie {id: 't3', title: 'Utc', year: datetime('2020-01-01T08:00:00Z'), createdBy: 'path-test'})
+    CREATE (fellini:PDirector {id: 'fellini', name: 'Fellini', createdBy: 'path-test'})
+    CREATE (godard:PDirector {id: 'godard', name: 'Godard', createdBy: 'path-test'})
+    CREATE (hawks:PDirector {id: 'hawks', name: 'Hawks', createdBy: 'path-test'})
+    CREATE (tm)-[:ACTED_IN]->(t1) CREATE (tm)-[:ACTED_IN]->(t2) CREATE (tm)-[:ACTED_IN]->(t3)
+    CREATE (t1)-[:DIRECTED_BY]->(fellini) CREATE (t2)-[:DIRECTED_BY]->(godard) CREATE (t3)-[:DIRECTED_BY]->(hawks)
+"""
+
+/** What Neo4j reads from [TEMPORAL_SEED]: the directors by their movies' moments, by instant and then offset. */
+fun assertTemporalOrderedPaths(load: (String, Class<*>) -> Any?) {
+    assertEquals(
+        listOf("Hawks", "Fellini", "Godard"),
+        (load("tm", ActorDirectorsByYear::class.java) as ActorDirectorsByYear).directors.map { it.name },
+        "08:00Z, then 10:00+02:00 at the same instant and a larger offset, then 09:00Z",
+    )
+    assertEquals(
+        listOf("Godard", "Fellini", "Hawks"),
+        (load("tm", JavaActorDirectorsLatestFirst::class.java) as JavaActorDirectorsLatestFirst).directors.map { it.name },
+    )
+}
+
 /** The directors an actor worked with, by a property whose name is no identifier on its own. */
 @GraphView
 data class ActorDirectorsByReleaseYear(

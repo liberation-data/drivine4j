@@ -246,4 +246,30 @@ class JdbcResultMapperTest {
         assertEquals(3L, read[8])
         assertEquals(mapOf("x" to listOf(-0.5)), read[9])
     }
+
+    /** The JSON of a document as the store layout holds one: a moment as its tag, and a key that begins with `$` with one more. */
+    private val held = """{"at":{"${'$'}t":"datetime","v":"2024-03-01T12:00:00Z","s":"x"},"bag":[{"${'$'}${'$'}t":"date","${'$'}${'$'}${'$'}k":[{"${'$'}t":"date","v":"2024-03-01"}]}]}"""
+
+    /** [held] as the caller wrote it. */
+    private val written = mapOf("at" to "2024-03-01T12:00:00Z", "bag" to listOf(mapOf("${'$'}t" to "date", "${'$'}${'$'}k" to listOf("2024-03-01"))))
+
+    @Test
+    fun `a JSON column reads the store layout's tags as their text and its escaped keys as written, at any depth`() {
+        assertEquals(written, single(Column("DOC", "JSON", 2016)) { `when`(it.getString(1)).thenReturn(held) })
+        // A statement given NaN reads the same.
+        val rows = JdbcResultMapper.rows(resultSet(listOf(Column("doc", "jsonb", Types.OTHER))) { `when`(it.getString(1)).thenReturn(held) }, nonFinite = true)
+        assertEquals(written, rows.single().values.single())
+    }
+
+    @Test
+    fun `a SQLite document reads the store layout's tags and keys as a JSON column does, and a map written with NaN's key is that map`() {
+        fun read(text: String) = JdbcResultMapper.sqliteRows(resultSet(listOf(Column("doc", "TEXT", Types.VARCHAR))) { `when`(it.getObject(1)).thenReturn(text) }, json = true)
+            .single().values.single()
+        assertEquals(written, read(held))
+        // NaN as SQLite writes it, beside a caller's map of the same key, which the layout holds with one more `$`.
+        assertEquals(
+            listOf(Double.NaN, mapOf("${'$'}numberDouble" to "NaN")),
+            read("""[{"${'$'}numberDouble":"NaN"},{"${'$'}${'$'}numberDouble":"NaN"}]"""),
+        )
+    }
 }

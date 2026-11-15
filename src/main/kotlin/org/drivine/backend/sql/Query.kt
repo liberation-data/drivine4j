@@ -26,11 +26,12 @@ internal class Derived(private val query: String, override val alias: String) : 
 /**
  * The nodes [grouped] gives once each, as rows named [once], joined to their rows of [nodes], named
  * [row]: the Postgres and SQLite selects read a path's nodes so, each node once however many ways lead to it,
- * and the nodes a vector index finds for `nearestAmong`, each joined to its row among the roots searched.
+ * and the nodes a vector index finds for `nearestAmong`, each joined to its row among the roots searched. [joins]
+ * follow, for rows the query's order reads.
  */
-internal class OnceReached(private val grouped: String, private val once: String, private val nodes: String, private val row: String) : RowSource {
+internal class OnceReached(private val grouped: String, private val once: String, private val nodes: String, private val row: String, private val joins: String = "") : RowSource {
     override val alias: String get() = row
-    override fun reading(readers: List<String>): String = "(\n    ${grouped.under()}\n) $once\nJOIN $nodes $row ON $row.nid = $once.nid"
+    override fun reading(readers: List<String>): String = "(\n    ${grouped.under()}\n) $once\nJOIN $nodes $row ON $row.nid = $once.nid$joins"
 }
 
 /**

@@ -9,6 +9,9 @@ import org.drivine.annotation.Direction
 import org.drivine.annotation.Hop
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
+import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.test.OracleTestContainer
+import javax.sql.DataSource
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -478,6 +481,26 @@ abstract class GroupsContract {
         assertEquals(listOf(null to 1L, "intro" to 1L, "" to 2L), sections { section -> orderBy { section.desc() } })
         assertEquals(listOf(null to 1L, "" to 2L, "intro" to 1L), sections { section -> orderBy { section.asc().nullsFirst() } })
         assertEquals(listOf("intro" to 1L, "" to 2L, null to 1L), sections { section -> orderBy { section.desc().nullsLast() } })
+    }
+
+    @Test
+    fun `min and max of a text count an empty text, the lowest text`() {
+        stateless.saveAll(
+            listOf(
+                Feedback("e1", "/a", section = ""),
+                Feedback("e2", "/a", section = "intro"),
+                Feedback("e3", "/b", section = ""),
+            )
+        )
+
+        val rows = feedback {
+            val page = key(query.page)
+            val least = min(query.section)
+            val most = max(query.section)
+            rows { listOf(it[page], it[least], it[most]) }
+        }
+
+        assertEquals(listOf(listOf("/a", "", "intro"), listOf("/b", "", "")), rows)
     }
 
     @Test
@@ -1072,6 +1095,38 @@ class GroupsMemgraphTest : GroupsContract() {
 @OracleTests
 class GroupsOracleTest : GroupsContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+
+    @Test
+    fun `a text key and a least or greatest text are ordered as Cypher orders them, whatever the session's NLS_SORT`() {
+        val plain = oracle.jdbc.pool.OracleDataSource().apply {
+            url = OracleTestContainer.getJdbcUrl()
+            user = OracleTestContainer.getConnectionUsername()
+            setPassword(OracleTestContainer.getConnectionPassword())
+        }
+        // Each session sorts text without case, as an application's may: "a" and "B" in the other order to Cypher's.
+        val folding = object : DataSource by plain {
+            override fun getConnection(): java.sql.Connection =
+                plain.connection.also { session -> session.createStatement().use { it.execute("ALTER SESSION SET NLS_SORT = BINARY_CI") } }
+        }
+        val provider = JdbcConnectionProvider("contracts", DatabaseType.ORACLE, folding, graphName = "contracts")
+        val folded = NonTransactionalPersistenceManager(provider, "contracts", DatabaseType.ORACLE, SubtypeRegistry())
+        assertEquals(
+            listOf<Any?>("BINARY_CI"),
+            folded.query(QuerySpecification.withStatement("SELECT value FROM nls_session_parameters WHERE parameter = 'NLS_SORT'").transform(String::class.java)),
+        )
+        val stateless = StatelessGraphObjectManager(folded, Neo4jObjectMapper.instance, SubtypeRegistry())
+        stateless.saveAll(listOf(Feedback("c1", "a", section = "a"), Feedback("c2", "B", section = "B"), Feedback("c3", "B", section = "a")))
+
+        val rows = stateless.groups.load(Feedback::class.java, FeedbackQueryDsl.INSTANCE) {
+            val page = key(query.page)
+            val least = min(query.section)
+            val most = max(query.section)
+            rows { listOf(it[page], it[least], it[most]) }
+        }
+
+        // Cypher orders text by its code points: "B" before "a".
+        assertEquals(listOf(listOf("B", "B", "a"), listOf("a", "a", "a")), rows)
+    }
 }
 
 @PostgresTests

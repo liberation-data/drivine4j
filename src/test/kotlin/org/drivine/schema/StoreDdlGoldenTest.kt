@@ -1,5 +1,6 @@
 package org.drivine.schema
 
+import org.drivine.cypher.store.ddl.GeneratedFunctions
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.LabelledIndexCatalog
@@ -65,14 +66,28 @@ class StoreDdlGoldenTest {
     @Test
     fun `each SQL store's tables, and what finds them made, are as drivine4j made them`() {
         val tables = store["tables"]
-        assertEquals(texts(tables["postgres"]["ddl"]), postgres.ddl, "postgres ddl")
-        assertEquals(tables["postgres"]["ensuring"].textValue(), postgres.ensuring, "postgres ensuring")
-        assertEquals(texts(tables["oracle"]["ddl"]), oracle.ddl, "oracle ddl")
-        assertEquals(texts(tables["oracle"]["functions"]), oracle.functions, "oracle functions")
-        assertEquals(tables["oracle"]["ensuring"].textValue(), oracle.ensuring, "oracle ensuring")
+        // A function the module generates is held by its marker, which the module expands (GeneratedFunctions).
+        fun expanded(node: JsonNode) = GeneratedFunctions.expand(node.textValue())
+        assertEquals(tables["postgres"]["ddl"].map(::expanded), postgres.ddl, "postgres ddl")
+        assertEquals(expanded(tables["postgres"]["ensuring"]), postgres.ensuring, "postgres ensuring")
+        assertEquals(tables["oracle"]["ddl"].map(::expanded), oracle.ddl, "oracle ddl")
+        assertEquals(tables["oracle"]["functions"].map(::expanded), oracle.functions, "oracle functions")
+        assertEquals(expanded(tables["oracle"]["ensuring"]), oracle.ensuring, "oracle ensuring")
         assertEquals(texts(tables["sqlite"]["ddl"]), sqlite.ddl, "sqlite ddl")
         assertEquals(tables["sqlite"]["made"].textValue(), sqlite.made, "sqlite made")
         assertEquals(tables["sqlite"]["file"].textValue(), SqliteGraph.FILE, "sqlite file")
+    }
+
+    @Test
+    fun `each generated function is what store yaml's digests pin, and each Oracle function is of the version it pins`() {
+        // The test above expands a marker with the module drivine4j runs, so it can't tell a function changed from the one the
+        // spec's tag pinned: the digests can.
+        val generated = store["generated"]
+        for (form in GeneratedFunctions.FORMS) {
+            assertEquals(generated["digests"][form].textValue(), GeneratedFunctions.digest(form, graph), "digest of $form")
+        }
+        val pinned = generated["oracleVersions"].properties().associate { (name, version) -> name to version.textValue() }
+        assertEquals(pinned, oracle.store.versions)
     }
 
     @Test

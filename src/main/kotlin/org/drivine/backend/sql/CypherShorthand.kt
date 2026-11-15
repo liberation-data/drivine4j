@@ -6,9 +6,10 @@ package org.drivine.backend.sql
  * Cypher predicate makes are the same text on a SQL store; anything more is SQL, over the root's
  * columns `issue.props`, `issue.labels` and `issue.stamp`. Text inside a string literal is left as it is.
  * A property compared with `true` or `false` (`issue.locked = true`) is compared with the text a store
- * reads a JSON boolean as, since SQL compares no text with a boolean.
+ * reads a JSON boolean as, since SQL compares no text with a boolean. A property is read as text, a temporal value as the
+ * ISO 8601 text its tag holds (the store layout 2's `v`), so `issue.due < '2024-06-01'` compares that text.
  *
- * @param property how the store reads the property of a row, given the row and the property's name
+ * @param property how the store reads the property of a row as text, given the row and the property's name
  */
 internal class CypherShorthand(private val alias: String, private val row: String, private val property: (String, String) -> String) {
 

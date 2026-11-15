@@ -8,6 +8,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.Ordered
 import org.drivine.query.MIXED_SEED
+import org.drivine.query.TEMPORAL_SEED
+import org.drivine.query.assertTemporalOrderedPaths
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -171,6 +173,14 @@ class PostgresSmokeTest {
         PostgresTestDatabase.seed(pm, MIXED_SEED)
 
         assertMixedOrderedPaths { id, view -> manager.load(id, view) }
+    }
+
+    @Test
+    fun `a path ordered by a property that holds moments reads them by instant and then offset, as Neo4j does`() {
+        PostgresTestDatabase.clear(pm)
+        PostgresTestDatabase.seed(pm, TEMPORAL_SEED)
+
+        assertTemporalOrderedPaths { id, view -> manager.load(id, view) }
     }
 
     @Test

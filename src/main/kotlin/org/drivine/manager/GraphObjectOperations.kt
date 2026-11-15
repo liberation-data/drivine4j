@@ -145,6 +145,11 @@ interface GraphObjectOperations {
      * [GraphObjectManager] adds the loaded object to its session for dirty tracking;
      * [StatelessGraphObjectManager] remembers nothing.
      *
+     * On Oracle, Postgres and SQLite the id's text is first read as the `@NodeId` field's type, as Jackson reads that
+     * field, and found as a save writes it: `"5"` finds a `Long` id of 5, and `"2024-01-02"` a `LocalDate` one. Text that
+     * is no value of the type, `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. The graph
+     * engines compare the text as it is given.
+     *
      * @param id The ID value to search for
      * @param graphClass The graph object class to load
      * @return The graph object instance, or null if not found
@@ -252,7 +257,10 @@ interface GraphObjectOperations {
      * ```
      *
      * @param graphClass the `@GraphView` or `@NodeFragment` class whose root nodes the ids name
-     * @param ids the set: both the seeds searched from and the only ids that can come back
+     * @param ids the set: both the seeds searched from and the only ids that can come back. On Oracle, Postgres and SQLite
+     *   each is read as [load] reads an id's text, as the `@NodeId` field's type, and the roots are found through the index
+     *   over the id; each comes back as the text it was given, though the store holds other text of it, as
+     *   `2030-01-01T10:00:00` for a `LocalDateTime` given as `2030-01-01T10:00`
      * @param topK the most neighbours kept for each id
      * @param threshold optional minimum similarity (higher = closer); neighbours below it are dropped
      * @param property the `@VectorIndex` embedding property to search, when the fragment has several
@@ -403,7 +411,7 @@ interface GraphObjectOperations {
 
     /**
      * Deletes a graph object (GraphView or GraphFragment) from the database by its ID.
-     * Uses DETACH DELETE to also remove all relationships.
+     * Uses DETACH DELETE to also remove all relationships. The id is found as [load] finds it.
      *
      * @param id The ID value of the object to delete
      * @param graphClass The graph object class

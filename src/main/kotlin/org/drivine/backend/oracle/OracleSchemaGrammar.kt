@@ -27,17 +27,17 @@ import java.sql.SQLException
  * Indexes and constraints over a graph kept by Oracle. A property is a path into a JSON column, so
  * each is an index over an expression:
  *
- * - a range index is two indexes. One reads the property as text, the expression a save and a load
- *   by id find a node by, testing the label on what they find. It is over the property whatever the
- *   label, so two labels that index a property of one name share it. The other, the labelled index,
- *   reads the property of the nodes that carry the label and is null for every other node (see
- *   [OracleSql.labelled]): a filter on the nodes of the label is read through it, so that one index
- *   answers both the label and the property, and Oracle is not left to choose between the index over
- *   labels and the one over the property, which it does badly;
+ * - a range index is two indexes, each over the property's class and key as the store layout holds a value (see the
+ *   module's `OracleSql.indexClass` and `indexKey`), so a value is equal only to one of its own kind. One is over the
+ *   property whatever the label, so two labels that index a property of one name share it. The other, the labelled
+ *   index, is over the property of the nodes that carry the label and null for every other node (the module's
+ *   `OracleSql.labelledIndex`): an equality on the nodes of the label is read through it, so that one index answers both
+ *   the label and the property, and Oracle is not left to choose between the index over labels and the one over the
+ *   property, which it does badly;
  * - a uniqueness constraint is a unique index over the property of the nodes that carry the label,
- *   and null for every other node, which a unique index does not hold (see [OracleSql.unique]). It
- *   comes with the range index a node is found by. Over one property, its index is the same value
- *   as a labelled index would be, so it stands for one: a filter on the property is read through
+ *   and null for every other node, which a unique index does not hold (the module's `OracleSql.uniqueIndex`). It
+ *   comes with the range index over the property whatever the label. Over one property, its index is the same value
+ *   as a labelled index would be, so it stands for one: an equality on the property is read through
  *   it, and no labelled index is made beside it.
  *
  * A vector index is a table of embeddings beside the nodes, and a full-text index a table of their

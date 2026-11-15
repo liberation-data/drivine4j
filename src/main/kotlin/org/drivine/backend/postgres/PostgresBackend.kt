@@ -1,6 +1,9 @@
 package org.drivine.backend.postgres
 
+import org.drivine.backend.sql.storedProperty
+import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
+import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.CollectionSortSpec
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
@@ -52,9 +55,9 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         // Through the index for the label when one has been made for embeddings of the vector's size; else by measuring every node.
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
         val candidates = if (dimensions == vector.size) {
-            select.nearestThrough(index.label, index.property, dimensions, index.similarity, vector, searchK ?: topK)
+            select.nearestThrough(index.label, index.storedProperty, dimensions, index.similarity, vector, searchK ?: topK)
         } else {
-            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+            select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
@@ -65,7 +68,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
-        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, index.label, dimensions, searchK)
+        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold, index.label, dimensions, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
@@ -98,11 +101,14 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
 
     // ----- Writing -----
 
-    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    /**
+     * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
+     * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
+     */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${PostgresSql.property("n", root.idProperty)} = CAST(\$id AS text)", PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to PostgresSql.key(root.id)),
+            listOfNotNull(PostgresSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to NodeIds.json(root.id)),
     )
 
     /**

@@ -49,8 +49,8 @@ operator fun Number.times(other: Operand): OrderExpression = arithmetic(Arithmet
 
 /**
  * Division of real numbers on every backend: `3 / 2` is `1.5` even where both are whole numbers.
- * Division by zero is not: Oracle refuses the statement, and Neo4j does where the divisor is a whole
- * number. Guard a divisor that can be zero with a [case].
+ * Division by zero is not: Neo4j, Oracle, Postgres and SQLite fail the statement where the divisor is a
+ * whole-number zero, and FalkorDB and Memgraph run it. Guard a divisor that can be zero with a [case].
  */
 operator fun Operand.div(other: Operand): OrderExpression = arithmetic(ArithmeticOperator.DIVIDE, expression(), other.expression())
 

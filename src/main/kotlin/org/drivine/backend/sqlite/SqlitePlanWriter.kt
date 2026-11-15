@@ -154,7 +154,7 @@ internal class SqlitePlanWriter(
         var made = false
         var found: String? = null
         while (true) {
-            val row = find(shape, step["k"].asText())
+            val row = find(shape, step["id"])
             made = row == null
             var labels: ArrayNode
             var o: ObjectNode
@@ -269,7 +269,7 @@ internal class SqlitePlanWriter(
 
     /** Finds a node that must be there. */
     private fun ref(step: JsonNode) {
-        val row = find(shapes[step["s"].asInt()], step["k"].asText()) ?: throw Stopped(0)
+        val row = find(shapes[step["s"].asInt()], step["id"]) ?: throw Stopped(0)
         nodes[step["r"].asInt()] = row.nid
     }
 
@@ -326,7 +326,8 @@ internal class SqlitePlanWriter(
         val held = strings(step["held"]).toSet()
         val keep = flag(step, "keep", false)
         val delete = flag(step, "delete", false)
-        val key = SqliteSql.property("t", shape.key)
+        // Each target's id as the text the plan keys it by in `ids` and `held`: a temporal value's tag as its text.
+        val key = SqliteSql.keyText("t", shape.key)
         val labels = SqliteSql.hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()
         // A relationship from the node to itself is read as leaving it, and so once when both directions are read.
         val reached = statements.rows(
@@ -396,7 +397,7 @@ internal class SqlitePlanWriter(
      * the call hands back; one that does not meet the query is left as it is, and said to.
      */
     private fun patch(step: JsonNode) {
-        val row = find(shapes[step["s"].asInt()], step["k"].asText()) ?: return
+        val row = find(shapes[step["s"].asInt()], step["id"]) ?: return
         val fresh = step["fresh"].asText()
         val met = patchedIf?.let { query -> statements.rows(query, row.nid) { it.getLong(1) }.single() } ?: 1L
         var o = row.props.deepCopy()
@@ -423,12 +424,19 @@ internal class SqlitePlanWriter(
 
     // ----- Reading -----
 
-    /** The node of [shape] whose id is stored as [id], the first made where there are several; null where there is none. */
-    private fun find(shape: Shape, id: String): Row? {
+    /**
+     * The node of [shape] whose id is [id], the JSON the node holds it as (a step's `id`), the first made where there are
+     * several; null where there is none, or where the step gives no id. The id's class and key are compared with the
+     * property's ([SqliteSql.hasId]), as a range index or a uniqueness constraint is made over them, so the index answers
+     * the lookup, and a temporal id's tag is equal only to the same value's.
+     */
+    private fun find(shape: Shape, id: JsonNode?): Row? {
+        if (id == null || id.isNull) return null
         val labels = SqliteSql.hasLabels("n", shape.labels)?.let { " AND $it" }.orEmpty()
         return statements.rows(
-            "SELECT n.nid, n.labels, n.props, n.stamp FROM $nodesTable n WHERE ${SqliteSql.property("n", shape.key)} = ?$labels ORDER BY n.nid LIMIT 1",
-            id,
+            // The one value, numbered, so each place the comparison reads it is bound to it.
+            "SELECT n.nid, n.labels, n.props, n.stamp FROM $nodesTable n WHERE ${SqliteSql.hasId("n", shape.key, "?1")}$labels ORDER BY n.nid LIMIT 1",
+            json.writeValueAsString(id),
         ) { row(it) }.firstOrNull()
     }
 

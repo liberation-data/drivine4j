@@ -116,11 +116,11 @@ class OracleReservedNodesTest {
     // ----- The store's stamp -----
 
     @Test
-    fun `the stamp is made only when no node of its label has the key, and binds the four values the resolver gives`() {
+    fun `the stamp is made only when no node of its label has the key, and binds the five values the resolver gives`() {
         val assign = stamp.assignIfAbsent
 
-        assertEquals(setOf("key", "storeId", "assignedAt", "engine"), parameters(assign))
-        assertTrue(assign.startsWith("INSERT INTO g_node (labels, props)\nSELECT '[\"DrivineStore\"]', JSON_OBJECT('key' VALUE \$key, 'storeId' VALUE \$storeId, 'assignedAt' VALUE \$assignedAt, 'engine' VALUE \$engine)"), assign)
+        assertEquals(setOf("key", "storeId", "assignedAt", "engine", "layout"), parameters(assign))
+        assertTrue(assign.startsWith("INSERT INTO g_node (labels, props)\nSELECT '[\"DrivineStore\"]', JSON_OBJECT('key' VALUE \$key, 'storeId' VALUE \$storeId, 'assignedAt' VALUE \$assignedAt, 'engine' VALUE \$engine, 'layout' VALUE TO_NUMBER(\$layout))"), assign)
         assertTrue(
             assign.endsWith("WHERE NOT EXISTS (SELECT 1 FROM g_node n WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"DrivineStore\")') AND JSON_VALUE(n.props, '$.key') = \$key)"),
             assign,
@@ -128,10 +128,10 @@ class OracleReservedNodesTest {
     }
 
     @Test
-    fun `every stamp is read as a map of its id and when it was assigned, the oldest first and the id breaking a tie`() {
+    fun `every stamp is read as a map of its id, when it was assigned and its layout, the oldest first and the id breaking a tie`() {
         val read = stamp.readStamps
 
-        assertTrue(read.startsWith("SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$.storeId'), 'assignedAt' VALUE JSON_VALUE(n.props, '$.assignedAt') RETURNING JSON)"), read)
+        assertTrue(read.startsWith("SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$.storeId'), 'assignedAt' VALUE JSON_VALUE(n.props, '$.assignedAt'), 'layout' VALUE JSON_VALUE(n.props, '$.layout' RETURNING NUMBER) RETURNING JSON)"), read)
         assertTrue(read.endsWith("ORDER BY JSON_VALUE(n.props, '$.assignedAt'), JSON_VALUE(n.props, '$.storeId')"), read)
         // Every stamp of the label, whatever its key: a duplicate is to be seen, not hidden.
         assertFalse("\$" in read.replace("'$", "'"), read)

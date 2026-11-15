@@ -11,9 +11,6 @@ internal open class StatementScope(private val maxName: Int) {
     private val bindings = mutableMapOf<String, Any?>()
     private val names = mutableSetOf<String>()
 
-    /** The kind a property no field declares is read as, learnt from the cursor value a seek compares it with. */
-    val inferredKinds = mutableMapOf<String, SqlKind>()
-
     /**
      * The name of a row of the statement that stands for [name], a field of the model or what the row
      * is there for: `people_`, and `people2_` for the next row of that name, so that a statement reads

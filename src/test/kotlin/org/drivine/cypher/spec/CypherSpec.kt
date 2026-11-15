@@ -67,13 +67,21 @@ data class CypherSpec(
             return yaml.readValue<CypherSpec>(resource).copy(file = file)
         }
 
+        private const val NEO4J_PINNED = "liberation-data/drivine-cypher-spec#296"
+
         /**
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
-         * pass. Each is run, and fails as the issue says it does; one that passes fails the case, so that its hold is
-         * taken out when the fix lands. One that would [skip][Hold.skip] is not run, whatever other hold names it.
+         * pass, named by repository (`owner/repo#n`), as it may be the spec's or a library's. Each is run, and fails as
+         * the issue says it does; one that passes fails the case, so that its hold is taken out when the fix lands. One
+         * that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf()
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
+            // Neo4j 2026.10.1 refuses toString() of a list of one kind when it plans the statement,
+            // and Bolt sends a relationship the statement deleted with an empty type, where these steps pin answers.
+            "queries.yaml" to mapOf("toString() of a list or a map" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(4)))),
+            "results.yaml" to mapOf("A node and a relationship the statement deleted" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(1)))),
+        )
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
@@ -97,11 +105,14 @@ data class CypherSpec(
     }
 
     /**
-     * Steps held for [issue] on the stores or groups [on]: [steps] (from 1), or every step of the case where null. Where
-     * [skip], the step is not run, as running it harms the store for what runs after it, and the case ends there on that
-     * store, as the steps after it read what it would have written.
+     * Steps held for [issue], named by repository (`liberation-data/drivine4j#418`), on the stores or groups [on]: [steps]
+     * (from 1), or every step of the case where null. Where [skip], the step is not run, as running it harms the store
+     * for what runs after it, and the case ends there on that store, as the steps after it read what it would have written.
      */
-    internal data class Hold(val issue: Int, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
+    internal data class Hold(val issue: String, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
+
+    /** The steps of this file held on a store everywhere ([HELD]), to which a runner of a store of its own adds its own. */
+    internal fun held(): Map<String, List<Hold>> = HELD[file].orEmpty()
 
     /**
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
@@ -135,7 +146,7 @@ data class CypherSpec(
                 }.let { matching -> matching.firstOrNull { it.skip } ?: matching.firstOrNull() }
                 if (hold == null) check(case, index, step, store, run)
                 else if (hold.skip) break
-                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (#${hold.issue})"
+                else if (!stillFails(case, index, step, store, run)) passing += "step ${index + 1} (${hold.issue})"
             }
             if (passing.isNotEmpty()) {
                 fail("$file, ${case.name}: ${passing.joinToString()} held on $store, and passing: take them out of HELD.")

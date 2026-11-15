@@ -1,5 +1,6 @@
 package org.drivine.schema
 
+import org.drivine.cypher.store.ddl.GeneratedFunctions
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -222,7 +223,8 @@ class StorePlanGoldenTest {
 
     /** A statement of DDL, as drivine4j sends it: its text on a schema connection, or FalkorDB's command natively. */
     private fun ddl(node: JsonNode, round: Int, answer: Any?): Sent =
-        if (node.isTextual) Sent(SCHEMA, node.textValue(), emptyMap(), answer, round = round)
+        // A function the module generates is held in store.yaml by its marker, which the module expands (GeneratedFunctions).
+        if (node.isTextual) Sent(SCHEMA, GeneratedFunctions.expand(node.textValue()), emptyMap(), answer, round = round)
         else Sent(SCHEMA, texts(node["native"]).joinToString(" "), emptyMap(), answer, round = round)
 
     private fun ddlNodes(id: String, execute: JsonNode): List<JsonNode> {

@@ -282,7 +282,7 @@ class PostgresPropertyKeyIndexTest : PropertyKeyIndexContract() {
     }
 
     override fun probesIndex(plan: String) =
-        Regex("""Index Cond: \(\(props ->> '(id|$IMPORT_ID)'::text\) = """).containsMatchIn(plan) && "Seq Scan on ${GRAPH}_node" !in plan
+        Regex("""Index Cond: \(\(props -> '(id|$IMPORT_ID)'::text\) = """).containsMatchIn(plan) && "Seq Scan on ${GRAPH}_node" !in plan
 
     override fun analyze() = PostgresTestDatabase.run("ANALYZE ${GRAPH}_node")
 
@@ -305,7 +305,7 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
      * label, nor a full scan of the nodes.
      */
     override fun probesIndex(plan: String) =
-        Regex("""INDEX (UNIQUE|RANGE) SCAN\s*\|\s*${GRAPH.uppercase()}_UQ_""").containsMatchIn(plan) &&
+        Regex("""INDEX (UNIQUE|RANGE) SCAN\s*\|\s*${GRAPH.uppercase()}_UQ2_""").containsMatchIn(plan) &&
             "${GRAPH.uppercase()}_NODE_LABELS" !in plan &&
             !Regex("""TABLE ACCESS (STORAGE )?FULL\s*\|\s*${GRAPH.uppercase()}_NODE\b""").containsMatchIn(plan)
 
@@ -330,7 +330,7 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
     fun `a statement compiled without the graph's indexes compares the property as JSON alone, and tests the labels through their index`() {
         // A property with no index of its own: its labels tested by their text, the node table would be read whole (#638).
         val sql = OracleCypherCompiler(GRAPH).compile("UNWIND \$rows AS row MATCH (a:Person {id: row.s}) RETURN a.k", mapOf("rows" to listOf(mapOf("s" to "p1")))).sql
-        assertTrue(org.drivine.backend.oracle.OracleSql.unique("n2", "Person", listOf("id"), "id") !in sql, sql)
+        assertTrue(org.drivine.backend.oracle.OracleSql.labelled("n2", "Person", "id") !in sql, sql)
         assertTrue("CARDINALITY" !in sql, sql)
         assertTrue("JSON_EXISTS(n2.labels, '\$[*]?(@ == \"Person\")')" in sql, sql)
     }

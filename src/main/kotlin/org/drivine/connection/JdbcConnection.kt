@@ -313,6 +313,7 @@ class JdbcConnection(
                 graphName, spec.statement!!.text, spec.parameters,
                 nullsEqualStored = { OracleStoredFunctions.nullsEqual(connection, graphName) },
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
+                temporalArithmeticStored = { OracleStoredFunctions.temporalArithmetic(connection, graphName) },
                 typed = typed,
                 indexedProperties = OracleIndexedProperties.leading(connection, graphName) { sql -> query(QuerySpecification.withStatement(sql)) },
             )

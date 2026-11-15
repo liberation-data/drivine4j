@@ -9,7 +9,7 @@ package org.drivine.query.dsl.temporal
  * |---|---|
  * | Neo4j 5, Neo4j 4 | yes: `(p.x.epochMillis / 1000.0)` |
  * | Memgraph | yes: `(timestamp(p.x) / 1000000.0)` |
- * | Oracle | for a property a field declares as a moment; refused for any other |
+ * | Oracle, Postgres, SQLite | yes: Neo4j's Cypher, compiled by the shared compiler, whether or not a field declares the property |
  * | FalkorDB | refused: it stores a moment as its ISO-8601 text, and has no function that reads one as a number |
  * | any other grammar | refused |
  *

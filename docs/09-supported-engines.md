@@ -220,15 +220,42 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
 the `stamp` column, and a load returns it as `__drivine.stamp`. Deleting a node's row deletes its
 relationships with it. A third table, `<graph>_schema`, records the indexes and constraints Drivine
 made: see [Schema Management](10-schema-management.md#schema-management-indexes--constraints). Beside the tables the graph is made with
-three functions: `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
-by (see the notes below), and `<graph>_era` and `<graph>_era_date`, which renumber a year before 1 between Cypher's
-numbering and Oracle's as a date or a moment is read and written. Making them takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
-`CREATE TABLE` the tables take. A store an earlier version made gains those it lacks before the datasource's first connection, as a new one gains its tables. Where the
+five functions: `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
+by (see the notes below), `<graph>_era` and `<graph>_era_date`, which renumber a year before 1 between Cypher's
+numbering and Oracle's as a date or a moment is read and written, `<graph>_temporal_key`, which works out the key a
+temporal value sorts by, and `<graph>_temporal_arith`, which works out `+`, `-`, `*` and `/` of a temporal value read
+from the store. Making them takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
+`CREATE TABLE` the tables take. A store an earlier version made gains those it lacks before the datasource's first connection, as a new one gains its tables, and has one made again where it is not of the version this Drivine makes: each function's first line names its version, a digest of what makes it. Where the
 user that makes the graph may not make a function, the graph is made without them, and Drivine logs a warning once
 for the graph when a statement would call one, and looks for it again a minute later. Without `<graph>_nulls_equal`, a statement that writes, or the step of a `reduce`, compares two
 lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
-declares the function itself. Without the era functions, a statement gives the same rows, renumbering a year inline,
-but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a minute for a moment two `CALL`s deep.
+declares the function itself. Without the era functions or `<graph>_temporal_key`, a statement calls none of the three
+and gives the same rows, renumbering a year and working out a key inline, but Oracle takes longer to plan one of temporal
+arithmetic: seconds, and over a minute for a moment two `CALL`s deep. Without `<graph>_temporal_arith`, which calls the
+other three and so is not valid without them, `+`, `-`, `*` or `/` of a temporal value read from the store fails by name
+as the statement runs.
+
+**A graph an earlier Drivine wrote.** Oracle, Postgres and SQLite hold each value in store layout 2, as the shared
+compiler writes it: a temporal value as a tagged map of its ISO 8601 text and the key it orders by, and a property whose
+name begins with `$` under one more `$`. The graph's stamp, its `DrivineStore` node, names its layout, and the provider
+reads it on its first connection, before anything is made. A graph an earlier Drivine wrote in layout 1 that holds no
+node but Drivine's own, its stamp and its schema marker, has that layout's indexes dropped and is stamped layout 2.
+One that holds the application's nodes is refused, on that connection and every one after it, with a
+`StoreLayoutException` that names the graph and says what to do: export it with the Drivine version that wrote it, and
+import it with this one. Nothing is migrated. A graph a later Drivine stamped with a later layout is refused too.
+
+**Hand-written SQL and the indexes.** In layout 2, the index Drivine makes for a range index or a uniqueness
+constraint holds a property as layout 2 holds it, not as its text:
+
+- **Postgres:** the JSON value, `(props -> 'id')`. A test of `props ->> 'id'`, the text, reads no index.
+- **Oracle and SQLite:** two columns, the value's class and its key (`CASE JSON_VALUE(props, '$.id.type()' …) …` on
+  Oracle). A plain `JSON_VALUE(props, '$.id')` reads no index. On SQLite the index holds the label's nodes alone; on
+  Oracle one does, beside one over the property of every node, both in that form.
+
+So a hand-written statement, or a raw `whereClause`, that finds a node by its id the layout-1 way now reads every node
+of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went from 0.25 ms to 23 ms on Postgres and from
+0.42 ms to 238 ms on Oracle. Cypher, and the query DSL, write the indexed form: write the lookup in Cypher, or test
+`props -> 'id'` against a JSON value on Postgres.
 
 **Notes:**
 - Each Oracle session Drivine uses makes no adaptive plan (`ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE`).
@@ -418,15 +445,16 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   subqueries that read the path's nodes and relationships by the ids the `WITH` passes on read one row's path on every
   row ([#537](https://github.com/liberation-data/drivine4j/issues/537)). The plan gains a view and is otherwise the same,
   and an order the `WITH` sorts by is kept: 3,000 rows of `WITH p, a ORDER BY a.i RETURN nodes(p)` take about 90 ms.
-- openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
+- openCypher's temporal values are held as a tagged map of their ISO 8601 text and the key they order by, as the
+  store keeps one (see [A graph an earlier Drivine wrote](#oracle)). `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
   read (`d.year`, `t.hour`, `dur.days`), a duration is added to a moment or to another duration,
   `duration.between` and `truncate` work them out, and two moments compare as the moments they are. `truncate`
   takes each unit Neo4j does, from `millennium` to `microsecond`, and a map of fields to set on the value cut short
   (`date.truncate('month', d, {day: 2})`), but not yet a nanosecond, a week's or a quarter's field, or a named zone. A zoned
-  value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`); one read as a property sorts as
-  its text, and so does a map that holds one. A list of them, or a list of lists of them, sorts item by item
+  value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`), and so does one read as a property,
+  then by its offset: one instant at two offsets is two values. A list of them, or a list of lists of them, sorts item by item
   so in an `ORDER BY`, `min` and `max`. Oracle reads by their places, not with `JSON_TABLE`, the items of a
   list that holds temporal values the statement makes, at any depth: a list of them, a list of lists or of
   maps of them (`collect(DISTINCT [l, l])`), one a `CASE`, `coalesce` or `reduce` may give, or one taken back out
@@ -438,22 +466,22 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   the keys are faster than `JSON_TABLE` gave them. A zoned value keeps the offset it was written
   with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
-  and Postgres give its text. A value read from a property is of the kind its text tells, so
-  `n.day + duration('P1D')` adds a day to a date stored as `2024-03-15`. A year is numbered as Neo4j and ISO 8601
+  and Postgres give its text. A value read from a property is of the kind its tag tells, so
+  `n.day + duration('P1D')` adds a day to a stored date; a text is a text, never equal to a temporal value. A year is numbered as Neo4j and ISO 8601
   number it, where Oracle and Postgres keep no year 0: `0000` is 1 BC and `-0044` is 45 BC, made, read, worked out,
   truncated, written and read back ([#469](https://github.com/liberation-data/drivine4j/issues/469)). A stored value
   whose year is 1000 or later is read as before; one of an earlier year is read by its era, so a statement that reads a
   stored date or moment takes two to three times as long to compile, and an aggregate of temporal arithmetic runs 8 to
   10% slower (a `truncate` on Postgres, about 16%). Oracle counts days before 1582-10-15 by the Julian calendar, so the
-  day of the week, the ISO week, the day of the year and a leap day of such a date are not Neo4j's. On every SQL
-  store, two stored values BC compare by their text, which orders them backwards
-  ([#374](https://github.com/liberation-data/drivine4j/issues/374)). Two values the statement makes
+  day of the week, the ISO week, the day of the year and a leap day of such a date are not Neo4j's. Two values the statement makes
   neither of temporal (by a constructor, or a parameter of a `java.time` type) are not added, taken away,
   scaled or compared as moments.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
   (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`.
+  A property so written is read as text, a date or a moment as its ISO 8601 text, which no range index
+  holds: the query DSL's `where` is answered by one.
 - A save is one statement and checks the stamp, as on the graph engines. Another writer that changes a
   node in SQL should give it a new stamp too: the first sixteen characters of `stamp` for its
   properties or labels, the last sixteen for its relationships. `Stamps.setClause` and
@@ -468,14 +496,15 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
 - A delete can cascade with `DELETE_ALL` and with `DELETE_ORPHAN`.
 - Index the id of each node type you save: `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`
   makes a unique index and the index a node is found by. Without one a save reads the table.
-- A range index reads a property as text. A comparison or an order by a number or a moment is correct
-  and is not served by that index, so an ordered or keyset-paged load is given no index advice.
+- An order or a seek of a load sorts as Cypher does, every text before every number, and is not served
+  by a range index, so an ordered or keyset-paged load is given no index advice.
 - A range index is two indexes on Oracle: one over the property whatever the label, which a save and
   a load by id find a node by, and one over the property of the label's nodes alone. A `loadAll`, a
-  `count`, a `deleteAll` or a `groups` whose `where` compares an indexed property with a text (`eq`,
-  `gt`, `gte`, `lt`, `lte`) reads the second, and does not test the label on its own: the one index
-  answers both. What else the `where` holds is tested on the nodes it gives. `IN`, `neq`, a test of
-  part of a text, a comparison inside an `or`, and one with a number are read as before. A
+  `count`, a `deleteAll` or a `groups` whose `where` holds an `eq` of an indexed property that every
+  node it gives must pass reads the second, and does not test the label on its own: the one index
+  answers both, and holds each value's kind beside it, so an `eq` with a number is answered as one with
+  a text is. What else the `where` holds is tested on the nodes it gives. `IN`, `neq`, a comparison
+  that orders, a test of part of a text, and an `eq` inside an `or` or a `not` are read as before. A
   uniqueness constraint over one property already has an index over the label's nodes, its unique
   index, which reads the same value: a filter on that property is read through it, and no second
   one is made. A range index made by an earlier version is found, listed and dropped as it is, and
@@ -508,8 +537,8 @@ but Oracle takes longer to plan one of temporal arithmetic: seconds, and over a 
   regular Free image and not the slim one: without it, or with no index made, a search counts the
   words in the text of every node of the label, scores them by BM25 as Postgres does, and does see
   them. An `analyzer` is recorded with the index and not applied.
-- A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate, but for
-  `eqIgnoreCase` on a [`@CaseInsensitive`](#caseinsensitive-lookups-that-ignore-case) field whose copy is recorded.
+- A property over 4,000 bytes is stored and loaded whole, and a condition of the query DSL compares it whole:
+  `eq`, `in`, `contains`, `startsWith`, `endsWith` and the operators that ignore case find it.
 - The deprecated `GraphObjectManager.save` and `saveAll` throw `UnsupportedOperationException` on Oracle;
   that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
   neither do the migration tools `RelationshipDirectionRepair` and `PathRelationshipReport`, which are
@@ -541,8 +570,13 @@ SELECT JSON_OBJECT(
 FROM GRAPH_TABLE (drivine
     MATCH (claim_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(claim_.labels), ']'), '[') || ',"', ',"Claim","') > 0)
     COLUMNS (claim_.nid, claim_.props, claim_.doc)) claim_
-WHERE JSON_VALUE(claim_.props, '$.id') = $id
+WHERE CASE WHEN … THEN CASE JSON_VALUE(claim_.props, '$.id.type()' RETURNING VARCHAR2(16)) … END END = CASE WHEN … JSON($id) … END
+  AND CASE JSON_VALUE(claim_.props, '$.id.type()' RETURNING VARCHAR2(16)) … END = CASE JSON_VALUE(JSON($id), '$.type()' RETURNING VARCHAR2(16)) … END
 ```
+
+The root is found by its id's class and key, as the index over the property holds them (see
+[Schema Management](10-schema-management.md#schema-management-indexes--constraints)), compared with those of the id's
+JSON, bound as `$id`; the two expressions are cut short here.
 
 A relationship field is a query of its own, under the field it fills: Oracle does not let a
 `GRAPH_TABLE` name the row it is nested in, so each returns the node it starts from as `src` and is
@@ -552,17 +586,12 @@ one field is numbered (`people2_`), as when a condition on `people` is tested be
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
 which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
 of a relationship: the label, escaped as `JSON_SERIALIZE` escapes it, is looked for as one whole label
-among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. Where a range index on the label answers the `where`, the property is read as that
-index reads it and the label is not tested on its own:
-
-```sql
-SELECT n_.doc AS result
-FROM GRAPH_TABLE (drivine
-    MATCH (n_ IS node)
-    COLUMNS (n_.labels, n_.props, n_.doc)) n_
-WHERE CASE WHEN JSON_EXISTS(n_.labels, '$[*]?(@ == "Issue")') THEN JSON_VALUE(n_.props, '$.repoKey') END = $_p0
-  AND JSON_VALUE(n_.props, '$.state') = $_p1
-```
+among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. A `where`, an `orderBy` and a
+seek are the Cypher the query DSL writes for Neo4j, compiled by the shared compiler as one condition or order
+over the row, so they compare as Cypher does whatever kind a value is. Where a range index on the label answers
+an `eq`, the condition reads the property as that index reads it, and the label is not tested on its own. The
+statement then carries the compiler's hint, `SELECT /*+ NO_JSON_TABLE_TRANSFORM */`, in its outermost `SELECT`
+or `DELETE`.
 
 A `@GraphPath` field, and a list read to a depth, is the path's own rows grouped by the node reached,
 so each node is there once however many ways lead to it:
@@ -673,7 +702,8 @@ datasource's first connection:
 `labels` (a JSON array) and `props` as `jsonb`, and `<graph>_schema` for what schema management made.
 A GIN index over `labels` answers whether a node carries a label. Beside them are three functions,
 `<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A store that an
-earlier version of Drivine made is brought up to date on first use, and keeps its rows. A node's stamp
+earlier version of Drivine made in this store layout is brought up to date on first use, and keeps its rows; one
+in an earlier layout is judged as on [Oracle](#oracle). A node's stamp
 is the `stamp` column, returned by a load as `__drivine.stamp`. Deleting a node's row deletes its
 relationships with it.
 
@@ -710,7 +740,7 @@ relationships with it.
   ([#673](https://github.com/liberation-data/drivine4j/issues/673); the compiled read is
   [liberation-data/drivine#680](https://github.com/liberation-data/drivine/issues/680)). Autoanalyze puts it right on its
   own within about a minute with Postgres's default settings; a read planned before then is slow until it ends.
-- Temporal values are their ISO 8601 text, and a year before 1 is numbered, as on Oracle.
+- A temporal value is held as a tagged map of its ISO 8601 text and the key it orders by (`{"$t": "datetime", "v": "…", "s": "…"}`), and a year before 1 is numbered, as on Oracle.
 - Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
   so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
   from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
@@ -734,6 +764,8 @@ relationships with it.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
   (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`
   (`issue.props ->> 'state'`). Postgres's `?` operators cannot be used: JDBC takes a `?` for a parameter.
+  A property so written is read as text, a date or a moment as its ISO 8601 text, which no range index
+  holds: the query DSL's `where` is answered by one.
 - A save is a plan of steps, the same plan Oracle's block carries out, which `<graph>_write` carries
   out in one statement: applied whole or not at all, and stamped and checked as on the graph engines.
   A node is found by its id and its labels, then locked by its key and looked at again. Another writer
@@ -742,6 +774,11 @@ relationships with it.
   again, as on Neo4j, Memgraph and Oracle.
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own, in one
   transaction; `patchAll` writes 500 nodes to a statement.
+- A compiled walk of several hops over a large graph can be planned as a parallel hash join. That join can need more
+  shared memory than Docker gives a container by default (64 MB of `/dev/shm`), and then Postgres fails with
+  `could not resize shared memory segment … No space left on device`. Graph Bench's 4-hop walk over 1.5 million
+  relationships does. Give the container more shared memory (`docker run --shm-size=1g`, or `shm_size` in Compose), or
+  turn parallel query down for such statements (`max_parallel_workers_per_gather = 0`).
 - A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
 - A compiled `MATCH` that compares a property by `=` with a value a row holds (`UNWIND $rows AS row MATCH (n:Person {id:
   row.id})`, `UNWIND $ids AS id MATCH (n:Person {id: id})`, or `WHERE n.id = row.id`) is read through the range index or the uniqueness constraint over the property,
@@ -753,9 +790,9 @@ relationships with it.
   that may hold a list is compared as JSON alone, as before.
 - A number is compared and ordered as a number only where one is stored: the text `'7'` is not `7`,
   as on the graph engines. Postgres keeps an empty string apart from null, so `""` is a value.
-- Text is ordered by the database's collation, so a page of mixed-case text may not be in the order
-  Neo4j gives (`a, b, B` rather than `B, a, b`). The range indexes are made in that collation, so an
-  order and a seek are read through them.
+- A load's order and seek sort text by its code points, as Cypher does (`B, a, b`), not by the
+  database's collation, and every text before every number. No range index serves them, so an ordered
+  or keyset-paged load is given no index advice.
 - Compiled Cypher compares and sorts text by its code points, as Cypher does (`B, a, b`), not by the
   database's collation: in the `C` collation, whose byte order is code point order in a UTF-8 database.
   In a list the statement makes, such as `ORDER BY [n.last, n.first]`, a text is ordered by its code
@@ -831,8 +868,11 @@ SELECT jsonb_build_object(
         ) people_), '[]'::jsonb)) AS result
 FROM drivine_node claim_
 WHERE claim_.labels @> '["Claim"]'
-  AND (claim_.props ->> 'id') = CAST($id AS text)
+  AND (claim_.props -> 'id') = CAST($id AS jsonb)
 ```
+
+The root is found by its id's JSON, bound as `$id`, as the range index or the uniqueness constraint over the property
+holds it.
 
 **Testing.** `PostgresTestContainer` starts Postgres with pgvector (`pgvector/pgvector:pg17`; another
 with `POSTGRES_TEST_IMAGE` or `-Dtest.postgres.image`) and gives a user, `drivine`, and a database,
@@ -870,7 +910,10 @@ Compiled Cypher needs SQLite 3.53.2. Before it, a compiled statement writes a fl
 comes back as `0.3` (`sqlite-jdbc` 3.53.0.0 and 3.53.1.0 still do); SQLite 3.49 refuses a
 `CALL` subquery that groups by a variable it imports; and a SQLite before 3.47 refuses the `-> -1` that `last()` and a
 negative list index compile to (#565). So on an older `sqlite-jdbc` a Cypher statement is refused, saying which SQLite
-it found and that `sqlite-jdbc` is to be upgraded. Plain SQL, the schema manager and the rest work there as before.
+it found and that `sqlite-jdbc` is to be upgraded. Plain SQL and the schema manager are not refused there, and neither
+are the object managers, but their conditions and orders are the compiler's SQL too, and a least or greatest value of a
+grouped read, and a path's order, are an ordered aggregate (`json_group_array(… ORDER BY …)`), which SQLite before
+3.44 refuses: run them on 3.53.2 or later.
 
 ```yaml
 database:
@@ -944,8 +987,9 @@ There is no migration, as SQLite cannot change a table's key in place.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
-- Temporal values are their ISO 8601 text, and a moment is compared and ordered as nanoseconds since
-  the epoch, whatever offset it was written with. A year before 1 is numbered as Neo4j numbers it: `0000` is 1 BC and
+- A temporal value is held as a tagged map of its ISO 8601 text and the key it orders by, as on Postgres, and a
+  moment is compared and ordered by its instant, whatever offset it was written with; one instant written at two
+  offsets is still two values, which a grouped read's key keeps apart. A year before 1 is numbered as Neo4j numbers it: `0000` is 1 BC and
   `-0044` is 45 BC.
 - SQLite has one writer at a time, and transactions are serializable:
   - A transaction takes the file's write lock as it begins (`BEGIN IMMEDIATE`), so no write in it is

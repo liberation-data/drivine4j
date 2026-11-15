@@ -35,7 +35,7 @@ class SqliteGraphIntegrationTest {
     @Test
     fun `ensuring makes the tables, and ensuring again keeps what they hold`() {
         SqliteGraph(graph).ensure(manager)
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
 
         manager.execute(spec("INSERT INTO made_node (labels, props) VALUES ('[\"Person\"]', '{\"id\": \"ada\"}')"))
         SqliteGraph(graph).ensure(manager)
@@ -43,7 +43,7 @@ class SqliteGraphIntegrationTest {
 
         // A name in another case names the same tables, as Postgres folds it to.
         SqliteGraph("MADE").ensure(manager)
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
         assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM MADE_node")))
     }
 
@@ -55,7 +55,7 @@ class SqliteGraphIntegrationTest {
         } finally {
             pool.shutdown()
         }
-        assertEquals(listOf("made_edge", "made_node", "made_schema"), tables())
+        assertEquals(org.drivine.connection.layoutTables("made"), tables())
     }
 
     @Test
