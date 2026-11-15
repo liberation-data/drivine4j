@@ -345,6 +345,9 @@ class OrderExpressionTest {
         listOf("note", "seenAt", "rank").forEach { assertContains(order, "'\$.$it") }
         val bound = boundValues(statement)
         listOf("x", 3, asOfTag).forEach { assertTrue(it in bound, "$it is bound: $bound") }
+        // No index answers the equality, so no key of one is bound beside its value: every name bound is written.
+        val written = Regex("""\$(_[A-Za-z0-9_]+)""").findAll(statement.statement).map { it.groupValues[1] }.toSet()
+        assertEquals(statement.bindings.keys, written, "every name written is bound, and every bound name is written")
     }
 
     @Test

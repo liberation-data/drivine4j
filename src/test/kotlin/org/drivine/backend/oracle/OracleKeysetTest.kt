@@ -77,6 +77,8 @@ class OracleKeysetTest {
         val cypher = "(n.`title` > \$f1_c0 OR (n.`title` = \$f1_c0 AND n.`count` < \$f1_c1))"
         assertEquals(seek(cypher, mapOf("c0" to "m", "c1" to 7L)), sql)
         assertEquals(bound("c0" to "\"m\"", "c1" to "7"), select.bindings())
+        // The level's equality binds no key of an index beside the value, as none answers it: every name bound is read.
+        assertTrue(select.bindings().keys.all { "\$$it" in sql }, "${select.bindings()} in $sql")
     }
 
     @Test

@@ -93,6 +93,8 @@ class OraclePredicatesTest {
             assertEquals(expected(cypher, bound, value), sql, "$operator $given")
             // A pattern is bound as written: the module anchors it to the whole value, a leading flag group among it.
             assertEquals(listOf<Any?>(json(value)), bound.values.toList(), "$operator $given")
+            // Every name bound is one the predicate reads: no key of an index is bound where no index answers (#286).
+            assertTrue(bound.keys.all { "\$$it" in sql }, "$operator $given: $bound in $sql")
         }
     }
 
@@ -198,6 +200,7 @@ class OraclePredicatesTest {
         assertTrue(tied(sql, "claim_") && "e2.type = 'MENTIONS'" in sql, sql)
         assertTrue("n1.props, '$.name'" in sql && "n1.props, '$.id'" in sql, sql)
         assertEquals(listOf<Any?>("\"ada\"", "\"h1\""), select.bindings().values.toList())
+        assertTrue(select.bindings().keys.all { "\$$it" in sql }, "${select.bindings()} in $sql")
     }
 
     @Test

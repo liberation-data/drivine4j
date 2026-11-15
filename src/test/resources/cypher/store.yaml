@@ -8603,3 +8603,40 @@ doubleKeys:
     - {double: "1.7976931348623157E308", key: "d1.7976931348623157E+308"}
     - {double: "2.2250738585072014E-308", key: "d2.2250738585072014E-308"}
     - {double: "4.9E-324", key: "d4.9406564584124654E-324"}
+indexKeys:
+  description: "What a range index or a uniqueness constraint of the layout 2 holds of a property, and so what a lookup by that property compares with it, worked out of a value given as the statement compiles (IndexKey.of): on Oracle and SQLite the value's class and key, as each store's index expression gives them over the property; null where the module works out none, and the store's SQL over the value is compared, as before. Postgres compares the value's JSON, and has none. A temporal value is given as its tag without its sort key `s`, which is worked out of its text, as ValueLayout.tag writes it at rest; one given with it is keyed by it. A library's runner stores each value with a key and checks each store's own index expressions give the class and key pinned (liberation-data/drivine-cypher-spec#286)."
+  values:
+    - {value: "p-123", oracle: ["string", "p-123"], sqlite: ["text", "p-123"]}
+    - {value: "a\"b é ✓", oracle: ["string", "a\"b é ✓"], sqlite: ["text", "a\"b é ✓"]}
+    - {value: "", oracle: null, sqlite: null}
+    - {value: {$repeat: "x", times: 4000}, oracle: ["string", {$repeat: "x", times: 4000}], sqlite: ["text", {$repeat: "x", times: 4000}]}
+    - {value: {$repeat: "x", times: 4001}, oracle: null, sqlite: null}
+    - {value: {$repeat: "é", times: 2000}, oracle: ["string", {$repeat: "é", times: 2000}], sqlite: ["text", {$repeat: "é", times: 2000}]}
+    - {value: {$repeat: "é", times: 2001}, oracle: null, sqlite: null}
+    - {value: true, oracle: ["boolean", "true"], sqlite: ["boolean", "1"]}
+    - {value: false, oracle: ["boolean", "false"], sqlite: ["boolean", "0"]}
+    - {value: 5, oracle: ["number", "5"], sqlite: ["number", "5"]}
+    - {value: -5, oracle: ["number", "-5"], sqlite: ["number", "-5"]}
+    - {value: 0, oracle: ["number", "0"], sqlite: ["number", "0"]}
+    - {value: 9007199254740993, oracle: ["number", "9007199254740993"], sqlite: ["number", "9007199254740993"]}
+    - {value: 9223372036854775807, oracle: ["number", "9223372036854775807"], sqlite: ["number", "9223372036854775807"]}
+    - {value: -9223372036854775808, oracle: ["number", "-9223372036854775808"], sqlite: ["number", "-9223372036854775808"]}
+    - {value: 2.5, oracle: null, sqlite: null}
+    - {value: 1.0, oracle: null, sqlite: null}
+    - {value: [1], oracle: null, sqlite: null}
+    - {value: {"a": 1}, oracle: null, sqlite: null}
+    - {value: null, oracle: null, sqlite: null}
+    - {value: {"$t": "date", "v": "2026-01-02"}, oracle: ["date", "10000020260102"], sqlite: ["date", "10000020260102"]}
+    - {value: {"$t": "date", "v": "-0001-01-01"}, oracle: ["date", "09999999990101"], sqlite: ["date", "09999999990101"]}
+    - {value: {"$t": "date", "v": "+10000-01-01"}, oracle: ["date", "10000100000101"], sqlite: ["date", "10000100000101"]}
+    - {value: {"$t": "localtime", "v": "10:15:30.123456789"}, oracle: ["localtime", "36930123456789"], sqlite: ["localtime", "36930123456789"]}
+    - {value: {"$t": "time", "v": "10:15:30+02:00"}, oracle: ["time", "094530000000000072000"], sqlite: ["time", "094530000000000072000"]}
+    - {value: {"$t": "localdatetime", "v": "2026-01-02T10:15:30"}, oracle: ["localdatetime", "10000020260102101530000000000"], sqlite: ["localdatetime", "10000020260102101530000000000"]}
+    - {value: {"$t": "datetime", "v": "2026-01-02T09:15:30Z"}, oracle: ["datetime", "10000020260102091530000000000064800"], sqlite: ["datetime", "10000020260102091530000000000064800"]}
+    - {value: {"$t": "datetime", "v": "2026-01-02T10:15:30+01:00"}, oracle: ["datetime", "10000020260102091530000000000068400"], sqlite: ["datetime", "10000020260102091530000000000068400"]}
+    - {value: {"$t": "datetime", "v": "2026-01-02T10:15:30+01:00", "s": "10000020260102091530000000000068400"}, oracle: ["datetime", "10000020260102091530000000000068400"], sqlite: ["datetime", "10000020260102091530000000000068400"]}
+    - {value: {"$t": "duration", "v": "P1Y2M3DT4H5M6.5S"}, oracle: ["duration", "P1Y2M3DT4H5M6.5S"], sqlite: ["duration", "P1Y2M3DT4H5M6.5S"]}
+    - {value: {"$t": "datetime", "v": "not a moment"}, oracle: null, sqlite: null}
+  keys:
+    - {key: "id"}
+    - {key: "$id", stored: "$$id"}

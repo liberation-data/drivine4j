@@ -225,6 +225,45 @@ cases:
       - cypher: "MATCH (:CyWrite)-[r]-() RETURN r"
         rows: []
 
+  - name: "A write whose returned rows fail as they are read"
+    description: "A statement that writes and returns a row that fails as the statement runs keeps nothing it wrote or deleted. On Oracle a compiled write's block returned its rows by a cursor whose query ran only as the host read it, after the block's writes were done, and so kept them (liberation-data/drivine-cypher-spec#292)."
+    steps:
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - note: "keys() of a number read from data fails as the statement runs."
+        cypher: "MATCH (n:CyWrite) SET n.x = 1 RETURN keys(n.num)"
+        error: true
+      - cypher: "MATCH (n:CyWrite) RETURN n.x"
+        rows: [null]
+      - cypher: "MATCH (n:CyWrite) WITH n, n.num AS num DETACH DELETE n RETURN keys(num)"
+        error: true
+      - cypher: "MATCH (n:CyWrite) RETURN count(n)"
+        rows: [1]
+      - note: "A sort key that fails fails the statement as well, though it isn't returned: on Oracle the block reads the rows in their order."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) SET n.x = 1 RETURN n.num ORDER BY left('a', -n.num)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) RETURN n.x"
+        rows: [null]
+      - note: "Rows that don't fail are still returned in their order, a null one as null."
+        cypher: "UNWIND [2, 3] AS i CREATE (n:CyWrite {num: i}) RETURN n.none, n.num ORDER BY n.num DESC"
+        rows: [[null, 3], [null, 2]]
+      - cypher: "MATCH (n:CyWrite) SET n.x = n.num RETURN n.none ORDER BY n.num"
+        rows: [null, null, null]
+
+  - name: "A write that returns a value made anew each time it is read"
+    description: "On Oracle a write's returned rows, a row each, are worked out once in its block, to check them, and then again as the host reads them (liberation-data/drivine-cypher-spec#292). What the statement wrote is written once, and what it returns of it is what it wrote; a value made anew, as randomUUID(), is made anew."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "UNWIND range(1, 3) AS i CREATE (n:CyWrite {i: i, u: randomUUID()}) RETURN [size(n.u), size(randomUUID())]"
+        rows: [[36, 36], [36, 36], [36, 36]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) RETURN count(n), count(DISTINCT n.u)"
+        rows: [[3, 3]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite {i: 1}) SET n.v = randomUUID() RETURN n.v = n.v, size(n.v)"
+        rows: [[true, 36]]
+
   - name: "A write after a DELETE"
     description: "What a statement makes after it deletes is made anew, with no id of what it deleted, and a read after the DELETE finds none of it."
     steps:
@@ -276,8 +315,8 @@ cases:
         only: [neo4j, sql]
         cypher: "MATCH (n:CyWrite) DELETE n RETURN n.num"
         error: true
-      - note: "The statement failed, so the node is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a node it creates."
-        only: [neo4j, postgres, sqlite]
+      - note: "The statement failed, so the node is still there; Oracle kept it deleted until liberation-data/drivine-cypher-spec#292."
+        only: [neo4j, sql]
         cypher: "MATCH (n:CyWrite) RETURN count(n)"
         rows: [1]
       - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
@@ -319,8 +358,8 @@ cases:
         only: [neo4j, sql]
         cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN r.num"
         error: true
-      - note: "The statement failed, so the relationship is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a relationship it creates."
-        only: [neo4j, postgres, sqlite]
+      - note: "The statement failed, so the relationship is still there; Oracle kept it deleted until liberation-data/drivine-cypher-spec#292."
+        only: [neo4j, sql]
         cypher: "MATCH (:CyWrite)-[r]->() RETURN count(r)"
         rows: [1]
       - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
