@@ -347,12 +347,33 @@ fun expected(records: CypherValueRecords): CypherValueRecords = CypherValueRecor
 fun chain(e: Throwable): List<Throwable> = generateSequence(e) { it.cause?.takeIf { c -> c !== it } }.toList()
 
 /** Whether [e] is Drivine refusing, on purpose, what it does not compile. */
-fun isRefusal(e: Throwable): Boolean = chain(e).any { t ->
+fun isRefusal(e: Throwable, query: String? = null): Boolean = chain(e).any { t ->
     t is DrivineException && t.message.orEmpty().let { m ->
         m.contains("is not compiled to SQL yet") || m.contains("does not run on Oracle") || m.contains("do not run on Oracle") ||
-            m.contains("A path is not a value drivine gives the same on each store") || m.contains("does not run on") && m.contains("yet")
+            m.contains("A path is not a value drivine gives the same on each store") || m.contains("does not run on") && m.contains("yet") ||
+            subMicrosecondRefused(m, query)
     }
 }
+
+/**
+ * Whether the error [message] is the store's refusal of a fraction of a second past the microsecond, which it can't keep
+ * (drivine4j#421): by its words on SQLite and Postgres; on Oracle, where a refusal by name is a failing `TO_NUMBER` of its
+ * words, by ORA-01722 on their first letter, and only for a [query] that gives such a fraction ([subMicrosecond]), so no
+ * other failure of that kind is taken for it. Refused on purpose until drivine-cypher-spec#302 keeps such a fraction where
+ * no store timestamp holds the value.
+ */
+fun subMicrosecondRefused(message: String, query: String?): Boolean =
+    message.contains("past the microsecond isn't kept by the store") ||
+        message.contains("ORA-01722: unable to convert string value containing 'A'") && query != null && subMicrosecond(query)
+
+/**
+ * Whether [query] gives a temporal value a fraction of a second past the microsecond: a `nanosecond` or `nanoseconds` field
+ * that is no whole number of microseconds, or a time's or a duration's text with seven to nine places of its fraction, not
+ * all zero after the sixth.
+ */
+fun subMicrosecond(query: String): Boolean =
+    Regex("""nanoseconds?\s*:\s*(\d+)""").findAll(query).any { it.groupValues[1].toLong() % 1000 != 0L } ||
+        Regex("""\d[.,](\d{7,9})(?!\d)""").findAll(query).any { m -> m.groupValues[1].drop(6).any { it != '0' } }
 
 /** Whether [e] came from the database, not from Drivine. */
 fun isDatabaseError(e: Throwable): Boolean = chain(e).any { it is SQLException || it is org.neo4j.driver.exceptions.Neo4jException }
@@ -409,7 +430,7 @@ fun run(scenario: Scenario, store: Store): Verdict {
                 if (step.qt() !== `InitQuery$`.`MODULE$`) currentQuery = step.query() + (if (parameters.isEmpty()) "" else "  PARAMS $parameters")
                 val outcome = runCatching { store.query(step.query(), parameters) }
                 when (step.qt()) {
-                    `InitQuery$`.`MODULE$` -> outcome.exceptionOrNull()?.let { e -> return errorVerdict(e, "setup") }
+                    `InitQuery$`.`MODULE$` -> outcome.exceptionOrNull()?.let { e -> return errorVerdict(e, "setup", step.query()) }
                     `ExecQuery$`.`MODULE$`, `ControlQuery$`.`MODULE$` -> last = outcome
                     else -> {}
                 }
@@ -421,7 +442,7 @@ fun run(scenario: Scenario, store: Store): Verdict {
             }
             is ExpectResult -> {
                 val e = last.exceptionOrNull()
-                if (e != null) return errorVerdict(e, "query")
+                if (e != null) return errorVerdict(e, "query", currentQuery)
                 val want = expected(step.expectedResult())
                 val got = records(CollectionConverters.asJava(want.header()), last.getOrThrow())
                 val same = if (step.sorted()) want == got else want.equalsUnordered(got)
@@ -436,7 +457,7 @@ fun run(scenario: Scenario, store: Store): Verdict {
             is ExpectError -> {
                 val e = last.exceptionOrNull()
                 if (e == null) return Verdict(Outcome.WRONG_ERROR, "no-error", "expected ${step.errorType()} at ${step.phase()} (${step.detail()}), got ${last.getOrNull()?.take(10)}")
-                if (isRefusal(e)) return Verdict(Outcome.REFUSED, "refused-expected-error", describe(e))
+                if (isRefusal(e, currentQuery)) return Verdict(Outcome.REFUSED, "refused-expected-error", describe(e))
                 // The lenient score passes any error; the strict one keeps apart where it came from.
                 if (errorSource != "database") errorSource = if (isDatabaseError(e)) "database" else "drivine"
                 notes += "error ${step.errorType()}/${step.detail()} as ${describe(e).take(200)}"
@@ -464,9 +485,9 @@ fun run(scenario: Scenario, store: Store): Verdict {
     return Verdict(Outcome.PASS, if (notes.isEmpty()) "" else "pass-notes", notes.joinToString("; "), errorSource)
 }
 
-fun errorVerdict(e: Throwable, where: String): Verdict = when {
+fun errorVerdict(e: Throwable, where: String, query: String? = null): Verdict = when {
     e is Failed -> e.verdict
-    isRefusal(e) -> Verdict(Outcome.REFUSED, "refused-$where", describe(e))
+    isRefusal(e, query) -> Verdict(Outcome.REFUSED, "refused-$where", describe(e))
     isDatabaseError(e) -> Verdict(Outcome.CRASH, "db-error-$where", describe(e))
     // Drivine's own compile-time error, for a statement the TCK runs: a semantic or syntax error it should not raise.
     chain(e).any { it is DrivineException } -> Verdict(Outcome.WRONG_ERROR, "drivine-error-$where", describe(e))
