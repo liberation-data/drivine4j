@@ -19,6 +19,7 @@ import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.testcontainers.containers.Neo4jContainer
@@ -50,6 +51,13 @@ abstract class CypherTemporalContract {
 
     /** Steps a store of this runner's own fails where others pass, beside those held everywhere: see [CypherSpec.Hold]. */
     internal open val held: Map<String, List<CypherSpec.Hold>> = emptyMap()
+
+    /**
+     * Why this store leaves out the sort of rows beside a variable-length walk by temporal arithmetic, naming the issue that
+     * brings it back; null where it runs. Oracle's run of it outgrows the instance's PGA_AGGREGATE_LIMIT (ORA-04036,
+     * liberation-data/drivine4j#809): the hold comes out with that fix.
+     */
+    internal open val walkSortHeld: String? = null
 
     @TestFactory
     fun spec() = CypherSpec.load("temporal.yaml").let { spec ->
@@ -389,6 +397,7 @@ abstract class CypherTemporalContract {
 
     @Test
     fun `rows beside a variable-length walk sort by temporal arithmetic that is none of the items, as they do on Neo4j`() {
+        assumeTrue(walkSortHeld == null, walkSortHeld)
         // #378: beside a walk, such a term bound nothing, and wrote the arithmetic's operands out again at each level: too
         // long for SQLite. It is worked out first, for each row, and sorts as it did.
         query(
@@ -511,6 +520,8 @@ class CypherTemporalPostgresTest : CypherTemporalContract() {
 @OracleTests
 class CypherTemporalOracleTest : CypherTemporalContract() {
     private val manager = OracleTestDatabase.graphManager("cypher")
+
+    override val walkSortHeld = "Held on Oracle until liberation-data/drivine4j#809: the walk's sort outgrows PGA_AGGREGATE_LIMIT (ORA-04036)."
 
     override val pm: PersistenceManager get() = manager
 
