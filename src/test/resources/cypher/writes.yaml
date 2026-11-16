@@ -2436,3 +2436,363 @@ cases:
         cypher: "MATCH (n:CyWrite) WHERE NOT n.k = $g RETURN n.i ORDER BY n.i"
         parameters: {g: 1}
         rows: [0]
+
+  - name: "Numbers past a decimal number's range, compared with a given number and with each other"
+    description: "A double nearer 0 than 1e-130, or past 1e126, which a decimal NUMBER does not hold, compares as the double it is: with a given float or whole number, by each operator, and with another such property (drivine-cypher-spec#309)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: 1.0e-200}), (:CyWrite {i: 2, k: 1.0e-140}), (:CyWrite {i: 3, k: -1.0e-200}), (:CyWrite {i: 4, k: 0.0}), (:CyWrite {i: 5, k: 0}), (:CyWrite {i: 6, k: 1.0e200}), (:CyWrite {i: 7, k: -1.0e200}), (:CyWrite {i: 8, k: 1}), (:CyWrite {i: 9, k: 1.0e-120})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, false], [2, true], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, true], [2, false], [3, true], [4, true], [5, true], [6, true], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, true], [2, false], [3, true], [4, true], [5, true], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= 1.0e-140."
+        parameters: {g: 1.0e-140}
+        rows: [[1, false], [2, true], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, false], [2, false], [3, false], [4, true], [5, true], [6, false], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, true], [2, true], [3, true], [4, false], [5, false], [6, true], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, false], [2, false], [3, true], [4, false], [5, false], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, false], [2, false], [3, true], [4, true], [5, true], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, true], [2, true], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= 0.0."
+        parameters: {g: 0.0}
+        rows: [[1, true], [2, true], [3, false], [4, true], [5, true], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= 0."
+        parameters: {g: 0}
+        rows: [[1, false], [2, false], [3, false], [4, true], [5, true], [6, false], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> 0."
+        parameters: {g: 0}
+        rows: [[1, true], [2, true], [3, true], [4, false], [5, false], [6, true], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< 0."
+        parameters: {g: 0}
+        rows: [[1, false], [2, false], [3, true], [4, false], [5, false], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= 0."
+        parameters: {g: 0}
+        rows: [[1, false], [2, false], [3, true], [4, true], [5, true], [6, false], [7, true], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> 0."
+        parameters: {g: 0}
+        rows: [[1, true], [2, true], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= 0."
+        parameters: {g: 0}
+        rows: [[1, true], [2, true], [3, false], [4, true], [5, true], [6, true], [7, false], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, false], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, false], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, true], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= 1.0e200."
+        parameters: {g: 1.0e+200}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= 1."
+        parameters: {g: 1}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, true], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> 1."
+        parameters: {g: 1}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, true], [7, true], [8, false], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< 1."
+        parameters: {g: 1}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, false], [7, true], [8, false], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= 1."
+        parameters: {g: 1}
+        rows: [[1, true], [2, true], [3, true], [4, true], [5, true], [6, false], [7, true], [8, true], [9, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> 1."
+        parameters: {g: 1}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, false], [9, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= 1."
+        parameters: {g: 1}
+        rows: [[1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k = m.k ORDER BY n.i, m.i"
+        note: "Two properties, =."
+        rows: [[1, 2, false], [1, 3, false], [1, 4, false], [1, 5, false], [1, 6, false], [1, 7, false], [1, 8, false], [1, 9, false], [2, 3, false], [2, 4, false], [2, 5, false], [2, 6, false], [2, 7, false], [2, 8, false], [2, 9, false], [3, 4, false], [3, 5, false], [3, 6, false], [3, 7, false], [3, 8, false], [3, 9, false], [4, 5, true], [4, 6, false], [4, 7, false], [4, 8, false], [4, 9, false], [5, 6, false], [5, 7, false], [5, 8, false], [5, 9, false], [6, 7, false], [6, 8, false], [6, 9, false], [7, 8, false], [7, 9, false], [8, 9, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k <> m.k ORDER BY n.i, m.i"
+        note: "Two properties, <>."
+        rows: [[1, 2, true], [1, 3, true], [1, 4, true], [1, 5, true], [1, 6, true], [1, 7, true], [1, 8, true], [1, 9, true], [2, 3, true], [2, 4, true], [2, 5, true], [2, 6, true], [2, 7, true], [2, 8, true], [2, 9, true], [3, 4, true], [3, 5, true], [3, 6, true], [3, 7, true], [3, 8, true], [3, 9, true], [4, 5, false], [4, 6, true], [4, 7, true], [4, 8, true], [4, 9, true], [5, 6, true], [5, 7, true], [5, 8, true], [5, 9, true], [6, 7, true], [6, 8, true], [6, 9, true], [7, 8, true], [7, 9, true], [8, 9, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k < m.k ORDER BY n.i, m.i"
+        note: "Two properties, <."
+        rows: [[1, 2, true], [1, 3, false], [1, 4, false], [1, 5, false], [1, 6, true], [1, 7, false], [1, 8, true], [1, 9, true], [2, 3, false], [2, 4, false], [2, 5, false], [2, 6, true], [2, 7, false], [2, 8, true], [2, 9, true], [3, 4, true], [3, 5, true], [3, 6, true], [3, 7, false], [3, 8, true], [3, 9, true], [4, 5, false], [4, 6, true], [4, 7, false], [4, 8, true], [4, 9, true], [5, 6, true], [5, 7, false], [5, 8, true], [5, 9, true], [6, 7, false], [6, 8, false], [6, 9, false], [7, 8, true], [7, 9, true], [8, 9, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k <= m.k ORDER BY n.i, m.i"
+        note: "Two properties, <=."
+        rows: [[1, 2, true], [1, 3, false], [1, 4, false], [1, 5, false], [1, 6, true], [1, 7, false], [1, 8, true], [1, 9, true], [2, 3, false], [2, 4, false], [2, 5, false], [2, 6, true], [2, 7, false], [2, 8, true], [2, 9, true], [3, 4, true], [3, 5, true], [3, 6, true], [3, 7, false], [3, 8, true], [3, 9, true], [4, 5, true], [4, 6, true], [4, 7, false], [4, 8, true], [4, 9, true], [5, 6, true], [5, 7, false], [5, 8, true], [5, 9, true], [6, 7, false], [6, 8, false], [6, 9, false], [7, 8, true], [7, 9, true], [8, 9, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k > m.k ORDER BY n.i, m.i"
+        note: "Two properties, >."
+        rows: [[1, 2, false], [1, 3, true], [1, 4, true], [1, 5, true], [1, 6, false], [1, 7, true], [1, 8, false], [1, 9, false], [2, 3, true], [2, 4, true], [2, 5, true], [2, 6, false], [2, 7, true], [2, 8, false], [2, 9, false], [3, 4, false], [3, 5, false], [3, 6, false], [3, 7, true], [3, 8, false], [3, 9, false], [4, 5, false], [4, 6, false], [4, 7, true], [4, 8, false], [4, 9, false], [5, 6, false], [5, 7, true], [5, 8, false], [5, 9, false], [6, 7, true], [6, 8, true], [6, 9, true], [7, 8, false], [7, 9, false], [8, 9, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k >= m.k ORDER BY n.i, m.i"
+        note: "Two properties, >=."
+        rows: [[1, 2, false], [1, 3, true], [1, 4, true], [1, 5, true], [1, 6, false], [1, 7, true], [1, 8, false], [1, 9, false], [2, 3, true], [2, 4, true], [2, 5, true], [2, 6, false], [2, 7, true], [2, 8, false], [2, 9, false], [3, 4, false], [3, 5, false], [3, 6, false], [3, 7, true], [3, 8, false], [3, 9, false], [4, 5, true], [4, 6, false], [4, 7, true], [4, 8, false], [4, 9, false], [5, 6, false], [5, 7, true], [5, 8, false], [5, 9, false], [6, 7, true], [6, 8, true], [6, 9, true], [7, 8, false], [7, 9, false], [8, 9, true]]
+
+  - name: "Numbers past a decimal number's range, ordered, aggregated and grouped"
+    description: "ORDER BY, min() and max(), IN, count(DISTINCT) and grouping hold such a double apart from 0 and from each other (drivine-cypher-spec#309)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: 1.0e-200}), (:CyWrite {i: 2, k: 1.0e-140}), (:CyWrite {i: 3, k: -1.0e-200}), (:CyWrite {i: 4, k: 0.0}), (:CyWrite {i: 5, k: 0}), (:CyWrite {i: 6, k: 1.0e200}), (:CyWrite {i: 7, k: -1.0e200}), (:CyWrite {i: 8, k: 1}), (:CyWrite {i: 9, k: 1.0e-120})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k, n.i"
+        note: "ORDER BY a number"
+        rows: [7, 3, 4, 5, 1, 2, 9, 8, 6]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k DESC, n.i"
+        note: "ORDER BY a number, descending"
+        rows: [6, 8, 9, 2, 1, 4, 5, 3, 7]
+      - cypher: "MATCH (n:CyWrite) RETURN [min(n.k), max(n.k)]"
+        note: "min and max"
+        rows: [[-1.0e+200, 1.0e+200]]
+      - cypher: "MATCH (n:CyWrite) WHERE n.i IN [1, 2, 3, 9] RETURN [min(n.k), max(n.k)]"
+        note: "min and max of the tiny ones"
+        rows: [[-1.0e-200, 1.0e-120]]
+      - cypher: "MATCH (n:CyWrite) WHERE n.k IN $l RETURN n.i ORDER BY n.i"
+        note: "IN a given list of floats"
+        parameters: {l: [1.0e-140, 1.0e+200]}
+        rows: [2, 6]
+      - cypher: "MATCH (n:CyWrite) WHERE n.k IN [1.0e-200, -1.0e200] RETURN n.i ORDER BY n.i"
+        note: "IN a list of literals"
+        rows: [1, 7]
+      - cypher: "MATCH (n:CyWrite) WHERE n.i IN [1, 2, 3, 6, 7, 9] RETURN count(DISTINCT n.k)"
+        note: "count of distinct doubles"
+        rows: [6]
+      - cypher: "MATCH (n:CyWrite) WHERE n.i IN [1, 2, 6, 7] RETURN n.k AS k, count(*) AS c ORDER BY k"
+        note: "grouped by a double"
+        rows: [[-1.0e+200, 1], [1.0e-200, 1], [1.0e-140, 1], [1.0e+200, 1]]
+
+  - name: "An integer and a float near 2^53, compared exactly"
+    description: "A whole number and a float compare by their exact values, not as doubles: the integer 2^53 + 1 is not the float 2^53, and the float 2^53 is the integer 2^53 (drivine-cypher-spec#309)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: 9007199254740993}), (:CyWrite {i: 2, k: 9007199254740992.0}), (:CyWrite {i: 3, k: 9007199254740992}), (:CyWrite {i: 4, k: 9007199254740994.0})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, false], [2, true], [3, true], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, true], [2, false], [3, false], [4, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, false], [2, false], [3, false], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, false], [2, true], [3, true], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, true], [2, false], [3, false], [4, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= the float 2^53, exactly"
+        parameters: {g: 9007199254740992.0}
+        rows: [[1, true], [2, true], [3, true], [4, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        note: "= the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, true], [2, false], [3, false], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <> $g ORDER BY n.i"
+        note: "<> the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, false], [2, true], [3, true], [4, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k < $g ORDER BY n.i"
+        note: "< the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, false], [2, true], [3, true], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k <= $g ORDER BY n.i"
+        note: "<= the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, true], [2, true], [3, true], [4, false]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k > $g ORDER BY n.i"
+        note: "> the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, false], [2, false], [3, false], [4, true]]
+      - cypher: "MATCH (n:CyWrite) RETURN n.i, n.k >= $g ORDER BY n.i"
+        note: ">= the integer 2^53 + 1, exactly"
+        parameters: {g: 9007199254740993}
+        rows: [[1, true], [2, false], [3, false], [4, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k = m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, ="
+        rows: [[1, 2, false], [1, 3, false], [1, 4, false], [2, 3, true], [2, 4, false], [3, 4, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k <> m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, <>"
+        rows: [[1, 2, true], [1, 3, true], [1, 4, true], [2, 3, false], [2, 4, true], [3, 4, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k < m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, <"
+        rows: [[1, 2, false], [1, 3, false], [1, 4, true], [2, 3, false], [2, 4, true], [3, 4, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k <= m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, <="
+        rows: [[1, 2, false], [1, 3, false], [1, 4, true], [2, 3, true], [2, 4, true], [3, 4, true]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k > m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, >"
+        rows: [[1, 2, true], [1, 3, true], [1, 4, false], [2, 3, false], [2, 4, false], [3, 4, false]]
+      - cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i RETURN n.i, m.i, n.k >= m.k ORDER BY n.i, m.i"
+        note: "two properties near 2^53, >="
+        rows: [[1, 2, true], [1, 3, true], [1, 4, false], [2, 3, true], [2, 4, false], [3, 4, false]]
+
+  - name: "NaN compared, ordered and counted"
+    description: "NaN is equal to nothing and is ordered against nothing; it sorts after every number, max() is NaN, and two are counted apart. Only where a write may store NaN: Postgres and SQLite refuse it (drivine-cypher-spec#309)."
+    steps:
+      - only: [neo4j, oracle]
+        cypher: "CREATE (:CyWrite {i: 1, k: $nan}), (:CyWrite {i: 2, k: $nan}), (:CyWrite {i: 3, k: 0.0}), (:CyWrite {i: 4, k: 1}), (:CyWrite {i: 5, k: 1.0e200})"
+        parameters: {nan: {$float: "NaN"}}
+        rows: []
+      - only: [neo4j, oracle]
+        note: "= of each pair"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i AND n.k = m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: []
+      - only: [neo4j, oracle]
+        note: "< of each pair"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i <> m.i AND n.k < m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: [[3, 4], [3, 5], [4, 5]]
+      - only: [neo4j, oracle]
+        note: "ORDER BY"
+        cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k, n.i"
+        rows: [3, 4, 5, 1, 2]
+      - only: [neo4j, oracle]
+        note: "ORDER BY DESC"
+        cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k DESC, n.i"
+        rows: [1, 2, 5, 4, 3]
+      - only: [neo4j, oracle]
+        note: "min and max"
+        cypher: "MATCH (n:CyWrite) RETURN [min(n.k), max(n.k)]"
+        rows: [[0.0, {$float: "NaN"}]]
+      - only: [neo4j, oracle]
+        note: "count(DISTINCT)"
+        cypher: "MATCH (n:CyWrite) RETURN count(DISTINCT n.k)"
+        rows: [5]
+      - only: [neo4j, oracle]
+        note: "= a given NaN"
+        cypher: "MATCH (n:CyWrite) WHERE n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: {$float: "NaN"}}
+        rows: []
+      - only: [neo4j, oracle]
+        note: "IN with NaN"
+        cypher: "MATCH (n:CyWrite) WHERE n.k IN $l RETURN n.i ORDER BY n.i"
+        parameters: {l: [{$float: "NaN"}, 1]}
+        rows: [4]
+
+  - name: "The infinities compared, ordered and aggregated"
+    description: "Infinity and -Infinity are the greatest and least numbers. Postgres refuses a write of either (drivine-cypher-spec#309)."
+    steps:
+      - only: [neo4j, oracle, sqlite]
+        cypher: "CREATE (:CyWrite {i: 1, k: $inf}), (:CyWrite {i: 2, k: $ninf}), (:CyWrite {i: 3, k: 1.0e200}), (:CyWrite {i: 4, k: 1})"
+        parameters: {inf: {$float: "Infinity"}, ninf: {$float: "-Infinity"}}
+        rows: []
+      - only: [neo4j, oracle, sqlite]
+        note: "= of each pair"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i AND n.k = m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: []
+      - only: [neo4j, oracle, sqlite]
+        note: "< of each pair"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i <> m.i AND n.k < m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: [[2, 1], [2, 3], [2, 4], [3, 1], [4, 1], [4, 3]]
+      - only: [neo4j, oracle, sqlite]
+        note: "ORDER BY"
+        cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k, n.i"
+        rows: [2, 4, 3, 1]
+      - only: [neo4j, oracle, sqlite]
+        note: "min and max"
+        cypher: "MATCH (n:CyWrite) RETURN [min(n.k), max(n.k)]"
+        rows: [[{$float: "-Infinity"}, {$float: "Infinity"}]]
+      - only: [neo4j, oracle, sqlite]
+        note: "= a given Infinity"
+        cypher: "MATCH (n:CyWrite) WHERE n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: {$float: "Infinity"}}
+        rows: [1]
+
+  - name: "A zero and a whole float compared, counted and grouped with the integer they equal"
+    description: "-0.0, 0.0 and 0 are equal and grouped together, and so are 1 and 1.0. Neo4j keeps -0.0's sign, returns it and orders it before 0.0; the SQL stores hold no negative zero, so those steps are Neo4j's alone (drivine-cypher-spec#314)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: $z}), (:CyWrite {i: 2, k: 0.0}), (:CyWrite {i: 3, k: 0}), (:CyWrite {i: 4, k: 1}), (:CyWrite {i: 5, k: 1.0})"
+        parameters: {z: -0.0}
+        rows: []
+      - note: "= of each pair"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i < m.i AND n.k = m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: [[1, 2], [1, 3], [2, 3], [4, 5]]
+      - note: "count(DISTINCT)"
+        cypher: "MATCH (n:CyWrite) RETURN count(DISTINCT n.k)"
+        rows: [2]
+      - note: "grouped by the value"
+        cypher: "MATCH (n:CyWrite) WITH n.k AS k, count(*) AS c RETURN c ORDER BY c"
+        rows: [2, 3]
+      - note: "WITH DISTINCT"
+        cypher: "MATCH (n:CyWrite) WITH DISTINCT n.k AS k RETURN count(*)"
+        rows: [2]
+      - note: "= a given -0.0"
+        cypher: "MATCH (n:CyWrite) WHERE n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: -0.0}
+        rows: [1, 2, 3]
+      - note: "ORDER BY, the zeros by their place"
+        cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k, n.i"
+        rows: [1, 2, 3, 4, 5]
+      - only: [neo4j]
+        note: "< of each pair: -0.0 before 0.0 and 0"
+        cypher: "MATCH (n:CyWrite), (m:CyWrite) WHERE n.i <> m.i AND n.k < m.k RETURN [n.i, m.i] ORDER BY n.i, m.i"
+        rows: [[1, 2], [1, 3], [1, 4], [1, 5], [2, 4], [2, 5], [3, 4], [3, 5]]
+      - only: [neo4j]
+        note: "ORDER BY DESC: -0.0 last"
+        cypher: "MATCH (n:CyWrite) RETURN n.i ORDER BY n.k DESC, n.i"
+        rows: [4, 5, 2, 3, 1]
+      - only: [neo4j]
+        note: "min is -0.0"
+        cypher: "MATCH (n:CyWrite) RETURN min(n.k)"
+        rows: [-0.0]
+      - only: [neo4j]
+        note: "-0.0 returned with its sign"
+        cypher: "MATCH (n:CyWrite {i: 1}) RETURN [n.k, toString(n.k)]"
+        rows: [[-0.0, "-0.0"]]

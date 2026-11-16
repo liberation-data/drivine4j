@@ -213,7 +213,8 @@ class OracleOneRowPlanTest {
     @Test
     fun `a CALL's projection of each row reads it as one row, in the query that reads it`() {
         val sql = compiled("MATCH (n:CyLoop) CALL (n) { SET n.y = n.i RETURN n.i AS j } RETURN count(j)")
-        val projection = Regex("""SELECT /\*\+ CARDINALITY\((r\d+) 1\) \*/ JSON\(JSON_QUERY\(JSON_SERIALIZE\(JSON_TRANSFORM\(n\d+\.props, KEEP '\$\.i'\)[^\n]*\n\s*r\d+\.item_no AS o1\n\s*FROM JSON_TABLE\(cy_rows, '\$\[\*]' COLUMNS \(item_no FOR ORDINALITY, item JSON PATH '\$'\)\) (r\d+)\n""")
+        val projection = Regex("""SELECT /\*\+ CARDINALITY\((r\d+) 1\) \*/ JSON\(JSON_QUERY\(JSON_SERIALIZE\(JSON_TRANSFORM\(n\d+\.props, KEEP '\$\.i'\)[^\n]*\n(?:\s*[^\n]* AS c1k\d,\n)*\s*r\d+\.item_no AS o1\n\s*FROM JSON_TABLE\(cy_rows, '\$\[\*]' COLUMNS \(item_no FOR ORDINALITY, item JSON PATH '\$'\)\) (r\d+)\n""")
+        // The value's number keys, where it may be a number, are carried beside it (drivine-cypher-spec#309).
         val found = projection.find(sql)
         assertTrue(found != null && found.groupValues[1] == found.groupValues[2], sql)
         // The loop over the call's rows, and the query of all the statement's rows after it, read them as before.

@@ -137,8 +137,8 @@ class OracleKeysetTest {
         assertEquals(seek("n.`score` > \$f1_c0", mapOf("c0" to 42)), numeric.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", 42)), 0))
         val textual = select()
         assertEquals(seek("n.`score` > \$f1_c0", mapOf("c0" to "b")), textual.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", "b")), 0))
-        // One condition for either kind: the cursor's value decides only what is bound.
-        assertEquals(seek("n.`score` > \$f1_c0", mapOf("c0" to 42)), seek("n.`score` > \$f1_c0", mapOf("c0" to "b")))
+        // The condition is the module's for the cursor's value, compiled for it: a number is compared by its keys, a text as a
+        // text (drivine-cypher-spec#309), so each kind compiles to a condition of its own.
         assertEquals(bound("c0" to "42"), numeric.bindings())
         assertEquals(bound("c0" to "\"b\""), textual.bindings())
     }

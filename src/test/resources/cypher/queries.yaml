@@ -8356,3 +8356,11 @@ cases:
       - cypher: "UNWIND $rows AS r RETURN [r.`$t`, r.a] ORDER BY r.a"
         parameters: {rows: [{"$t": 1, "a": 1}, {"$t": 2, "a": 2}]}
         rows: [[1, 1], [2, 2]]
+
+  - name: "A float literal with a signed exponent"
+    description: "A float's exponent may carry a + sign: 1.0e+2 is 100.0."
+    steps:
+      - note: "Neo4j reads a + in a float's exponent, where the SQL stores' parser doesn't yet, and refuse it (drivine-cypher-spec#313)."
+        cypher: "RETURN [1.0e+2, 1e+2, 1.5E+3]"
+        only: [neo4j]
+        rows: [[100.0, 100.0, 1500.0]]
