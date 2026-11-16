@@ -76,8 +76,9 @@ class OracleKeysetTest {
         )
         val cypher = "(n.`title` > \$f1_c0 OR (n.`title` = \$f1_c0 AND n.`count` < \$f1_c1))"
         assertEquals(seek(cypher, mapOf("c0" to "m", "c1" to 7L)), sql)
-        assertEquals(bound("c0" to "\"m\"", "c1" to "7"), select.bindings())
-        // The level's equality binds no key of an index beside the value, as none answers it: every name bound is read.
+        // The first key's value as JSON text, which `>` reads, and its key beside it, which the level's equality reads (spec#287).
+        assertEquals(mapOf<String, Any?>("_cy_f1_c0" to "\"m\"", "_cyk_f1_c0" to "m", "_cy_f1_c1" to "7"), select.bindings())
+        // Every name bound is read.
         assertTrue(select.bindings().keys.all { "\$$it" in sql }, "${select.bindings()} in $sql")
     }
 
@@ -89,8 +90,9 @@ class OracleKeysetTest {
             listOf(SeekValueSpec("n.count", 1L), SeekValueSpec("n.title", "t"), SeekValueSpec("n.id", "i")),
             0,
         )
-        assertEquals(bound("c0" to "1", "c1" to "\"t\"", "c2" to "\"i\""), select.bindings())
-        assertEquals(listOf("_cy_f1_c0", "_cy_f1_c1", "_cy_f1_c2"), select.bindings().keys.toList())
+        // Each value as JSON text, and the key of each one a level's equality compares beside it (spec#287); the last has no level.
+        assertEquals(mapOf<String, Any?>("_cy_f1_c0" to "1", "_cyk_f1_c0" to "1", "_cy_f1_c1" to "\"t\"", "_cyk_f1_c1" to "t", "_cy_f1_c2" to "\"i\""), select.bindings())
+        assertEquals(listOf("_cy_f1_c0", "_cyk_f1_c0", "_cy_f1_c1", "_cyk_f1_c1", "_cy_f1_c2"), select.bindings().keys.toList())
     }
 
     @Test

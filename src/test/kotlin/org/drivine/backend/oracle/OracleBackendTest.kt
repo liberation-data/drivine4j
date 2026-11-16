@@ -405,9 +405,10 @@ class OracleBackendTest {
         assertContains(sql, "AND EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE")
         assertContains(sql, "e2.src = claim_.nid")
         assertContains(sql, "e2.type = ''MENTIONS''")
-        assertContains(sql, "= JSON(:b0)")
-        assertContains(sql, "' USING \$_cy_param_people_name_0; v_count := SQL%ROWCOUNT;")
-        assertEquals(mapOf("_cy_param_people_name_0" to "\"Ada\""), statement.bindings)
+        // The value's key, which the equality compares the property with (liberation-data/drivine-cypher-spec#287).
+        assertContains(sql, "= :b0,")
+        assertContains(sql, "' USING \$_cyk_param_people_name_0; v_count := SQL%ROWCOUNT;")
+        assertEquals(mapOf("_cyk_param_people_name_0" to "Ada"), statement.bindings)
     }
 
     @Test
@@ -533,10 +534,11 @@ class OracleBackendTest {
         )
         // A String id is the value given, 7.0, which no node of a String id holds, as on the graph engines.
         // The predicate's values are the block's own parameters, handed to the query in the order it names them.
-        val text = "_cy_param_claim_text_0"
-        val name = "_cy_param_people_name_1"
+        // Each one the key of its value, which the equality compares its property with (spec#287).
+        val text = "_cyk_param_claim_text_0"
+        val name = "_cyk_param_people_name_1"
         assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK, text, name), patch.bindings.keys)
-        assertEquals(listOf<Any?>("\"one\"", "\"Ada\""), listOf(patch.bindings[text], patch.bindings[name]))
+        assertEquals(listOf<Any?>("one", "Ada"), listOf(patch.bindings[text], patch.bindings[name]))
         val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         // The fragments' hints in the query's SELECT, and a condition on a related node the module's EXISTS.
         assertContains(asked.squashed(), "SELECT /*+ NO_JSON_TABLE_TRANSFORM */ COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
@@ -560,7 +562,7 @@ class OracleBackendTest {
 
         val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         assertContains(asked, "cost\$_p0")
-        assertEquals("v_nid, \$_cy_param_n_name_0", patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";"))
+        assertEquals("v_nid, \$_cyk_param_n_name_0", patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";"))
         assertEquals(listOf(":b0", ":b1"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
     }
 
@@ -754,7 +756,7 @@ class OracleBackendTest {
         assertContains(sql, "COALESCE(SUM(CASE WHEN ${helpful(1, false)} THEN 1 ELSE 0 END), 0) AS a2")
         // Ordered by the key as Cypher orders it, read from a node of the group that holds it.
         assertTrue(sql.endsWith("WHERE g_.a0 >= \$_p2 ORDER BY ${terms("k0_holder_", "page")}"), sql)
-        assertEquals(mapOf<String, Any?>("_cy_param_n_helpful_0" to "true", "_cy_param_n_helpful_1" to "false", "_p2" to 3), groups.bindings)
+        assertEquals(mapOf<String, Any?>("_cyk_param_n_helpful_0" to "true", "_cyk_param_n_helpful_1" to "false", "_p2" to 3), groups.bindings)
     }
 
     @Test

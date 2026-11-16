@@ -63,8 +63,9 @@ class OracleLabelledIndexTest {
         // The fragment's hints in the outermost SELECT, and no label tested in the pattern.
         assertTrue(statement.statement.startsWith("SELECT /*+ NO_JSON_TABLE_TRANSFORM */ n_.doc AS result\nFROM GRAPH_TABLE (g\n    MATCH (n_ IS node)\n"), statement.statement)
         assertTrue(throughIndex(statement.statement.substringAfter("\nWHERE "), "Claim", "text"), statement.statement)
-        // The value bound as its JSON text, and beside it the key the index holds of it, a text's being the text itself.
-        assertEquals(mapOf<String, Any?>("_cy_param_n_text_0" to "\"x\"", "_cyk_param_n_text_0" to "x"), statement.bindings)
+        // The key the index holds of the value, a text's being the text itself, bound alone: the equality compares the property
+        // with it too, and reads the value's JSON text nowhere (liberation-data/drivine-cypher-spec#287).
+        assertEquals(mapOf<String, Any?>("_cyk_param_n_text_0" to "x"), statement.bindings)
         assertTrue(statement.bindings.keys.all { "\$$it" in statement.statement }, statement.statement)
     }
 
@@ -102,8 +103,9 @@ class OracleLabelledIndexTest {
             val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x"), condition("note", ComparisonOperator.EQUALS, "y")), indexed = true)!!
             assertTrue(throughIndex(sql, "Claim", "text"), sql)
             assertFalse(StoreSql.labelledIndex("n_", "Claim", "note").any { it in sql }, sql)
-            // The key of the index's text bound beside its value; the note, which no index begins with, has none.
-            assertEquals(listOf("_cy_param_n_text_0", "_cyk_param_n_text_0", "_cy_param_n_note_1"), select.bindings().keys.toList())
+            // Each value's key bound alone, as each equality compares its property with it (spec#287): the index's text, and the
+            // note, which no index begins with.
+            assertEquals(listOf("_cyk_param_n_text_0", "_cyk_param_n_note_1"), select.bindings().keys.toList())
             assertTrue(select.bindings().keys.all { "\$$it" in sql }, sql)
         }
     }
