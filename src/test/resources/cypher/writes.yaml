@@ -2609,7 +2609,8 @@ cases:
         note: "count of distinct doubles"
         rows: [6]
       - cypher: "MATCH (n:CyWrite) WHERE n.i IN [1, 2, 6, 7] RETURN n.k AS k, count(*) AS c ORDER BY k"
-        note: "grouped by a double"
+        note: "grouped by a double. Oracle groups a number as JSON, through a decimal NUMBER, so 1e200 with -1e200 and 1e-200 with 1e-140 (drivine-cypher-spec#315)."
+        except: [oracle]
         rows: [[-1.0e+200, 1], [1.0e-200, 1], [1.0e-140, 1], [1.0e+200, 1]]
 
   - name: "An integer and a float near 2^53, compared exactly"
@@ -2770,7 +2771,8 @@ cases:
       - note: "grouped by the value"
         cypher: "MATCH (n:CyWrite) WITH n.k AS k, count(*) AS c RETURN c ORDER BY c"
         rows: [2, 3]
-      - note: "WITH DISTINCT"
+      - note: "WITH DISTINCT. SQLite keeps a number distinct by its text, so 1 from 1.0 and 0 from 0.0 (drivine-cypher-spec#315)."
+        except: [sqlite]
         cypher: "MATCH (n:CyWrite) WITH DISTINCT n.k AS k RETURN count(*)"
         rows: [2]
       - note: "= a given -0.0"
@@ -2796,3 +2798,47 @@ cases:
         note: "-0.0 returned with its sign"
         cypher: "MATCH (n:CyWrite {i: 1}) RETURN [n.k, toString(n.k)]"
         rows: [[-0.0, "-0.0"]]
+
+  - name: "#309's remaining paths: a UNION's rows"
+    description: "A UNION keeps a double nearer 0 than a decimal holds apart from 0, and 1 and 1.0 as one, as Neo4j does. Oracle merges the double with 0, and SQLite keeps 1 and 1.0 apart, until #315."
+    steps:
+      - cypher: "RETURN 1.0e-200 AS k UNION RETURN 0 AS k UNION RETURN 1 AS k UNION RETURN 1.0 AS k"
+        except: [oracle, sqlite]
+        unordered: true
+        rows: [1.0e-200, 0, 1]
+
+  - name: "#309's remaining paths: lists and maps holding 1 and 1.0"
+    description: "A list or a map holding 1 is one with one holding 1.0 in count(DISTINCT), as Neo4j does. SQLite counts them apart until #315."
+    steps:
+      - cypher: "UNWIND [[1], [1.0], [2]] AS l RETURN count(DISTINCT l)"
+        except: [sqlite]
+        rows: [2]
+      - cypher: "UNWIND [{a: 1}, {a: 1.0}, {a: 2}] AS m RETURN count(DISTINCT m)"
+        except: [sqlite]
+        rows: [2]
+
+  - name: "#309's remaining paths: a number past a decimal's range in a list or a map"
+    description: "A list or a map holding such a double is equal only to one holding that double, as Neo4j does. Oracle finds them equal to one holding 0 or the other sign until #315."
+    steps:
+      - cypher: "RETURN [[1.0e-200] = [0], {a: 1.0e-200} = {a: 0}, [1.0e200] = [-1.0e200]]"
+        except: [oracle]
+        rows: [[false, false, false]]
+
+  - name: "#309's remaining paths: DISTINCT of float arithmetic"
+    description: "RETURN DISTINCT keeps 2 and 2.0 once, as Neo4j does. SQLite keeps them apart until #315."
+    steps:
+      - cypher: "CREATE (:CyWrite {k: 1}), (:CyWrite {k: 1.0})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN DISTINCT n.k + n.k AS s"
+        except: [sqlite]
+        rows: [2]
+
+  - name: "DISTINCT keeps the order its rows come in"
+    description: "WITH DISTINCT keeps each value where its first row came, in the order the rows come in, and a LIMIT after it keeps the first of them. Oracle keeps no order through a DISTINCT until #316."
+    steps:
+      - except: [oracle]
+        cypher: "UNWIND [{k: 3}, {k: 1}, {k: 2}, {k: 1}] AS m WITH m ORDER BY m.k DESC WITH DISTINCT m.k AS k RETURN collect(k)"
+        rows: [[3, 2, 1]]
+      - except: [oracle]
+        cypher: "UNWIND [{k: 3}, {k: 1}, {k: 2}, {k: 1}] AS m WITH m ORDER BY m.k DESC WITH DISTINCT m.k AS k LIMIT 2 RETURN collect(k)"
+        rows: [[3, 2]]
