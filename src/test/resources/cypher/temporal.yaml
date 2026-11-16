@@ -1137,7 +1137,7 @@ cases:
         error: true
 
   - name: "A nanosecond past the microsecond"
-    description: "A temporal value keeps its nanoseconds in its text on every store, written, stored and read back, compared and sorted by its key, and its fields read off its text. No store's timestamp keeps a nanosecond past the microsecond: Postgres's holds microseconds, Oracle's is written FF6, SQLite's to six places. So where a value is worked out through one, made of a nanosecond field, moved by a duration, truncated, converted, measured by duration.between, or a field read off it, as its week, day of the week or epochSeconds is, a nanosecond past the microsecond fails by name on the SQL stores, where they cut or rounded it away (drivine4j#421). Working it out exactly is drivine-cypher-spec#246. A date takes the whole days of a duration's time alone, so a duration's nanoseconds are no matter beside one."
+    description: "A temporal value keeps its nanoseconds in its text on every store, written, stored and read back, compared and sorted by its key, and its fields read off its text. No store's timestamp keeps a nanosecond past the microsecond: Postgres's holds microseconds, Oracle's is written FF6, SQLite's to six places. So where a value is worked out through one, moved by a duration, measured by duration.between, made of a map's fields over one that gives its time or over a moment with an offset moved to another timezone beside a nanosecond, or a field read off it, as its week, day of the week or epochSeconds is, a nanosecond past the microsecond fails by name on the SQL stores, where they cut or rounded it away (drivine4j#421). Working it out exactly is drivine-cypher-spec#246. A value made of a nanosecond field keeps all nine digits in its text, and a truncation, to a unit of a microsecond or coarser, or a conversion reads its text cut to the microsecond, a time keeping its fraction, so each gives Neo4j's answer (#302). A date takes the whole days of a duration's time alone, so a duration's nanoseconds are no matter beside one."
     steps:
       - note: "Kept: written, its text, its fields and its order."
         only: [neo4j, sql]
@@ -1150,13 +1150,28 @@ cases:
         only: [neo4j, sql]
         cypher: "RETURN toString(localtime({hour: 12, minute: 0, second: 0, nanosecond: 645876000}))"
         rows: ["12:00:00.645876"]
-      - note: "Refused: made of a nanosecond past the microsecond, written or bound."
-        only: [sql]
-        cypher: "RETURN localtime({hour: 12, minute: 0, second: 0, nanosecond: 645876123})"
-        error: true
-      - only: [sql]
-        cypher: "RETURN localtime({hour: 12, minute: 0, second: 0, nanosecond: $n})"
+      - note: "Kept: made of a nanosecond past the microsecond, written or bound, and compared, sorted, printed and read as it is (#302)."
+        only: [neo4j, sql]
+        cypher: "WITH localtime({hour: 12, minute: 31, second: 14, nanosecond: 645876123}) AS x, localtime({hour: 12, minute: 31, second: 14}) AS d RETURN [x > d, toString(x), x.nanosecond, x = localtime('12:31:14.645876123')]"
+        rows: [[true, "12:31:14.645876123", 645876123, true]]
+      - only: [neo4j, sql]
+        cypher: "RETURN toString(localtime({hour: 12, minute: 0, second: 0, nanosecond: $n}))"
         parameters: {n: 645876123}
+        rows: ["12:00:00.645876123"]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [3, 1, 2] AS n WITH datetime({year: 1984, month: 10, day: 11, hour: 12, nanosecond: n, timezone: '+01:00'}) AS t RETURN toString(t) ORDER BY t"
+        rows: ["1984-10-11T12:00:00.000000001+01:00", "1984-10-11T12:00:00.000000002+01:00", "1984-10-11T12:00:00.000000003+01:00"]
+      - note: "Kept: truncated, to any unit, each a microsecond or coarser; and converted to a date, or to a kind with a time, its fraction kept (#302)."
+        only: [neo4j, sql]
+        cypher: "WITH localdatetime({year: 1984, month: 11, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123}) AS o RETURN [toString(date.truncate('millennium', o)), toString(localdatetime.truncate('second', o)), toString(localtime.truncate('microsecond', o)), toString(date(o)), toString(localtime(o)), toString(localdatetime(o))]"
+        rows: [["1000-01-01", "1984-11-11T12:31:14", "12:31:14.645876", "1984-11-11", "12:31:14.645876123", "1984-11-11T12:31:14.645876123"]]
+      - note: "Kept: a date of a map whose date is of one (#302)."
+        only: [neo4j, sql]
+        cypher: "WITH localdatetime({year: 1984, month: 11, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123}) AS o RETURN [toString(date({date: o})), toString(date({date: o, day: 28})), toString(localdatetime({date: o, hour: 1}))]"
+        rows: [["1984-11-11", "1984-11-28", "1984-11-11T01:00"]]
+      - note: "Refused: worked out through the store's timestamp, a moment made of one moved."
+        only: [sql]
+        cypher: "RETURN localtime({hour: 12, minute: 0, second: 0, nanosecond: 645876123}) + duration('PT1S')"
         error: true
       - note: "Refused: a moment moved by a duration of a nanosecond past the microsecond, or a moment of one moved."
         only: [sql]
@@ -1171,6 +1186,10 @@ cases:
       - only: [neo4j, sql]
         cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN [toString(n.t), n.t.nanosecond, toString(n.at), toString(n.d)]"
         rows: [["12:00:00.000000001", 1, "2024-01-01T00:00:00.000000001", "PT0.000000001S"]]
+      - note: "Stored: truncated and converted from its text cut to the microsecond, a time's fraction kept (#302)."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN [toString(localtime.truncate('second', n.t)), toString(date(n.at)), toString(localtime(n.at))]"
+        rows: [["12:00", "2024-01-01", "00:00:00.000000001"]]
       - note: "Stored: refused as the statement runs through each path that reads a store's timestamp of it."
         only: [sql]
         cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN n.at + duration('PT1S')"
@@ -1180,12 +1199,6 @@ cases:
         error: true
       - only: [sql]
         cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN n.at + n.d"
-        error: true
-      - only: [sql]
-        cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN localtime.truncate('second', n.t)"
-        error: true
-      - only: [sql]
-        cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN date(n.at)"
         error: true
       - only: [sql]
         cypher: "MATCH (n:CyTemporal {id: 'ns'}) RETURN duration.between(n.at, localdatetime('2024-01-02T00:00:00'))"
