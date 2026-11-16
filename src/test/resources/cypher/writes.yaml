@@ -2842,3 +2842,19 @@ cases:
       - except: [oracle]
         cypher: "UNWIND [{k: 3}, {k: 1}, {k: 2}, {k: 1}] AS m WITH m ORDER BY m.k DESC WITH DISTINCT m.k AS k LIMIT 2 RETURN collect(k)"
         rows: [[3, 2]]
+
+  - name: "min() and max() of a whole number and an equal float keep the first of them"
+    description: "An integer and a float of one value tie in min() and max(), which give the one that came first (drivine-cypher-spec#309)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: 36}), (:CyWrite {i: 2, k: 36.0})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN [min(n.k), max(n.k)]"
+        rows: [[36, 36]]
+
+  - name: "min() and max() of a float and an equal whole number keep the first of them"
+    description: "As the case before, created the other way round: the float comes first, and is given (drivine-cypher-spec#309)."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 1, k: 36.0}), (:CyWrite {i: 2, k: 36})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN [min(n.k), max(n.k)]"
+        rows: [[36.0, 36.0]]
