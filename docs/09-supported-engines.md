@@ -215,8 +215,8 @@ val provider = JdbcConnectionProvider.pooled(
 there yet, before the datasource's first connection: `<graph>_node (nid, labels, props, stamp)` and
 `<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. A save and a `CREATE` hold a
 value alike: every float as a binary double, `2.0` as a float and not the number 2, and a `ByteArray` as the list of its
-signed bytes, `[1, 2, -1]`, as on Postgres and SQLite (a release before this one saved a float as a number and bytes
-as base64 text; such a node loads as before). Labels, property
+signed bytes, `[1, 2, -1]`, as on Postgres and SQLite (a release before this one saved a float as a number, and bytes,
+on every SQL store, as base64 text; such a node loads as before). Labels, property
 names and relationship types are data, so `@NodeLabels`, `@PropertyBag` and `edges.relate` work as
 they do elsewhere. To SQL written by hand the graph has one vertex label, `node`, and one edge label,
 `edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`. A node's stamp is
@@ -704,7 +704,9 @@ datasource's first connection:
 `<graph>_node (nid, labels, props, stamp)` and `<graph>_edge (eid, src, dst, type, props)`, with
 `labels` (a JSON array) and `props` as `jsonb`, and `<graph>_schema` for what schema management made.
 A GIN index over `labels` answers whether a node carries a label. Beside them are three functions,
-`<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A store that an
+`<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A save and a `CREATE` hold a
+`ByteArray` alike, as the list of its signed bytes, `[1, 2, -1]` (a release before this one saved it as base64 text;
+such a node loads as before). A store that an
 earlier version of Drivine made in this store layout is brought up to date on first use, and keeps its rows; one
 in an earlier layout is judged as on [Oracle](#oracle). A node's stamp
 is the `stamp` column, returned by a load as `__drivine.stamp`. Deleting a node's row deletes its
@@ -944,7 +946,9 @@ first connection, with `labels` and `props` as JSON text (not SQLite's binary
 `jsonb`, so Drivine for TypeScript and for Python read the same file), and `<graph>_schema` for what
 schema management made. A save is the plan of steps the other stores carry out, carried out by the
 function `drivine_write` that Drivine registers on each connection: applied whole or not at all, and
-stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
+stamped and checked as elsewhere. A save and a `CREATE` hold a `ByteArray` alike, as the list of its signed bytes,
+`[1, 2, -1]` (a release before this one saved it as base64 text; such a node loads as before). Deleting a node's row
+deletes its relationships with it.
 
 `nid` and `eid` are `INTEGER PRIMARY KEY AUTOINCREMENT`, so the id of a node or relationship that is deleted is
 never given to another, within a statement, a transaction or after it, as on Oracle and Postgres: an element id an
