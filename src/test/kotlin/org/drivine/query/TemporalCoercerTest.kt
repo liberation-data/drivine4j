@@ -65,6 +65,19 @@ class TemporalCoercerTest {
     }
 
     @Test
+    fun `a duration and a period are coerced to their ISO 8601 text, alone and in a list or a map`() {
+        // #833: bind() keeps each as it is, and FalkorDB's client refuses a parameter of a type it doesn't know.
+        val d = java.time.Duration.ofMillis(-1500)
+        val p = java.time.Period.ofMonths(14)
+        val out = TemporalCoercer.coerce(mapOf("d" to d, "p" to p, "list" to listOf(d, p), "map" to mapOf("d" to d)))
+
+        assertEquals("PT-1.5S", out["d"])
+        assertEquals("P14M", out["p"])
+        assertEquals(listOf("PT-1.5S", "P14M"), out["list"])
+        assertEquals(mapOf("d" to "PT-1.5S"), out["map"])
+    }
+
+    @Test
     fun `list of temporal values is coerced recursively`() {
         val a = Instant.parse("2026-04-23T00:00:00Z")
         val b = Instant.parse("2026-04-24T00:00:00Z")

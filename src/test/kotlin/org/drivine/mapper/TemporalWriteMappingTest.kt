@@ -60,6 +60,19 @@ class TemporalWriteMappingTest {
     }
 
     @Test
+    fun `a time with its offset, a duration and a period are bound as they are, alone and in a list or a map`() {
+        // #833: each went to toMap(), which can't make a map of one, and failed.
+        val values = listOf(
+            java.time.OffsetTime.of(10, 0, 0, 0, ZoneOffset.ofHours(2)), java.time.Duration.ofMillis(-1500),
+            java.time.Period.ofMonths(14),
+        )
+        values.forEach { assertTrue(m.convertValueForNeo4j(it) === it, "$it") }
+        assertEquals(values, m.convertValueForNeo4j(values))
+        assertEquals(values, m.convertValueForNeo4j(values.toTypedArray()))
+        assertEquals(mapOf("v" to values), m.convertValueForNeo4j(mapOf("v" to values)))
+    }
+
+    @Test
     fun `reads and real JSON still use ISO strings`() {
         val json = m.writeValueAsString(node(instant))
         assertTrue(json.contains("\"createdAt\":\"2026-06-03T02:25:23.449563Z\""), json)

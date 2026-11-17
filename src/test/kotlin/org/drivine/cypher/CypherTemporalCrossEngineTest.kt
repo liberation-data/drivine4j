@@ -386,6 +386,33 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a time with its offset, a duration and a period bound as parameters are the values Cypher writes`() {
+        // #833: bind() made a map of each, and failed, on every store. Each is its kind, equal to the value Cypher writes and
+        // written as it is, and no text that spells it (#779).
+        val given = mapOf(
+            "t" to java.time.OffsetTime.of(10, 0, 0, 0, java.time.ZoneOffset.UTC), "d" to java.time.Duration.ofHours(1),
+            "p" to java.time.Period.of(1, 2, 3), "ts" to "10:00Z",
+        )
+        assertEquals(
+            listOf(listOf(true, "10:00:00Z", true, "PT1H", true, "P1Y2M3D", false, false)),
+            query(
+                "RETURN [\$t = time('10:00Z'), toString(\$t), \$d = duration('PT1H'), toString(\$d), \$p = duration('P1Y2M3D'), toString(\$p), \$t = \$ts, [\$t] = [\$ts]]",
+                given,
+            ),
+        )
+    }
+
+    @Test
+    fun `a negative fractional duration and a period of months only bound as parameters are the values Cypher writes`() {
+        // #833: as Neo4j writes each, the months of a period carried into years.
+        val given = mapOf("d" to java.time.Duration.ofMillis(-1500), "p" to java.time.Period.ofMonths(14))
+        assertEquals(
+            listOf(listOf(true, "PT-1.5S", true, "P1Y2M")),
+            query("RETURN [\$d = duration('PT-1.5S'), toString(\$d), \$p = duration('P14M'), toString(\$p)]", given),
+        )
+    }
+
+    @Test
     fun `another temporal value an expression gives that is null or of the wrong kind fails as the statement runs`() {
         // #508: as Neo4j fails (22007, 22G05), not given as null. The spec's temporal steps hold the rest; it hasn't these.
         listOf(
