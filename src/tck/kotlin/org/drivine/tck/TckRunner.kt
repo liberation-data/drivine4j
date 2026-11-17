@@ -357,13 +357,14 @@ fun isRefusal(e: Throwable, query: String? = null): Boolean = chain(e).any { t -
 
 /**
  * Whether the error [message] is the store's refusal of a fraction of a second past the microsecond, which it can't keep
- * (drivine4j#421): by its words on SQLite and Postgres; on Oracle, where a refusal by name is a failing `TO_NUMBER` of its
- * words, by ORA-01722 on their first letter, and only for a [query] that gives such a fraction ([subMicrosecond]), so no
- * other failure of that kind is taken for it. Refused on purpose until drivine-cypher-spec#302 keeps such a fraction where
- * no store timestamp holds the value.
+ * (drivine4j#421): by its words on SQLite and Postgres; on SQLite also by the words the compiler writes in place of such a
+ * fraction, which the store's read of the text then quotes as it fails, where a value kept since drivine-cypher-spec#302 is
+ * worked out as the statement runs; on Oracle, where a refusal by name is a failing `TO_NUMBER` of its words, by ORA-01722 on
+ * their first letter, and only for a [query] that gives such a fraction ([subMicrosecond]), so no other failure of that kind
+ * is taken for it.
  */
 fun subMicrosecondRefused(message: String, query: String?): Boolean =
-    message.contains("past the microsecond isn't kept by the store") ||
+    message.contains("past the microsecond isn't kept by the store") || message.contains("past the microsecond (drivine4j#421)") ||
         message.contains("ORA-01722: unable to convert string value containing 'A'") && query != null && subMicrosecond(query)
 
 /**

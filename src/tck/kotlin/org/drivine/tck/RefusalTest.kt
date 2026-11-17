@@ -43,6 +43,10 @@ class RefusalTest {
     @Test
     fun `the refusal is refused on purpose by its words or on Oracle by its letter beside such a query`() {
         assertTrue(isRefusal(DrivineException(words)))
+        assertTrue(
+            isRefusal(DrivineException("[SQLITE_ERROR] SQL error or missing database ('12:31:14.645876 past the microsecond (drivine4j#421)' is no temporal value")),
+            "SQLite's read of the words written in place of the fraction",
+        )
         assertTrue(isRefusal(DrivineException(oracle), "RETURN localtime({hour: 12, nanosecond: 645876123})"))
         assertFalse(isRefusal(DrivineException(oracle), "RETURN localtime({hour: 12, nanosecond: 645876000})"), "another failure by name")
         assertFalse(isRefusal(DrivineException(oracle)), "no query to tell it by")
