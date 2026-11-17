@@ -47,8 +47,8 @@ import kotlin.test.fail
  * `function` step calls one of the functions Drivine registers on SQLite ([SqliteFunctions]), on an in-memory database Drivine
  * opens ([SqliteDataSource]), and
  * each `read` step reads a column's text as [JdbcResultMapper] reads a compiled statement's rows, and each `write` step writes a
- * value as a save's plan writes it on its store ([StoreValues.text], through drivine4j's [JacksonEncoder]; see
- * `WritePlan.bindings`), its refusal the [DrivineException] a save throws. Each case's `pairs` must
+ * value as a save's plan writes it on its store ([CypherCompile.storeText], the module's [StoreValues.text] through drivine4j's
+ * [JacksonEncoder]; see `WritePlan.bindings`), its refusal the [DrivineException] a save throws. Each case's `pairs` must
  * name store cases the other spec files have, whose statements rely on its steps: one of them compiles, as Drivine compiles
  * it ([CypherCompile]), on SQLite, to SQL
  * that calls each function the case's steps call (for `regexp`, which SQLite calls for its `REGEXP` operator, SQL that holds the
@@ -393,8 +393,8 @@ class HostSpecTest {
 
     /**
      * The step's `write`, a value written on a store, is the JSON text `result`, exactly, or is refused with the message
-     * `error`, exactly: as a save's plan writes the value ([StoreValues.text] through [JacksonEncoder], its refusal thrown as
-     * drivine4j's, as `WritePlan.bindings` writes it). A step that names no SQL store, which no save of drivine4j's can, is
+     * `error`, exactly: as a save's plan writes the value ([CypherCompile.storeText], its refusal thrown as drivine4j's, as
+     * `WritePlan.bindings` writes it). A step that names no SQL store, which no save of drivine4j's can, is
      * the module's JSON request's to refuse ([CompileJson]).
      */
     private fun write(step: Map<String, Any?>, where: String) {
@@ -406,7 +406,7 @@ class HostSpecTest {
             val answer = CypherJson.readTree(CompileJson.compile(request))
             answer["error"]?.let { Result.failure(IllegalArgumentException(it.textValue())) } ?: Result.success(CypherJson.writeValueAsString(answer["value"]!!))
         } else {
-            runCatching { CypherCompile.refusing { StoreValues.text(writeValue(write["value"]), store, JacksonEncoder) } }
+            runCatching { CypherCompile.storeText(writeValue(write["value"]), store) }
                 .onFailure { if (it !is DrivineException) throw it }
         }
         if ("error" in step) {

@@ -194,6 +194,17 @@ abstract class SaveValuesContract {
     }
 
     @Test
+    fun `a target whose id is a float with an exponent or a fraction is kept by a save that holds it`() {
+        val gauges = listOf(1e20, 0.1, 1e-7, 123456.789).map { SavedGauge(it, "g$it") }
+        manager.save(SavedReadings(SavedReading("r"), gauges))
+        val ids = { cypher("MATCH (:SavedReading {id: 'r'})-[:READS]->(g:SavedGauge) RETURN g.id ORDER BY g.id") }
+
+        manager.save(manager.load("r", SavedReadings::class.java)!!, Replace(SavedReadings::gauges))
+        assertEquals(listOf(1e-7, 0.1, 123456.789, 1e20), ids())
+        assertEquals(4, manager.count(SavedGauge::class.java))
+    }
+
+    @Test
     fun `a float patched in reads back as a float, and NaN and the infinities as the store's float or refused as a save is`() {
         manager.saveAll(listOf(SavedValue("p", d = 1.5), SavedValue("q", d = 1.5)))
         manager.patchAll(listOf(SavedValue("p", d = 3.0, l = listOf(2.0))), only = setOf(SavedValue::d, SavedValue::l))

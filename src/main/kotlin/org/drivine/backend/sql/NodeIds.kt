@@ -2,15 +2,12 @@ package org.drivine.backend.sql
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.connection.CypherCompile
-import org.drivine.connection.JacksonEncoder
 import org.drivine.cypher.api.Store
 import org.drivine.cypher.json.CypherJson
 import org.drivine.cypher.json.ObjectNode
-import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.mapper.toPropertyValue
 import org.drivine.model.FragmentModel
-import org.drivine.query.JdbcParameterCoercer
 
 /**
  * A node's id as a SQL store holds it, in the store layout 2 (liberation-data/drivine-cypher-spec#161), and an id given to
@@ -53,7 +50,7 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
      * writes it (`StoreValues.text`), a temporal value as its tag. An id the store holds as no number, NaN on Postgres, is
      * refused as a save of it is.
      */
-    fun json(id: Any): String = CypherCompile.refusing { StoreValues.text(JdbcParameterCoercer.listed(id), store, JacksonEncoder) }
+    fun json(id: Any): String = CypherCompile.storeText(id, store)
 
     companion object {
         /**

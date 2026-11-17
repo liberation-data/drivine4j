@@ -2,12 +2,9 @@ package org.drivine.backend.sql
 
 import org.drivine.annotation.Direction
 import org.drivine.connection.CypherCompile
-import org.drivine.connection.JacksonEncoder
 import org.drivine.cypher.api.Store
-import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.model.Stamps
-import org.drivine.query.JdbcParameterCoercer
 import org.drivine.query.RootMode
 
 /** What a statement that carries out a plan gives back: see [WriteBlocks]. */
@@ -238,8 +235,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
         mapOf(PLAN to planText(), MARK to mark) + blocks.bindings(shapes.keys.toList(), patchedIf)
 
     /** The steps as the store's layout holds their values: see [bindings]. */
-    private fun planText(): String =
-        CypherCompile.refusing { StoreValues.text(JdbcParameterCoercer.listed(steps), blocks.store, JacksonEncoder) }
+    private fun planText(): String = CypherCompile.storeText(steps, blocks.store)
 
     /** A stamp for a node step, which is offered to its node. */
     private fun fresh(): String = Stamps.fresh().also { stamps += it }

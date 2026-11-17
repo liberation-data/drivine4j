@@ -36,8 +36,8 @@ internal object OracleSql {
 
     /**
      * The id [id] as the text a write plan keys its node by, within the plan, and reads a target's stored id back as. A
-     * property is read back as text, and Oracle keeps a JSON number as a number, so `3.0` is read as `3`: a number is
-     * written as its plain, shortest form. A temporal value is held as its tag, and keyed by the tag's text, as the module
+     * property is read back as text, and Oracle reads a number, and a float, held as a binary double, as its plain digits,
+     * `3.0` as `3` and `1e20` as `100000000000000000000`: a number is written as its plain, shortest form. A temporal value is held as its tag, and keyed by the tag's text, as the module
      * writes it ([NodeIds.temporalText]). A node is found by its id's JSON, not by this text: see [NodeIds].
      */
     fun key(id: Any): String = NodeIds.temporalText(id) ?: when (id) {
