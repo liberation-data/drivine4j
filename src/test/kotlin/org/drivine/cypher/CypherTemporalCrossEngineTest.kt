@@ -403,6 +403,16 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a negative fractional duration and a period of months only bound as parameters are the values Cypher writes`() {
+        // #833: as Neo4j writes each, the months of a period carried into years.
+        val given = mapOf("d" to java.time.Duration.ofMillis(-1500), "p" to java.time.Period.ofMonths(14))
+        assertEquals(
+            listOf(listOf(true, "PT-1.5S", true, "P1Y2M")),
+            query("RETURN [\$d = duration('PT-1.5S'), toString(\$d), \$p = duration('P14M'), toString(\$p)]", given),
+        )
+    }
+
+    @Test
     fun `another temporal value an expression gives that is null or of the wrong kind fails as the statement runs`() {
         // #508: as Neo4j fails (22007, 22G05), not given as null. The spec's temporal steps hold the rest; it hasn't these.
         listOf(

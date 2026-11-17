@@ -9,6 +9,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeFormatterBuilder
 import java.time.temporal.ChronoField
 import java.time.temporal.Temporal
+import java.time.temporal.TemporalAmount
 
 /**
  * Coerces [Temporal] values (Instant, ZonedDateTime, LocalDateTime, etc.) to their ISO 8601
@@ -28,6 +29,9 @@ import java.time.temporal.Temporal
  * fraction, and `Z` sorts after `.`, so `…00Z` would be later than `…00.5Z`. Two times compare in
  * order when their offsets agree, as those of an [Instant] always do. A time without an offset
  * sorts in order as `toString()` writes it, and is left so.
+ *
+ * A `Duration` or a `Period`, which bind() keeps as it is (liberation-data/drivine4j#833), is its ISO 8601 text too:
+ * FalkorDB's client refuses a parameter of a type it doesn't know.
  *
  * Recurses into lists and maps so nested temporals are coerced too.
  */
@@ -64,7 +68,7 @@ object TemporalCoercer : ParameterCoercer {
             is ZonedDateTime -> coerceValue(value.toOffsetDateTime(), fixedWidth)
             is OffsetDateTime -> (if (fixedWidth) dateTime else DateTimeFormatter.ISO_OFFSET_DATE_TIME).format(value)
             is OffsetTime -> if (fixedWidth) time.format(value) else value.toString()
-            is Temporal -> value.toString()
+            is Temporal, is TemporalAmount -> value.toString()
             is List<*> -> value.map { coerceValue(it, fixedWidth) }
             is Map<*, *> -> value.mapValues { (_, v) -> coerceValue(v, fixedWidth) }
             else -> value
