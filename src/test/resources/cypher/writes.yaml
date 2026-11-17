@@ -225,6 +225,45 @@ cases:
       - cypher: "MATCH (:CyWrite)-[r]-() RETURN r"
         rows: []
 
+  - name: "A write whose returned rows fail as they are read"
+    description: "A statement that writes and returns a row that fails as the statement runs keeps nothing it wrote or deleted. On Oracle a compiled write's block returned its rows by a cursor whose query ran only as the host read it, after the block's writes were done, and so kept them (liberation-data/drivine-cypher-spec#292)."
+    steps:
+      - cypher: "CREATE (:CyWrite {num: 1})"
+      - note: "keys() of a number read from data fails as the statement runs."
+        cypher: "MATCH (n:CyWrite) SET n.x = 1 RETURN keys(n.num)"
+        error: true
+      - cypher: "MATCH (n:CyWrite) RETURN n.x"
+        rows: [null]
+      - cypher: "MATCH (n:CyWrite) WITH n, n.num AS num DETACH DELETE n RETURN keys(num)"
+        error: true
+      - cypher: "MATCH (n:CyWrite) RETURN count(n)"
+        rows: [1]
+      - note: "A sort key that fails fails the statement as well, though it isn't returned: on Oracle the block reads the rows in their order."
+        only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) SET n.x = 1 RETURN n.num ORDER BY left('a', -n.num)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) RETURN n.x"
+        rows: [null]
+      - note: "Rows that don't fail are still returned in their order, a null one as null."
+        cypher: "UNWIND [2, 3] AS i CREATE (n:CyWrite {num: i}) RETURN n.none, n.num ORDER BY n.num DESC"
+        rows: [[null, 3], [null, 2]]
+      - cypher: "MATCH (n:CyWrite) SET n.x = n.num RETURN n.none ORDER BY n.num"
+        rows: [null, null, null]
+
+  - name: "A write that returns a value made anew each time it is read"
+    description: "On Oracle a write's returned rows, a row each, are worked out once in its block, to check them, and then again as the host reads them (liberation-data/drivine-cypher-spec#292). What the statement wrote is written once, and what it returns of it is what it wrote; a value made anew, as randomUUID(), is made anew."
+    steps:
+      - only: [neo4j, sql]
+        cypher: "UNWIND range(1, 3) AS i CREATE (n:CyWrite {i: i, u: randomUUID()}) RETURN [size(n.u), size(randomUUID())]"
+        rows: [[36, 36], [36, 36], [36, 36]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite) RETURN count(n), count(DISTINCT n.u)"
+        rows: [[3, 3]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (n:CyWrite {i: 1}) SET n.v = randomUUID() RETURN n.v = n.v, size(n.v)"
+        rows: [[true, 36]]
+
   - name: "A write after a DELETE"
     description: "What a statement makes after it deletes is made anew, with no id of what it deleted, and a read after the DELETE finds none of it."
     steps:
@@ -276,8 +315,8 @@ cases:
         only: [neo4j, sql]
         cypher: "MATCH (n:CyWrite) DELETE n RETURN n.num"
         error: true
-      - note: "The statement failed, so the node is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a node it creates."
-        only: [neo4j, postgres, sqlite]
+      - note: "The statement failed, so the node is still there; Oracle kept it deleted until liberation-data/drivine-cypher-spec#292."
+        only: [neo4j, sql]
         cypher: "MATCH (n:CyWrite) RETURN count(n)"
         rows: [1]
       - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
@@ -319,8 +358,8 @@ cases:
         only: [neo4j, sql]
         cypher: "MATCH (:CyWrite)-[r]->() DELETE r RETURN r.num"
         error: true
-      - note: "The statement failed, so the relationship is still there. Oracle keeps it deleted (liberation-data/drivine-cypher-spec#292), so each step that fails starts from a relationship it creates."
-        only: [neo4j, postgres, sqlite]
+      - note: "The statement failed, so the relationship is still there; Oracle kept it deleted until liberation-data/drivine-cypher-spec#292."
+        only: [neo4j, sql]
         cypher: "MATCH (:CyWrite)-[r]->() RETURN count(r)"
         rows: [1]
       - cypher: "MATCH (n:CyWrite) DETACH DELETE n"
@@ -537,6 +576,225 @@ cases:
         rows: [4]
       - cypher: "MATCH (n:CyWrite) RETURN [n.id, n.f] ORDER BY n.id"
         rows: [["a", false], ["b", false], ["c", true], ["d", true]]
+
+  - name: "Work a read out in a WITH before the write"
+    description: "A read of the graph that a CREATE or a MERGE would make a property of, worked out in a WITH before it, as the refusal of one in its properties says (liberation-data/drivine4j#814): the WITH reads the graph over its rows before the write makes any, as Neo4j 2026.10.1 does, so the SQL stores give its rows. Each from the graph alone."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "UNWIND [1, 2, 3] AS i WITH i, COUNT { (:CyMade) } AS c CREATE (m:CyMade {c: c}) RETURN m.c ORDER BY m.c"
+        rows: [0, 0, 0]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "MATCH (n:CyWrite) WITH n, COUNT { ()-[:CyR]->() } AS c CREATE (n)-[r:CyR {c: c}]->(:CyMade) RETURN [n.id, r.c] ORDER BY n.id"
+        rows: [["a", 0], ["b", 0], ["c", 0], ["d", 0]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "MATCH (n:CyWrite) WITH n, NOT (n)-->() AS f MERGE (n)-[r:CyR {f: f}]->(m) RETURN [n.id, r.f] ORDER BY n.id"
+        rows: [["a", false], ["b", false], ["c", true], ["d", true]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "MATCH (n:CyWrite {id: 'a'}) WITH n, EXISTS { (:CyNew) } AS f CREATE (a:CyNew {name: 'x'}), (m:CyMade {f: f}) RETURN m.f"
+        rows: [false]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | CREATE (m:CyMade {c: i})) WITH count(*) AS k UNWIND [1, 2] AS j WITH j, COUNT { (:CyMade) } AS c CREATE (:CyMade {c: c}) RETURN c ORDER BY c"
+        rows: [4, 4]
+
+  - name: "When a write reads a property its own rows set"
+    description: "A plain read of a property in what a CREATE or a MERGE makes or sets, of a node the same statement changes, gives Neo4j 2026.10.1's rows (liberation-data/drivine4j#814): a CREATE reads every row's before the SET after it writes any, and a MERGE reads, a row at a time, what the rows before it set, in the properties it matches and in its ON CREATE and ON MATCH SET. Each from the graph alone."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "A SET after a CREATE reads the graph after the CREATE has made every row's node."
+        cypher: "UNWIND [1, 2] AS i CREATE (m:CyMade {i: i}) SET m.c = COUNT { (:CyMade) } RETURN [m.i, m.c] ORDER BY m.i"
+        rows: [[1, 2], [2, 2]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "A CREATE reads a property before the SET after it changes it, on every row, and the SET reads what the row before it set."
+        cypher: "MATCH (n:CyWrite {id: 'a'}) UNWIND [1, 2] AS i CREATE (m:CyMade {f: coalesce(n.c, 0)}) SET n.c = coalesce(n.c, 0) + 1 RETURN [i, m.f, n.c] ORDER BY i"
+        rows: [[1, 0, 2], [2, 0, 2]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "A MERGE's node reads what the row before set in its ON CREATE SET."
+        cypher: "MATCH (n:CyWrite {id: 'a'}) UNWIND [1, 2] AS i MERGE (m:CyMade {f: coalesce(n.c, 0)}) ON CREATE SET n.c = coalesce(n.c, 0) + 1 RETURN [i, m.f, n.c] ORDER BY i"
+        rows: [[1, 0, 2], [2, 1, 2]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "A MERGE's relationship likewise."
+        cypher: "MATCH (n:CyWrite {id: 'a'}) UNWIND [1, 2] AS i MERGE (n)-[r:CyR {f: coalesce(n.c, 0)}]->(m:CyMade) ON CREATE SET n.c = coalesce(n.c, 0) + 1 RETURN [i, r.f, n.c] ORDER BY i"
+        rows: [[1, 0, 2], [2, 1, 2]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "An ON CREATE SET reads what its own items before set, and what the row before set."
+        cypher: "MATCH (n:CyWrite {id: 'a'}) UNWIND [1, 2] AS i MERGE (m:CyMade {k: i}) ON CREATE SET n.c = coalesce(n.c, 0) + 1, m.c = n.c RETURN [m.k, m.c, n.c] ORDER BY m.k"
+        rows: [[1, 1, 2], [2, 2, 2]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "An ON MATCH SET reads what the row before set in its ON CREATE SET."
+        cypher: "MATCH (n:CyWrite {id: 'a'}) UNWIND [1, 2] AS i MERGE (m:CyMade {k: 1}) ON CREATE SET n.c = 1, m.c = 0 ON MATCH SET m.c = n.c RETURN [i, m.c] ORDER BY i"
+        rows: [[1, 1], [2, 1]]
+
+  - name: "Values a write makes: CREATE, a node made alone"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) CREATE (a:CyNew {name: 'x'}), (m:CyMade {f: n.id}) RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: CREATE, a relationship's endpoint"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) CREATE (a:CyNew {name: 'x'})-[:CyR]->(m:CyMade {f: n.id}) RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: CREATE, a relationship"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) CREATE (a:CyNew {name: 'x'})-[r:CyR {f: n.id}]->(m:CyMade) RETURN [n.id, r.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: FOREACH CREATE, a node made alone"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | CREATE (a:CyNew {name: 'x'}), (m:CyMade {f: n.id})) WITH count(*) AS c MATCH (m:CyMade) RETURN m.f ORDER BY m.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: FOREACH CREATE, a relationship's endpoint"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | CREATE (a:CyNew {name: 'x'})-[:CyR]->(m:CyMade {f: n.id})) WITH count(*) AS c MATCH (m:CyMade) RETURN m.f ORDER BY m.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: FOREACH CREATE, a relationship"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | CREATE (a:CyNew {name: 'x'})-[r:CyR {f: n.id}]->(m:CyMade)) WITH count(*) AS c MATCH ()-[r:CyR]->() RETURN r.f ORDER BY r.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: MERGE, a node made alone"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) MERGE (m:CyMade {f: n.id}) RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: MERGE, a relationship's endpoint"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) MERGE (a:CyNew {name: 'x'})-[:CyR]->(m:CyMade {f: n.id}) RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: MERGE, a relationship"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) MERGE (a:CyNew {name: 'x'})-[r:CyR {f: n.id}]->(m:CyMade) RETURN [n.id, r.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: FOREACH MERGE, a node made alone"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | MERGE (m:CyMade {f: n.id})) WITH count(*) AS c MATCH (m:CyMade) RETURN m.f ORDER BY m.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: FOREACH MERGE, a relationship's endpoint"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | MERGE (a:CyNew {name: 'x'})-[:CyR]->(m:CyMade {f: n.id})) WITH count(*) AS c MATCH (m:CyMade) RETURN m.f ORDER BY m.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: FOREACH MERGE, a relationship"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) FOREACH (i IN [1] | MERGE (a:CyNew {name: 'x'})-[r:CyR {f: n.id}]->(m:CyMade)) WITH count(*) AS c MATCH ()-[r:CyR]->() RETURN r.f ORDER BY r.f"
+        rows: ["a", "b", "c", "d"]
+
+  - name: "Values a write makes: MERGE, ON CREATE SET"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a property of a variable the clause makes."
+        cypher: "MATCH (n:CyWrite) MERGE (m:CyMade {id: n.id}) ON CREATE SET m.f = m.name RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", null], ["b", null], ["c", null], ["d", null]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) MERGE (m:CyMade {id: n.id}) ON CREATE SET m.f = n.id RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "Values a write makes: MERGE, ON MATCH SET"
+    description: "Each cell of writevalues.yaml in this position that Neo4j 2026.10.1 stores and the SQL stores compile, with its rows, each from the graph alone (liberation-data/drivine4j#814, #817): the cells refused are in refusals.yaml, \"Values a write makes, by position and form\", \"Variable a write makes, read inside a pattern or a comprehension in its properties\" and \"Pattern or subquery in the properties of a CREATE or a MERGE\"."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a property of a variable the clause makes."
+        cypher: "MATCH (n:CyWrite) MERGE (m:CyWrite {id: n.id}) ON MATCH SET m.f = m.name RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", null], ["b", null], ["c", null], ["d", null]]
+      - cypher: "MATCH (x) DETACH DELETE x"
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "a variable bound before, plainly."
+        cypher: "MATCH (n:CyWrite) MERGE (m:CyWrite {id: n.id}) ON MATCH SET m.f = n.id RETURN [n.id, m.f] ORDER BY n.id"
+        rows: [["a", "a"], ["b", "b"], ["c", "c"], ["d", "d"]]
+
+  - name: "A value worked out of a node, a relationship or a path, set as a property"
+    description: "What Neo4j 2026.10.1 stores of a node, a relationship or a path written as a property: a property of it, in a list or a map written, what a function or a test gives of it, and a list comprehension mapping each to a property, by SET and in what a CREATE makes. The node, the relationship or the path itself is refused (see refusals.yaml, \"Node or relationship set as a property\"), and these are not (drivine4j#814)."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "A property of a node, in a list written and in a map set."
+        cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = [b.id, 'x'] RETURN n.p"
+        rows: [["b", "x"]]
+      - cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n += {p: b.id} RETURN n.p"
+        rows: ["b"]
+      - note: "What a function or a test gives of a node."
+        cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = labels(b) RETURN n.p"
+        rows: [["CyWrite"]]
+      - cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = b IS NULL RETURN n.p"
+        rows: [false]
+      - cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = elementId(b) RETURN n.p = elementId(b)"
+        rows: [true]
+      - cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = size(keys(properties(b))) RETURN n.p"
+        rows: [1]
+      - note: "A list comprehension of nodes to a property of each."
+        cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) SET n.p = [x IN [b] | x.id] RETURN n.p"
+        rows: [["b"]]
+      - note: "A property a CREATE makes, of a node and of a relationship."
+        cypher: "MATCH (n:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}) CREATE (m:CyMade {p: [b.id], q: size(labels(b)), r: b IS NOT NULL}) RETURN [m.p, m.q, m.r]"
+        rows: [[["b"], 1, true]]
+      - cypher: "MATCH (n:CyWrite {id: 'a'})-[r:NEXT]->(b:CyWrite {id: 'b'}) CREATE (n)-[s:CyR {p: type(r), q: [b.id]}]->(b) RETURN [s.p, s.q]"
+        rows: [["NEXT", ["b"]]]
+      - note: "What a function gives of a path and of a variable-length relationship's list."
+        cypher: "MATCH p = (n:CyWrite {id: 'a'})-[:NEXT]->(:CyWrite {id: 'b'}) SET n.q = length(p) RETURN n.q"
+        rows: [1]
+      - cypher: "MATCH (n:CyWrite {id: 'a'})-[rs:NEXT*1..2]->(:CyWrite {id: 'c'}) SET n.q = size(rs) RETURN n.q"
+        rows: [2]
+
+  - name: "Values a write makes: depth-3 canaries"
+    description: "Each canary of writevalues.yaml, three constructs nested in a write's own properties, that the SQL stores compile, with Neo4j 2026.10.1's rows, each from the graph alone (liberation-data/drivine4j#814): the others are refused (see refusals.yaml, \"Values a write makes: depth-3 canaries refused\", and \"Pattern or subquery in the properties of a CREATE or a MERGE\")."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})"
+      - note: "MERGE, ON CREATE SET; list comprehension > reduce > list comprehension."
+        except: [oracle]
+        cypher: "MATCH (n:CyWrite) MERGE (a:CyNew {id: n.id}) ON CREATE SET a.f = size([v IN [1, 2] WHERE reduce(s = false, w IN [1, 2] | s OR size([v IN [1, 2] WHERE a IS NULL]) > 0)]) > 0 RETURN [n.id, a.f] ORDER BY n.id"
+        rows: [["a", false], ["b", false], ["c", false], ["d", false]]
 
   - name: "SET and MERGE with EXISTS { } over UNWIND"
     description: "An EXISTS { } whose body unwinds a list, in a write's WHERE, SET or MERGE, reads the row being written (drivine4j#449)."
@@ -2067,3 +2325,114 @@ cases:
         rows: ["r", "q", "p"]
       - cypher: "MATCH (n:CyWrite) WHERE n.id IN ['p', 'q', 'r'] WITH min(n.l) AS lo, max(n.l) AS hi RETURN [size(lo), toString(lo[0]), toString(hi[0])]"
         rows: [[1, "2020-01-01", "2020-01-02"]]
+
+  - name: "A walk and a list of relationships bound before"
+    description: "A walk compared to a list of relationships bound before it finds the walk the list is. Neo4j walks such a list named as the walk's own variable, `-[rs*]->`, which the compiler refuses as not compiled yet (see refusals.yaml, \"Read not compiled yet\", drivine4j#427)."
+    steps:
+      - cypher: "CREATE (a:CyWrite {id: 'a'}), (b:CyWrite {id: 'b'}), (c:CyWrite {id: 'c'}) CREATE (a)-[:Y]->(b), (b)-[:Y]->(c)"
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH (first)-[r*]->(second) WHERE r = rs RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH p = (first)-[*]->(second) WHERE relationships(p) = rs RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH ()-[r1]->()-[r2]->() WITH [r1, r2] AS rs LIMIT 1 MATCH (first)-[r*]->(second) WHERE size(r) = size(rs) AND all(i IN range(0, size(rs) - 1) WHERE r[i] = rs[i]) RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH (first)-[r*]->(second) WITH r MATCH (x)-[r2*]->(y) WHERE r2 = r RETURN count(*)"
+        only: [neo4j, sql]
+        rows: [3]
+      - cypher: "MATCH (first)-[r*]->(second) RETURN first.id, second.id, size(r) AS n ORDER BY n, first.id"
+        only: [neo4j, sql]
+        rows: [["a", "b", 1], ["b", "c", 1], ["a", "c", 2]]
+      - cypher: "MATCH p = (first)-[r*]->(second) WHERE size(r) = 2 RETURN first.id, second.id"
+        only: [neo4j, sql]
+        rows: [["a", "c"]]
+      - cypher: "MATCH (first {id: 'a'})-[r*]->(second) RETURN second.id ORDER BY size(r)"
+        only: [neo4j, sql]
+        rows: ["b", "c"]
+
+  - name: "A property equal to a given text, number or truth value, beside each kind a property holds"
+    description: "A property is equal to a value of its own kind and that value alone: a text is no number or truth value, a list holding the value is not the value, and a missing property is null, which NOT keeps null (drivine-cypher-spec#287). NaN is the next case's."
+    steps:
+      - cypher: "CREATE (:CyWrite {i: 0}), (:CyWrite {i: 1, k: 'open'}), (:CyWrite {i: 2, k: 'Open'}), (:CyWrite {i: 3, k: ''}), (:CyWrite {i: 4, k: '1'}), (:CyWrite {i: 5, k: 'true'}), (:CyWrite {i: 6, k: 1}), (:CyWrite {i: 7, k: 2}), (:CyWrite {i: 8, k: 1.0}), (:CyWrite {i: 9, k: 1.5}), (:CyWrite {i: 10, k: true}), (:CyWrite {i: 11, k: false}), (:CyWrite {i: 12, k: [1]}), (:CyWrite {i: 13, k: ['open']}), (:CyWrite {i: 14, k: []}), (:CyWrite {i: 15, k: [true]}), (:CyWrite {i: 16, k: date('2026-01-02')}), (:CyWrite {i: 18, k: $long}), (:CyWrite {i: 19, k: $text}), (:CyWrite {i: 20, k: 9007199254740993}), (:CyWrite {i: 21, k: 1.0e-200})"
+        parameters: {long: {$repeat: "x", times: 4500}, text: {$repeat: "x", times: 4000}}
+        rows: []
+      - note: "Given 'open'."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: "open"}
+        rows: [[0, null], [1, true], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given '1'."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: "1"}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, true], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given x * 4000."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: {"$repeat": "x", "times": 4000}}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, true], [20, false], [21, false]]
+      - note: "Given 1."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: 1}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, true], [7, false], [8, true], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given 2."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: 2}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, true], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given true."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: true}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, true], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given false."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: false}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, true], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given 0: a float too small for a decimal number is still not 0."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: 0}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "Given a date's own text: a date is no text."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: "2026-01-02"}
+        rows: [[0, null], [1, false], [2, false], [3, false], [4, false], [5, false], [6, false], [7, false], [8, false], [9, false], [10, false], [11, false], [12, false], [13, false], [14, false], [15, false], [16, false], [18, false], [19, false], [20, false], [21, false]]
+      - note: "NOT keeps a missing property null, and so leaves it out, and keeps each value of another kind."
+        cypher: "MATCH (n:CyWrite) WHERE NOT n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: "open"}
+        rows: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21]
+      - note: "A literal compares so too."
+        cypher: "MATCH (n:CyWrite) WHERE n.k = 1 RETURN n.i ORDER BY n.i"
+        rows: [6, 8]
+      - note: "Given 0, a whole 0 and a float 0 are equal to it, as a parameter and as a literal."
+        cypher: "CREATE (:CyWrite {i: 22, k: 0}), (:CyWrite {i: 23, k: 0.0})"
+        rows: []
+      - cypher: "MATCH (n:CyWrite) WHERE n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: 0}
+        rows: [22, 23]
+      - cypher: "MATCH (n:CyWrite) WHERE n.k = 0 RETURN n.i ORDER BY n.i"
+        rows: [22, 23]
+
+  - name: "NaN equal to a given number, text or truth value"
+    description: "NaN is equal to no value a statement gives, and NOT keeps it (drivine-cypher-spec#287). Only where a write may store NaN: Postgres and SQLite refuse one."
+    steps:
+      - only: [neo4j, oracle]
+        cypher: "CREATE (:CyWrite {i: 0, k: $nan}), (:CyWrite {i: 1, k: 1.0})"
+        parameters: {nan: {$float: "NaN"}}
+        rows: []
+      - only: [neo4j, oracle]
+        note: "Given 1."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: 1}
+        rows: [[0, false], [1, true]]
+      - only: [neo4j, oracle]
+        note: "Given 'open'."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: "open"}
+        rows: [[0, false], [1, false]]
+      - only: [neo4j, oracle]
+        note: "Given true."
+        cypher: "MATCH (n:CyWrite) RETURN n.i, n.k = $g ORDER BY n.i"
+        parameters: {g: true}
+        rows: [[0, false], [1, false]]
+      - only: [neo4j, oracle]
+        cypher: "MATCH (n:CyWrite) WHERE NOT n.k = $g RETURN n.i ORDER BY n.i"
+        parameters: {g: 1}
+        rows: [0]

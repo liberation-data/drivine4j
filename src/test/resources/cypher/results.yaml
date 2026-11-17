@@ -80,7 +80,8 @@ cases:
   - name: "A node and a relationship the statement deleted"
     description: "A relationship the statement deleted is still given with its type and no properties, and a node with no labels and no properties, as untyped it is {}; a SQL store gave null for each, as their rows were gone (liberation-data/drivine4j#420, liberation-data/drivine4j#427)."
     steps:
-      - only: [neo4j, sql]
+      - note: "Neo4j 2026.10.1's driver gives the deleted relationship's type as \"\" while type(k) gives \"KNOWS\", in the default language, CYPHER 5 and CYPHER 25 alike (liberation-data/drivine-cypher-spec#296). The SQL stores give the type."
+        only: [sql]
         cypher: "MATCH (:Person {name: 'Keanu'})-[k:KNOWS]->() DELETE k RETURN k"
         columns: ["k"]
         rows: [{$t: "relationship", type: "KNOWS", properties: {}}]

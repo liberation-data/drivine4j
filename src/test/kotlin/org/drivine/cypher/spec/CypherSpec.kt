@@ -77,9 +77,8 @@ data class CypherSpec(
          * that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
         private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            // Neo4j 2026.10.1 refuses toString() of a list of one kind when it plans the statement,
-            // and Bolt sends a relationship the statement deleted with an empty type, where these steps pin answers.
-            "queries.yaml" to mapOf("toString() of a list or a map" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(4)))),
+            // Bolt sends a relationship the statement deleted with an empty type, where this step pins one. (toString() of a
+            // list of one kind, held here too, the spec refuses as Neo4j does since #296's fix.)
             "results.yaml" to mapOf("A node and a relationship the statement deleted" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(1)))),
         )
 
