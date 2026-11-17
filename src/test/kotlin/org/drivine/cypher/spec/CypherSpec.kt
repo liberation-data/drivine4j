@@ -69,6 +69,9 @@ data class CypherSpec(
 
         private const val NEO4J_PINNED = "liberation-data/drivine-cypher-spec#296"
 
+        /** The issue of the temporal steps the spec at v0.49.0 pins as no store gives them. */
+        private const val TEMPORAL_PINNED = "liberation-data/drivine-cypher-spec#321"
+
         /**
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
@@ -80,6 +83,14 @@ data class CypherSpec(
             // Bolt sends a relationship the statement deleted with an empty type, where this step pins one. (toString() of a
             // list of one kind, held here too, the spec refuses as Neo4j does since #296's fix.)
             "results.yaml" to mapOf("A node and a relationship the statement deleted" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(1)))),
+            // The spec at v0.49.0 makes step 6's map, which gives a nanosecond without a minute, where Neo4j refuses it, and pins
+            // steps 8 and 14 without the zero seconds Neo4j and the SQL stores write. Its #330 corrects all three, after v0.49.0.
+            "temporal.yaml" to mapOf(
+                "A nanosecond past the microsecond" to listOf(
+                    Hold(TEMPORAL_PINNED, listOf("neo4j"), steps = listOf(6, 8, 14)),
+                    Hold(TEMPORAL_PINNED, listOf("sql"), steps = listOf(8)),
+                ),
+            ),
         )
 
         /** The name a step gives [type] by. */
