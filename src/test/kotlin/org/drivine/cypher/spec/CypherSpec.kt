@@ -67,7 +67,7 @@ data class CypherSpec(
             return yaml.readValue<CypherSpec>(resource).copy(file = file)
         }
 
-        /** The issue of the temporal steps the spec at v0.49.0 pins as no store gives them. */
+        /** The issue of the temporal steps the spec at v0.49.0 pins otherwise than the stores held on give them. */
         private const val TEMPORAL_PINNED = "liberation-data/drivine-cypher-spec#321"
 
         /**
