@@ -80,6 +80,20 @@ data class ClaimVessels(
     val vessels: List<Vessel> = emptyList(),
 )
 
+/**
+ * The steps of a plan bound in [bindings], as JSON text with each float extended JSON's double (`WritePlan.bindings`): read
+ * back with each double the Double it holds.
+ */
+@Suppress("UNCHECKED_CAST")
+internal fun planSteps(bindings: Map<String, Any?>): List<Map<String, Any?>> {
+    fun doubles(value: Any?): Any? = when (value) {
+        is Map<*, *> -> if (value.keys == setOf("\$numberDouble")) (value.values.single() as String).toDouble() else value.mapValues { doubles(it.value) }
+        is List<*> -> value.map(::doubles)
+        else -> value
+    }
+    return doubles(Neo4jObjectMapper.instance.readValue(bindings[OracleWriteBlock.PLAN] as String, List::class.java)) as List<Map<String, Any?>>
+}
+
 /** The steps a save on Oracle plans: what `SaveStatementBuilder` decides for the graph engines, written for the write block. */
 class OracleSavePlanTest {
 
@@ -100,20 +114,6 @@ class OracleSavePlanTest {
     ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, rootMode))
 
     private fun steps(statement: SaveStatement): List<Map<String, Any?>> = planSteps(statement.bindings)
-
-    /**
-     * The steps of a plan bound in [bindings], as JSON text with each float extended JSON's double (`WritePlan.bindings`):
-     * read back with each double the Double it holds.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun planSteps(bindings: Map<String, Any?>): List<Map<String, Any?>> {
-        fun doubles(value: Any?): Any? = when (value) {
-            is Map<*, *> -> if (value.keys == setOf("\$numberDouble")) (value.values.single() as String).toDouble() else value.mapValues { doubles(it.value) }
-            is List<*> -> value.map(::doubles)
-            else -> value
-        }
-        return doubles(Neo4jObjectMapper.instance.readValue(bindings[OracleWriteBlock.PLAN] as String, List::class.java)) as List<Map<String, Any?>>
-    }
 
     private fun stepsOf(obj: Any, replaced: RemovedTargets? = null, nullPolicy: NullPolicy = NullPolicy.IGNORE, checked: Boolean = true) =
         steps(build(obj, checked = checked, nullPolicy = nullPolicy, replaced = replaced))

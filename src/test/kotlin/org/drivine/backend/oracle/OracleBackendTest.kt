@@ -80,19 +80,8 @@ class OracleBackendTest {
 
     private fun query(build: GraphQuerySpec<Any>.() -> Unit = {}) = GraphQuerySpec(Any()).apply(build)
 
-    /**
-     * The steps of the plan bound in [bindings], JSON text with each float extended JSON's double (`WritePlan.bindings`), read
-     * back with each double the Double it holds.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun steps(bindings: Map<String, Any?>): List<Map<String, Any?>> {
-        fun doubles(value: Any?): Any? = when (value) {
-            is Map<*, *> -> if (value.keys == setOf("\$numberDouble")) (value.values.single() as String).toDouble() else value.mapValues { doubles(it.value) }
-            is List<*> -> value.map(::doubles)
-            else -> value
-        }
-        return doubles(Neo4jObjectMapper.instance.readValue(bindings[OracleWriteBlock.PLAN] as String, List::class.java)) as List<Map<String, Any?>>
-    }
+    /** The steps of the plan bound in [bindings]: see [planSteps]. */
+    private fun steps(bindings: Map<String, Any?>): List<Map<String, Any?>> = planSteps(bindings)
 
     private fun String.squashed(): String = replace(Regex("\\s+"), " ")
 

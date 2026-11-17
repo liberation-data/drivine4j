@@ -1,6 +1,7 @@
 package org.drivine.store
 
 import org.drivine.DrivineException
+import org.drivine.StaleObjectException
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -11,6 +12,7 @@ import org.drivine.annotation.Root
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.Replace
 import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.manager.loadRelated
 import org.drivine.manager.nodeRef
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -48,6 +50,10 @@ data class SavedGauge(@NodeId val id: Double, val name: String)
 /** A node that carries its stamp, which a save that changes nothing leaves as it was. */
 @NodeFragment(labels = ["SavedReading"])
 data class SavedReading(@NodeId val id: String, val d: Double? = null, @NodeStamp val stamp: String? = null)
+
+/** A node whose id is a float and that carries its stamp, which a checked save and `create` find again by its id. */
+@NodeFragment(labels = ["SavedDial"])
+data class SavedDial(@NodeId val id: Double, val name: String, @NodeStamp val stamp: String? = null)
 
 /** A view whose targets' ids are floats, which a save names as the store holds them to unlink one. */
 @GraphView
@@ -173,6 +179,23 @@ abstract class SaveValuesContract {
             assertEquals(listOf(1L), cypher("MATCH (n:SavedGauge) WHERE n.id = \$id RETURN count(n)", mapOf("id" to id)), "$id")
         }
         assertEquals(2, manager.count(SavedGauge::class.java))
+    }
+
+    @Test
+    fun `a node whose id is a float is found by its id where a create, a stale save, loadRelated and a delete look for it`() {
+        manager.save(SavedValue("a"))
+        for (id in listOf(3.0, 4.5, 1e20)) {
+            val made = manager.create(SavedDial(id, "one"))!!
+            assertEquals(null, manager.create(SavedDial(id, "again")), "$id: create of a node that is there")
+            val changed = manager.save(made.copy(name = "two"))
+            val stale = assertFailsWith<StaleObjectException>("$id") { manager.save(made.copy(name = "three")) }
+            assertEquals(changed.stamp, stale.foundStamp, "$id")
+
+            assertTrue(manager.edges.relate(nodeRef<SavedDial>(id), nodeRef<SavedValue>("a"), "POINTS", emptyMap()), "$id")
+            assertEquals(listOf("a"), manager.edges.loadRelated<SavedValue>(nodeRef<SavedDial>(id), "POINTS").map { it.id }, "$id")
+            assertEquals(1, manager.delete(id.toString(), SavedDial::class.java), "$id")
+        }
+        assertEquals(0, manager.count(SavedDial::class.java))
     }
 
     @Test
