@@ -6789,7 +6789,7 @@ cases:
         rows: [["2.5", "3", "a", "4.0"]]
 
   - name: "toString() of a list or a map"
-    description: "toString() of a list of items of many kinds, or of a map, that the statement makes is its text, as Neo4j's Cypher 25 writes it, where the SQL stores refused it (liberation-data/drivine4j#420): each item as toString() writes it, a text without quotes, null as null, after ', ', and each entry as key: value, in the order of the keys' code points, as Neo4j orders them, not as written. A list of items of one kind is refused, as Neo4j refuses it (see \"toString of a list or a map\")."
+    description: "toString() of a list of items of many kinds, or of a map, that the statement makes is its text, as Neo4j's Cypher 25 writes it, where the SQL stores refused it (liberation-data/drivine4j#420): each item as toString() writes it, a text without quotes, null as null, after ', ', and each entry as key: value, in the order of the keys' code points, as Neo4j orders them, not as written. A list Neo4j types as narrower than List<Any>, of items of one kind or collect() of a property, is refused, as Neo4j refuses it (see \"toString of a list or a map\")."
     steps:
       - note: "Neo4j 2026.10.1 gives these three."
         cypher: "RETURN [toString([1, 'a']), size(toString([1, 'a'])), toString({a: 1, b: 'x'}), toString([1.0, true, null])]"
@@ -6799,8 +6799,16 @@ cases:
         rows: [["[[1, x], {k: [true, 2.5]}, [], {}]", "[]", "{}", "{a: 2, b: 1}"]]
       - cypher: "RETURN toString({b: 'x', a: [{d: 1, c: 2.5}], c: null})"
         rows: ["{a: [{c: 2.5, d: 1}], b: x, c: null}"]
-      - cypher: "MATCH (p:Person) WITH p ORDER BY p.name RETURN toString(collect(p.born))"
-        rows: ["[1967, 1964, 1961]"]
+      - note: "Neo4j 2026.10.1 refuses toString() of collect() of a property when it plans the statement, as it types it a list of one kind or another, never List<Any>: Type mismatch: expected … List<Any> … but was List<Boolean>, List<Float>, … (liberation-data/drivine-cypher-spec#296). A SQL store gave its text."
+        only: [neo4j]
+        cypher: "MATCH (p:Person) WITH p ORDER BY p.name RETURN toString(collect(p.born))"
+        error: true
+      - only: [sql]
+        cypher: "MATCH (p:Person) WITH p ORDER BY p.name RETURN toString(collect(p.born))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - note: "Neo4j 2026.10.1 gives these: a null is of no one kind, nor is a property, so a list of them is of any items."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [toString([null, null]), toString([1, null]), toString([p.born, p.born])]"
+        rows: [["[null, null]", "[1, null]", "[1964, 1964]"]]
       - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [toString([p.name, p.born, p.born / 2.0, p.nope]), toString(p {.name}), toString({n: p.name, l: [p.born]})]"
         rows: [["[Keanu, 1964, 982.0, null]", "{name: Keanu}", "{l: [1964], n: Keanu}"]]
       - note: "A map projection's entry written key: value and its variable, beside a property it selects, in the order of their keys."
@@ -6819,6 +6827,36 @@ cases:
         cypher: "RETURN [toString($l), toString($k)]"
         parameters: {l: [1, "a", [2, [true, null]], 2.5], k: [1, 2]}
         rows: [["[1, a, [2, [true, null]], 2.5]", "[1, 2]"]]
+      - note: "Neo4j 2026.10.1 plans a member of a map given as a parameter as a value of any kind, and gives a list there as its text. A SQL store gives its JSON text, as it gives toString() of a value whose kind is left open."
+        only: [neo4j]
+        cypher: "WITH $m AS m RETURN toString(m.l)"
+        parameters: {m: {l: [1, 2]}}
+        rows: ["[1, 2]"]
+      - note: "Neo4j 2026.10.1 gives these, lists of items of more than one kind (liberation-data/drivine-cypher-spec#296): tail(), a slice and reverse() of one, and two lists joined by + whose items are of two kinds."
+        cypher: "RETURN [toString([true, 1]), toString([[1], 1]), toString([{a: 1}, 1]), toString(tail([1, 'a', 2])), toString([1, 'a', 2][0..2]), toString(reverse([1, 'a'])), toString([1] + ['a'])]"
+        rows: [["[true, 1]", "[[1], 1]", "[{a: 1}, 1]", "[a, 2]", "[1, a]", "[a, 1]", "[1, a]"]]
+      - note: "Neo4j 2026.10.1 gives these: an item unwound from a list of lists of two kinds, and a UNION's column where one query's is a list of any items (liberation-data/drivine-cypher-spec#296)."
+        cypher: "UNWIND [[1], ['a']] AS x RETURN toString(x)"
+        rows: ["[1]", "[a]"]
+      - cypher: "CALL { RETURN [1, 2] AS l UNION RETURN [1, 'a'] AS l } RETURN toString(l)"
+        unordered: true
+        rows: ["[1, 2]", "[1, a]"]
+      - note: "Neo4j 2026.10.1 gives a comprehension over a list given as a parameter as a list of any items (liberation-data/drivine-cypher-spec#296)."
+        only: [neo4j, sql]
+        cypher: "RETURN toString([x IN $l | x])"
+        parameters: {l: [1, 2]}
+        rows: ["[1, 2]"]
+      - note: "Neo4j 2026.10.1 gives these (liberation-data/drivine-cypher-spec#296). A SQL store refuses a list that holds a temporal value by name (see refusals.yaml), and gives coalesce() of lists as its JSON text, as it gives toString() of a value whose kind is left open."
+        only: [neo4j]
+        cypher: "RETURN [toString([date('2024-01-02'), 1]), toString(coalesce([1, 'a'], [2]))]"
+        rows: [["[2024-01-02, 1]", "[1, a]"]]
+      - note: "Neo4j 2026.10.1 gives coalesce() with a null among its arguments as a list of any items (liberation-data/drivine-cypher-spec#296). A SQL store gives its JSON text, as it gives toString() of a value whose kind is left open (liberation-data/drivine-cypher-spec#297)."
+        only: [neo4j]
+        cypher: "RETURN toString(coalesce(null, [1, 2]))"
+        rows: ["[1, 2]"]
+      - note: "Neo4j 2026.10.1 gives a CASE one of whose values is a list of any items as a list of any items (liberation-data/drivine-cypher-spec#296)."
+        cypher: "RETURN toString(CASE WHEN true THEN [1, 2] ELSE [1, 'a'] END)"
+        rows: ["[1, 2]"]
       - note: "Neo4j 2026.10.1 gives a map a WITH binds as it gives one written; a SQL store refuses it by name, as it knows no keys of it when compiling (see refusals.yaml)."
         only: [neo4j]
         cypher: "WITH {a: 1} AS m RETURN toString(m)"
@@ -8233,7 +8271,7 @@ cases:
         error: "Two lists compared with <, <=, > or >= do not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL."
 
   - name: "toString of a list or a map"
-    description: "toString() of a list of items of one kind is refused, as Neo4j refuses it, written, bound by a WITH or gathered by collect(); of a map, its text (liberation-data/drivine4j#420); and of a value whose kind the statement leaves open, as a list of properties, it is run."
+    description: "toString() of a list Neo4j types as narrower than List<Any> is refused, as Neo4j refuses it when it plans the statement: a list written of items of one kind, integers and floats both numbers, a list of lists or of maps, collect() of a property, a node or a list, a list of maps, nodes or relationships, a list keys(), labels(), split(), range(), nodes() or relationships() gives, a comprehension of items of one kind, a pattern comprehension, tail(), reverse() or a slice of such a list, head(), last() or an item [i] of a list of such lists, two such lists of one kind joined by + or given to coalesce(), a CASE each of whose values, its ELSE too, is such a list of one kind, a UNION's column each of whose queries gives such a list, or one a WITH binds (liberation-data/drivine-cypher-spec#296); of a map, its text (liberation-data/drivine4j#420); and of a value whose kind the statement leaves open, as a list with a property or a null among its items, it is run."
     steps:
       - note: "Neo4j refuses both under Cypher 5. Neo4j 2026.10's default language, Cypher 25, gives toString({a: 1}) as '{a: 1}', and toString([1, 'a']) as '[1, a]' though it refuses toString([1, 2])."
         only: [neo4j]
@@ -8279,11 +8317,224 @@ cases:
       - only: [sql]
         cypher: "UNWIND [1964, 1967] AS b WITH collect(b) AS c RETURN toString(c)"
         error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - note: "Neo4j 2026.10.1 refuses each of these when it plans them, as it types each a list narrower than List<Any>: of numbers, integers and floats alike, of lists of any items, of maps, collect() of a property, keys(), labels(), split(), range(), a comprehension, and an item unwound from a list of lists of integers (liberation-data/drivine-cypher-spec#296). A SQL store gave the text of some of them."
+        only: [neo4j]
+        cypher: "RETURN toString([1, 2.5])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([[1], ['a']])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([[1], [2]])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([{a: 1}, {b: 2}])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person) WITH collect(p.name) AS c RETURN toString(c)"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person) RETURN toString(collect(DISTINCT p.born))"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString(keys(p))"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString(labels(p))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(range(1, 3))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(split('a,b', ','))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([x IN [1, 2] | x])"
+        error: true
+      - only: [neo4j]
+        cypher: "UNWIND [[1], [2]] AS x RETURN toString(x)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString([1, 2.5])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([[1], ['a']])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([[1], [2]])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([{a: 1}, {b: 2}])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person) WITH collect(p.name) AS c RETURN toString(c)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person) RETURN toString(collect(DISTINCT p.born))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString(keys(p))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString(labels(p))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(range(1, 3))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(split('a,b', ','))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([x IN [1, 2] | x])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "UNWIND [[1], [2]] AS x RETURN toString(x)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
       - only: [neo4j, sql]
         cypher: "RETURN toString({a: 1})"
         rows: ["{a: 1}"]
       - cypher: "UNWIND [1, 'a'] AS x RETURN toString(x)"
         rows: ["1", "a"]
+      - note: "Neo4j 2026.10.1 refuses each of these too when it plans them (liberation-data/drivine-cypher-spec#296): a map, a node and a relationship are of one kind here, as it says List<Map>, List<Node>, List<Relationship>; nodes(), relationships(), a variable-length relationship and a pattern comprehension are narrower than List<Any>, as collect() is; tail() and a slice keep their list's kind (and reverse(), below), two lists of one kind joined by + are of it, and a UNION's column is narrower than List<Any> where each of its queries' is, whatever their kinds."
+        only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'})-[r:KNOWS]->() RETURN toString([p, r])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([p, {a: 1}])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([p {}, p {.name}])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH path = (:Person {name: 'Keanu'})-[:KNOWS]->() RETURN toString(nodes(path))"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH path = (:Person {name: 'Keanu'})-[:KNOWS]->() RETURN toString(relationships(path))"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:KNOWS*]->() RETURN toString(r)"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([(p)-[:ACTED_IN]->(m) | m.title])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person) RETURN toString(collect([p.born, 'x']))"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([keys(p), keys(p)])"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) WITH keys(p) AS k RETURN toString(k)"
+        error: true
+      - only: [neo4j]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([CASE WHEN p.born > 1960 THEN 'a' ELSE 'b' END, 'c'])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([1.5, 2.5])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([x IN [1, 2] | x + 1])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(tail([1, 2]))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([1, 2][0..1])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([1] + [2])"
+        error: true
+      - only: [neo4j]
+        cypher: "CALL { RETURN [1, 2] AS l UNION RETURN [1.5] AS l } RETURN toString(l)"
+        error: true
+      - only: [neo4j]
+        cypher: "CALL { RETURN [1, 2] AS l UNION RETURN ['a'] AS l } RETURN toString(l)"
+        error: true
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'})-[r:KNOWS]->() RETURN toString([p, r])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([p, {a: 1}])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([p {}, p {.name}])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH path = (:Person {name: 'Keanu'})-[:KNOWS]->() RETURN toString(nodes(path))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH path = (:Person {name: 'Keanu'})-[:KNOWS]->() RETURN toString(relationships(path))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:KNOWS*]->() RETURN toString(r)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([(p)-[:ACTED_IN]->(m) | m.title])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person) RETURN toString(collect([p.born, 'x']))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([keys(p), keys(p)])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) WITH keys(p) AS k RETURN toString(k)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN toString([CASE WHEN p.born > 1960 THEN 'a' ELSE 'b' END, 'c'])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([1.5, 2.5])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([x IN [1, 2] | x + 1])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(tail([1, 2]))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([1, 2][0..1])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([1] + [2])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "CALL { RETURN [1, 2] AS l UNION RETURN [1.5] AS l } RETURN toString(l)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "CALL { RETURN [1, 2] AS l UNION RETURN ['a'] AS l } RETURN toString(l)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - note: "Neo4j 2026.10.1 refuses each of these when it plans them, as List<Integer> (liberation-data/drivine-cypher-spec#296): reverse() keeps its list's kind, coalesce() of lists of one kind is of it, head() or an item [i] of a list of lists of one kind is a list of it, and a CASE each of whose values, its ELSE too, is a list of one kind is of it."
+        only: [neo4j]
+        cypher: "RETURN toString(reverse([1, 2]))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(coalesce([1, 2], [3]))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(head([[1], [2]]))"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString([[1], [2]][0])"
+        error: true
+      - only: [neo4j]
+        cypher: "RETURN toString(CASE WHEN true THEN [1, 2] ELSE [3] END)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString(reverse([1, 2]))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(coalesce([1, 2], [3]))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(head([[1], [2]]))"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString([[1], [2]][0])"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString(CASE WHEN true THEN [1, 2] ELSE [3] END)"
+        error: "toString() takes a number, a text, a truth value, a temporal value, a map or a list of any items, not a list whose items are all of one kind, as in Neo4j."
 
   - name: "A keyword as a variable"
     description: "A word Cypher keeps for its clauses and operators, as end, match or case, may name a variable, as Neo4j takes it (drivine4j#635)."
