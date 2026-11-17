@@ -4,6 +4,7 @@ import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.WriteBlocks
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.sql.WriteReturns
+import org.drivine.cypher.api.Store
 import org.drivine.cypher.store.ddl.PostgresWriteFunctions
 
 /**
@@ -12,6 +13,8 @@ import org.drivine.cypher.store.ddl.PostgresWriteFunctions
  * it as data beside the plan.
  */
 internal class PostgresWriteBlocks(private val functions: PostgresWriteFunctions) : WriteBlocks {
+
+    override val store = Store.POSTGRES
 
     override fun statement(shapes: List<NodeShape>, returns: WriteReturns, patchedIf: String?): String {
         val call = "${functions.write}(CAST(\$${WritePlan.PLAN} AS jsonb), CAST(\$$SHAPES AS jsonb), CAST(\$${WritePlan.MARK} AS text), '${returns.name}', CAST(\$$PATCHED_IF AS text))"

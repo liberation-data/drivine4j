@@ -26,7 +26,8 @@ import org.drivine.model.GraphViewModel
  * manager's own.
  *
  * Each fragment's Cypher parameters are named apart, `f<n>_<name>`, and bound in [scope] under the names the module gives
- * them (`_cy_f<n>_<name>`), beside the statement's own. [hints] are those the statement's outermost `SELECT` carries.
+ * them (`_cy_f<n>_<name>`, and on Oracle `_cyk_f<n>_<name>`, the key a property is compared with it by), beside the
+ * statement's own. [hints] are those the statement's outermost `SELECT` carries.
  *
  * @param compiler the store's compiler, for this statement alone, as no other statement is compiled on it: from
  *   [CypherCompile], so that a fragment the module refuses is thrown as drivine4j's refusal of a statement is

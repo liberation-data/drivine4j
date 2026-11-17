@@ -95,7 +95,7 @@ class OracleSelectTest {
         val statement = byId.load(listOf(byId.hasId("id"))).statement
         assertTrue(statement.contains(carriesClaim), statement)
         assertFalse(statement.contains(scansClaim), statement)
-        assertTrue(statement.endsWith("    COLUMNS (n_.props, n_.doc)) n_\nWHERE ${OracleSql.hasId("n_", "id", "JSON(\$id)")}"), statement)
+        assertTrue(statement.endsWith("    COLUMNS (n_.props, n_.doc)) n_\nWHERE ${OracleSql.hasId("n_", "id", "JSON(\$id EXTENDED)")}"), statement)
 
         val all = select(Claim::class.java).load(emptyList()).statement
         assertTrue(all.contains(scansClaim), all)
@@ -377,7 +377,7 @@ class OracleSelectTest {
                 SELECT claim_.nid
                 FROM g_node claim_
                 WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(claim_.labels), ']'), '[') || ',"', ',"Claim","') > 0
-                  AND ${OracleSql.hasId("claim_", "id", "JSON(${'$'}id)")})
+                  AND ${OracleSql.hasId("claim_", "id", "JSON(${'$'}id EXTENDED)")})
         """.trimIndent()
         assertEquals(reached("cascaded_", "Company") + "\nUNION\n" + reached("cascaded2_", "Human"), sql)
     }
@@ -452,7 +452,7 @@ class OracleSelectTest {
                 WHERE related_.src IN (
                     SELECT from_.nid
                     FROM g_node from_
-                    WHERE ${OracleSql.hasId("from_", "id", "JSON(${'$'}_fromId)")}
+                    WHERE ${OracleSql.hasId("from_", "id", "JSON(${'$'}_fromId EXTENDED)")}
                       AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(from_.labels), ']'), '[') || ',"', ',"Human","') > 0))
             """.trimIndent(),
             out.relatedTo(listOf("Human"), "id", "_fromId", "MENTIONS", Direction.OUTGOING),
@@ -470,7 +470,7 @@ class OracleSelectTest {
         val related = select(Claim::class.java).relatedTo(emptyList(), "id", "_fromId", "TAGS", Direction.OUTGOING)
 
         assertTrue(related.contains("MATCH (from_ IS node) -[e IS edge WHERE e.type = 'TAGS']-> (related_ IS node)"), related)
-        assertTrue(related.contains("FROM g_node from_\n        WHERE ${OracleSql.hasId("from_", "id", "JSON(${'$'}_fromId)")}))"), related)
+        assertTrue(related.contains("FROM g_node from_\n        WHERE ${OracleSql.hasId("from_", "id", "JSON(${'$'}_fromId EXTENDED)")}))"), related)
     }
 
     // ----- scored search -----

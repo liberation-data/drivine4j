@@ -80,8 +80,8 @@ class OracleBackendTest {
 
     private fun query(build: GraphQuerySpec<Any>.() -> Unit = {}) = GraphQuerySpec(Any()).apply(build)
 
-    @Suppress("UNCHECKED_CAST")
-    private fun steps(bindings: Map<String, Any?>): List<Map<String, Any?>> = bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+    /** The steps of the plan bound in [bindings]: see [planSteps]. */
+    private fun steps(bindings: Map<String, Any?>): List<Map<String, Any?>> = planSteps(bindings)
 
     private fun String.squashed(): String = replace(Regex("\\s+"), " ")
 
@@ -147,7 +147,7 @@ class OracleBackendTest {
         val statement = backend().load(Claim::class.java)
 
         // Compared by its class and key, as the index over the property of every node is made over them.
-        assertContains(statement.statement, OracleSql.hasId("n_", "id", "JSON(\$${GraphBackend.ID_PARAM})"))
+        assertContains(statement.statement, OracleSql.hasId("n_", "id", "JSON(\$${GraphBackend.ID_PARAM} EXTENDED)"))
         assertEquals(setOf(GraphBackend.ID_PARAM), SqlParameters.positional(statement.statement).names.toSet())
         assertTrue(statement.bindings.isEmpty(), "the id is the caller's to bind")
         // Bound as the JSON the node holds it as.
@@ -377,9 +377,9 @@ class OracleBackendTest {
         assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR('','' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), '']''), ''['') || '',\"'', '',\"Claim\",\"'') > 0 AND ")
         // The id compared by its class and key, as the index over the property of every node is made over them.
         // Each place the comparison reads the id is a bind of its own, each given the id.
-        val binds = Regex("""JSON\(:b(\d+)\)""").findAll(plain).map { it.groupValues[1].toInt() }.toList()
+        val binds = Regex("""JSON\(:b(\d+) EXTENDED\)""").findAll(plain).map { it.groupValues[1].toInt() }.toList()
         assertEquals((0 until binds.size).toList(), binds)
-        assertContains(plain, OracleSql.hasId("n_", "id", "JSON(:bN)").replace("'", "''").replace(Regex(""":bN"""), ":b0").substringBefore(" AND "))
+        assertContains(plain, OracleSql.hasId("n_", "id", "JSON(:bN EXTENDED)").replace("'", "''").replace(Regex(""":bN"""), ":b0").substringBefore(" AND "))
         assertContains(plain, "' USING ${List(binds.size) { "\$id" }.joinToString(", ")}; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
         assertContains(narrowed, " AND (COALESCE(JSON_VALUE(n_.props, ''$.text.v''), JSON_VALUE(n_.props, ''$.text'')) = ''x'')' USING \$id")
@@ -586,11 +586,12 @@ class OracleBackendTest {
         val found = backend().foundStamp(StampWrite(Gauge::class.java, 3.0, "Gauge:Hot", "id", null))
 
         assertEquals(
-            "SELECT n.stamp FROM g_node n WHERE ${OracleSql.hasId("n", "id", "JSON(\$id)")}" +
+            "SELECT n.stamp FROM g_node n WHERE ${OracleSql.hasId("n", "id", "JSON(\$id EXTENDED)")}" +
                 " AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Gauge\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0",
             found.statement,
         )
-        assertEquals(mapOf<String, Any?>("id" to "3.0"), found.bindings)
+        // On Oracle a float id is extended JSON's double, as the node holds it, read EXTENDED.
+        assertEquals(mapOf<String, Any?>("id" to "{\"\$numberDouble\":\"3.0\"}"), found.bindings)
     }
 
     @Test
@@ -699,11 +700,11 @@ class OracleBackendTest {
         val sql = statement.statement.squashed()
 
         // The id as the JSON the node holds it as: a double, which Oracle compares as the number it is.
-        assertEquals(mapOf<String, Any?>("_fromId" to "3.0"), statement.bindings)
+        assertEquals(mapOf<String, Any?>("_fromId" to "{\"\$numberDouble\":\"3.0\"}"), statement.bindings)
         assertContains(sql, "<-[e IS edge WHERE e.type = 'READ_BY']-")
         assertContains(sql, "\"Gauge\"")
         assertContains(sql, "\"Hot\"")
-        assertContains(sql, "JSON(\$_fromId)")
+        assertContains(sql, "JSON(\$_fromId EXTENDED)")
         // The target's label is tested on the node found, not used to find it.
         assertContains(sql, "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0")
     }

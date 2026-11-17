@@ -262,7 +262,7 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
   of numbers, and for an infinity it gives the infinity from `^`, `abs`, `round` and `floor`, and fails from `sqrt`,
   `log` and `exp`. `%` given one gives what Neo4j gives on each SQL store. Oracle stores them too. SQLite stores an
   infinity, and refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb`
-  holds neither. `DISTINCT`, a grouping key and a statement's `UNION` without `ALL` keep each NaN apart on each SQL
+  holds neither. A save writes them as a statement does, and is refused where it is, with the same message. `DISTINCT`, a grouping key and a statement's `UNION` without `ALL` keep each NaN apart on each SQL
   store, which can't tell one NaN from another: `UNWIND [$p, $p] AS x RETURN count(DISTINCT x)` given NaN is 2, where
   Neo4j, keeping a NaN given once and read twice once, gives 1. A `UNION` without `ALL` in `CALL { … }` keeps rows
   that are NaN once on each SQL store, where Neo4j gives each. `DISTINCT` keeps once two lists or maps holding NaN

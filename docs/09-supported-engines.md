@@ -213,7 +213,10 @@ val provider = JdbcConnectionProvider.pooled(
 
 **How a graph is stored.** Two tables and the property graph over them, made, where they are not
 there yet, before the datasource's first connection: `<graph>_node (nid, labels, props, stamp)` and
-`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. Labels, property
+`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. A save and a `CREATE` hold a
+value alike: every float as a binary double, `2.0` as a float and not the number 2, and a `ByteArray` as the list of its
+signed bytes, `[1, 2, -1]`, as on Postgres and SQLite (a release before this one saved a float as a number, and bytes,
+on every SQL store, as base64 text; such a node loads as before). Labels, property
 names and relationship types are data, so `@NodeLabels`, `@PropertyBag` and `edges.relate` work as
 they do elsewhere. To SQL written by hand the graph has one vertex label, `node`, and one edge label,
 `edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`. A node's stamp is
@@ -307,7 +310,7 @@ of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went fro
   or a variable may be named by a keyword (`$limit`, `MATCH (end)`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
-  are the floats they are, and are stored as them, as in Neo4j; but `^` and functions of numbers given one give null,
+  are the floats they are, and are stored as them, as in Neo4j, by a statement and a save alike; but `^` and functions of numbers given one give null,
   where Neo4j gives NaN or an infinity. `%` gives what Neo4j gives: a finite number taken `%` by an infinity is that
   number, as a float, any other `%` of NaN or an infinity is NaN, and so is one by a float zero, not the number taken
   that Oracle's `MOD` gives. A number divided or taken `%` by an integer zero fails, as in Neo4j, but a float where both
@@ -701,7 +704,9 @@ datasource's first connection:
 `<graph>_node (nid, labels, props, stamp)` and `<graph>_edge (eid, src, dst, type, props)`, with
 `labels` (a JSON array) and `props` as `jsonb`, and `<graph>_schema` for what schema management made.
 A GIN index over `labels` answers whether a node carries a label. Beside them are three functions,
-`<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A store that an
+`<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A save and a `CREATE` hold a
+`ByteArray` alike, as the list of its signed bytes, `[1, 2, -1]` (a release before this one saved it as base64 text;
+such a node loads as before). A store that an
 earlier version of Drivine made in this store layout is brought up to date on first use, and keeps its rows; one
 in an earlier layout is judged as on [Oracle](#oracle). A node's stamp
 is the `stamp` column, returned by a load as `__drivine.stamp`. Deleting a node's row deletes its
@@ -748,7 +753,7 @@ relationships with it.
   anyway. A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
 - `jsonb` holds no NaN or infinity. A statement given one as a parameter writes it as a number past any double's,
   and works with it as the float it is, as Neo4j does; the rows give it back as that float. A statement that writes
-  and is given one is refused, rather than store that number.
+  and is given one is refused, rather than store that number, and so is a save of one, with the same message.
 - A statement that reads and may work NaN or an infinity out is compiled the same way, decided as it is compiled: one
   that divides or takes `%` by anything but a number other than 0 written in it or given, or takes `toFloat` of anything
   but a number, or a text that names neither, written in it or given. So a number divided by a float zero is NaN or an
@@ -941,7 +946,9 @@ first connection, with `labels` and `props` as JSON text (not SQLite's binary
 `jsonb`, so Drivine for TypeScript and for Python read the same file), and `<graph>_schema` for what
 schema management made. A save is the plan of steps the other stores carry out, carried out by the
 function `drivine_write` that Drivine registers on each connection: applied whole or not at all, and
-stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
+stamped and checked as elsewhere. A save and a `CREATE` hold a `ByteArray` alike, as the list of its signed bytes,
+`[1, 2, -1]` (a release before this one saved it as base64 text; such a node loads as before). Deleting a node's row
+deletes its relationships with it.
 
 `nid` and `eid` are `INTEGER PRIMARY KEY AUTOINCREMENT`, so the id of a node or relationship that is deleted is
 never given to another, within a statement, a transaction or after it, as on Oracle and Postgres: an element id an
@@ -974,9 +981,9 @@ There is no migration, as SQLite cannot change a table's key in place.
   mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
   and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
   float. A `sum()` of integers that passes a long's range fails with `integer overflow`, where Neo4j gives a float.
-- An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one as
+- An infinity is the number SQLite's JSON writes for one, and is stored, by a statement and a save alike. Its JSON holds no NaN: a statement given one as
   a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives it
-  back as NaN. A statement that writes and is given NaN is refused, rather than store that map, and one that writes NaN
+  back as NaN. A statement that writes and is given NaN is refused, rather than store that map, as is a save of NaN, and one that writes NaN
   it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A statement that may work NaN or an infinity
   out, as on [Postgres](#postgres) (dividing or taking `%` by anything but a number other than 0, `toFloat` of a text),
   is compiled as one given one: a number divided by a float zero is NaN or an infinity, as on Neo4j, and so is a float

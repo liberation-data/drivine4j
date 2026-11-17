@@ -36,8 +36,8 @@ internal object OracleSql {
 
     /**
      * The id [id] as the text a write plan keys its node by, within the plan, and reads a target's stored id back as. A
-     * property is read back as text, and Oracle keeps a JSON number as a number, so `3.0` is read as `3`: a number is
-     * written as its plain, shortest form. A temporal value is held as its tag, and keyed by the tag's text, as the module
+     * property is read back as text, and Oracle reads a number, and a float, held as a binary double, as its plain digits,
+     * `3.0` as `3` and `1e20` as `100000000000000000000`: a number is written as its plain, shortest form. A temporal value is held as its tag, and keyed by the tag's text, as the module
      * writes it ([NodeIds.temporalText]). A node is found by its id's JSON, not by this text: see [NodeIds].
      */
     fun key(id: Any): String = NodeIds.temporalText(id) ?: when (id) {
@@ -61,11 +61,12 @@ internal object OracleSql {
 
     /**
      * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
-     * text, as [hasId] compares one: the index answers it for each.
+     * text, as [hasId] compares one: the index answers it for each. Each is read `EXTENDED`, as the store's JSON of an id
+     * holds a float as extended JSON's double ([NodeIds]).
      */
     fun hasIdIn(alias: String, key: String, parameter: String): String =
         "(${Shared.indexClass("$alias.props", key)}, ${Shared.indexKey("$alias.props", key)}) IN " +
-            "(SELECT ${Shared.valueClass("JSON(i.v)")}, ${Shared.valueKey("JSON(i.v)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
+            "(SELECT ${Shared.valueClass("JSON(i.v EXTENDED)")}, ${Shared.valueKey("JSON(i.v EXTENDED)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
 
     /**
      * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read

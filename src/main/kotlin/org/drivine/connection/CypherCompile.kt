@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.DrivineException
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.cypher.CompilerException
+import org.drivine.cypher.api.Store
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.cypher.sql.OracleCypherCompiler
@@ -10,6 +11,8 @@ import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqlCypherCompiler
 import org.drivine.cypher.sql.SqlFragment
 import org.drivine.cypher.sql.SqliteCypherCompiler
+import org.drivine.cypher.store.StoreValues
+import org.drivine.query.JdbcParameterCoercer
 
 /**
  * A Cypher statement compiled to a SQL store's statement over a graph's tables, as [JdbcConnection] runs it: the one
@@ -125,6 +128,13 @@ internal object CypherCompile {
         value is Array<*> -> value.map(::drainedValue)
         else -> value
     }
+
+    /**
+     * [value] as [store]'s layout holds it, written by the module as a compiled statement that writes binds a parameter
+     * (`StoreValues.text`), each collection in it a list: what a save's plan and an id a node is found by are bound as
+     * (`WritePlan.bindings`, `NodeIds.json`). A value the store holds as no number is refused as a `CREATE` given it is.
+     */
+    fun storeText(value: Any?, store: Store): String = refusing { StoreValues.text(JdbcParameterCoercer.listed(value), store, JacksonEncoder) }
 
     /**
      * [compile], with the compiler's refusal thrown as drivine4j's. A refusal's [CompilerException.detail] is null until

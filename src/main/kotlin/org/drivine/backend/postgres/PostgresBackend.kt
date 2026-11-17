@@ -108,7 +108,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull(PostgresSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to NodeIds.json(root.id)),
+        mapOf("id" to ids.json(root.id)),
     )
 
     /**

@@ -41,8 +41,8 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     /** How a plan of steps is carried out. */
     protected abstract val blocks: WriteBlocks
 
-    /** An id given to find a node by, as the JSON the node holds it as. */
-    private val ids = NodeIds(objectMapper)
+    /** An id given to find a node by, as the JSON the node holds it as on the store of [blocks]. */
+    protected val ids by lazy { NodeIds(objectMapper, blocks.store) }
 
     /** Plans a save, and a batch of fragments, as the steps of a plan. */
     private val saves by lazy { SqlSavePlan(blocks, objectMapper, ::key, ids) }

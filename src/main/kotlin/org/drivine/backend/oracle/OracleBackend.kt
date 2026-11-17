@@ -194,8 +194,8 @@ internal class OracleBackend(
      */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull(OracleSql.hasId("n", ValueLayout.escape(root.idProperty), "JSON(\$id)"), OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to NodeIds.json(root.id)),
+            listOfNotNull(OracleSql.hasId("n", ValueLayout.escape(root.idProperty), "JSON(\$id EXTENDED)"), OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
+        mapOf("id" to ids.json(root.id)),
     )
 
     /**

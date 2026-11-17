@@ -20,8 +20,7 @@ class WritePlanTest {
     private val graph = OracleGraph("g")
     private val blocks = OracleWriteBlocks(graph)
 
-    @Suppress("UNCHECKED_CAST")
-    private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.bindings()[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+    private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.added
 
     /** What a node step says beyond the fields every node step has. */
     private fun Map<String, Any?>.said(): Map<String, Any?> = this - setOf("op", "r", "s", "k", "key", "id", "labels", "fresh")

@@ -5,12 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import org.drivine.DrivineException
 import org.drivine.backend.sqlite.SqliteDataSource
 import org.drivine.backend.sqlite.SqliteFunctions
 import org.drivine.connection.CypherCompile
+import org.drivine.connection.JacksonEncoder
+import org.drivine.cypher.api.CompileJson
+import org.drivine.cypher.api.Store
+import org.drivine.cypher.json.CypherJson
 import org.drivine.cypher.spec.CypherSpec.Companion.expanded
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.Temporals
+import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.mapper.JdbcResultMapper
 import org.junit.jupiter.api.DynamicTest
@@ -22,6 +28,12 @@ import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 import java.sql.SQLException
 import java.sql.Types
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.OffsetTime
+import java.time.ZonedDateTime
+import java.util.Base64
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -34,13 +46,16 @@ import kotlin.test.fail
  * The spec's `cypher/host.yaml`: what Drivine's own code does with the values compiled SQL hands it, with no store. Each
  * `function` step calls one of the functions Drivine registers on SQLite ([SqliteFunctions]), on an in-memory database Drivine
  * opens ([SqliteDataSource]), and
- * each `read` step reads a column's text as [JdbcResultMapper] reads a compiled statement's rows. Each case's `pairs` must
+ * each `read` step reads a column's text as [JdbcResultMapper] reads a compiled statement's rows, and each `write` step writes a
+ * value as a save's plan writes it on its store ([CypherCompile.storeText], the module's [StoreValues.text] through drivine4j's
+ * [JacksonEncoder]; see `WritePlan.bindings`), its refusal the [DrivineException] a save throws. Each case's `pairs` must
  * name store cases the other spec files have, whose statements rely on its steps: one of them compiles, as Drivine compiles
  * it ([CypherCompile]), on SQLite, to SQL
  * that calls each function the case's steps call (for `regexp`, which SQLite calls for its `REGEXP` operator, SQL that holds the
  * operator), and one compiles, on each store its steps read, with the `nonFinite`
  * each read step says. Each `key` step's temporal value has the sort key the module works out ([Temporals.key]), and one of its
- * pairs makes a temporal value as the statement runs. The three libraries read the same file.
+ * pairs makes a temporal value as the statement runs. For each store a `write` step names, one of its pairs runs on the store
+ * and writes. The three libraries read the same file.
  *
  * As the shared module's HostSpecTest runs it: a step with an `error` must fail, with a message that holds it; a step
  * whose note holds [HELD] waits for layout 2, and must fail, so the hold comes off when it passes; and
@@ -61,12 +76,17 @@ class HostSpecTest {
 
     private companion object {
         /**
-         * The keys of each kind of step, beside its optional `note`: a function's result, its failure, its order, a read, and a
-         * temporal value's sort key.
+         * The keys of each kind of step, beside its optional `note`: a function's result, its failure, its order, a read, a
+         * temporal value's sort key, and a value a store's layout writes or refuses.
          */
         val SHAPES = setOf(
             setOf("function", "args", "result"), setOf("function", "args", "error"), setOf("function", "ascending"), setOf("read", "value"), setOf("key", "result"),
+            setOf("write", "result"), setOf("write", "error"),
         )
+        /** A write's keys: the store's left out of a step that is refused for it. */
+        val WRITE = setOf("store", "value")
+        /** A statement that writes, as a pair of a `write` step: whether it compiles on the store or is refused. */
+        val WRITES = Regex("\\b(?:CREATE|MERGE|SET)\\b", RegexOption.IGNORE_CASE)
         val KEY = setOf("kind", "v")
         /** A call in Cypher that makes a temporal value of a kind with a sort key, as a statement runs. */
         val TEMPORAL_CALL = Regex("""\b(?:date|localtime|time|localdatetime|datetime)\s*\(""", RegexOption.IGNORE_CASE)
@@ -88,6 +108,11 @@ class HostSpecTest {
 
         /** SQLite's errors of a call it won't make, which no held step's failure can be: the step names no function of the store's. */
         val RUNNER_ERRORS = listOf("no such function", "wrong number of arguments")
+
+        /** The keys of a `write` step's bytes, temporal value and map with keys of its own, as a request's parameter writes them. */
+        const val BYTES = "\$bytes"
+        const val TEMPORAL = "\$temporal"
+        const val MAP = "\$map"
 
         /** The function a library calls itself, once on each connection, and no compiled statement does: its steps pair nothing. */
         const val UNPAIRED = "drivine_host_version"
@@ -183,6 +208,24 @@ class HostSpecTest {
     }
 
     @Test
+    fun `a write step gives the text a save's plan binds, or the refusal a save throws, exactly, and pairs a statement that writes on its store`() {
+        val pairs = mapOf("writes.yaml" to listOf("NaN and the infinities written"))
+        check(case(mapOf("write" to mapOf("store" to "sqlite", "value" to mapOf("\$float" to "Infinity")), "result" to "9e999"), pairs = pairs))
+        check(case(mapOf("write" to mapOf("store" to "oracle", "value" to mapOf("\$bytes" to "AQL/")), "result" to "[1,2,-1]"), pairs = pairs))
+        assertFails { check(case(mapOf("write" to mapOf("store" to "sqlite", "value" to mapOf("\$float" to "Infinity")), "result" to "9E999"), pairs = pairs)) }
+        val refused = mapOf("write" to mapOf("store" to "postgres", "value" to mapOf("\$float" to "NaN")))
+        check(case(refused + ("error" to "A statement that writes is given NaN or an infinity, which Postgres's `jsonb` holds as no number: it would store another value in its place."), pairs = pairs))
+        // The message is compared whole, not as a part of it.
+        assertContains(assertFails { check(case(refused + ("error" to "A statement that writes is given NaN"), pairs = pairs)) }.message!!, "expected")
+        assertContains(assertFails { check(case(refused + ("result" to "null"), pairs = pairs)) }.message!!, "refused")
+        // A store left out, or a graph engine's, is refused by the module's request, and needs no pair.
+        check(case(mapOf("write" to mapOf("value" to 1L), "error" to "A write request gives the store: postgres, oracle or sqlite."), pairs = pairs))
+        assertContains(assertFails { check(case(mapOf("write" to mapOf("store" to "sqlite", "valu" to 1L), "result" to "1"), pairs = pairs)) }.message!!, "a write has the keys")
+        val unrelated = mapOf("queries.yaml" to listOf("Returning nodes and properties"))
+        assertContains(assertFails { check(case(mapOf("write" to mapOf("store" to "sqlite", "value" to 1L), "result" to "1"), pairs = unrelated)) }.message!!, "runs on sqlite and writes")
+    }
+
+    @Test
     fun `a function Drivine does not register, or a result it does not give, fails`() {
         assertFails { check(case(mapOf("function" to "drivine_nothing", "args" to listOf("1"), "result" to "1"))) }
         assertFails { check(case(mapOf("function" to "drivine_add", "args" to listOf("1", "2"), "result" to "4"))) }
@@ -255,6 +298,8 @@ class HostSpecTest {
                     read(connection, step, where)
                 } else if ("key" in keys) {
                     key(step, where)
+                } else if ("write" in keys) {
+                    write(step, where)
                 } else if ((step["note"] as? String)?.contains(HELD) != true) {
                     function(connection, step, where)
                 } else {
@@ -346,6 +391,56 @@ class HostSpecTest {
         assertEquals(result, ValueLayout.tagMap(kind, v)[ValueLayout.KEY], where)
     }
 
+    /**
+     * The step's `write`, a value written on a store, is the JSON text `result`, exactly, or is refused with the message
+     * `error`, exactly: as a save's plan writes the value ([CypherCompile.storeText], its refusal thrown as drivine4j's, as
+     * `WritePlan.bindings` writes it). A step that names no SQL store, which no save of drivine4j's can, is
+     * the module's JSON request's to refuse ([CompileJson]).
+     */
+    private fun write(step: Map<String, Any?>, where: String) {
+        val write = step["write"] as? Map<*, *> ?: throw IllegalArgumentException("$where: a write is a map")
+        require(write.keys == WRITE || write.keys == WRITE - "store") { "$where: a write has the keys $WRITE, the store's only where it is refused" }
+        val store = (write["store"] as String?)?.let(Store::of)
+        val got: Result<String> = if (store == null) {
+            val request = CypherJson.writeValueAsString(CypherJson.valueToTree(mapOf("write" to write["value"]) + (write["store"]?.let { mapOf("store" to it) } ?: emptyMap())))
+            val answer = CypherJson.readTree(CompileJson.compile(request))
+            answer["error"]?.let { Result.failure(IllegalArgumentException(it.textValue())) } ?: Result.success(CypherJson.writeValueAsString(answer["value"]!!))
+        } else {
+            runCatching { CypherCompile.storeText(writeValue(write["value"]), store) }
+                .onFailure { if (it !is DrivineException) throw it }
+        }
+        if ("error" in step) {
+            val error = step["error"] as? String ?: throw IllegalArgumentException("$where: error is a text, not ${step["error"]}")
+            assertEquals(error, got.exceptionOrNull()?.message ?: fail("$where: refused with \"$error\", but wrote ${got.getOrNull()}"), where)
+        } else {
+            assertEquals(step["result"] as String, got.getOrElse { fail("$where: refused: ${it.message}") }, where)
+        }
+    }
+
+    /**
+     * A `write` step's value as drivine4j gives a save one ([expanded], then as a request's parameter is read): `{$bytes}` a
+     * `ByteArray`, `{$temporal, text}` the `java.time` value of its kind, and `{$map}` the map it holds.
+     */
+    private fun writeValue(value: Any?): Any? = when (value) {
+        is Map<*, *> -> when (value.keys) {
+            setOf(BYTES) -> Base64.getDecoder().decode(value[BYTES] as String)
+            setOf(TEMPORAL, "text") -> (value["text"] as String).let { text ->
+                when (val kind = value[TEMPORAL]) {
+                    "DATE" -> LocalDate.parse(text)
+                    "LOCAL_TIME" -> LocalTime.parse(text)
+                    "TIME" -> OffsetTime.parse(text)
+                    "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
+                    "DATE_TIME" -> ZonedDateTime.parse(text)
+                    else -> error("No temporal kind $kind in the runner")
+                }
+            }
+            setOf(MAP) -> (value[MAP] as Map<*, *>).mapValues { writeValue(it.value) }
+            else -> expanded<Any?>(value).let { if (it is Map<*, *>) it.mapValues { (_, item) -> writeValue(item) } else it }
+        }
+        is List<*> -> value.map(::writeValue)
+        else -> value
+    }
+
     /** A column's text: a text, or a list of texts (and `$repeat`s) written one after the other. */
     private fun column(value: Any?): String = when (value) {
         is String -> value
@@ -408,6 +503,10 @@ class HostSpecTest {
                 else -> fail("${case.name}: no compiler for $store")
             }
             assertTrue(statements.any { it.nonFinite == nonFinite }, "${case.name}: no step of ${case.pairs} compiles on $store with nonFinite $nonFinite")
+        }
+        case.steps.mapNotNull { (it["write"] as Map<*, *>?)?.get("store") as String? }.filter { Store.of(it) != null }.distinct().forEach { store ->
+            val writes = paired.flatMap { it.steps }.any { it.runsOn(store) && WRITES.containsMatchIn(it.cypher) }
+            assertTrue(writes, "${case.name}: no step of ${case.pairs} runs on $store and writes")
         }
         if (case.steps.any { "key" in it }) {
             val making = paired.flatMap { it.steps }.filter { it.runsOn("sqlite") && TEMPORAL_CALL.containsMatchIn(it.cypher) }

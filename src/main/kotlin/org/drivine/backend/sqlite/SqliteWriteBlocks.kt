@@ -4,6 +4,7 @@ import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.WriteBlocks
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.sql.WriteReturns
+import org.drivine.cypher.api.Store
 
 /**
  * SQLite carries out a plan by the function Drivine registers on each connection (see
@@ -13,6 +14,8 @@ import org.drivine.backend.sql.WriteReturns
  * value of a statement that opens with [SqliteSql.JSON_ROWS] is JSON, and a count as a number.
  */
 internal class SqliteWriteBlocks(private val graph: SqliteGraph) : WriteBlocks {
+
+    override val store = Store.SQLITE
 
     override fun statement(shapes: List<NodeShape>, returns: WriteReturns, patchedIf: String?): String {
         val call = "${SqliteFunctions.WRITE}(${SqliteSql.literal(graph.name)}, \$${WritePlan.PLAN}, \$$SHAPES, \$${WritePlan.MARK}, '${returns.name}', \$$PATCHED_IF)"

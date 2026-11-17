@@ -20,6 +20,7 @@ import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.WriteReturns
 import org.drivine.backend.sqlite.SqliteBackend
+import org.drivine.cypher.api.Store
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
@@ -388,8 +389,8 @@ abstract class NodeIdLookupContract {
     companion object {
         const val FILLERS = 3000
 
-        /** The JSON a node of [type] holds the id [text] as. */
-        fun idJson(type: Class<*>, text: String): String = assertNotNull(NodeIds(Neo4jObjectMapper.instance).json(FragmentModel.from(type), text))
+        /** The JSON a node of [type] holds the id [text] as on [store]. */
+        fun idJson(type: Class<*>, text: String, store: Store): String = assertNotNull(NodeIds(Neo4jObjectMapper.instance, store).json(FragmentModel.from(type), text))
     }
 }
 
@@ -418,7 +419,7 @@ class NodeIdLookupPostgresTest : NodeIdLookupContract() {
             val connection = PostgresTestDatabase.provider.connect()
             val plan = try {
                 connection.startTransaction()
-                val id = idJson(type, text)
+                val id = idJson(type, text, Store.POSTGRES)
                 connection.query(QuerySpecification.withStatement("SELECT (${GRAPH}_find('[\"$label\"]'::jsonb, 'id', ${PostgresSql.literal(id)}::jsonb)).nid"))
                 val name = connection.query(
                     QuerySpecification.withStatement("SELECT name FROM pg_prepared_statements WHERE name LIKE 'drivine_find_%' AND statement LIKE \$label")
@@ -478,7 +479,7 @@ class NodeIdLookupOracleTest : NodeIdLookupContract() {
     override fun deletePlan(type: Class<*>, id: String): String {
         val select = OracleSelect(OracleGraph(GRAPH), type)
         val delete = select.hinted("DELETE FROM ${OracleGraph(GRAPH).nodes} ${select.root}\nWHERE ${select.selecting(listOf(select.hasId(GraphBackend.ID_PARAM)))}")
-        return plan(delete, select.bindings() + (GraphBackend.ID_PARAM to idJson(type, id)))
+        return plan(delete, select.bindings() + (GraphBackend.ID_PARAM to idJson(type, id, Store.ORACLE)))
     }
 
     /** A save finds each node by the block's `find`, whose query is explained for the id's JSON. */
@@ -488,7 +489,7 @@ class NodeIdLookupOracleTest : NodeIdLookupContract() {
             val label = FragmentModel.from(type).labels.single()
             val block = OracleWriteBlocks(OracleGraph(GRAPH)).statement(listOf(NodeShape(listOf(label), "id")), WriteReturns.COUNT, null)
             val find = assertNotNull(Regex("""SELECT MIN\(n\.nid\) INTO v_nid FROM (.*);""").find(block), block).groupValues[1]
-            val plan = plan("SELECT MIN(n.nid) FROM ${find.replace("JSON(p_id)", "JSON(${OracleSql.literal(idJson(type, text))})")}", emptyMap())
+            val plan = plan("SELECT MIN(n.nid) FROM ${find.replace("p_id", "JSON(${OracleSql.literal(idJson(type, text, Store.ORACLE))} EXTENDED)")}", emptyMap())
             assertTrue(readsIndex(plan, label), "the save's lookup of a $label:\n$plan")
         }
     }

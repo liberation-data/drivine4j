@@ -38,11 +38,14 @@ class JacksonEncoderTest {
     )
 
     @Test
-    fun `a value's tree is written as Jackson writes its own tree of it`() {
-        for (value in values) {
+    fun `a value's tree is written as Jackson writes its own tree of it, bytes but as the list of their signed values`() {
+        for (value in values.filter { it !is ByteArray }) {
             val jackson = Neo4jObjectMapper.instance.writeValueAsString(Neo4jObjectMapper.instance.valueToTree(value))
             assertEquals(jackson, CypherJson.writeValueAsString(JacksonEncoder.tree(value)), "$value")
         }
+        // Bytes as the store layout holds them on every store, as on a graph engine, not Jackson's base64 (drivine4j#830).
+        assertEquals("[1,2,3,-1]", CypherJson.writeValueAsString(JacksonEncoder.tree(byteArrayOf(1, 2, 3, -1))))
+        assertEquals("{\"b\":[1,-128]}", CypherJson.writeValueAsString(JacksonEncoder.tree(mapOf("b" to byteArrayOf(1, -128)))))
     }
 
     @Test
@@ -76,9 +79,8 @@ class JacksonEncoderTest {
             emptyList<Any>(), emptySet<Any>(), emptyMap<String, Any>(), listOf("a"), setOf(2, 1), mapOf("b" to 1, "a" to 2),
             buildList { add(1); add(emptyList<Any>()) }, buildMap { put("l", emptyList<Any>()); put("m", emptyMap<String, Any>()) },
             listOf(1, 2).asReversed(), arrayOf<Any>(emptyList<Any>(), "x"), mapOf("labels" to emptyList<String>(), "props" to mapOf("k" to 1)),
-            // A byte array is still its base64 text, a sorted or hashed map keeps its order, and a set's two arrays of the
-            // same items stay two.
-            listOf(byteArrayOf(1, 2, -1), emptyList<Any>()), java.util.TreeMap(mapOf("b" to emptyList<Any>(), "a" to 1)),
+            // A sorted or hashed map keeps its order, and a set's two arrays of the same items stay two.
+            java.util.TreeMap(mapOf("b" to emptyList<Any>(), "a" to 1)),
             hashMapOf("z" to 1, "a" to emptyList<Any>(), "m" to emptyMap<String, Any>()), linkedSetOf(arrayOf<Any>(1), arrayOf<Any>(1), emptyList<Any>()),
         )
         for (value in kotlins) {
@@ -91,6 +93,10 @@ class JacksonEncoderTest {
             assertEquals(mapper.writeValueAsString(mapper.valueToTree(value)), CypherJson.writeValueAsString(JacksonEncoder.tree(mapper.valueToTree(plain))), "$value")
             assertEquals(mapper.writeValueAsString(value), JacksonEncoder.text(value), "$value")
         }
+        // A byte array is a byte array in the copy, which Jackson writes as its base64 text, and the tree as the list of its signed values.
+        val bytes = listOf(byteArrayOf(1, 2, -1), emptyList<Any>())
+        assertEquals("[\"AQL/\",[]]", Neo4jObjectMapper.instance.writeValueAsString(JacksonEncoder.plain(bytes, native = true)))
+        assertEquals("[[1,2,-1],[]]", CypherJson.writeValueAsString(JacksonEncoder.tree(Neo4jObjectMapper.instance.valueToTree(JacksonEncoder.plain(bytes, native = true)))))
         assertEquals(listOf("b", "a"), (JacksonEncoder.plain(linkedMapOf("b" to emptyList<Any>(), "a" to 2), native = true) as Map<*, *>).keys.toList())
         // A value that holds no Kotlin collection is itself, and on a JVM every value is.
         val java = arrayListOf<Any>(linkedMapOf("k" to arrayListOf(1)))
