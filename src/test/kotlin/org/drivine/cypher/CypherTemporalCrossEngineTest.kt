@@ -55,7 +55,8 @@ abstract class CypherTemporalContract {
     /**
      * Why this store leaves out the sort of rows beside a variable-length walk by temporal arithmetic, naming the issue that
      * brings it back; null where it runs. Oracle's run of it outgrows the instance's PGA_AGGREGATE_LIMIT (ORA-04036,
-     * liberation-data/drivine4j#809): the hold comes out with that fix.
+     * liberation-data/drivine4j#809), and SQLite's outgrows its statement limit (SQLITE_TOOBIG,
+     * liberation-data/drivine-cypher-spec#338): each hold comes out with its fix.
      */
     internal open val walkSortHeld: String? = null
 
@@ -571,6 +572,8 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
 }
 
 class CypherTemporalSqliteTest : CypherTemporalContract() {
+    override val walkSortHeld =
+        "Held on SQLite until liberation-data/drivine-cypher-spec#338: the walk's sort outgrows SQLite's statement limit (SQLITE_TOOBIG)."
     private val manager = SqliteTestDatabase.graphManager("cypher")
 
     override val pm: PersistenceManager get() = manager

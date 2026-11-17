@@ -88,7 +88,7 @@ data class CypherSpec(
             "temporal.yaml" to mapOf(
                 "A nanosecond past the microsecond" to listOf(
                     Hold(TEMPORAL_PINNED, listOf("neo4j"), steps = listOf(6, 8, 14)),
-                    Hold(TEMPORAL_PINNED, listOf("sql"), steps = listOf(8)),
+                    Hold(TEMPORAL_PINNED, listOf("sql"), steps = listOf(8, 14)),
                 ),
             ),
         )
