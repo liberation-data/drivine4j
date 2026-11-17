@@ -1,9 +1,15 @@
 package org.drivine.store
 
 import org.drivine.DrivineException
+import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeStamp
+import org.drivine.annotation.Root
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.Replace
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.nodeRef
 import org.drivine.mapper.Neo4jObjectMapper
@@ -38,6 +44,18 @@ data class SavedValue(
 /** A node whose id is a float, which Oracle holds as a binary double. */
 @NodeFragment(labels = ["SavedGauge"])
 data class SavedGauge(@NodeId val id: Double, val name: String)
+
+/** A node that carries its stamp, which a save that changes nothing leaves as it was. */
+@NodeFragment(labels = ["SavedReading"])
+data class SavedReading(@NodeId val id: String, val d: Double? = null, @NodeStamp val stamp: String? = null)
+
+/** A view whose targets' ids are floats, which a save names as the store holds them to unlink one. */
+@GraphView
+data class SavedReadings(
+    @Root val reading: SavedReading,
+    @GraphRelationship(type = "READS", direction = Direction.OUTGOING)
+    val gauges: List<SavedGauge> = emptyList(),
+)
 
 /**
  * A value a save writes is held as a `CREATE` given it holds it, and read back by Cypher as the same value
@@ -155,6 +173,75 @@ abstract class SaveValuesContract {
             assertEquals(listOf(1L), cypher("MATCH (n:SavedGauge) WHERE n.id = \$id RETURN count(n)", mapOf("id" to id)), "$id")
         }
         assertEquals(2, manager.count(SavedGauge::class.java))
+    }
+
+    @Test
+    fun `a target whose id is a float is unlinked by a save that drops it, and kept by one that holds it`() {
+        manager.save(SavedReadings(SavedReading("r"), listOf(SavedGauge(3.0, "three"), SavedGauge(4.5, "four and a half"))))
+        val ids = { cypher("MATCH (:SavedReading {id: 'r'})-[:READS]->(g:SavedGauge) RETURN g.id ORDER BY g.id") }
+
+        val loaded = manager.load("r", SavedReadings::class.java)!!
+        manager.save(loaded, Replace(SavedReadings::gauges))
+        assertEquals(listOf(3.0, 4.5), ids())
+
+        val again = manager.load("r", SavedReadings::class.java)!!
+        manager.save(again.copy(gauges = again.gauges.filter { it.id == 4.5 }), Replace(SavedReadings::gauges))
+        assertEquals(listOf(4.5), ids())
+
+        val last = manager.load("r", SavedReadings::class.java)!!
+        manager.save(last.copy(gauges = emptyList()), Replace(SavedReadings::gauges))
+        assertEquals(emptyList(), ids())
+    }
+
+    @Test
+    fun `a float patched in reads back as a float, and NaN and the infinities as the store's float or refused as a save is`() {
+        manager.saveAll(listOf(SavedValue("p", d = 1.5), SavedValue("q", d = 1.5)))
+        manager.patchAll(listOf(SavedValue("p", d = 3.0, l = listOf(2.0))), only = setOf(SavedValue::d, SavedValue::l))
+        assertEquals(listOf(3.0, "3.0", 2.0), cypher("MATCH (n:SavedValue {id: 'p'}) RETURN [n.d, toString(n.d), n.l[0]]").single())
+
+        for (d in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
+            if (d in refused) {
+                assertFailsWith<DrivineException>("$d") { manager.patchAll(listOf(SavedValue("q", d = d)), only = setOf(SavedValue::d)) }
+            } else {
+                manager.patchAll(listOf(SavedValue("q", d = d)), only = setOf(SavedValue::d))
+                val read = read("q", "n.d")
+                assertTrue(read is Double && read.equals(d), "$d read back as $read")
+            }
+        }
+    }
+
+    @Test
+    fun `an infinity saved sorts past every number and is found by a comparison with it`() {
+        // 1e100, as Oracle sorts a double past NUMBER's range out of place (drivine-cypher-spec#309).
+        val infinities = listOf(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY) - refused
+        manager.saveAll(listOf(SavedValue("one", d = 1.0), SavedValue("big", d = 1e100)) + infinities.map { SavedValue("i$it", d = it) })
+
+        assertEquals(infinities.filter { it < 0 }.map { "i$it" } + listOf("one", "big") + infinities.filter { it > 0 }.map { "i$it" }, cypher("MATCH (n:SavedValue) RETURN n.id ORDER BY n.d"))
+        for (d in infinities) {
+            assertEquals(listOf("i$d"), cypher("MATCH (n:SavedValue) WHERE n.d = \$d RETURN n.id", mapOf("d" to d)), "$d")
+            assertEquals(listOf("i$d"), cypher("MATCH (n:SavedValue) WHERE n.d > \$big OR n.d < -\$big RETURN n.id", mapOf("big" to 1e100)).filter { it == "i$d" }, "$d")
+        }
+    }
+
+    @Test
+    fun `a node saved again with the same non-finite float is unchanged, and keeps its stamp`() {
+        for (d in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 2.0) - refused) {
+            val saved = manager.save(SavedReading("s-$d", d = d))
+            val loaded = manager.load("s-$d", SavedReading::class.java)!!
+            assertEquals(saved.stamp, manager.save(loaded).stamp, "$d")
+        }
+    }
+
+    @Test
+    fun `a relationship given a non-finite float is related again as the one relationship`() {
+        manager.saveAll(listOf(SavedValue("a"), SavedValue("b")))
+        for (w in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY) - refused) {
+            assertTrue(manager.edges.relate(nodeRef<SavedValue>("a"), nodeRef<SavedValue>("b"), "WEIGHS", mapOf("w" to w)), "$w")
+            assertTrue(manager.edges.relate(nodeRef<SavedValue>("a"), nodeRef<SavedValue>("b"), "WEIGHS", mapOf("w" to w)), "$w")
+            assertEquals(listOf(1L), cypher("MATCH (:SavedValue {id: 'a'})-[r:WEIGHS]->() RETURN count(r)"), "$w")
+            val read = cypher("MATCH (:SavedValue {id: 'a'})-[r:WEIGHS]->() RETURN r.w").single()
+            assertTrue(read is Double && read.equals(w), "$w read back as $read")
+        }
     }
 }
 
