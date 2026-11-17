@@ -99,7 +99,7 @@ pull requests. Each job writes the report to its summary and keeps `build/tck/` 
 
 ## Pass rates
 
-On compiler 0.49.0 and the store layout 2, when the baselines were last written (2026-11-17), of 3,896 scenarios. The baselines hold the lenient passes. Neo4j's row is from the run of 2026-11-16: the compiler doesn't touch it.
+On compiler 0.50.0 and the store layout 2, when the gate last ran (2026-11-18; the baselines were last written on 2026-11-17, on 0.49.0, and held), of 3,896 scenarios. The baselines hold the lenient passes. Neo4j's row is from the run of 2026-11-16: the compiler doesn't touch it.
 
 | store | lenient pass | strict pass | refused on purpose | wrong result | wrong or missing error | crash or stall | harness limitation |
 |---|---:|---:|---:|---:|---:|---:|---:|
