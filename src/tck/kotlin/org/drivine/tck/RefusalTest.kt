@@ -7,9 +7,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The store's refusal of a fraction of a second past the microsecond is refused on purpose (drivine4j#421, until
- * drivine-cypher-spec#302): by its words on SQLite and Postgres, and on Oracle, which reports only its first letter, by the
- * query's giving such a fraction.
+ * The store's refusal of a fraction of a second past the microsecond, where a statement works such a value out through the
+ * store's timestamp, is refused on purpose (drivine4j#421): by its words on SQLite and Postgres, on SQLite also by the words
+ * the compiler writes in place of the fraction, which the store quotes as it fails, and on Oracle, which reports only its
+ * first letter, by the query's giving such a fraction.
  */
 class RefusalTest {
 

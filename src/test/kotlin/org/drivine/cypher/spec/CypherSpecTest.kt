@@ -90,6 +90,20 @@ class CypherSpecTest {
     }
 
     @Test
+    fun `a hold on a step that runs on none of the hold's stores fails at once`() {
+        val sqlOnly = Step(cypher = "RETURN 1", only = listOf("sql"), rows = listOf(1L))
+        val failure = assertThrows<IllegalArgumentException> {
+            spec(sqlOnly).tests("postgres", before = {}, held = mapOf("a case" to listOf(Hold("#1", listOf("neo4j"), listOf(1))))) { listOf(1L) }
+        }
+        assertContains(failure.message!!, "test.yaml, a case holds step [1] on [neo4j], where it doesn't run")
+        val graphOnly = Step(cypher = "RETURN 1", except = listOf("sql"), rows = listOf(1L))
+        assertThrows<IllegalArgumentException> {
+            spec(graphOnly).tests("neo4j", before = {}, held = mapOf("a case" to listOf(Hold("#1", listOf("sql"))))) { listOf(1L) }
+        }
+        assertDoesNotThrow { spec(sqlOnly).tests("neo4j", before = {}, held = heldOnSql) { listOf(1L) } }
+    }
+
+    @Test
     fun `the holds here name cases and steps the spec has`() {
         listOf("queries.yaml", "writes.yaml", "temporal.yaml", "refusals.yaml", "results.yaml").forEach { file ->
             assertDoesNotThrow { CypherSpec.load(file).tests("postgres", before = {}) { emptyList() } }
