@@ -268,6 +268,11 @@ holds each store to the scenarios it passed, one by one, so none can slip back u
   that are NaN once on each SQL store, where Neo4j gives each. `DISTINCT` keeps once two lists or maps holding NaN
   that two items of one list make (`UNWIND [[0.0/0.0], [0.0/0.0]] AS r`) on each SQL store, and two stored NaNs on
   Oracle where the statement works out none, where Neo4j keeps each apart.
+- A float's negative zero is kept by Neo4j and lost by each SQL store. `-0.0` comes back as `0.0`, and `toString()` of it
+  is `'0.0'`, on Oracle and Postgres, whose stores hold no negative zero. On SQLite it does so where the statement writes
+  it or works it out; one given as a parameter keeps its sign. It is still equal to `0.0` and `0`, and grouped with them,
+  on every store, but isn't ordered before them as Neo4j orders it
+  ([drivine-cypher-spec#314](https://github.com/liberation-data/drivine-cypher-spec/issues/314)).
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold
   lists. Two maps compare as null, and two that differ do in a list too, where Neo4j orders them.

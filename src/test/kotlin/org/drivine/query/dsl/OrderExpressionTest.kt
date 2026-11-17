@@ -264,9 +264,12 @@ class OrderExpressionTest {
     /** The condition the module compiles [cypher] to over the root, with [parameters] by the names the order's fragment gives them. */
     private fun condition(cypher: String, parameters: Map<String, Any?> = emptyMap()) = fragments.condition(cypher, root, parameters).terms.single()
 
-    /** The values [statement] binds, each read from the JSON text the module binds it as. */
+    /**
+     * The values [statement] binds, a parameter's read from the JSON text the module binds it as; a value's key, which the module
+     * binds beside it as plain text (`_cyk_`, liberation-data/drivine-cypher-spec#286 and #287), as it is.
+     */
     private fun boundValues(statement: GraphStatement): List<Any?> =
-        statement.bindings.values.map { value -> if (value is String) Neo4jObjectMapper.instance.readValue(value, Any::class.java) else value }
+        statement.bindings.map { (name, value) -> if (value is String && !name.startsWith("_cyk_")) Neo4jObjectMapper.instance.readValue(value, Any::class.java) else value }
 
     /** The tag the store layout holds [asOf] as, which a statement binds for it. */
     private val asOfTag = ValueLayout.tagMap(Temporal.DATE_TIME, asOf.toString())
@@ -345,6 +348,9 @@ class OrderExpressionTest {
         listOf("note", "seenAt", "rank").forEach { assertContains(order, "'\$.$it") }
         val bound = boundValues(statement)
         listOf("x", 3, asOfTag).forEach { assertTrue(it in bound, "$it is bound: $bound") }
+        // The equality's key is bound in place of its value (spec#287): every name bound is written, and every one written bound.
+        val written = Regex("""\$(_[A-Za-z0-9_]+)""").findAll(statement.statement).map { it.groupValues[1] }.toSet()
+        assertEquals(statement.bindings.keys, written, "every name written is bound, and every bound name is written")
     }
 
     @Test

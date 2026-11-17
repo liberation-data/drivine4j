@@ -67,7 +67,8 @@ data class CypherSpec(
             return yaml.readValue<CypherSpec>(resource).copy(file = file)
         }
 
-        private const val NEO4J_PINNED = "liberation-data/drivine-cypher-spec#296"
+        /** The issue of the temporal steps the spec at v0.49.0 pins otherwise than the stores held on give them. */
+        private const val TEMPORAL_PINNED = "liberation-data/drivine-cypher-spec#321"
 
         /**
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
@@ -77,10 +78,14 @@ data class CypherSpec(
          * that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
         private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            // Neo4j 2026.10.1 refuses toString() of a list of one kind when it plans the statement,
-            // and Bolt sends a relationship the statement deleted with an empty type, where these steps pin answers.
-            "queries.yaml" to mapOf("toString() of a list or a map" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(4)))),
-            "results.yaml" to mapOf("A node and a relationship the statement deleted" to listOf(Hold(NEO4J_PINNED, listOf("neo4j"), steps = listOf(1)))),
+            // The spec at v0.49.0 makes step 6's map, which gives a nanosecond without a minute, where Neo4j refuses it, and pins
+            // steps 8 and 14 without the zero seconds Neo4j and the SQL stores write. Its #330 corrects all three, after v0.49.0.
+            "temporal.yaml" to mapOf(
+                "A nanosecond past the microsecond" to listOf(
+                    Hold(TEMPORAL_PINNED, listOf("neo4j"), steps = listOf(6, 8, 14)),
+                    Hold(TEMPORAL_PINNED, listOf("sql"), steps = listOf(8, 14)),
+                ),
+            ),
         )
 
         /** The name a step gives [type] by. */
@@ -118,7 +123,8 @@ data class CypherSpec(
      * A test for each case, run on [store]: [before] readies the graph, and [run] gives a step's rows, or fails as
      * the store fails. A step not run on [store] is passed over; one held there ([held], by case name) is checked to
      * fail, by an assertion or as the store fails, not as the runner crashes. A hold naming a case or a step the
-     * file does not have fails at once, so that a typo or a renamed case holds nothing unseen.
+     * file does not have fails at once, so that a typo or a renamed case holds nothing unseen, and so does one on a step
+     * that runs on none of the hold's stores, as when the spec moves a held step off them (`only: [sql]`).
      */
     internal fun tests(
         store: String,
@@ -130,6 +136,13 @@ data class CypherSpec(
             val case = requireNotNull(cases.find { it.name == name }) { "$file has no case \"$name\" to hold" }
             holds.flatMap { it.steps.orEmpty() }.filter { it !in 1..case.steps.size }.let { missing ->
                 require(missing.isEmpty()) { "$file, $name has no step $missing to hold: it has ${case.steps.size}" }
+            }
+            holds.forEach { hold ->
+                val stores = hold.on.flatMap { GROUPS[it] ?: setOf(it) }
+                fun runs(step: Int) = stores.any(case.steps[step - 1]::runsOn)
+                val idle = hold.steps?.filter { it in 1..case.steps.size && !runs(it) }
+                    ?: (1..case.steps.size).toList().takeIf { all -> all.none(::runs) }.orEmpty()
+                require(idle.isEmpty()) { "$file, $name holds step $idle on ${hold.on}, where it doesn't run: take the hold out" }
             }
         }
         return cases.map { case -> test(case, store, before, held[case.name].orEmpty(), run) }

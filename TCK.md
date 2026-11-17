@@ -99,20 +99,22 @@ pull requests. Each job writes the report to its summary and keeps `build/tck/` 
 
 ## Pass rates
 
-On compiler 0.48.3 and the store layout 2, when the baselines were last written (2026-11-16), of 3,896 scenarios. The baselines hold the lenient passes.
+On compiler 0.49.0 and the store layout 2, when the baselines were last written (2026-11-17), of 3,896 scenarios. The baselines hold the lenient passes. Neo4j's row is from the run of 2026-11-16: the compiler doesn't touch it.
 
 | store | lenient pass | strict pass | refused on purpose | wrong result | wrong or missing error | crash or stall | harness limitation |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Neo4j | 3,821 (98.1%) | 3,821 (98.1%) | 0 | 2 | 9 | 5 | 59 |
-| Postgres | 3,069 (78.8%) | 3,057 (78.5%) | 661 | 3 | 102 | 2 | 59 |
-| Oracle | 3,068 (78.7%) | 3,057 (78.5%) | 661 | 4 | 103 | 1 | 59 |
-| SQLite | 3,070 (78.8%) | 3,059 (78.5%) | 661 | 3 | 103 | 0 | 59 |
+| Postgres | 3,311 (85.0%) | 3,299 (84.7%) | 417 | 2 | 105 | 2 | 59 |
+| Oracle | 3,310 (85.0%) | 3,299 (84.7%) | 417 | 3 | 106 | 1 | 59 |
+| SQLite | 3,312 (85.0%) | 3,301 (84.7%) | 417 | 2 | 106 | 0 | 59 |
 
 Neo4j is the ceiling: the 16 scenarios it fails beside the harness's 59 are where Neo4j itself differs from
 the TCK, an error it doesn't raise or one it raises where the TCK expects rows. On the SQL stores the gap is almost
-all what Drivine refuses on purpose. 355 statements are refused by design. The other 306 give a temporal value a fraction of a
-second past the microsecond, which the store can't keep (drivine4j#421). They are refused until
-drivine-cypher-spec#302 keeps such a fraction where no store timestamp holds the value, and 185 of them passed before: counted
-as passing, Postgres would pass 3,254 (83.5%). Few answers are wrong (3 on Postgres, from about 200 before the layout 2),
-and the rest are errors (102 on Postgres): Drivine's own on statements the TCK runs, or none where the TCK expects one.
+all what Drivine refuses on purpose. 358 statements are refused by design. The other 59 work out a temporal value a fraction
+of a second past the microsecond, which the store can't keep (drivine4j#421): since drivine-cypher-spec#302 such a value is
+kept where the statement only makes, compares or prints it, which made 247 more scenarios pass on each store. Five that
+passed on compiler 0.48.3 are now refused as Neo4j refuses them: Match9 #6 and #7, a list of relationships bound before
+the variable-length pattern that walks it, and WithSkipLimit1 #1, WithSkipLimit2 #2 and With2 #1, a `CREATE` whose
+properties read a node the same clause makes. Few answers are wrong (2 on Postgres), and the rest are errors (105 on
+Postgres): Drivine's own on statements the TCK runs, or none where the TCK expects one.
 `build/tck/report.md` has the pass rate of each area.

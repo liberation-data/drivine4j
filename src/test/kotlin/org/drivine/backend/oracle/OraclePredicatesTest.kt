@@ -46,10 +46,13 @@ class OraclePredicatesTest {
      * the name the statement binds it under, given as [value].
      */
     private fun expected(cypher: String, bound: Map<String, Any?>, value: Any?): String {
-        val name = bound.keys.singleOrNull()?.removePrefix("_cy_")
+        val name = bound.keys.singleOrNull()?.let(::parameter)
         val written = name?.let { cypher.replace("\$v", "\$$it") } ?: cypher
         return fragments.condition(written, mapOf("n" to FragmentVariable.Node("n_", listOf("Claim"))), name?.let { mapOf(it to value) }.orEmpty()).terms.single()
     }
+
+    /** The parameter a bound name is of: `_cy_<name>`, its JSON text, or `_cyk_<name>`, its key (liberation-data/drivine-cypher-spec#287). */
+    private fun parameter(bound: String): String = bound.removePrefix("_cyk_").removePrefix("_cy_")
 
     /** [value] as the module binds it: its JSON text. */
     private fun json(value: Any?): String = Neo4jObjectMapper.instance.writeValueAsString(value)
@@ -92,7 +95,10 @@ class OraclePredicatesTest {
             val (sql, bound) = compared(key, operator, given)
             assertEquals(expected(cypher, bound, value), sql, "$operator $given")
             // A pattern is bound as written: the module anchors it to the whole value, a leading flag group among it.
-            assertEquals(listOf<Any?>(json(value)), bound.values.toList(), "$operator $given")
+            // A value an equality compares by its key is bound as that key, plain text (spec#287); any other as its JSON text.
+            assertEquals(bound.keys.map { if (it.startsWith("_cyk_")) "$value" else json(value) }, bound.values.toList(), "$operator $given")
+            // Every name bound is one the predicate reads: no key of an index is bound where no index answers (#286).
+            assertTrue(bound.keys.all { "\$$it" in sql }, "$operator $given: $bound in $sql")
         }
     }
 
@@ -153,10 +159,11 @@ class OraclePredicatesTest {
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "a"),
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "b"),
         ))))
-        val (a, b) = select.bindings().keys.map { it.removePrefix("_cy_") }
+        val (a, b) = select.bindings().keys.map(::parameter)
         val root = mapOf("n" to FragmentVariable.Node("n_", listOf("Claim")))
         assertEquals(fragments.condition("(n.name = \$$a OR n.name = \$$b)", root, mapOf(a to "a", b to "b")).terms.single(), sql)
-        assertEquals(listOf<Any?>("\"a\"", "\"b\""), select.bindings().values.toList())
+        // Each value's key, which each equality compares the property with (spec#287).
+        assertEquals(listOf<Any?>("a", "b"), select.bindings().values.toList())
     }
 
     @Test
@@ -166,7 +173,7 @@ class OraclePredicatesTest {
             PropertyCondition("n.name", ComparisonOperator.EQUALS, "a"),
             PropertyCondition("n.rank", ComparisonOperator.GREATER_THAN, 1),
         )))))
-        val (name, rank) = select.bindings().keys.map { it.removePrefix("_cy_") }
+        val (name, rank) = select.bindings().keys.map(::parameter)
         val root = mapOf("n" to FragmentVariable.Node("n_", listOf("Claim")))
         assertEquals(fragments.condition("NOT (n.name = \$$name AND n.rank > \$$rank)", root, mapOf(name to "a", rank to 1)).terms.single(), sql)
         assertTrue(sql.startsWith("(NOT ("), sql)
@@ -197,7 +204,9 @@ class OraclePredicatesTest {
         assertTrue(sql.startsWith("EXISTS (SELECT /*+ NO_COALESCE_SQ */ 1 FROM g_node n1 CROSS JOIN g_edge e2 WHERE JSON_EXISTS(n1.labels, '$[*]?(@ == \"Human\")')"), sql)
         assertTrue(tied(sql, "claim_") && "e2.type = 'MENTIONS'" in sql, sql)
         assertTrue("n1.props, '$.name'" in sql && "n1.props, '$.id'" in sql, sql)
-        assertEquals(listOf<Any?>("\"ada\"", "\"h1\""), select.bindings().values.toList())
+        // Each value's key, a text's being the text itself, which each equality compares its property with (spec#287).
+        assertEquals(listOf<Any?>("ada", "h1"), select.bindings().values.toList())
+        assertTrue(select.bindings().keys.all { "\$$it" in sql }, "${select.bindings()} in $sql")
     }
 
     @Test
@@ -304,7 +313,7 @@ class OraclePredicatesTest {
             PropertyCondition("claim.text", ComparisonOperator.EQUALS, "t"),
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
         )))
-        val text = select.bindings().keys.first().removePrefix("_cy_")
+        val text = select.bindings().keys.first().let(::parameter)
         val root = fragments.condition("claim.text = \$$text", mapOf("claim" to FragmentVariable.Node("claim_", listOf("Claim"))), mapOf(text to "t")).terms.single()
         assertTrue(sql.startsWith("($root AND EXISTS ("), sql)
         assertFalse(sql.contains("n_."), sql)
