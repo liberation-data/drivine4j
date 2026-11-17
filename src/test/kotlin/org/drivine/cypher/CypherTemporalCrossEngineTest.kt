@@ -536,6 +536,8 @@ class CypherTemporalOracleTest : CypherTemporalContract() {
  */
 @OracleTests
 class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
+    override val walkSortHeld = "Held on Oracle until liberation-data/drivine-cypher-spec#338 and liberation-data/drivine4j#809: past 0.48.3 the walk's sort outgrows PGA_AGGREGATE_LIMIT (ORA-04036) without the era functions too."
+
     private val graph = "cy_no_era"
 
     private val manager = OracleTestDatabase.graphManager(graph).also { manager ->

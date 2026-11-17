@@ -161,10 +161,10 @@ class SaveAllLockOrderTest {
 
     private fun postgres() = RecordingStore(DatabaseType.POSTGRES, ddl = PostgresSchemaGrammar(PostgresGraph("g")), graphName = "g")
 
-    /** The labels and the id of each node a statement's plan saves, in the order of its steps. */
-    @Suppress("UNCHECKED_CAST")
+    /** The labels and the id of each node a statement's plan saves, in the order of its steps: the plan is bound as JSON text. */
     private fun RecordingStore.Ran.steps(): List<Pair<String, Any?>> =
-        (parameters.getValue(WritePlan.PLAN) as List<Map<String, Any?>>).map { (it["labels"] as List<*>).joinToString(":") to it["id"] }
+        Neo4jObjectMapper.instance.readValue(parameters.getValue(WritePlan.PLAN) as String, List::class.java)
+            .map { it as Map<*, *> }.map { (it["labels"] as List<*>).joinToString(":") to it["id"] }
 
     @Test
     fun `on Oracle and Postgres the steps go class by class in the order of their names, and in the order of their ids`() {

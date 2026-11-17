@@ -20,7 +20,8 @@ object JdbcParameterCoercer : ParameterCoercer {
             is ZonedDateTime -> value.toOffsetDateTime()
             // Written as the store layout holds a value (drivine-cypher-spec#161): a temporal value as its tag, {"$t", "v", "s"},
             // and a map's key that begins with `$` with one more, by the compiler's module, which asks drivine4j's Jackson
-            // mapper ([JacksonEncoder]) how to write anything else. A save's plan is copied into the store as it is written here.
+            // mapper ([JacksonEncoder]) how to write anything else. A save's plan comes as text, written for its store by
+            // WritePlan.bindings, and is left as it is.
             is Collection<*>, is Map<*, *> -> json(value)
             else -> value
         }
@@ -28,13 +29,13 @@ object JdbcParameterCoercer : ParameterCoercer {
 
     /**
      * [value] as JSON text in the store layout's form, as a value in a collection or a map is bound: a temporal value as its
-     * tag, and a map's key that begins with `$` with one more. A save's plan writes each property so, an id among them, so
-     * a value written here is the JSON a node holds it as.
+     * tag, and a map's key that begins with `$` with one more. A save's plan, and an id a node is found by, are written as
+     * their store holds them instead (`StoreValues.text`): see `WritePlan.bindings` and `NodeIds`.
      */
-    internal fun json(value: Any?): String = CypherJson.writeValueAsString(CypherJson.valueToTree(listed(value), JacksonEncoder))
+    private fun json(value: Any?): String = CypherJson.writeValueAsString(CypherJson.valueToTree(listed(value), JacksonEncoder))
 
     /** [value] with each collection in it a list, which is what the temporal coercer looks inside. */
-    private fun listed(value: Any?): Any? = when (value) {
+    internal fun listed(value: Any?): Any? = when (value) {
         is Collection<*> -> value.map(::listed)
         is Map<*, *> -> value.mapValues { (_, v) -> listed(v) }
         else -> value

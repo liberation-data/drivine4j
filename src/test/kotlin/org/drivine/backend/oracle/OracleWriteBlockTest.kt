@@ -21,8 +21,7 @@ class OracleWriteBlockTest {
     private val graph = OracleGraph("g")
     private val blocks = OracleWriteBlocks(graph)
 
-    @Suppress("UNCHECKED_CAST")
-    private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.bindings()[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+    private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.added
 
     // Steps
 

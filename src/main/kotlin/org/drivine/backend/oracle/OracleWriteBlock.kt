@@ -16,6 +16,12 @@ import org.drivine.query.PatchOutcomes
  * A block is one statement: one that fails is rolled back to where it began, so a save is applied
  * whole or not at all, with or without a transaction around it.
  *
+ * The plan is read as extended JSON (`JSON(… EXTENDED)`): its values are written as the store layout holds them
+ * (`WritePlan.bindings`), every float as extended JSON's double, `{"$numberDouble": "2.0"}`, which is read so as a binary
+ * double, NaN and the infinities among them (liberation-data/drivine4j#830). The properties are kept as `JSON` from there to
+ * the node or relationship they are written to, read and written back as `JSON` too, so each float stays one: as text, a
+ * binary double `2.0` would be read back as the number 2, an integer.
+ *
  * The steps, each an object with its kind under `op`:
  *
  * - `node` saves a node: found by its labels and id and locked, or made. `set` holds the properties to
@@ -136,9 +142,10 @@ DECLARE
     TYPE t_counts IS TABLE OF PLS_INTEGER INDEX BY VARCHAR2(40);
     TYPE t_ids IS TABLE OF NUMBER;
     TYPE t_keys IS TABLE OF VARCHAR2(4000);
-    TYPE t_docs IS TABLE OF CLOB;
     TYPE t_flags IS TABLE OF BOOLEAN INDEX BY PLS_INTEGER;
-    v_plan    JSON_ARRAY_T := JSON_ARRAY_T.parse(${'$'}$PLAN);
+    v_given   CLOB := ${'$'}$PLAN;
+    v_read    JSON;
+    v_plan    JSON_ARRAY_T;
     v_mark    VARCHAR2(33) := ${'$'}$MARK;
     v_op      JSON_OBJECT_T;
     v_nodes   t_numbers;
@@ -161,14 +168,14 @@ DECLARE
 
     /** `id_of` and `find`: a node of a shape by its id, locked. */
     private fun finding(): String = """
-    -- The id a step finds its node by, as the JSON the node holds it as: a temporal value as its tag. Null where the step
-    -- gives none, or gives JSON's null, which finds no node.
-    FUNCTION id_of(op JSON_OBJECT_T) RETURN VARCHAR2 IS
+    -- The id a step finds its node by, as the JSON the node holds it as: a temporal value as its tag, a float a binary
+    -- double, as the plan was read. Null where the step gives none, or gives JSON's null, which finds no node.
+    FUNCTION id_of(op JSON_OBJECT_T) RETURN JSON IS
     BEGIN
         IF NOT op.has('id') OR op.get('id').is_null THEN
             RETURN NULL;
         END IF;
-        RETURN op.get('id').to_string;
+        RETURN op.get('id').to_json;
     END;
 
     -- Finds the node of a shape by its id, p_id, the JSON it holds its id as, and locks it. A null o_nid says there is none.
@@ -179,7 +186,7 @@ DECLARE
     -- is found would wait for another writer's lock while holding the page of the index it was found
     -- through, and that writer, whose update keeps the same index, would wait for the page: each for
     -- the other, and the database sees no deadlock in a held page.
-    PROCEDURE find(p_shape NUMBER, p_id VARCHAR2, o_nid OUT NUMBER, o_stamp OUT VARCHAR2, o_labels OUT VARCHAR2, o_props OUT CLOB) IS
+    PROCEDURE find(p_shape NUMBER, p_id JSON, o_nid OUT NUMBER, o_stamp OUT VARCHAR2, o_labels OUT VARCHAR2, o_props OUT JSON) IS
         v_nid   NUMBER;
         v_still NUMBER;
     BEGIN
@@ -192,7 +199,7 @@ ${eachShape(::finder)}
                 RETURN;
             END IF;
             BEGIN
-                SELECT n.nid, n.stamp, JSON_SERIALIZE(n.labels), JSON_SERIALIZE(n.props RETURNING CLOB)
+                SELECT n.nid, n.stamp, JSON_SERIALIZE(n.labels), n.props
                 INTO o_nid, o_stamp, o_labels, o_props
                 FROM ${graph.nodes} n WHERE n.nid = v_nid FOR UPDATE;
                 -- Locked: is it still the node that was looked for? Another writer may have changed it meanwhile.
@@ -258,15 +265,13 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
 
     /** `spanning`: the relationships of a type between two nodes. */
     private fun spanning(): String = """
-    -- The relationships of a type from one node to another.
-    PROCEDURE spanning(p_src NUMBER, p_dst NUMBER, p_type VARCHAR2, o_eids IN OUT NOCOPY t_ids, o_props IN OUT NOCOPY t_docs) IS
+    -- The relationships of a type from one node to another. `link` reads the properties of each it compares, as JSON.
+    PROCEDURE spanning(p_src NUMBER, p_dst NUMBER, p_type VARCHAR2, o_eids IN OUT NOCOPY t_ids) IS
         v_eids  t_ids;
-        v_props t_docs;
     BEGIN
-        SELECT eid, JSON_SERIALIZE(props RETURNING CLOB) BULK COLLECT INTO v_eids, v_props
+        SELECT eid BULK COLLECT INTO v_eids
         FROM ${graph.edges} WHERE src = p_src AND dst = p_dst AND type = p_type;
         o_eids := o_eids MULTISET UNION ALL v_eids;
-        o_props := o_props MULTISET UNION ALL v_props;
     END;
 """.trim('\n')
 
@@ -490,8 +495,8 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_found     VARCHAR2(33);
         v_two       VARCHAR2(33);
         v_labels    VARCHAR2(4000);
-        v_props     CLOB;
-        v_new_props CLOB;
+        v_props     JSON;
+        v_new_props JSON;
         v_expect    VARCHAR2(33) := op.get_string('expect');
         v_fresh     VARCHAR2(33) := op.get_string('fresh');
         v_o         JSON_OBJECT_T;
@@ -522,7 +527,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
                 -- block gives no row.
                 RAISE e_stale;
             ELSE
-                v_o := JSON_OBJECT_T.parse(v_props);
+                v_o := JSON_OBJECT_T(v_props);
             END IF;
             v_found := v_stamp;
             IF v_expect IS NOT NULL AND (v_stamp IS NULL OR
@@ -537,7 +542,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             own_labels(op, v_o, v_add, v_drop);
             relabel(v_add, v_drop, v_labels, v_relabel);
 
-            v_new_props := v_o.to_clob;
+            v_new_props := v_o.to_json;
             -- The copies are written from what the step leaves, and are no part of whether it changed the node.
             IF op.has('lower') THEN
                 lower_props(op.get_array('lower'), v_o);
@@ -545,7 +550,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             IF v_made THEN
                 -- A node that is made is written once, whole, with a stamp of its own.
                 v_stamp := v_fresh;
-                v_new_props := v_o.to_clob;
+                v_new_props := v_o.to_json;
                 BEGIN
                     INSERT INTO ${graph.nodes} (labels, props, stamp) VALUES (v_labels, v_new_props, v_stamp) RETURNING nid INTO v_nid;
                     EXIT;
@@ -562,7 +567,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
                 -- Whether the properties, copies and all, are as they were.
                 v_kept := v_same;
                 IF op.has('lower') THEN
-                    v_new_props := v_o.to_clob;
+                    v_new_props := v_o.to_json;
                     SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_kept FROM dual;
                 END IF;
                 -- A stamp that is not two tokens, which no save leaves, counts as none.
@@ -608,7 +613,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_nid    NUMBER;
         v_stamp  VARCHAR2(33);
         v_labels VARCHAR2(4000);
-        v_props  CLOB;
+        v_props  JSON;
     BEGIN
         find(op.get_number('s'), id_of(op), v_nid, v_stamp, v_labels, v_props);
         IF v_nid IS NULL THEN
@@ -630,9 +635,9 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_clear  JSON_ARRAY_T := op.get_array('clear');
         v_keys   JSON_KEY_LIST;
         v_eids   t_ids := t_ids();
-        v_docs   t_docs := t_docs();
+        v_doc    JSON;
         v_x      JSON_OBJECT_T;
-        v_text   CLOB;
+        v_text   JSON;
         v_same   PLS_INTEGER := 0;
         v_match  BOOLEAN;
     BEGIN
@@ -645,16 +650,17 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_keys := v_props.get_keys;
         IF NOT NVL(op.get_boolean('always'), FALSE) THEN
             IF v_dir IN ('OUT', 'BOTH') THEN
-                spanning(v_from, v_to, v_type, v_eids, v_docs);
+                spanning(v_from, v_to, v_type, v_eids);
             END IF;
             -- A node's relationship to itself is one relationship, whichever way it is read.
             IF v_dir = 'IN' OR (v_dir = 'BOTH' AND v_from <> v_to) THEN
-                spanning(v_to, v_from, v_type, v_eids, v_docs);
+                spanning(v_to, v_from, v_type, v_eids);
             END IF;
             FOR e IN 1 .. v_eids.COUNT LOOP
                 v_match := TRUE;
                 IF (v_keys IS NOT NULL AND v_keys.COUNT > 0) OR v_clear.get_size > 0 THEN
-                    v_x := JSON_OBJECT_T.parse(v_docs(e));
+                    SELECT props INTO v_doc FROM ${graph.edges} WHERE eid = v_eids(e);
+                    v_x := JSON_OBJECT_T(v_doc);
                     IF v_keys IS NOT NULL THEN
                         FOR i IN 1 .. v_keys.COUNT LOOP
                             IF NOT v_x.has(v_keys(i)) OR v_x.get(v_keys(i)).to_string <> v_props.get(v_keys(i)).to_string THEN
@@ -673,14 +679,14 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
                 IF v_match THEN
                     v_same := v_same + 1;
                 ELSE
-                    v_text := v_x.to_clob;
+                    v_text := v_x.to_json;
                     UPDATE ${graph.edges} SET props = v_text WHERE eid = v_eids(e);
                 END IF;
             END LOOP;
         END IF;
         IF v_eids.COUNT = 0 THEN
             -- An undirected field is satisfied by a relationship either way, and makes one from the first node.
-            v_text := v_props.to_clob;
+            v_text := v_props.to_json;
             INSERT INTO ${graph.edges} (src, dst, type, props)
             VALUES (CASE WHEN v_dir = 'IN' THEN v_to ELSE v_from END, CASE WHEN v_dir = 'IN' THEN v_from ELSE v_to END, v_type, v_text);
         END IF;
@@ -815,8 +821,8 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_stamp     VARCHAR2(33);
         v_two       VARCHAR2(33);
         v_labels    VARCHAR2(4000);
-        v_props     CLOB;
-        v_new_props CLOB;
+        v_props     JSON;
+        v_new_props JSON;
         v_fresh     VARCHAR2(33) := op.get_string('fresh');
         v_o         JSON_OBJECT_T;
         v_same      NUMBER;
@@ -826,16 +832,16 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         IF v_nid IS NULL THEN
             RETURN;
         END IF;${patchedIf?.let { "\n${meeting(it)}" }.orEmpty()}
-        v_o := JSON_OBJECT_T.parse(v_props);
+        v_o := JSON_OBJECT_T(v_props);
         IF v_met > 0 THEN
             write_props(op, v_o);
         END IF;
-        v_new_props := v_o.to_clob;
+        v_new_props := v_o.to_json;
         SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
         -- A node the step changes has its copies written from what it now holds.
         IF v_same = 0 AND op.has('lower') THEN
             lower_props(op.get_array('lower'), v_o);
-            v_new_props := v_o.to_clob;
+            v_new_props := v_o.to_json;
         END IF;
         -- A new first token only if the step changes the node, or the node has no stamp of two tokens yet.
         v_two := ${twoTokens("v_stamp")};
@@ -866,6 +872,9 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
     private fun main(): String = """
 BEGIN
     BEGIN
+        -- Read as extended JSON, so each float the plan holds as {"${'$'}numberDouble": …} is a binary double.
+        SELECT JSON(v_given EXTENDED) INTO v_read FROM dual;
+        v_plan := JSON_ARRAY_T(v_read);
         FOR i IN 0 .. v_plan.get_size - 1 LOOP
             v_op := TREAT(v_plan.get(i) AS JSON_OBJECT_T);
             CASE v_op.get_string('op')
@@ -888,11 +897,11 @@ END;
         shapes.withIndex().joinToString("\n") { (index, shape) -> arm(index, shape) }
 
     /**
-     * Whether the node [alias] is the one of [shape] whose id is `p_id`, the JSON the node holds it as: its class and key
+     * Whether the node [alias] is the one of [shape] whose id is `p_id`, the `JSON` the node holds it as: its class and key
      * compared with the property's ([OracleSql.hasId]), which the index over the property of every node answers.
      */
     private fun identified(alias: String, shape: NodeShape): String =
-        listOfNotNull(OracleSql.hasId(alias, shape.key, "JSON(p_id)"), hasLabels(alias, shape.labels)).joinToString(" AND ")
+        listOfNotNull(OracleSql.hasId(alias, shape.key, "p_id"), hasLabels(alias, shape.labels)).joinToString(" AND ")
 
     /** [stamp] where it is two tokens, as every save leaves one, and null where it is not. */
     private fun twoTokens(stamp: String): String = "CASE WHEN LENGTH($stamp) = 33 AND SUBSTR($stamp, 17, 1) = ':' THEN $stamp END"

@@ -354,13 +354,14 @@ internal class OracleSelect(
     private var handWritten = false
 
     /**
-     * The root whose id is bound as [parameter], as the JSON the node holds it as ([org.drivine.backend.sql.NodeIds]): the
-     * property's class and key are compared with the id's, which the index over the property of every node answers.
+     * The root whose id is bound as [parameter], as the JSON the node holds it as ([org.drivine.backend.sql.NodeIds]), read
+     * `EXTENDED` as a float is extended JSON's double: the property's class and key are compared with the id's, which the
+     * index over the property of every node answers.
      */
     override fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         scope.narrowed = true
-        return OracleSql.hasId(root, ValueLayout.escape(idProperty), "JSON(\$$parameter)")
+        return OracleSql.hasId(root, ValueLayout.escape(idProperty), "JSON(\$$parameter EXTENDED)")
     }
 
     /**
@@ -693,7 +694,7 @@ internal class OracleSelect(
         scope.narrowed = true
         val from = scope.row("from")
         val row = scope.row("related")
-        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull(OracleSql.hasId(from, ValueLayout.escape(key), "JSON(\$$parameter)"), hasLabels(from, labels)))
+        val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull(OracleSql.hasId(from, ValueLayout.escape(key), "JSON(\$$parameter EXTENDED)"), hasLabels(from, labels)))
         val reached = rows.reached(from, listOf(Step(type, direction, emptyList())), row)
         return "$root.nid IN ${Query("$row.nid", reached, listOf("$row.src IN ${found.nested()}")).nested()}"
     }

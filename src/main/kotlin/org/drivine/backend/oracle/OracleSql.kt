@@ -61,11 +61,12 @@ internal object OracleSql {
 
     /**
      * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
-     * text, as [hasId] compares one: the index answers it for each.
+     * text, as [hasId] compares one: the index answers it for each. Each is read `EXTENDED`, as the store's JSON of an id
+     * holds a float as extended JSON's double ([NodeIds]).
      */
     fun hasIdIn(alias: String, key: String, parameter: String): String =
         "(${Shared.indexClass("$alias.props", key)}, ${Shared.indexKey("$alias.props", key)}) IN " +
-            "(SELECT ${Shared.valueClass("JSON(i.v)")}, ${Shared.valueKey("JSON(i.v)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
+            "(SELECT ${Shared.valueClass("JSON(i.v EXTENDED)")}, ${Shared.valueKey("JSON(i.v EXTENDED)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
 
     /**
      * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read

@@ -1,8 +1,13 @@
 package org.drivine.backend.sql
 
 import org.drivine.annotation.Direction
+import org.drivine.connection.CypherCompile
+import org.drivine.connection.JacksonEncoder
+import org.drivine.cypher.api.Store
+import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.model.Stamps
+import org.drivine.query.JdbcParameterCoercer
 import org.drivine.query.RootMode
 
 /** What a statement that carries out a plan gives back: see [WriteBlocks]. */
@@ -26,6 +31,9 @@ internal enum class WriteReturns {
  * [WritePlan.PLAN], and the mark bound as [WritePlan.MARK], and does what each step says.
  */
 internal interface WriteBlocks {
+
+    /** The store whose layout the plan's values are written in: see [WritePlan.bindings]. */
+    val store: Store
 
     /**
      * The statement that carries out a plan whose steps name [shapes] by their number, and gives back
@@ -213,9 +221,25 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun text(returns: WriteReturns, patchedIf: String? = null): String =
         blocks.statement(shapes.keys.toList(), returns, patchedIf)
 
-    /** The values of the statement's parameters: the steps as JSON, the mark, and what the store adds for [patchedIf]. */
+    /** The steps in the order they were added, as the block is given them: see [bindings]. */
+    internal val added: List<Map<String, Any?>> get() = steps
+
+    /**
+     * The values of the statement's parameters: the steps as JSON text, the mark, and what the store adds for [patchedIf].
+     *
+     * The steps are written as the store's layout holds each value, by the shared module's `StoreValues.text`, which a
+     * compiled statement that writes binds its parameters by too, so a value saved is held as one `CREATE` made
+     * (liberation-data/drivine4j#830): on Postgres a whole float with its fraction, on Oracle every float as extended JSON's
+     * double, which the block reads `EXTENDED`, and on SQLite an infinity as `9e999`. A float the store's JSON holds as no
+     * number, Postgres's NaN and infinities and SQLite's NaN, is refused by name, with the [org.drivine.DrivineException]
+     * a `CREATE` given one is refused with. Bound as text, which the parameter coercer leaves as it is.
+     */
     fun bindings(patchedIf: String? = null): Map<String, Any?> =
-        mapOf(PLAN to steps, MARK to mark) + blocks.bindings(shapes.keys.toList(), patchedIf)
+        mapOf(PLAN to planText(), MARK to mark) + blocks.bindings(shapes.keys.toList(), patchedIf)
+
+    /** The steps as the store's layout holds their values: see [bindings]. */
+    private fun planText(): String =
+        CypherCompile.refusing { StoreValues.text(JdbcParameterCoercer.listed(steps), blocks.store, JacksonEncoder) }
 
     /** A stamp for a node step, which is offered to its node. */
     private fun fresh(): String = Stamps.fresh().also { stamps += it }

@@ -4,6 +4,7 @@ import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlSavePlan
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.annotation.Direction
+import org.drivine.cypher.api.Store
 import org.drivine.cypher.sql.Temporal
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.annotation.GraphRelationship
@@ -82,7 +83,7 @@ data class ClaimVessels(
 /** The steps a save on Oracle plans: what `SaveStatementBuilder` decides for the graph engines, written for the write block. */
 class OracleSavePlanTest {
 
-    private val planner = SqlSavePlan(OracleWriteBlocks(OracleGraph("g")), Neo4jObjectMapper.instance, OracleSql::key, NodeIds(Neo4jObjectMapper.instance))
+    private val planner = SqlSavePlan(OracleWriteBlocks(OracleGraph("g")), Neo4jObjectMapper.instance, OracleSql::key, NodeIds(Neo4jObjectMapper.instance, Store.ORACLE))
     private val digests = SnapshotDigest(Neo4jObjectMapper.instance)
 
     private val stamp = "aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb"
@@ -98,8 +99,21 @@ class OracleSavePlanTest {
         rootWriteFields: Set<String>? = null,
     ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, rootMode))
 
+    private fun steps(statement: SaveStatement): List<Map<String, Any?>> = planSteps(statement.bindings)
+
+    /**
+     * The steps of a plan bound in [bindings], as JSON text with each float extended JSON's double (`WritePlan.bindings`):
+     * read back with each double the Double it holds.
+     */
     @Suppress("UNCHECKED_CAST")
-    private fun steps(statement: SaveStatement): List<Map<String, Any?>> = statement.bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+    private fun planSteps(bindings: Map<String, Any?>): List<Map<String, Any?>> {
+        fun doubles(value: Any?): Any? = when (value) {
+            is Map<*, *> -> if (value.keys == setOf("\$numberDouble")) (value.values.single() as String).toDouble() else value.mapValues { doubles(it.value) }
+            is List<*> -> value.map(::doubles)
+            else -> value
+        }
+        return doubles(Neo4jObjectMapper.instance.readValue(bindings[OracleWriteBlock.PLAN] as String, List::class.java)) as List<Map<String, Any?>>
+    }
 
     private fun stepsOf(obj: Any, replaced: RemovedTargets? = null, nullPolicy: NullPolicy = NullPolicy.IGNORE, checked: Boolean = true) =
         steps(build(obj, checked = checked, nullPolicy = nullPolicy, replaced = replaced))
@@ -550,8 +564,7 @@ class OracleSavePlanTest {
 
         val (_, clearing) = planner.together(fragments, NullPolicy.CLEAR) { fields[it] }
 
-        @Suppress("UNCHECKED_CAST")
-        val steps = clearing[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+        val steps = planSteps(clearing)
         assertEquals(listOf<Any?>(mapOf("note" to "noted"), mapOf("name" to "Ada"), emptyMap<String, Any?>()), steps.map { it["set"] ?: emptyMap<String, Any?>() })
         // Under CLEAR a named field that is null is cleared, and the text, which is not named, is not touched.
         assertContains(steps[2].toString(), "note")
@@ -562,8 +575,7 @@ class OracleSavePlanTest {
     fun `fragments saved together are a step each, returned under the index each was given, by the block that returns each stamp`() {
         val (text, bindings) = planner.together(listOf(Claim("a", "A"), Claim("b", "B"), Claim("c", "C")).withIndex().toList(), NullPolicy.IGNORE)
 
-        @Suppress("UNCHECKED_CAST")
-        val steps = bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+        val steps = planSteps(bindings)
         assertEquals(listOf("node", "node", "node"), steps.map { it["op"] })
         assertEquals(listOf("0", "1", "2"), steps.map { it["i"] })
         assertEquals(listOf("a", "b", "c"), steps.map { it["k"] })

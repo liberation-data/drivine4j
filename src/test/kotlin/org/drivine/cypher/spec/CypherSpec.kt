@@ -67,9 +67,6 @@ data class CypherSpec(
             return yaml.readValue<CypherSpec>(resource).copy(file = file)
         }
 
-        /** The issue of the temporal steps the spec at v0.49.0 pins otherwise than the stores held on give them. */
-        private const val TEMPORAL_PINNED = "liberation-data/drivine-cypher-spec#321"
-
         /**
          * The steps of a spec tag that a fix here has yet to make pass, by file and case: the steps (from 1), or every
          * step of the case where none are named, the stores or groups they are held on, and the issue that makes them
@@ -77,16 +74,7 @@ data class CypherSpec(
          * the issue says it does; one that passes fails the case, so that its hold is taken out when the fix lands. One
          * that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
-            // The spec at v0.49.0 makes step 6's map, which gives a nanosecond without a minute, where Neo4j refuses it, and pins
-            // steps 8 and 14 without the zero seconds Neo4j and the SQL stores write. Its #330 corrects all three, after v0.49.0.
-            "temporal.yaml" to mapOf(
-                "A nanosecond past the microsecond" to listOf(
-                    Hold(TEMPORAL_PINNED, listOf("neo4j"), steps = listOf(6, 8, 14)),
-                    Hold(TEMPORAL_PINNED, listOf("sql"), steps = listOf(8, 14)),
-                ),
-            ),
-        )
+        private val HELD: Map<String, Map<String, List<Hold>>> = emptyMap()
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()

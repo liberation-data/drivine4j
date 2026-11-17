@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.node.JsonNodeType
 import com.fasterxml.jackson.databind.node.POJONode
 import org.drivine.cypher.json.CypherEncoder
 import org.drivine.mapper.Neo4jObjectMapper
-import java.util.Base64
 import org.drivine.cypher.json.ArrayNode as CompilerArray
 import org.drivine.cypher.json.BigIntegerNode as CompilerBigInteger
 import org.drivine.cypher.json.BooleanNode as CompilerBoolean
@@ -97,8 +96,9 @@ internal object JacksonEncoder : CypherEncoder {
         JsonNodeType.NULL, JsonNodeType.MISSING, null -> CompilerNull
         JsonNodeType.STRING -> CompilerText(node.textValue())
         JsonNodeType.BOOLEAN -> CompilerBoolean(node.booleanValue())
-        // As Jackson writes a byte[]: its base64 text.
-        JsonNodeType.BINARY -> CompilerText(Base64.getEncoder().encodeToString(node.binaryValue()))
+        // A byte[] as the list of its signed values, [1, 2, -1], as the store layout holds bytes on every store and the module
+        // writes a ByteArray it is given (drivine-cypher-spec#329), not as Jackson writes it, base64 text.
+        JsonNodeType.BINARY -> CompilerArray().apply { node.binaryValue().forEach { add(CompilerLong(it.toLong())) } }
         JsonNodeType.NUMBER -> when {
             node.isIntegralNumber && node.canConvertToLong() -> CompilerLong(node.longValue())
             node.isIntegralNumber -> CompilerBigInteger(com.ionspin.kotlin.bignum.integer.BigInteger.parseString(node.bigIntegerValue().toString()))

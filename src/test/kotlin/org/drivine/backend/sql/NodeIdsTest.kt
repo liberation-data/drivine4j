@@ -1,9 +1,11 @@
 package org.drivine.backend.sql
 
+import org.drivine.DrivineException
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.backend.postgres.PostgresSql
+import org.drivine.cypher.api.Store
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
@@ -12,6 +14,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 @NodeFragment(labels = ["IdsLong"])
@@ -67,14 +70,14 @@ private data class DoubleIdNode(@NodeId val id: Double, val name: String)
  */
 class NodeIdsTest {
 
-    private val ids = NodeIds(Neo4jObjectMapper.instance)
+    private val ids = NodeIds(Neo4jObjectMapper.instance, Store.POSTGRES)
 
     private inline fun <reified T> json(given: Any?): String? = ids.json(FragmentModel.from(T::class.java), given)
 
     /** The JSON a save writes the id of [node] as: what a lookup must give for the same id. */
     private fun saved(node: Any): String {
         val model = FragmentModel.from(node.javaClass)
-        return NodeIds.json(Neo4jObjectMapper.instance.toMap(node)[model.nodeIdField]!!)
+        return ids.json(Neo4jObjectMapper.instance.toMap(node)[model.nodeIdField]!!)
     }
 
     @Test
@@ -128,13 +131,20 @@ class NodeIdsTest {
     @Test
     fun `a temporal id is keyed in a plan by its tag's text, which the stores read a target's id back as`() {
         val moment = LocalDateTime.of(2024, 1, 2, 10, 0)
-        val tag = Neo4jObjectMapper.instance.readTree(NodeIds.json(moment))
+        val tag = Neo4jObjectMapper.instance.readTree(ids.json(moment))
         assertEquals(tag["v"].asText(), PostgresSql.key(moment))
         assertEquals(tag["v"].asText(), OracleSql.key(moment))
         assertEquals("2024-01-02", PostgresSql.key(LocalDate.of(2024, 1, 2)))
         assertNull(NodeIds.temporalText("2024-01-02"))
         assertEquals("7", PostgresSql.key(7L))
         assertEquals("3", OracleSql.key(3.0))
+    }
+
+    @Test
+    fun `a float id is held as each store holds the float, extended JSON's double on Oracle, and NaN is refused where the store holds no NaN`() {
+        assertEquals("{\"${'$'}numberDouble\":\"4.5\"}", NodeIds(Neo4jObjectMapper.instance, Store.ORACLE).json(4.5))
+        assertEquals("3.0", NodeIds(Neo4jObjectMapper.instance, Store.POSTGRES).json(3.0))
+        assertFailsWith<DrivineException> { NodeIds(Neo4jObjectMapper.instance, Store.POSTGRES).json(Double.NaN) }
     }
 
     @Test
