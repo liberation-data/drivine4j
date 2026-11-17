@@ -218,13 +218,13 @@ abstract class SaveValuesContract {
 
     @Test
     fun `a target whose id is a float with an exponent or a fraction is kept by a save that holds it`() {
-        val gauges = listOf(1e20, 0.1, 1e-7, 123456.789).map { SavedGauge(it, "g$it") }
+        val gauges = listOf(1e20, 0.1, 1e-7, 123456.789, 1.0 / 3, 0.1 + 0.2).map { SavedGauge(it, "g$it") }
         manager.save(SavedReadings(SavedReading("r"), gauges))
         val ids = { cypher("MATCH (:SavedReading {id: 'r'})-[:READS]->(g:SavedGauge) RETURN g.id ORDER BY g.id") }
 
         manager.save(manager.load("r", SavedReadings::class.java)!!, Replace(SavedReadings::gauges))
-        assertEquals(listOf(1e-7, 0.1, 123456.789, 1e20), ids())
-        assertEquals(4, manager.count(SavedGauge::class.java))
+        assertEquals(listOf(1e-7, 0.1, 0.1 + 0.2, 1.0 / 3, 123456.789, 1e20), ids())
+        assertEquals(6, manager.count(SavedGauge::class.java))
     }
 
     @Test
