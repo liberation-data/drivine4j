@@ -161,6 +161,19 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         return connection
     }
 
+    /**
+     * The graph this provider keeps in tables, for a store layout migration ([org.drivine.migration.StoreLayoutMigration]),
+     * which runs the store's DDL itself; null on a JDBC store that keeps none.
+     */
+    internal val sqlGraph: SqlGraph? get() = graph
+
+    /**
+     * A connection that neither makes the graph's tables nor judges its store layout, as [connect] does first: what a
+     * store layout migration runs on, as the graph it migrates is one [connect] refuses (see
+     * [org.drivine.migration.StoreLayoutMigration]).
+     */
+    internal fun connectUnjudged(): JdbcConnection = open()
+
     /** A connection, the graph's tables made first if this is the provider's first (see the class). */
     override fun connect(): Connection {
         ensureGraph()

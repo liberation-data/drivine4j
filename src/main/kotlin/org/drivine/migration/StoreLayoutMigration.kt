@@ -1,0 +1,223 @@
+package org.drivine.migration
+
+import org.drivine.DrivineException
+import org.drivine.connection.JdbcConnection
+import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.cypher.store.marker.StoreStamp
+import org.drivine.cypher.store.marker.StoreStampStatements
+import org.drivine.cypher.store.migrate.LayoutMigration
+import org.drivine.cypher.store.migrate.LayoutMigrator
+import org.drivine.cypher.store.migrate.MigrationAction
+import org.drivine.cypher.store.migrate.MigrationOutcome
+import org.drivine.cypher.store.migrate.MigrationReport
+import org.drivine.cypher.store.migrate.MigrationRequest
+import org.drivine.cypher.store.migrate.MigrationStep
+import org.drivine.annotation.GraphProperty
+import org.drivine.annotation.GraphView
+import org.drivine.annotation.NodeFragment
+import org.drivine.model.FragmentModel
+import kotlin.reflect.KClass
+import kotlin.reflect.full.findAnnotation
+import kotlin.reflect.full.memberProperties
+import org.drivine.query.QuerySpecification
+import org.slf4j.LoggerFactory
+import java.time.Instant
+import java.util.UUID
+
+/**
+ * Marks the store layout migration as not yet proven on every store: its statements are the shared module's, pinned by
+ * the spec, but their runs on Postgres, Oracle and SQLite are still to be made (liberation-data/drivine4j#832). A call
+ * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class)`.
+ */
+@RequiresOptIn(
+    level = RequiresOptIn.Level.ERROR,
+    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it.",
+)
+@Retention(AnnotationRetention.BINARY)
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR)
+annotation class ExperimentalStoreLayoutMigration
+
+/**
+ * Moves a graph on Postgres, Oracle or SQLite from store layout 1, which every Drivine before 0.8.0 wrote, to layout 2,
+ * which this version reads, in place of reloading it (liberation-data/drivine-cypher-spec#256). The shared module's
+ * [LayoutMigrator] decides each round, as every library migrates alike; this runs what it decides on the provider's
+ * store, and gives back its [MigrationReport].
+ *
+ * Run it while nothing else uses the graph, with a backup taken first: a migration stopped at any moment is resumed by
+ * running it again, with the same declarations. What layout 1 can't tell, which texts are dates or moments, which whole
+ * numbers are floats, and which texts are bytes, it is told by [declarations], label by label and property by property,
+ * as the application's model has them; a dry run ([dryRun]) writes nothing, and reports what would change, the values that
+ * are no value of their declared kind, the properties whose values all read as one kind (the candidates to declare), and
+ * the uniqueness constraints' keys that may collide.
+ *
+ * A migration makes no index or constraint: the application's schema plan makes its declared ones at its next start. Until
+ * one does, statements give the same answers, unindexed. The report's `notes` say so, and that the count store is left
+ * unseeded.
+ *
+ * What stays drivine4j's: the connections. Statements run on a connection of their own that neither makes the graph's
+ * tables nor judges its layout, as [JdbcConnectionProvider.connect] would, and refuse the graph; the lock is held on
+ * another, in a transaction left open until the migration ends; a transaction's statements commit together or not at all.
+ *
+ * @param provider the store and graph to migrate
+ */
+@ExperimentalStoreLayoutMigration
+class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
+
+    private val graph = provider.sqlGraph
+        ?: throw DrivineException("A store layout migration runs on Postgres, Oracle or SQLite, which keep a graph in tables, not on ${provider.type}.")
+    private val store = graph.store
+    private val stamps = StoreStampStatements.of(store)
+
+    /**
+     * Migrates the graph, or with [dryRun] reports what a migration would do and writes nothing, by [declarations], reading
+     * and writing [batchSize] rows at a time. Where [keepInvalid], a value that is no value of its declared kind is kept as
+     * it is, and named in the report, where it would otherwise refuse the graph. A declaration is refused before anything
+     * runs where one label's property is declared two kinds, or where it is Drivine's own label's.
+     */
+    @JvmOverloads
+    fun migrate(
+        declarations: List<LayoutMigration.Declaration>,
+        batchSize: Int = 1000,
+        dryRun: Boolean = false,
+        keepInvalid: Boolean = false,
+    ): MigrationReport {
+        val migrator = LayoutMigrator(store)
+        val request = MigrationRequest(declarations, batchSize, dryRun, keepInvalid)
+        migrator.validate(request)?.let { throw IllegalArgumentException(it) }
+        val work = provider.connectUnjudged()
+        var lock: JdbcConnection? = null
+        try {
+            var step = migrator.start(request)
+            while (step is MigrationStep.Run) {
+                val outcomes = mutableListOf<MigrationOutcome>()
+                for (action in step.actions) {
+                    val outcome = try {
+                        when (action) {
+                            is MigrationAction.Lock -> {
+                                lock = lock ?: provider.connectUnjudged().also { held ->
+                                    held.startTransaction()
+                                    held.query(QuerySpecification.withStatement(action.statement))
+                                }
+                                MigrationOutcome.Ran
+                            }
+                            else -> run(work, action)
+                        }
+                    } catch (e: Exception) {
+                        logger.warn("Store layout migration of '{}': {} failed: {}", store.name, describe(action), e.message)
+                        MigrationOutcome.Failed(e.message ?: e.toString())
+                    }
+                    outcomes += outcome
+                    if (outcome is MigrationOutcome.Failed) break
+                }
+                step = migrator.resume(step.state, outcomes)
+            }
+            val report = (step as MigrationStep.Done).report
+            logger.info("Store layout migration of '{}': {}: {}", store.name, report.status?.word, report.message)
+            report.notes.forEach { logger.warn("Store layout migration of '{}': {}", store.name, it) }
+            return report
+        } finally {
+            lock?.let { held -> runCatching { held.rollbackTransaction() }; runCatching { held.release() } }
+            runCatching { work.release() }
+        }
+    }
+
+    /** Runs [action], any but a lock, on [work], and gives back what came of it. */
+    private fun run(work: JdbcConnection, action: MigrationAction): MigrationOutcome = when (action) {
+        is MigrationAction.Query -> MigrationOutcome.Rows(rows(work, action.statement, action.parameters))
+        is MigrationAction.Execute -> { rows(work, action.statement, action.parameters); MigrationOutcome.Ran }
+        is MigrationAction.Transaction -> {
+            work.startTransaction()
+            try {
+                action.statements.forEach { rows(work, it.statement, it.parameters) }
+                work.commitTransaction()
+            } catch (e: Exception) {
+                runCatching { work.rollbackTransaction() }.exceptionOrNull()?.let(e::addSuppressed)
+                throw e
+            }
+            MigrationOutcome.Ran
+        }
+        // The store's tables made as a first connection makes them, without the verdict it asks first, which refuses the graph.
+        MigrationAction.Prepare -> { graph.ensure { work.query(QuerySpecification.withStatement(it)) }; MigrationOutcome.Ran }
+        MigrationAction.AssignStamp -> {
+            rows(work, stamps.assignIfAbsent, StoreStamp.assignParameters(UUID.randomUUID().toString(), Instant.now().toString(), StoreStamp.engine(store)))
+            MigrationOutcome.Ran
+        }
+        is MigrationAction.Lock -> throw IllegalStateException("A lock is held on a connection of its own")
+    }
+
+    /** The rows [statement], one of the module's, gives on [work], bound [parameters]: each a map where its row is a JSON object. */
+    private fun rows(work: JdbcConnection, statement: String, parameters: Map<String, Any?>): List<Any?> =
+        work.query(QuerySpecification.withStatement(statement).bind(parameters)).map { row ->
+            (row as? Map<*, *>)?.entries?.associate { (k, v) -> k.toString() to v } ?: row
+        }
+
+    private fun describe(action: MigrationAction): String = when (action) {
+        is MigrationAction.Query -> "a query (${action.purpose})"
+        is MigrationAction.Execute -> "a statement (${action.purpose})"
+        is MigrationAction.Transaction -> "a transaction of ${action.statements.size} statement(s)"
+        MigrationAction.Prepare -> "making the store's tables"
+        MigrationAction.AssignStamp -> "stamping the graph"
+        is MigrationAction.Lock -> "the lock"
+    }
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(StoreLayoutMigration::class.java)
+
+        /**
+         * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
+         * each of its labels and each of its fields of a temporal type, a float or bytes, or a list of one of them, by the
+         * name it is stored under: what a migration of the nodes it maps is told.
+         */
+        @JvmStatic
+        fun declarationsOf(type: Class<*>): List<LayoutMigration.Declaration> {
+            val model = FragmentModel.from(type)
+            return model.labels.flatMap { label -> declared(model, label) }
+        }
+
+        /**
+         * What the relationship fragment [type] (`@RelationshipFragment`) says of its properties, for the relationships of
+         * [relationshipType]: each of its properties but the one that points at the node it reaches, as [declarationsOf].
+         */
+        @JvmStatic
+        fun declarationsOf(relationshipType: String, type: Class<*>): List<LayoutMigration.Declaration> =
+            type.kotlin.memberProperties.filter { property ->
+                val target = (property.returnType.classifier as? KClass<*>)?.java
+                target?.isAnnotationPresent(NodeFragment::class.java) != true && target?.isAnnotationPresent(GraphView::class.java) != true
+            }.mapNotNull { property ->
+                val stored = property.findAnnotation<GraphProperty>()?.value?.takeIf { it.isNotEmpty() } ?: property.name
+                kindOf(property.returnType.toString())?.let { LayoutMigration.Declaration(relationshipType, stored, it) }
+            }
+
+        private fun declared(model: FragmentModel, label: String) = model.fields
+            .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null }
+            .mapNotNull { field -> kindOf(field.typeString)?.let { LayoutMigration.Declaration(label, field.propertyName, it) } }
+
+        /**
+         * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`)
+         * is declared: its own, or for a list or a set, its items'; null for one layout 1 holds as layout 2 does.
+         */
+        internal fun kindOf(typeString: String): LayoutMigration.Kind? {
+            val type = typeString.trim().removeSuffix("?").removeSuffix("!")
+            COLLECTION.matchEntire(type)?.let { return kindOf(it.groupValues[2]) }
+            return KINDS[type]
+        }
+
+        /** A list's or a set's type, its items' in the second group. */
+        private val COLLECTION = Regex("""(kotlin\.collections\.(?:Mutable)?(?:List|Set|Collection)|java\.util\.(?:List|Set|Collection))<(?:out |\? extends )?(.+)>""")
+
+        private val KINDS = mapOf(
+            "java.time.LocalDate" to LayoutMigration.Kind.DATE,
+            "java.time.LocalTime" to LayoutMigration.Kind.LOCAL_TIME,
+            "java.time.OffsetTime" to LayoutMigration.Kind.TIME,
+            "java.time.LocalDateTime" to LayoutMigration.Kind.LOCAL_DATE_TIME,
+            "java.time.ZonedDateTime" to LayoutMigration.Kind.DATE_TIME,
+            "java.time.OffsetDateTime" to LayoutMigration.Kind.DATE_TIME,
+            "java.time.Instant" to LayoutMigration.Kind.DATE_TIME,
+            "java.time.Duration" to LayoutMigration.Kind.DURATION,
+            "java.time.Period" to LayoutMigration.Kind.DURATION,
+            "kotlin.Double" to LayoutMigration.Kind.FLOAT, "java.lang.Double" to LayoutMigration.Kind.FLOAT, "double" to LayoutMigration.Kind.FLOAT,
+            "kotlin.Float" to LayoutMigration.Kind.FLOAT, "java.lang.Float" to LayoutMigration.Kind.FLOAT, "float" to LayoutMigration.Kind.FLOAT,
+            "kotlin.ByteArray" to LayoutMigration.Kind.BYTES, "byte[]" to LayoutMigration.Kind.BYTES,
+        )
+    }
+}
