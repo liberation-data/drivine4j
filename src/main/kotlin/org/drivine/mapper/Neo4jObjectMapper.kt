@@ -186,8 +186,8 @@ internal fun ObjectMapper.toPropertyValue(value: Any): Any? = temporalWriteMappe
  * - Maps are recursively converted
  * - Complex objects are converted via Jackson toMap()
  *
- * Primitives (String, Number, Boolean) and Neo4j-native temporal types
- * (ZonedDateTime, LocalDate, LocalDateTime) pass through unchanged.
+ * Primitives (String, Number, Boolean) and Neo4j-native temporal types (ZonedDateTime, OffsetDateTime, LocalDate,
+ * LocalDateTime, LocalTime, OffsetTime, Duration and Period) pass through unchanged.
  */
 fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
     if (value == null) return null
@@ -202,8 +202,10 @@ fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
         is Enum<*> -> value.name
         // Convert legacy Date to ZonedDateTime
         is Date -> value.toInstant().atZone(ZoneId.of("UTC"))
-        // Keep native temporals as-is (the Neo4j driver supports them directly)
-        is ZonedDateTime, is OffsetDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime -> value
+        // Keep native temporals as-is (the Neo4j driver supports them directly, and the SQL stores tag each by its kind): a time
+        // with its offset and a duration among them, which toMap() can't make a map of (liberation-data/drivine4j#833)
+        is ZonedDateTime, is OffsetDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime,
+        is java.time.OffsetTime, is java.time.Duration, is java.time.Period -> value
         // Recursively handle collections
         is Collection<*> -> value.map { convertValueForNeo4j(it) }
         // Handle arrays (convert to list and recursively process)
