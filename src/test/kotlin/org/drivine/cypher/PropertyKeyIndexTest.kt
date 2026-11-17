@@ -3,6 +3,7 @@ package org.drivine.cypher
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.oracle.OracleTestDatabase
@@ -11,6 +12,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.schema.UniquenessConstraintSpec
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -47,6 +49,23 @@ abstract class PropertyKeyIndexContract {
 
     /** Whether the store keeps an infinity: Postgres's JSON holds none. */
     open val storesInfinity = true
+
+    /** Whether the store keeps a NaN, where it keeps an infinity: SQLite's JSON holds none, and a write given one is refused. */
+    open val storesNaN = true
+
+    /**
+     * Whether a list is found by an equal list whose whole numbers are its floats, `[1, 2.5]` the stored `[1.0, 2.50]`: false
+     * where the compiler the build is pinned to doesn't yet (liberation-data/drivine-cypher-spec#354), so the step is held,
+     * and fails once it is found, to have the hold taken out.
+     */
+    open val findsEqualList = true
+
+    /**
+     * Whether an APOC batch's rows, whose keys are written out long, find their nodes through the index: false where the
+     * store's compiled test isn't one its index answers (liberation-data/drivine-cypher-spec#358), so the plan's check is
+     * held, and fails once it is, to have the hold taken out. The batch's rows are checked either way.
+     */
+    open val apocBatchProbesIndex = true
 
     @BeforeAll
     fun seed() {
@@ -153,7 +172,8 @@ abstract class PropertyKeyIndexContract {
         if (!storesInfinity) return
         // An infinity finds the one stored, and NaN is equal to nothing, itself included.
         val nonFinite = mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY, "nan" to Double.NaN)
-        query("CREATE (:Odd {id: \$i, k: 5}), (:Odd {id: \$n, k: 6}), (:Odd {id: \$nan, k: 7})", nonFinite)
+        // A write given a NaN is refused where the store keeps none, though the statement doesn't read it: it isn't given one.
+        query("CREATE (:Odd {id: \$i, k: 5}), (:Odd {id: \$n, k: 6})" + if (storesNaN) ", (:Odd {id: \$nan, k: 7})" else "", if (storesNaN) nonFinite else nonFinite - "nan")
         val infinities = mapOf("rows" to listOf(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN).map { mapOf("s" to it) })
         assertEquals(listOf(5L, 6L), query("UNWIND \$rows AS row MATCH (a:Odd {id: row.s}) RETURN a.k ORDER BY a.k", infinities))
         assertEquals(listOf(5L, 6L), query("UNWIND \$rows AS row MATCH (a:Odd) WHERE a.id = row.s RETURN a.k ORDER BY a.k", infinities))
@@ -202,6 +222,11 @@ abstract class PropertyKeyIndexContract {
             listOf(listOf(1L, 2.5)) to listOf(5L),
         )) {
             val bound = mapOf("rows" to rows.map { mapOf("s" to it) })
+            if (!findsEqualList && rows.first() is List<*>) {
+                assertEquals(emptyList(), query(statement, bound), "held for liberation-data/drivine-cypher-spec#354, and passing: take the hold out")
+                assertEquals(emptyList(), query("UNWIND \$rows AS row MATCH (a:Scaled) WHERE a.id = row.s RETURN a.k ORDER BY a.k", bound), "held for liberation-data/drivine-cypher-spec#354 in a WHERE, and passing: take the hold out")
+                continue
+            }
             assertEquals(expected, query(statement, bound), "$rows")
             assertEquals(expected, query("UNWIND \$rows AS row MATCH (a:Scaled) WHERE a.id = row.s RETURN a.k ORDER BY a.k", bound), "$rows in a WHERE")
         }
@@ -235,7 +260,8 @@ abstract class PropertyKeyIndexContract {
         // Its reads, planned as a query: a write compiles to a procedure, which no EXPLAIN takes.
         val plan = plan(compiled(apocBatch(0, 20, "RETURN start, finish"), emptyMap()))
         println("apoc\n$plan\n")
-        assertTrue(probesIndex(plan), "an APOC batch reads every node of the label for each row:\n$plan")
+        if (apocBatchProbesIndex) assertTrue(probesIndex(plan), "an APOC batch reads every node of the label for each row:\n$plan")
+        else assertTrue(!probesIndex(plan), "held for liberation-data/drivine-cypher-spec#358, and passing: take the hold out\n$plan")
         query(apocBatch(0, 20))
         query(apocBatch(20, 40))
         assertEquals(listOf(40L), query("MATCH (:`$IMPORT_LABEL`)-[r:NEXT_CHUNK]->(:`$IMPORT_LABEL`) RETURN count(r)"))
@@ -334,4 +360,36 @@ class OraclePropertyKeyIndexTest : PropertyKeyIndexContract() {
         assertTrue("CARDINALITY" !in sql, sql)
         assertTrue("JSON_EXISTS(n2.labels, '\$[*]?(@ == \"Person\")')" in sql, sql)
     }
+}
+
+class SqlitePropertyKeyIndexTest : PropertyKeyIndexContract() {
+    override val pm by lazy { SqliteTestDatabase.graphManager(GRAPH) }
+    override val cypher by lazy { SqliteTestDatabase.fixtures(pm) }
+
+    override fun compiled(cypher: String, parameters: Map<String, Any?>) = SqliteCypherCompiler(GRAPH).compile(cypher, parameters)
+
+    /** A line for each table or rows the plan reads, each led by the table it reads, as `SqliteIdKeyPlanTest` reads it. */
+    override fun plan(compiled: CompiledCypher): String {
+        val tables = Regex("""\b${GRAPH}_(node|edge) (\w+)""").findAll(compiled.sql).associate { it.groupValues[2] to it.groupValues[1] }
+        return pm.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters))
+            .map { row -> (row as List<*>).last() as String }
+            .filter { it.startsWith("SCAN ") || it.startsWith("SEARCH ") }
+            .joinToString("\n") { line -> "${tables[line.split(" ")[1]] ?: "rows"}: $line" }
+    }
+
+    /** Each node read by a search of the uniqueness constraint's index, by its class and key, and none by a scan of the label. */
+    override fun probesIndex(plan: String) =
+        plan.lines().any { Regex("""^node: SEARCH \w+ USING (COVERING )?INDEX ${GRAPH}_uq2_\w+ \(<expr>=\? AND <expr>""").containsMatchIn(it) } &&
+            plan.lines().none { it.startsWith("node: SCAN ") }
+
+    override fun analyze() = SqliteTestDatabase.run("ANALYZE ${GRAPH}_node")
+
+    /** SQLite stores an infinity (#295) but no NaN, which only a row gives here. */
+    override val storesNaN = false
+
+    /** Held: the compiler this build is pinned to finds no list by an equal one of whole numbers (liberation-data/drivine-cypher-spec#354). */
+    override val findsEqualList = false
+
+    /** Held: the pinned compiler binds a long row key in a subquery around the index's test, so the label's index is scanned (liberation-data/drivine-cypher-spec#358). */
+    override val apocBatchProbesIndex = false
 }
