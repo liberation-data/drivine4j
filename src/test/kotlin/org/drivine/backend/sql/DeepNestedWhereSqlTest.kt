@@ -37,9 +37,11 @@ class DeepNestedWhereSqlTest {
             // An EXISTS of its own for each level, a JSON_EXISTS of a label aside.
             assertEquals(3, Regex("\\bEXISTS\\b").findAll(sql).count(), "$store: $sql")
             types.forEach { assertTrue("'$it'" in sql, "$store: $sql") }
-            // The one value, as the module binds a fragment's value on every SQL store: as JSON text.
-            val bound = select.bindings().values.single()
-            assertEquals("Paris", ObjectMapper().readValue(bound as String, String::class.java), store)
+            // The one value, as the module binds a fragment's value: as JSON text, or on Oracle, where an equality compares the
+            // property with it by its key, as that key, plain text (liberation-data/drivine-cypher-spec#287).
+            val (name, bound) = select.bindings().entries.single()
+            val value = if (name.startsWith("_cyk_")) bound else ObjectMapper().readValue(bound as String, String::class.java)
+            assertEquals("Paris", value, "$store: $name")
         }
     }
 
