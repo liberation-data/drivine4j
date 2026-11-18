@@ -2,6 +2,7 @@ package org.drivine.schema
 
 import org.drivine.DrivineException
 import org.drivine.cypher.store.marker.SchemaMarker
+import org.drivine.model.FragmentModel
 import kotlin.reflect.KClass
 
 /**
@@ -69,6 +70,12 @@ class SchemaCatalog private constructor(
      * no item declared serves. [withoutNodeIdIndexes] leaves them out, as `drivine.schema.index-node-ids=false` does.
      */
     val nodeIdIndexes: Set<IndexSpec> = emptySet(),
+    /**
+     * The labels of the fragments this catalog was read from ([fromFragments]), kept whatever items it keeps, as with its
+     * default indexes left out ([withoutNodeIdIndexes]): where a fragment belongs, so that #828's warning of an unindexed
+     * `@NodeId` is given on the databases its catalog is for, and not on another it is never used on (#848).
+     */
+    internal val fragmentLabels: Set<String> = emptySet(),
 ) {
 
     /** All items in ensure order: indexes first, then constraints. */
@@ -90,7 +97,7 @@ class SchemaCatalog private constructor(
      * not re-embed. After a model change, re-embed the nodes first, then enforce.
      */
     fun withVersion(version: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
+        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes, fragmentLabels)
 
     /**
      * Returns a copy of this catalog owned by [name].
@@ -110,7 +117,7 @@ class SchemaCatalog private constructor(
      * co-owned item. Genuinely conflicting declarations across owners fail fast, naming both owners.
      */
     fun named(name: String?): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
+        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes, fragmentLabels)
 
     /** Returns a copy of this catalog applying only to the primary (first-registered) database. */
     fun forDefaultDatabase(): SchemaCatalog = forDatabase(DEFAULT_DATABASE)
@@ -121,7 +128,7 @@ class SchemaCatalog private constructor(
      * Replaces any existing target — use [forDatabases] to target several at once.
      */
     fun forDatabase(database: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version, name, nodeIdIndexes)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version, name, nodeIdIndexes, fragmentLabels)
 
     /**
      * Returns a copy of this catalog applying only to the named databases.
@@ -130,17 +137,17 @@ class SchemaCatalog private constructor(
      * chaining `forDatabase(...)` calls does not accumulate.
      */
     fun forDatabases(vararg databases: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version, name, nodeIdIndexes)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version, name, nodeIdIndexes, fragmentLabels)
 
     /**
      * Returns a copy of this catalog applying to every schema-capable database (the default).
      *
      * Replaces any existing target.
      */
-    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name, nodeIdIndexes)
+    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name, nodeIdIndexes, fragmentLabels)
 
     /** A copy of this catalog applying to [target]. */
-    internal fun withTarget(target: DatabaseTarget): SchemaCatalog = SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
+    internal fun withTarget(target: DatabaseTarget): SchemaCatalog = SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes, fragmentLabels)
 
     /** Merges another catalog into this one. Both must share the same [target] and [name]. */
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
@@ -158,7 +165,7 @@ class SchemaCatalog private constructor(
         val declaredTaken = others.flatMap { it.declaredItems }.map(::keyOf).toSet()
         val kept = items.filter { keyOf(it) !in (if (it in nodeIdIndexes) taken else declaredTaken) }
         val keptIndexes = kept.filterIsInstance<IndexSpec>()
-        return SchemaCatalog(keptIndexes, kept.filterIsInstance<ConstraintSpec>(), target, version, name, nodeIdIndexes.filter { it in keptIndexes }.toSet())
+        return SchemaCatalog(keptIndexes, kept.filterIsInstance<ConstraintSpec>(), target, version, name, nodeIdIndexes.filter { it in keptIndexes }.toSet(), fragmentLabels)
     }
 
     /**
@@ -166,7 +173,7 @@ class SchemaCatalog private constructor(
      * leaving only what is declared: as `drivine.schema.index-node-ids=false` gives the schema manager its catalogs.
      */
     fun withoutNodeIdIndexes(): SchemaCatalog =
-        SchemaCatalog(indexes.filter { it !in nodeIdIndexes }, constraints, target, version, name)
+        SchemaCatalog(indexes.filter { it !in nodeIdIndexes }, constraints, target, version, name, fragmentLabels = fragmentLabels)
 
     /** [items] without the defaults of [nodeIdIndexes]: what is declared. */
     internal val declaredItems: List<SchemaItemSpec>
@@ -222,6 +229,7 @@ class SchemaCatalog private constructor(
             fragmentClasses.flatMap { FragmentSchemaScanner.scan(it, dimensionProvider) },
             DatabaseTarget.All,
             nodeIdIndexes = fragmentClasses.mapNotNull { FragmentSchemaScanner.nodeIdIndex(it) },
+            fragmentLabels = fragmentClasses.flatMapTo(mutableSetOf()) { FragmentModel.labelsFor(it) },
         )
 
         /** Kotlin convenience for [fromFragments]. */
@@ -269,6 +277,7 @@ class SchemaCatalog private constructor(
                 combineVersions(catalogs),
                 names.first(),
                 catalogs.flatMap { it.nodeIdIndexes },
+                catalogs.flatMapTo(mutableSetOf()) { it.fragmentLabels },
             )
         }
 
@@ -284,6 +293,7 @@ class SchemaCatalog private constructor(
             version: String? = null,
             name: String? = null,
             nodeIdIndexes: List<IndexSpec> = emptyList(),
+            fragmentLabels: Set<String> = emptySet(),
         ): SchemaCatalog {
             val deduplicated = deduplicate(specs)
             // A default no declared item serves, once each: one declared, under a name or not, is the one made.
@@ -295,6 +305,7 @@ class SchemaCatalog private constructor(
                 version = version,
                 name = name,
                 nodeIdIndexes = defaults.toSet(),
+                fragmentLabels = fragmentLabels,
             )
         }
 

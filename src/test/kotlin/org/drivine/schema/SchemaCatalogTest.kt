@@ -535,4 +535,22 @@ class SchemaCatalogTest {
         assertEquals(emptySet<IndexSpec>(), declared.nodeIdIndexes)
         assertEquals(emptyList<IndexSpec>(), scanned.except(listOf(scanned)).indexes.filter { it.properties == listOf("id") })
     }
+
+    @Test
+    fun `a catalog keeps the labels of the fragments it was read from, whatever items it keeps (#848)`() {
+        val unindexed = SchemaCatalog.fromFragments(UnindexedIdFixture::class)
+        // nodeIdIndex = false and nothing declared: no item, but the fragment's label is kept.
+        assertTrue(unindexed.isEmpty())
+        assertEquals(setOf("Account"), unindexed.fragmentLabels)
+        val message = SchemaCatalog.fromFragments(MessageFixture::class)
+        assertEquals(setOf("Message", "ContentElement"), message.fragmentLabels)
+        for (copy in listOf(
+            message.withoutNodeIdIndexes(),
+            message.forDatabase("a"),
+            message.named("app").withVersion("1"),
+            message.except(listOf(message)),
+        )) assertEquals(message.fragmentLabels, copy.fragmentLabels)
+        assertEquals(setOf("Account", "Message", "ContentElement"), (unindexed + message).fragmentLabels)
+        assertEquals(emptySet<String>(), SchemaCatalog.of(RangeIndexSpec("Topic", "name")).fragmentLabels)
+    }
 }

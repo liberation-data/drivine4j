@@ -15,7 +15,7 @@ import kotlin.concurrent.schedule
  * Nothing here reads the store while a fragment is used, nor throws: a check that fails is passed over, and the save or
  * load goes on. What serves an id is what [SchemaManager]'s enforce listed of each database ([listed]), after it applied
  * the catalogs, outside any caller's transaction, and kept current by each ensure after it ([ensured]). A fragment used before an enforce is checked when it runs, and one
- * first used after it against what it listed. Where no [SchemaManager] with a catalog has been built, nothing applies one;
+ * first used after it against what it listed, each only on the databases where it belongs ([catalogued], #848). Where no [SchemaManager] with a catalog has been built, nothing applies one;
  * as one may yet be, as Spring builds its beans, a fragment is warned of only if none has been [UNMANAGED_DELAY_MILLIS] after
  * its first use.
  *
@@ -102,6 +102,30 @@ internal object NodeIdIndexCheck {
         }
     }
 
+    /**
+     * The labels the catalogs a [SchemaManager] applies declare items of, by database, given before its enforce lists
+     * any: a fragment whose labels some catalog names is checked only on the databases where one does, as it belongs
+     * there, and not warned of on another it is never used on (#848). A fragment no catalog names is checked on every
+     * database listed.
+     */
+    private var catalogued: Map<String, Set<String>> = emptyMap()
+
+    /** What the catalogs on each database name, as [catalogued] keeps it: given by [SchemaManager] before it lists. */
+    fun catalogued(labels: Map<String, Set<String>>) {
+        guarded { synchronized(this) { catalogued = labels } }
+    }
+
+    /** [labels] are named on [database] too, by a catalog [SchemaManager.ensure] gave after the enforce: before it lists [database] again. */
+    fun catalogued(database: String, labels: Collection<String>) {
+        guarded { synchronized(this) { catalogued = catalogued + (database to catalogued[database].orEmpty() + labels) } }
+    }
+
+    /** Whether [model] is checked on [database]: no catalog names its labels, or one on [database] does. */
+    private fun belongs(database: String, model: FragmentModel): Boolean {
+        if (model.labels.none { label -> catalogued.values.any { label in it } }) return true
+        return model.labels.any { it in catalogued[database].orEmpty() }
+    }
+
     /** Whether an enforce has listed [database], whose listing a runtime ensure is to keep current. */
     fun listedOn(database: String): Boolean = synchronized(this) { database in served }
 
@@ -144,6 +168,7 @@ internal object NodeIdIndexCheck {
      */
     private fun check(database: String, model: FragmentModel, serving: Set<Pair<String, String>>) {
         val property = model.nodeIdProperty ?: return
+        if (!belongs(database, model)) return
         if (model.labels.none { it to property in serving }) warn(database, model)
     }
 
@@ -155,8 +180,10 @@ internal object NodeIdIndexCheck {
         logger.warn(
             "@NodeId '{}' of {} has no index under :{}, so each save scans every :{} node. Its default index is off " +
                 "(nodeIdIndex = false / drivine.schema.index-node-ids=false, or {} isn't in a SchemaCatalog): declare @RangeIndex or @Unique on it, " +
-                "or indexes.ensure(RangeIndexSpec(\"{}\", listOf(\"{}\"))).",
+                "or indexes.ensure(RangeIndexSpec(\"{}\", listOf(\"{}\"))).{}",
             property, fragment, label, label, fragment, label, property,
+            // Where there is more than one database, the one it is said of (#848).
+            database?.takeIf { catalogued.size > 1 || served.size > 1 }?.let { " On database '$it'." }.orEmpty(),
         )
     }
 
@@ -176,6 +203,7 @@ internal object NodeIdIndexCheck {
             admitted.clear()
             served.clear()
             warned.clear()
+            catalogued = emptyMap()
             managed = false
         }
     }

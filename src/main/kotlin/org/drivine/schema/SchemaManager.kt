@@ -214,7 +214,11 @@ class SchemaManager(
             planned.forEach { (planning, request) ->
                 planning.run(request)
                 // What an enforce listed is kept current, so a fragment first used after this isn't warned of (#828).
-                if (NodeIdIndexCheck.listedOn(request.database)) planning.listForNodeIds(request.database)
+                // Its labels are named on the database from then on, so a fragment under one is checked there too (#848).
+                if (NodeIdIndexCheck.listedOn(request.database)) {
+                    NodeIdIndexCheck.catalogued(request.database, catalog.items.map { it.label } + catalog.fragmentLabels)
+                    planning.listForNodeIds(request.database)
+                }
             }
         }
     }
@@ -270,6 +274,10 @@ class SchemaManager(
             VectorAnnotationCheck.register(all)
             val resolution = SchemaTargets.resolve(all, databaseRegistry)
             warnSkipped(resolution)
+            if (operation is Operation.Enforce || operation is Operation.RecreateAll) {
+                // Before any is listed: a fragment is checked on the databases whose catalogs name its labels (#848).
+                NodeIdIndexCheck.catalogued(cataloguedOn(resolution.databases, all))
+            }
             resolution.databases.sorted().forEach { database ->
                 val planning = planning(database)
                 planning.run(request(database, operation, runtime))
@@ -277,6 +285,16 @@ class SchemaManager(
             }
         }
     }
+
+    /**
+     * The labels the items of [all] are under on each of [databases], for [NodeIdIndexCheck] to check a fragment where it
+     * belongs (#848), and on each database an empty catalog names, which [SchemaTargets] leaves out of [databases]: a
+     * fragment read with its default index off, which declares nothing, belongs there all the same.
+     */
+    internal fun cataloguedOn(databases: Collection<String>, all: List<SchemaCatalog>): Map<String, Set<String>> =
+        (databases + all.filter { it.isEmpty() }.flatMap { databasesOf(it.target).orEmpty() }).distinct().associateWith { database ->
+            all.filter { targets(it.target, database) }.flatMapTo(mutableSetOf()) { catalog -> catalog.items.map { it.label } + catalog.fragmentLabels }
+        }
 
     /** What the planner is asked of [database]: its startup catalogs, of every owner, and the [runtime] items on it. */
     internal fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>): PlanRequest {

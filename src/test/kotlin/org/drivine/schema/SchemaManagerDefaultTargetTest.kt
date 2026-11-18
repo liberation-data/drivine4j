@@ -13,6 +13,7 @@ import org.drivine.query.grammar.CypherDialect
 import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * A catalog for the `default` alias, as `forDefaultDatabase()` makes one, is applied to the first-registered database the
@@ -54,6 +55,32 @@ class SchemaManagerDefaultTargetTest {
             assertEquals(listOf<SchemaItemSpec>(index), manager.applied("neo"), "${catalog.target}")
             assertEquals(listOf<SchemaItemSpec>(other), manager.applied("other"), "${catalog.target}")
         }
+    }
+
+    @Test
+    fun `the labels a fragment is checked under are those of the catalogs for each database, the default alias resolved`() {
+        val catalogs = listOf(
+            SchemaCatalog.of(index).forDefaultDatabase(),
+            SchemaCatalog.of(other).forDatabase("other"),
+            SchemaCatalog.of(RangeIndexSpec("Customer", "id")).forAllDatabases(),
+        )
+        assertEquals(
+            mapOf("neo" to setOf("Person", "Customer"), "other" to setOf("Order", "Customer")),
+            manager(*catalogs.toTypedArray()).cataloguedOn(listOf("neo", "other"), catalogs),
+        )
+    }
+
+    @Test
+    fun `a fragment read into an empty catalog is checked where that catalog is for, though no item is applied there (#848)`() {
+        val catalogs = listOf(
+            SchemaCatalog.of(index).forDefaultDatabase(),
+            SchemaCatalog.fromFragments(UnindexedIdFixture::class).forDatabase("other"),
+        )
+        // What SchemaTargets resolves leaves out the empty catalog's database: its fragment belongs there all the same.
+        val labels = manager(*catalogs.toTypedArray()).cataloguedOn(listOf("neo"), catalogs)
+        assertTrue(catalogs[1].isEmpty())
+        assertEquals(setOf("Person"), labels.getValue("neo"))
+        assertEquals(setOf("Account"), labels.getValue("other"))
     }
 
     @Test
