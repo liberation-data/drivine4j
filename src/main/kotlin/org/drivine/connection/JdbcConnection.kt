@@ -451,7 +451,10 @@ class JdbcConnection(
      * (`max_parallel_maintenance_workers` 0), set back after to what it was: to the session's own value where the
      * session had set one, and otherwise reset, so that a value from `postgresql.conf`, the role or the database, or the
      * default, is followed again as it was, rather than kept as the session's own. In a transaction both are set for the
-     * transaction alone (`SET LOCAL`), which its end undoes, so that a value it set for itself alone is not kept after it.
+     * transaction alone (`SET LOCAL`), which its end undoes, so that a value it set for itself alone is not kept after it;
+     * and the build runs within a savepoint of its own, rolled back to where the build fails, so that the transaction
+     * outlives a build Postgres refuses, as it refuses one `CONCURRENTLY` in a transaction, which the schema planner then
+     * runs again without it (#845).
      */
     internal fun <T> buildingIndex(block: () -> T): T {
         val refusal = noEviction ?: "it is in a transaction".takeIf { inTransaction } ?: "its pool cannot close a session for good".takeIf { evictor == null }
@@ -470,12 +473,28 @@ class JdbcConnection(
         }
         setParallelWorkers("0", local)
         try {
-            return block()
+            return withinSavepoint(block)
         } finally {
-            // In a caller's transaction that the build failed, this fails too, and the transaction's rollback sets it back.
             runCatching {
                 if (previous != null) setParallelWorkers(previous, local) else connection.createStatement().use { it.execute("RESET $PARALLEL_WORKERS") }
             }
+        }
+    }
+
+    /**
+     * Runs [block], schema DDL on Postgres, within a savepoint of its own where the connection commits nothing of itself, rolled
+     * back to and released where it fails: in a transaction, a statement Postgres refuses ends the transaction, as any error
+     * does, and the savepoint keeps it going, so a build or drop refused online (`CONCURRENTLY`, `25001`) can be run again
+     * plain (#845). Outside one, [block] runs as it is. The savepoint is taken after anything set before it, which its
+     * rollback then leaves as it was.
+     */
+    internal fun <T> withinSavepoint(block: () -> T): T {
+        val savepoint = if (!connection.autoCommit) connection.setSavepoint() else null
+        try {
+            return block().also { savepoint?.let { runCatching { connection.releaseSavepoint(it) } } }
+        } catch (e: Exception) {
+            savepoint?.let { runCatching { connection.rollback(it); connection.releaseSavepoint(it) }.exceptionOrNull()?.let(e::addSuppressed) }
+            throw e
         }
     }
 

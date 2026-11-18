@@ -42,6 +42,14 @@ class SchemaExecutor internal constructor(
                         (connection as? JdbcConnection)?.buildingIndex(build) ?: build()
                     }
                 }
+            } else if (connectionProvider.type == DatabaseType.POSTGRES && ONLINE_DROP.containsMatchIn(statement.statement)) {
+                // Refused in a transaction (`25001`), it would end it: see JdbcConnection.withinSavepoint.
+                traced(statement.statement, emptyMap()) {
+                    PinnedConnections.on(connectionProvider) { connection ->
+                        val drop = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
+                        (connection as? JdbcConnection)?.withinSavepoint(drop) ?: drop()
+                    }
+                }
             } else {
                 query(statement.statement)
             }
@@ -87,5 +95,8 @@ class SchemaExecutor internal constructor(
     private companion object {
         /** A Postgres statement that builds an index, as PostgresSchemaGrammar writes one: a uniqueness constraint's too. */
         val INDEX_BUILD = Regex("""^\s*CREATE\s+(UNIQUE\s+)?INDEX\b""", RegexOption.IGNORE_CASE)
+
+        /** A Postgres statement that drops an index online, as the schema planner drops an invalid one to build it again. */
+        val ONLINE_DROP = Regex("""^\s*DROP\s+INDEX\s+CONCURRENTLY\b""", RegexOption.IGNORE_CASE)
     }
 }
