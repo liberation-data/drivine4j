@@ -61,6 +61,47 @@ class NodeIdIndexCheckTest {
             "(nodeIdIndex = false / drivine.schema.index-node-ids=false, or OrderFixture isn't in a SchemaCatalog): declare @RangeIndex or @Unique on it, " +
             "or indexes.ensure(RangeIndexSpec(\"Order\", listOf(\"id\")))."
 
+    /** The words a warning ends with where there is more than one database: the one it is said of (#848). */
+    private fun on(database: String) = " On database '$database'."
+
+    @Test
+    fun `a fragment some catalog names is checked only on the databases whose catalogs name it, and the database is named`() {
+        NodeIdIndexCheck.managed()
+        FragmentModel.from(OrderFixture::class.java)
+        FragmentModel.from(InvoiceFixture::class.java)
+        // Order's catalog is for a alone, Invoice's for b alone; neither has its id indexed.
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "b" to setOf("Invoice")))
+        NodeIdIndexCheck.listed("a", emptyList())
+        NodeIdIndexCheck.listed("b", emptyList())
+        assertEquals(listOf(orderWarning + on("a")), warnings().filter { it.contains("OrderFixture") })
+        assertEquals(1, warnings().count { it.contains("InvoiceFixture") && it.endsWith(on("b")) })
+        assertEquals(2, warnings().size, "neither is warned of on the other's database")
+    }
+
+    @Test
+    fun `a fragment first used after the enforce is checked only where it belongs, and where a later ensure names it`() {
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Purchase"), "b" to setOf("Invoice")))
+        NodeIdIndexCheck.listed("a", emptyList())
+        NodeIdIndexCheck.listed("b", emptyList())
+        FragmentModel.from(OrderFixture::class.java)
+        assertEquals(listOf(orderWarning + on("a")), warnings(), "named on a under its other label, Purchase")
+        // A catalog ensured on b at runtime names Order there, and b is listed again.
+        NodeIdIndexCheck.catalogued("b", listOf("Order"))
+        NodeIdIndexCheck.listed("b", emptyList())
+        assertEquals(listOf(orderWarning + on("a"), orderWarning + on("b")), warnings())
+    }
+
+    @Test
+    fun `a fragment no catalog names is checked on every database listed`() {
+        NodeIdIndexCheck.managed()
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Customer"), "b" to emptySet()))
+        NodeIdIndexCheck.listed("a", emptyList())
+        NodeIdIndexCheck.listed("b", emptyList())
+        assertEquals(listOf(orderWarning + on("a"), orderWarning + on("b")), warnings())
+    }
+
     @Test
     fun `a fragment no index serves is warned of once per database, in the issue's words`() {
         NodeIdIndexCheck.managed()
@@ -70,7 +111,7 @@ class NodeIdIndexCheckTest {
         FragmentModel.from(OrderFixture::class.java)
         assertEquals(listOf(orderWarning), warnings())
         NodeIdIndexCheck.listed("users", listOf(range("Customer", "id")))
-        assertEquals(listOf(orderWarning, orderWarning), warnings(), "another database, whose index is under a label the fragment hasn't")
+        assertEquals(listOf(orderWarning, orderWarning + on("users")), warnings(), "another database, whose index is under a label the fragment hasn't")
         // An index under any of the fragment's labels serves it: a save matches all of them.
         NodeIdIndexCheck.listed("archive", listOf(range("Purchase", "id")))
         assertEquals(2, warnings().size)
@@ -84,7 +125,7 @@ class NodeIdIndexCheckTest {
         NodeIdIndexCheck.listed("b", listOf(unique("Order", "id")))
         assertEquals(emptyList(), warnings())
         NodeIdIndexCheck.listed("c", listOf(range("Order", "id", "placedAt"), unique("Order", "id", "line")))
-        assertEquals(listOf(orderWarning), warnings(), "an item over more properties serves no lookup by the id alone")
+        assertEquals(listOf(orderWarning + on("c")), warnings(), "an item over more properties serves no lookup by the id alone")
     }
 
     @Test
@@ -96,7 +137,7 @@ class NodeIdIndexCheckTest {
         NodeIdIndexCheck.listed("falkor", listOf(range("Order", "placedAt", "id")), falkor)
         assertEquals(emptyList(), warnings())
         NodeIdIndexCheck.listed("neo", listOf(range("Order", "placedAt", "id")))
-        assertEquals(listOf(orderWarning), warnings(), "a composite index elsewhere")
+        assertEquals(listOf(orderWarning + on("neo")), warnings(), "a composite index elsewhere")
     }
 
     @Test
