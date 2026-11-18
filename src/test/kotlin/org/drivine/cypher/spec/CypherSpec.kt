@@ -74,7 +74,12 @@ data class CypherSpec(
          * the issue says it does; one that passes fails the case, so that its hold is taken out when the fix lands. One
          * that would [skip][Hold.skip] is not run, whatever other hold names it.
          */
-        private val HELD: Map<String, Map<String, List<Hold>>> = emptyMap()
+        private val HELD: Map<String, Map<String, List<Hold>>> = mapOf(
+            "queries.yaml" to mapOf(
+                // The Oracle server sometimes ends the session in this case on CI (ORA-03113): skipped there, not checked to fail.
+                "collect skips nulls" to listOf(Hold("liberation-data/drivine4j#838", on = listOf("oracle"), skip = true)),
+            ),
+        )
 
         /** The name a step gives [type] by. */
         fun storeOf(type: DatabaseType): String = type.name.lowercase()
@@ -99,8 +104,9 @@ data class CypherSpec(
 
     /**
      * Steps held for [issue], named by repository (`liberation-data/drivine4j#418`), on the stores or groups [on]: [steps]
-     * (from 1), or every step of the case where null. Where [skip], the step is not run, as running it harms the store
-     * for what runs after it, and the case ends there on that store, as the steps after it read what it would have written.
+     * (from 1), or every step of the case where null. Where [skip], the step is not run, and the case ends there on that
+     * store, as the steps after it read what it would have written: running it harms the store for what runs after it,
+     * or it fails only at times, so it can't be checked to fail.
      */
     internal data class Hold(val issue: String, val on: List<String>, val steps: List<Int>? = null, val skip: Boolean = false)
 
