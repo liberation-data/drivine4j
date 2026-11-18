@@ -10,6 +10,7 @@ import org.drivine.annotation.NodeLabels
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.VectorIndex
+import org.drivine.schema.NodeIdIndexCheck
 import org.drivine.schema.VectorAnnotationCheck
 import org.slf4j.LoggerFactory
 import java.lang.reflect.Modifier
@@ -173,6 +174,7 @@ data class FragmentModel(
             // A catalog's vector index over a field without @VectorIndex is refused here as well as when
             // the catalog is applied, since either may come first.
             VectorAnnotationCheck.admit(model)
+            NodeIdIndexCheck.admit(model)
             return model
         }
 

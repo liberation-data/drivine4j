@@ -112,6 +112,14 @@ fun schema(embeddingService: EmbeddingService) = SchemaCatalog.fromFragments(
 
 Works for Java fragments too (`SchemaCatalog.fromFragments(JavaNode.class)`).
 
+**A fragment's `@NodeId` gets a range index.** Each save, and each load by id, finds its node by the `@NodeId` property under the fragment's primary label, and with no index over it a store reads every node of the label. So `fromFragments` gives each fragment with a `@NodeId` a range index over that property, unless an item declared serves it: a range index over that property alone, or a uniqueness constraint over it alone, neither ignoring case, from any fragment of the catalog, any catalog merged with it, or any other catalog the `SchemaManager` applies on that database. It is an item like any other, made by `enforce` and listed in the owner's marker. Once made, it stays when a `@Unique` is later declared on the id (reported as an orphan of its owner), and on Neo4j it is in the way of that constraint (`BlockedByIndex`): enforce once with `drivine.schema.replace-blocking-index=true`, or drop the index first. To go without it:
+
+- one fragment: `@NodeFragment(labels = ["Person"], nodeIdIndex = false)`;
+- one catalog: `SchemaCatalog.fromFragments(...).withoutNodeIdIndexes()`;
+- every catalog the Spring starter gives the `SchemaManager`: `drivine.schema.index-node-ids: false`.
+
+A fragment never read into a `SchemaCatalog` gets none. A fragment whose `@NodeId` no index serves is warned of once per database, at WARN, naming the label, the property and the fix: after an `enforce` (or `recreateAll`), from what it lists of the store, or, where no `SchemaManager` with a catalog is built, 30 seconds after the fragment's first use. The check never reads the store in a save, and never fails one.
+
 **With Spring Boot, the fragments are scanned for you.** The starter reads the schema of every `@NodeFragment` class or interface under the `@SpringBootApplication` class's packages (or `drivine.schema.scan-packages`) and gives it to the `SchemaManager` beside your catalog beans, so a fragment's `@RangeIndex`, `@Unique` and the rest are made at startup without a catalog listing it. An item one of your catalog beans declares, under the same kind, label and properties, is left to that bean, so one you name or tune is made as you declare it. A fragment with a `@VectorIndex` is read with your `VectorDimensionProvider` bean; with none, or several and none primary, it is passed over, said at INFO, and is yours to register in a catalog. A TEXT index is given to the Neo4j databases that manage schema alone, since the other stores refuse one. Scanning never fails startup: fragments that declare conflicting items are passed over together, said at WARN, and the rest applied. What is scanned is applied as a catalog bean is, under `drivine.schema.mode`, and belongs to the unnamed owner: it is recorded in that owner's marker, and a version change of your unnamed catalog beans recreates it with theirs. Set `drivine.schema.scan-fragments: false` to manage the schema through catalog beans alone, as before.
 
 ### Runtime enforcement (`SchemaManager`)
@@ -224,6 +232,7 @@ drivine:
     index-build-timeout: 60s   # how long to wait for an index Neo4j or FalkorDB builds in the background
     scan-fragments: true       # read the schema of the application's @NodeFragment classes (Spring Boot)
     scan-packages: []          # packages to scan, in place of the @SpringBootApplication class's
+    index-node-ids: true       # give each fragment's @NodeId a range index, unless one is declared
 ```
 
 Without Spring, the timeout is the `SchemaManager`'s last constructor argument: `SchemaManager(factory, registry, catalogs, policy, Duration.ofMinutes(5))`.

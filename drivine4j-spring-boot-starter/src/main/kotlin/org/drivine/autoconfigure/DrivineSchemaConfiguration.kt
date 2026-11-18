@@ -39,6 +39,9 @@ import java.time.Duration
  * from its packages ([NodeFragmentScan]): `drivine.schema.scan-fragments=false` turns that off, and
  * `drivine.schema.scan-packages` names the packages in place of Spring Boot's auto-configuration packages. An item a
  * catalog bean declares is that bean's to make.
+ *
+ * `drivine.schema.index-node-ids=false` gives the manager its catalogs without the range index each fragment's `@NodeId`
+ * is given by default ([SchemaCatalog.withoutNodeIdIndexes]), leaving only what is declared.
  */
 @Configuration
 class DrivineSchemaConfiguration {
@@ -55,11 +58,14 @@ class DrivineSchemaConfiguration {
         dimensions: ObjectProvider<VectorDimensionProvider>,
     ): SchemaManager {
         val binder = Binder.get(environment)
+        val indexNodeIds = binder.bind(INDEX_NODE_IDS, Boolean::class.javaObjectType).orElse(true)
         val declared = catalogs.orderedStream().toList()
+        // The scanned catalogs are read from fragments too, and their defaults go with the declared ones' where they're off.
         return SchemaManager(
             persistenceManagerFactory = persistenceManagerFactory,
             databaseRegistry = databaseRegistry,
-            catalogs = declared + scanned(binder, beanFactory, dimensions, declared, databaseRegistry),
+            catalogs = (declared + scanned(binder, beanFactory, dimensions, declared, databaseRegistry))
+                .map { if (indexNodeIds) it else it.withoutNodeIdIndexes() },
             policy = properties.toPolicy(),
             indexBuildTimeout = binder.bind(INDEX_BUILD_TIMEOUT, Duration::class.java).orElse(DEFAULT_INDEX_BUILD_TIMEOUT),
         )
@@ -103,6 +109,9 @@ class DrivineSchemaConfiguration {
 
         /** The packages scanned for `@NodeFragment` classes, in place of Spring Boot's auto-configuration packages. */
         const val SCAN_PACKAGES = "drivine.schema.scan-packages"
+
+        /** Whether the range indexes fragments' `@NodeId`s are given by default are made: see [SchemaCatalog.nodeIdIndexes]. Read as [INDEX_BUILD_TIMEOUT] is. */
+        const val INDEX_NODE_IDS = "drivine.schema.index-node-ids"
 
         val DEFAULT_INDEX_BUILD_TIMEOUT: Duration = Duration.ofSeconds(60)
     }

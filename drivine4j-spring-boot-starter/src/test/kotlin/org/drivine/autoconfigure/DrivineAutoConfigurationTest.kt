@@ -13,6 +13,8 @@ import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.drivine.transaction.Transactions
 import org.drivine.schema.DatabaseTarget
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
@@ -262,6 +264,25 @@ class DrivineAutoConfigurationTest {
         }
 
     @Test
+    fun `drivine schema index-node-ids false gives the schema manager its catalogs without the @NodeId's default index`() {
+        @Suppress("UNCHECKED_CAST")
+        fun catalogsOf(manager: SchemaManager) =
+            SchemaManager::class.java.getDeclaredField("catalogs").apply { isAccessible = true }.get(manager) as List<SchemaCatalog>
+        // No startup run, which would reach the database.
+        val app = runner.withUserConfiguration(NodeIdCatalogConfig::class.java)
+            .withPropertyValues(*datasourceProperties, "drivine.schema.enabled=false")
+        app.run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).single().indexes)
+                .containsExactly(RangeIndexSpec("StarterNode", "id"))
+        }
+        app.withPropertyValues("drivine.schema.index-node-ids=false").run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).single().isEmpty()).isTrue()
+        }
+    }
+
+    @Test
     fun `excluding the auto-configuration leaves an EnableDrivine application as it was`() {
         isolatedRunner()
             .withUserConfiguration(EnableDrivineApp::class.java)
@@ -360,6 +381,15 @@ class DrivineAutoConfigurationTest {
 
         @Bean
         fun appSchemaManager(): SchemaManager = schemaManager
+    }
+
+    @NodeFragment(labels = ["StarterNode"])
+    data class StarterNode(@NodeId val id: String)
+
+    @Configuration(proxyBeanMethods = false)
+    class NodeIdCatalogConfig {
+        @Bean
+        fun nodeIdCatalog(): SchemaCatalog = SchemaCatalog.fromFragments(StarterNode::class)
     }
 
     class NoOpTransactionManager : PlatformTransactionManager {
