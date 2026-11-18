@@ -117,12 +117,15 @@ internal object NodeFragmentScan {
         val kept = read.filter { it.first !in clashing }.map { it.second }
         if (kept.isEmpty()) return emptyList()
         val scanned = SchemaCatalog.merge(kept).except(declared)
-        val (text, rest) = scanned.items.partition { it is TextIndexSpec }
+        val text = scanned.items.filterIsInstance<TextIndexSpec>()
+        // The rest through except, not of, so its @NodeId defaults stay defaults: index-node-ids=false leaves them out,
+        // and one an application's own uniqueness constraint over the id serves is left out beside it.
+        val rest = scanned.except(listOf(SchemaCatalog.of(text)))
         if (text.isNotEmpty() && neo4jDatabases.isEmpty()) {
             logger.info("The TEXT indexes of the @NodeFragment classes scanned are not made: only Neo4j makes one, and no Neo4j database is registered: {}", text)
         }
         return listOfNotNull(
-            SchemaCatalog.of(rest).takeUnless { it.isEmpty() },
+            rest.takeUnless { it.isEmpty() },
             SchemaCatalog.of(text).takeUnless { it.isEmpty() || neo4jDatabases.isEmpty() }?.forDatabases(*neo4jDatabases.toTypedArray()),
         )
     }

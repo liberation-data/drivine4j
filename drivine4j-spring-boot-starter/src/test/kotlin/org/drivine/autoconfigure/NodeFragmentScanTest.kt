@@ -91,6 +91,19 @@ class NodeFragmentScanTest {
     }
 
     @Test
+    fun `a fragment's @NodeId default stays a default through the scan, beside a TEXT index and an application's own constraint over the id`() {
+        val fragments = listOf(ScanHolder.Nested::class.java, ScanPerson::class.java)
+        val default = RangeIndexSpec("ScanPerson", "id")
+        val own = SchemaCatalog.of(UniquenessConstraintSpec("ScanPerson", "id"))
+        val (all, _) = NodeFragmentScan.catalogs(fragments, null, listOf(own), setOf("neo"))
+        assertTrue(default in all.indexes)
+        assertTrue(default in all.nodeIdIndexes)
+        assertTrue(RangeIndexSpec("ScanNested", "id") in all.nodeIdIndexes)
+        // So drivine.schema.index-node-ids=false leaves it out, and only the defaults.
+        assertEquals(all.items - all.nodeIdIndexes, all.withoutNodeIdIndexes().items)
+    }
+
+    @Test
     fun `fragments that declare conflicting items are passed over together, and the rest applied, never failing startup`() {
         val fragments = NodeFragmentScan.fragments(listOf("org.drivine.autoconfigure.scanconflict"), loader)
         assertEquals(3, fragments.size)
