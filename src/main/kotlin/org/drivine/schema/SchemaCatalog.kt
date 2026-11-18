@@ -146,6 +146,22 @@ class SchemaCatalog private constructor(
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
 
     /**
+     * A copy of this catalog without the items [others] declare under the same kind, label and properties, which are
+     * theirs to make: as the Spring starter leaves to an application's own catalogs what its scan of `@NodeFragment`
+     * classes also finds, so that an item the application names or tunes is made as it declares it. A default
+     * of [nodeIdIndexes] kept is kept as one. A default of theirs takes only a default of this one: an item this catalog
+     * declares is left out only for one they declare, so that `index-node-ids=false`, leaving out their default, doesn't
+     * leave it out too.
+     */
+    fun except(others: List<SchemaCatalog>): SchemaCatalog {
+        val taken = others.flatMap { it.items }.map(::keyOf).toSet()
+        val declaredTaken = others.flatMap { it.declaredItems }.map(::keyOf).toSet()
+        val kept = items.filter { keyOf(it) !in (if (it in nodeIdIndexes) taken else declaredTaken) }
+        val keptIndexes = kept.filterIsInstance<IndexSpec>()
+        return SchemaCatalog(keptIndexes, kept.filterIsInstance<ConstraintSpec>(), target, version, name, nodeIdIndexes.filter { it in keptIndexes }.toSet())
+    }
+
+    /**
      * A copy of this catalog without the range indexes fragments' `@NodeId`s are given by default ([nodeIdIndexes]),
      * leaving only what is declared: as `drivine.schema.index-node-ids=false` gives the schema manager its catalogs.
      */
@@ -282,6 +298,9 @@ class SchemaCatalog private constructor(
             )
         }
 
+        /** What two declarations of one item share: its kind, label and properties, as made, in any order. */
+        private fun keyOf(spec: SchemaItemSpec) = Triple(spec.kind, spec.label, spec.made().properties.toSet())
+
         /**
          * Whether [declared] serves [default], a `@NodeId`'s range index over one property: a range index or a uniqueness
          * constraint over that property alone, under the label, that doesn't ignore case, whose index a lookup by the id
@@ -313,7 +332,7 @@ class SchemaCatalog private constructor(
          * which knows the property its nodes are identified by, wins.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
-            val byKey = specs.groupBy { Triple(it.kind, it.label, it.made().properties.toSet()) }
+            val byKey = specs.groupBy(::keyOf)
             return byKey.map { (key, group) -> resolveDeclarations(key, group) }
         }
 

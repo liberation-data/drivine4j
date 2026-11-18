@@ -120,6 +120,8 @@ Works for Java fragments too (`SchemaCatalog.fromFragments(JavaNode.class)`).
 
 A fragment never read into a `SchemaCatalog` gets none. A fragment whose `@NodeId` no index serves is warned of once per database, at WARN, naming the label, the property and the fix: after an `enforce` (or `recreateAll`), from what it lists of the store, or, where no `SchemaManager` with a catalog is built, 30 seconds after the fragment's first use. The check never reads the store in a save, and never fails one.
 
+**With Spring Boot, the fragments are scanned for you.** The starter reads the schema of every `@NodeFragment` class or interface under the `@SpringBootApplication` class's packages (or `drivine.schema.scan-packages`) and gives it to the `SchemaManager` beside your catalog beans, so a fragment's `@RangeIndex`, `@Unique` and the rest, and its `@NodeId`'s range index, are made at startup without a catalog listing it. An item one of your catalog beans declares, under the same kind, label and properties, is left to that bean, so one you name or tune is made as you declare it. A fragment with a `@VectorIndex` is read with your `VectorDimensionProvider` bean; with none, or several and none primary, it is passed over, said at INFO, and is yours to register in a catalog. A TEXT index is given to the Neo4j databases that manage schema alone, since the other stores refuse one. Scanning never fails startup: fragments that declare conflicting items are passed over together, said at WARN, and the rest applied. What is scanned is applied as a catalog bean is, under `drivine.schema.mode`, and belongs to the unnamed owner: it is recorded in that owner's marker, and a version change of your unnamed catalog beans recreates it with theirs. Set `drivine.schema.scan-fragments: false` to manage the schema through catalog beans alone, as before.
+
 ### Runtime enforcement (`SchemaManager`)
 
 Catalogs are applied by a `SchemaManager` bean, enforced once on startup. It's also injectable, so you can drive schema changes at runtime — e.g. build indexes *after* a bulk load, or rebuild after re-embedding:
@@ -228,6 +230,8 @@ drivine:
     violation-sample-size: 10  # conflicting rows sampled on constraint violations, and nodes named per row
     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
     index-build-timeout: 60s   # how long to wait for an index Neo4j or FalkorDB builds in the background
+    scan-fragments: true       # read the schema of the application's @NodeFragment classes (Spring Boot)
+    scan-packages: []          # packages to scan, in place of the @SpringBootApplication class's
     index-node-ids: true       # give each fragment's @NodeId a range index, unless one is declared
 ```
 

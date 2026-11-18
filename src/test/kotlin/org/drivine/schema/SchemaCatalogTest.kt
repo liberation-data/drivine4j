@@ -489,4 +489,50 @@ class SchemaCatalogTest {
             SchemaCatalog.fromFragments(MessageFixture::class)
         assertEquals("id", handFirst.constraints.single().nodeIdProperty)
     }
+
+    @Test
+    fun `except leaves out what other catalogs declare under the same kind, label and properties, and keeps its own target, version and owner`() {
+        val own = SchemaCatalog.of(
+            RangeIndexSpec("Message", listOf("sessionId", "createdAt")),
+            UniquenessConstraintSpec("Message", listOf("sessionId", "sequence")),
+            RangeIndexSpec("Message", "sessionId"),
+        ).named("app").withVersion("v1").forDatabase("users")
+        // Named otherwise, its properties in another order, and for another database and owner: still the same item.
+        val others = listOf(
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("createdAt", "sessionId"), "other_name")).forDatabase("other"),
+            SchemaCatalog.of(TextIndexSpec("Message", "sessionId")).named("lib"),
+        )
+
+        val left = own.except(others)
+
+        assertEquals(listOf(RangeIndexSpec("Message", "sessionId")), left.indexes)
+        assertEquals(own.constraints, left.constraints)
+        assertEquals("app", left.name)
+        assertEquals("v1", left.version)
+        assertEquals(DatabaseTarget.Named(setOf("users")), left.target)
+        assertEquals(own.items, own.except(emptyList()).items)
+    }
+
+    @Test
+    fun `a default @NodeId index except keeps is still a default, and one another catalog declares is left to it`() {
+        // As the Spring starter leaves to an app's own catalogs what its scan finds: the scan's defaults stay defaults.
+        val scanned = SchemaCatalog.fromFragments(MessageFixture::class)
+        val default = RangeIndexSpec("Message", "id")
+        val kept = scanned.except(listOf(SchemaCatalog.of(RangeIndexSpec("Topic", "name"))))
+        assertEquals(setOf<IndexSpec>(default), kept.nodeIdIndexes)
+        assertTrue(default in kept.indexes)
+        // So index-node-ids=false still leaves it out, and only it.
+        assertTrue(default !in kept.withoutNodeIdIndexes().indexes)
+        assertEquals(kept.indexes.size - 1, kept.withoutNodeIdIndexes().indexes.size)
+        // An app catalog that declares the id's index takes it, default and all.
+        val taken = scanned.except(listOf(SchemaCatalog.of(RangeIndexSpec("Message", listOf("id"), "message_id"))))
+        assertEquals(emptySet<IndexSpec>(), taken.nodeIdIndexes)
+        assertTrue(taken.indexes.none { it.properties == listOf("id") })
+        // Another catalog's default takes only a default: an index declared over the id stays, for index-node-ids=false
+        // leaves out the other's default.
+        val declared = SchemaCatalog.of(default).except(listOf(scanned))
+        assertEquals(listOf<IndexSpec>(default), declared.indexes)
+        assertEquals(emptySet<IndexSpec>(), declared.nodeIdIndexes)
+        assertEquals(emptyList<IndexSpec>(), scanned.except(listOf(scanned)).indexes.filter { it.properties == listOf("id") })
+    }
 }

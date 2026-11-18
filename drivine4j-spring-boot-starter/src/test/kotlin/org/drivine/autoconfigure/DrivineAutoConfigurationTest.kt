@@ -12,11 +12,16 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.drivine.transaction.Transactions
+import org.drivine.schema.DatabaseTarget
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
+import org.drivine.schema.TextIndexSpec
+import org.drivine.schema.UniquenessConstraintSpec
+import org.drivine.schema.VectorDimensionProvider
+import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.Test
 import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.autoconfigure.AutoConfiguration
@@ -215,6 +220,51 @@ class DrivineAutoConfigurationTest {
     }
 
     @Test
+    fun `the schema manager is given the fragments scanned from drivine schema scan-packages, or from the auto-configuration packages, unless scan-fragments is false`() {
+        val scanPackages = "drivine.schema.scan-packages=org.drivine.autoconfigure.scanfixtures"
+        runner.withPropertyValues(*datasourceProperties, scanPackages).run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            assertThat(catalogs.flatMap { it.items }).contains(RangeIndexSpec("ScanPerson", "name"), RangeIndexSpec("ScanJava", "code"))
+            // The TEXT index, for the Neo4j database alone.
+            assertThat(catalogs.single { it.items.any { item -> item is TextIndexSpec } }.target).isEqualTo(DatabaseTarget.Named(setOf("neo")))
+            // No dimension provider: the vector index's fragment is passed over.
+            assertThat(catalogs.flatMap { it.items }).noneMatch { it.label == "ScanChunk" }
+        }
+        runner.withUserConfiguration(DimensionsConfig::class.java).withPropertyValues(*datasourceProperties, scanPackages).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).flatMap { it.indexes })
+                .anyMatch { it is VectorIndexSpec && it.label == "ScanChunk" && it.dimensions == 8 }
+        }
+        // Two providers, neither primary: not the scan's to choose, so the vector index's fragment is passed over.
+        runner.withUserConfiguration(DimensionsConfig::class.java, OtherDimensionsConfig::class.java).withPropertyValues(*datasourceProperties, scanPackages).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).flatMap { it.items }).noneMatch { it.label == "ScanChunk" }
+        }
+        runner.withPropertyValues(*datasourceProperties, scanPackages, "drivine.schema.scan-fragments=false").run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java))).isEmpty()
+        }
+        // No packages known, as under plain @EnableDrivine: nothing scanned.
+        runner.withPropertyValues(*datasourceProperties).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java))).isEmpty()
+        }
+        // The auto-configuration packages: this test's, whose fixtures are among them.
+        isolatedRunner().withUserConfiguration(AutoConfiguredApp::class.java).withPropertyValues(*datasourceProperties).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).flatMap { it.items }).contains(RangeIndexSpec("ScanPerson", "name"))
+        }
+    }
+
+    /** The catalogs a manager was given, which it keeps to itself. */
+    private fun catalogsOf(manager: SchemaManager): List<SchemaCatalog> =
+        SchemaManager::class.java.getDeclaredField("catalogs").apply { isAccessible = true }.get(manager).let {
+            @Suppress("UNCHECKED_CAST")
+            it as List<SchemaCatalog>
+        }
+
+    @Test
     fun `drivine schema index-node-ids false gives the schema manager its catalogs without the @NodeId's default index`() {
         @Suppress("UNCHECKED_CAST")
         fun catalogsOf(manager: SchemaManager) =
@@ -230,6 +280,35 @@ class DrivineAutoConfigurationTest {
         app.withPropertyValues("drivine.schema.index-node-ids=false").run { context ->
             assertThat(context).hasNotFailed()
             assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).single().isEmpty()).isTrue()
+        }
+    }
+
+    @Test
+    fun `drivine schema index-node-ids false leaves the scanned fragments' @NodeId defaults out too, and keeps what they declare`() {
+        // No startup run, which would reach the database.
+        val app = runner.withPropertyValues(
+            *datasourceProperties,
+            "drivine.schema.enabled=false",
+            "drivine.schema.scan-packages=org.drivine.autoconfigure.scanfixtures",
+        )
+        val nodeIdDefaults = listOf(RangeIndexSpec("ScanPerson", "id"), RangeIndexSpec("ScanJava", "id"), RangeIndexSpec("ScanNested", "id"))
+        val declared = listOf(
+            RangeIndexSpec("ScanPerson", "name"),
+            RangeIndexSpec("ScanJava", "code"),
+            UniquenessConstraintSpec("ScanAccount", "code"),
+            TextIndexSpec("ScanNested", "title"),
+        )
+        app.run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            assertThat(catalogs.flatMap { it.items }).containsAll(nodeIdDefaults).containsAll(declared)
+            assertThat(catalogs.flatMap { it.nodeIdIndexes }).containsExactlyInAnyOrderElementsOf(nodeIdDefaults)
+        }
+        app.withPropertyValues("drivine.schema.index-node-ids=false").run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            assertThat(catalogs.flatMap { it.items }).containsAll(declared).doesNotContainAnyElementsOf(nodeIdDefaults)
+            assertThat(catalogs.flatMap { it.nodeIdIndexes }).isEmpty()
         }
     }
 
@@ -280,6 +359,19 @@ class DrivineAutoConfigurationTest {
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     class AutoConfiguredApp
+
+    @Configuration(proxyBeanMethods = false)
+    class DimensionsConfig {
+        @Bean
+        // Not named as the manager's parameter is, which Spring would pick among several by its name.
+        fun chunkDimensions() = VectorDimensionProvider { _, _ -> 8 }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class OtherDimensionsConfig {
+        @Bean
+        fun otherDimensions() = VectorDimensionProvider { _, _ -> 16 }
+    }
 
     @Configuration(proxyBeanMethods = false)
     @EnableDrivine
