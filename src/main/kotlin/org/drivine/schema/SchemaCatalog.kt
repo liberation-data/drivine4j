@@ -64,6 +64,11 @@ class SchemaCatalog private constructor(
      * historical `scope: 'schema'` marker so existing deployments are untouched. See [named].
      */
     val name: String? = null,
+    /**
+     * The range indexes among [indexes] that fragments' `@NodeId`s are given by default ([fromFragments], #827): each one
+     * no item declared serves. [withoutNodeIdIndexes] leaves them out, as `drivine.schema.index-node-ids=false` does.
+     */
+    val nodeIdIndexes: Set<IndexSpec> = emptySet(),
 ) {
 
     /** All items in ensure order: indexes first, then constraints. */
@@ -85,7 +90,7 @@ class SchemaCatalog private constructor(
      * not re-embed. After a model change, re-embed the nodes first, then enforce.
      */
     fun withVersion(version: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, target, version, name)
+        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
 
     /**
      * Returns a copy of this catalog owned by [name].
@@ -105,7 +110,7 @@ class SchemaCatalog private constructor(
      * co-owned item. Genuinely conflicting declarations across owners fail fast, naming both owners.
      */
     fun named(name: String?): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, target, version, name)
+        SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
 
     /** Returns a copy of this catalog applying only to the primary (first-registered) database. */
     fun forDefaultDatabase(): SchemaCatalog = forDatabase(DEFAULT_DATABASE)
@@ -116,7 +121,7 @@ class SchemaCatalog private constructor(
      * Replaces any existing target — use [forDatabases] to target several at once.
      */
     fun forDatabase(database: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version, name)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version, name, nodeIdIndexes)
 
     /**
      * Returns a copy of this catalog applying only to the named databases.
@@ -125,20 +130,42 @@ class SchemaCatalog private constructor(
      * chaining `forDatabase(...)` calls does not accumulate.
      */
     fun forDatabases(vararg databases: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version, name)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version, name, nodeIdIndexes)
 
     /**
      * Returns a copy of this catalog applying to every schema-capable database (the default).
      *
      * Replaces any existing target.
      */
-    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name)
+    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name, nodeIdIndexes)
 
     /** A copy of this catalog applying to [target]. */
-    internal fun withTarget(target: DatabaseTarget): SchemaCatalog = SchemaCatalog(indexes, constraints, target, version, name)
+    internal fun withTarget(target: DatabaseTarget): SchemaCatalog = SchemaCatalog(indexes, constraints, target, version, name, nodeIdIndexes)
 
     /** Merges another catalog into this one. Both must share the same [target] and [name]. */
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
+
+    /**
+     * A copy of this catalog without the range indexes fragments' `@NodeId`s are given by default ([nodeIdIndexes]),
+     * leaving only what is declared: as `drivine.schema.index-node-ids=false` gives the schema manager its catalogs.
+     */
+    fun withoutNodeIdIndexes(): SchemaCatalog =
+        SchemaCatalog(indexes.filter { it !in nodeIdIndexes }, constraints, target, version, name)
+
+    /** [items] without the defaults of [nodeIdIndexes]: what is declared. */
+    internal val declaredItems: List<SchemaItemSpec>
+        get() = items.filter { it !in nodeIdIndexes }
+
+    /**
+     * [items] as they are applied beside [declared], what the catalogs on a database declare: without a default of
+     * [nodeIdIndexes] one of them serves, as [build] leaves out one this catalog's own items serve. Applied beside it, a
+     * named range index over the id, or one of another owner, would be refused as a conflicting declaration, and a
+     * uniqueness constraint over it blocked by it on Neo4j. One declared the same, unnamed, is the same item: the default
+     * is kept beside it, co-owned, so that this owner's marker doesn't call the index both share an orphan.
+     */
+    internal fun itemsBeside(declared: List<SchemaItemSpec>): List<SchemaItemSpec> =
+        if (nodeIdIndexes.isEmpty()) items
+        else items.filter { item -> item !in nodeIdIndexes || declared.none { it != item && servesNodeId(it, item as IndexSpec) } }
 
     override fun toString(): String =
         "SchemaCatalog(name=$name, target=$target, version=$version, " +
@@ -178,6 +205,7 @@ class SchemaCatalog private constructor(
         ): SchemaCatalog = build(
             fragmentClasses.flatMap { FragmentSchemaScanner.scan(it, dimensionProvider) },
             DatabaseTarget.All,
+            nodeIdIndexes = fragmentClasses.mapNotNull { FragmentSchemaScanner.nodeIdIndex(it) },
         )
 
         /** Kotlin convenience for [fromFragments]. */
@@ -219,7 +247,13 @@ class SchemaCatalog private constructor(
                         "Group catalogs by owner (name) before merging."
                 )
             }
-            return build(catalogs.flatMap { it.items }, targets.first(), combineVersions(catalogs), names.first())
+            return build(
+                catalogs.flatMap { catalog -> catalog.items.filter { it !in catalog.nodeIdIndexes } },
+                targets.first(),
+                combineVersions(catalogs),
+                names.first(),
+                catalogs.flatMap { it.nodeIdIndexes },
+            )
         }
 
         /**
@@ -233,16 +267,32 @@ class SchemaCatalog private constructor(
             target: DatabaseTarget,
             version: String? = null,
             name: String? = null,
+            nodeIdIndexes: List<IndexSpec> = emptyList(),
         ): SchemaCatalog {
             val deduplicated = deduplicate(specs)
+            // A default no declared item serves, once each: one declared, under a name or not, is the one made.
+            val defaults = nodeIdIndexes.distinct().filter { default -> deduplicated.none { servesNodeId(it, default) } }
             return SchemaCatalog(
-                indexes = deduplicated.filterIsInstance<IndexSpec>(),
+                indexes = deduplicated.filterIsInstance<IndexSpec>() + defaults,
                 constraints = deduplicated.filterIsInstance<ConstraintSpec>(),
                 target = target,
                 version = version,
                 name = name,
+                nodeIdIndexes = defaults.toSet(),
             )
         }
+
+        /**
+         * Whether [declared] serves [default], a `@NodeId`'s range index over one property: a range index or a uniqueness
+         * constraint over that property alone, under the label, that doesn't ignore case, whose index a lookup by the id
+         * reads (a uniqueness constraint's on every store, drivine-cypher-spec#325).
+         */
+        private fun servesNodeId(declared: SchemaItemSpec, default: IndexSpec): Boolean =
+            declared.label == default.label && declared.properties == default.properties && when (declared) {
+                is RangeIndexSpec -> !declared.ignoreCase
+                is UniquenessConstraintSpec -> !declared.ignoreCase
+                else -> false
+            }
 
         /**
          * Collapses duplicate declarations. The key is (kind, label, property set).

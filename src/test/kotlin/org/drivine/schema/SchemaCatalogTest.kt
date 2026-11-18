@@ -48,6 +48,31 @@ data class BadgeFixture(
     val code: String,
 )
 
+@NodeFragment(labels = ["Message"])
+data class OtherMessageFixture(
+    @NodeId
+    val id: String,
+)
+
+@NodeFragment(labels = ["Account"], nodeIdIndex = false)
+data class UnindexedIdFixture(
+    @NodeId
+    val id: String,
+)
+
+@NodeFragment
+data class LabellessIdFixture(
+    @NodeId
+    val id: String,
+)
+
+@NodeFragment(labels = ["Session"])
+data class UniqueIdFixture(
+    @NodeId
+    @Unique
+    val id: String,
+)
+
 @NodeFragment(labels = ["Ticket"])
 data class TicketFixture(
     @NodeId
@@ -286,7 +311,7 @@ class SchemaCatalogTest {
     fun `scans class-level composite annotations and uses the primary label`() {
         val catalog = SchemaCatalog.fromFragments(MessageFixture::class)
 
-        val composite = catalog.indexes.filterIsInstance<RangeIndexSpec>().single()
+        val composite = catalog.indexes.filterIsInstance<RangeIndexSpec>().single { it !in catalog.nodeIdIndexes }
         assertEquals("Message", composite.label) // primary label, not ContentElement
         assertEquals(listOf("sessionId", "createdAt"), composite.properties)
         assertEquals("message_session_created_range", composite.name)
@@ -357,8 +382,99 @@ class SchemaCatalogTest {
 
         val merged = fromAnnotations + explicit
 
-        assertEquals(2, merged.indexes.size)
+        // The composite, Topic(name), and Message(id), the fragment's @NodeId's.
+        assertEquals(3, merged.indexes.size)
+        assertEquals(setOf<IndexSpec>(RangeIndexSpec("Message", "id")), merged.nodeIdIndexes)
         assertEquals(1, merged.constraints.size)
+    }
+
+    // ----- A fragment's @NodeId's range index (#827) -----
+
+    @Test
+    fun `a fragment's @NodeId is given a range index under its primary label, over the property it is stored under`() {
+        val message = SchemaCatalog.fromFragments(MessageFixture::class)
+        assertEquals(setOf<IndexSpec>(RangeIndexSpec("Message", "id")), message.nodeIdIndexes)
+        assertTrue(RangeIndexSpec("Message", "id") in message.indexes)
+        // @GraphProperty: the property the id is stored under.
+        assertEquals(setOf<IndexSpec>(RangeIndexSpec("Ticket", "ticket_id")), SchemaCatalog.fromFragments(TicketFixture::class).nodeIdIndexes)
+    }
+
+    @Test
+    fun `a fragment without a @NodeId, or one that opts out, is given no range index for it`() {
+        assertEquals(emptySet<IndexSpec>(), SchemaCatalog.fromFragments(BadgeFixture::class).nodeIdIndexes)
+        val unindexed = SchemaCatalog.fromFragments(UnindexedIdFixture::class)
+        assertEquals(emptySet<IndexSpec>(), unindexed.nodeIdIndexes)
+        assertTrue(unindexed.indexes.isEmpty())
+        // No label, which a save or load refuses: no index under the class's name.
+        assertTrue(SchemaCatalog.fromFragments(LabellessIdFixture::class).isEmpty())
+    }
+
+    @Test
+    fun `an item declared over the @NodeId alone serves it, so none is added beside it, whichever catalog declares it`() {
+        for (declared in listOf(
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("id"), "message_id")),
+            SchemaCatalog.of(UniquenessConstraintSpec("Message", "id")),
+        )) {
+            val merged = SchemaCatalog.fromFragments(MessageFixture::class) + declared
+            assertEquals(emptySet<IndexSpec>(), merged.nodeIdIndexes, "$declared")
+            assertEquals(1, merged.items.count { it.label == "Message" && it.properties == listOf("id") }, "$declared")
+        }
+        // Declared on the fragment itself.
+        assertEquals(emptySet<IndexSpec>(), SchemaCatalog.fromFragments(UniqueIdFixture::class).nodeIdIndexes)
+    }
+
+    @Test
+    fun `an item over more properties, or one that ignores case, does not serve the @NodeId`() {
+        for (declared in listOf(
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("id", "sessionId"))),
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("id"), ignoreCase = true)),
+            SchemaCatalog.of(RangeIndexSpec("Other", "id")),
+        )) {
+            val merged = SchemaCatalog.fromFragments(MessageFixture::class) + declared
+            assertEquals(setOf<IndexSpec>(RangeIndexSpec("Message", "id")), merged.nodeIdIndexes, "$declared")
+        }
+    }
+
+    @Test
+    fun `two fragments of one label give it one range index, and withoutNodeIdIndexes leaves only what is declared`() {
+        val both = SchemaCatalog.fromFragments(MessageFixture::class, OtherMessageFixture::class)
+        assertEquals(1, both.indexes.count { it == RangeIndexSpec("Message", "id") })
+        val declared = both.withoutNodeIdIndexes()
+        assertEquals(emptySet<IndexSpec>(), declared.nodeIdIndexes)
+        assertTrue(RangeIndexSpec("Message", "id") !in declared.indexes)
+        assertEquals(both.indexes.size - 1, declared.indexes.size)
+        // The defaults survive a copy, and a merge.
+        assertEquals(both.nodeIdIndexes, both.forDatabase("x").withVersion("1").named("app").nodeIdIndexes)
+        assertEquals(both.nodeIdIndexes, (both + SchemaCatalog.of(RangeIndexSpec("Topic", "name"))).nodeIdIndexes)
+    }
+
+    @Test
+    fun `a Java fragment's @NodeId is given a range index, and opts out as a Kotlin one does`() {
+        // JavaMembershipNode's @NodeId is @Unique, which serves it.
+        assertEquals(emptySet<IndexSpec>(), SchemaCatalog.fromFragments(JavaMembershipNode::class.java).nodeIdIndexes)
+        val unindexed = SchemaCatalog.fromFragments(JavaUnindexedIdNode::class.java)
+        assertEquals(emptySet<IndexSpec>(), unindexed.nodeIdIndexes)
+        assertTrue(unindexed.isEmpty())
+    }
+
+    @Test
+    fun `a default another catalog on the database serves is left out where they are applied, and one it doesn't serve kept`() {
+        val fragments = SchemaCatalog.fromFragments(MessageFixture::class)
+        val default = RangeIndexSpec("Message", "id")
+        for (other in listOf(
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("id"), "message_id")).named("app"),
+            SchemaCatalog.of(UniquenessConstraintSpec("Message", "id")),
+        )) {
+            val declared = fragments.declaredItems + other.declaredItems
+            assertTrue(default !in fragments.itemsBeside(declared), "$other")
+            assertEquals(fragments.items.size - 1, fragments.itemsBeside(declared).size, "$other")
+        }
+        val unserved = fragments.declaredItems + SchemaCatalog.of(RangeIndexSpec("Message", listOf("id", "sessionId"))).declaredItems
+        assertEquals(fragments.items, fragments.itemsBeside(unserved))
+        // Another catalog's own default serves nothing: two catalogs of the fragment both keep theirs, as one item.
+        assertEquals(fragments.items, fragments.itemsBeside(fragments.declaredItems + fragments.declaredItems))
+        // One declared the same is the same item, co-owned: kept, so the owner's marker doesn't call it an orphan.
+        assertEquals(fragments.items, fragments.itemsBeside(fragments.declaredItems + SchemaCatalog.of(default).named("app").declaredItems))
     }
 
     @Test

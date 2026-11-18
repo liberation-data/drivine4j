@@ -30,6 +30,9 @@ import java.time.Duration
  *
  * The manager waits `drivine.schema.index-build-timeout` (a duration, `60s` unless set) for an index that
  * Neo4j or FalkorDB builds in the background.
+ *
+ * `drivine.schema.index-node-ids=false` gives the manager its catalogs without the range index each fragment's `@NodeId`
+ * is given by default ([SchemaCatalog.withoutNodeIdIndexes]), leaving only what is declared.
  */
 @Configuration
 class DrivineSchemaConfiguration {
@@ -42,14 +45,17 @@ class DrivineSchemaConfiguration {
         catalogs: ObjectProvider<SchemaCatalog>,
         properties: DrivineSchemaProperties,
         environment: Environment,
-    ): SchemaManager = SchemaManager(
-        persistenceManagerFactory = persistenceManagerFactory,
-        databaseRegistry = databaseRegistry,
-        catalogs = catalogs.orderedStream().toList(),
-        policy = properties.toPolicy(),
-        indexBuildTimeout = Binder.get(environment).bind(INDEX_BUILD_TIMEOUT, Duration::class.java)
-            .orElse(DEFAULT_INDEX_BUILD_TIMEOUT),
-    )
+    ): SchemaManager {
+        val binder = Binder.get(environment)
+        val indexNodeIds = binder.bind(INDEX_NODE_IDS, Boolean::class.javaObjectType).orElse(true)
+        return SchemaManager(
+            persistenceManagerFactory = persistenceManagerFactory,
+            databaseRegistry = databaseRegistry,
+            catalogs = catalogs.orderedStream().toList().map { if (indexNodeIds) it else it.withoutNodeIdIndexes() },
+            policy = properties.toPolicy(),
+            indexBuildTimeout = binder.bind(INDEX_BUILD_TIMEOUT, Duration::class.java).orElse(DEFAULT_INDEX_BUILD_TIMEOUT),
+        )
+    }
 
     @Bean
     @ConditionalOnProperty(
@@ -64,6 +70,9 @@ class DrivineSchemaConfiguration {
     private companion object {
         /** Read here rather than held in [DrivineSchemaProperties], whose constructor and `copy` stay as they were. */
         const val INDEX_BUILD_TIMEOUT = "drivine.schema.index-build-timeout"
+
+        /** Whether the range indexes fragments' `@NodeId`s are given by default are made: see [SchemaCatalog.nodeIdIndexes]. Read as [INDEX_BUILD_TIMEOUT] is. */
+        const val INDEX_NODE_IDS = "drivine.schema.index-node-ids"
 
         val DEFAULT_INDEX_BUILD_TIMEOUT: Duration = Duration.ofSeconds(60)
     }

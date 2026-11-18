@@ -112,6 +112,14 @@ fun schema(embeddingService: EmbeddingService) = SchemaCatalog.fromFragments(
 
 Works for Java fragments too (`SchemaCatalog.fromFragments(JavaNode.class)`).
 
+**A fragment's `@NodeId` gets a range index.** Each save, and each load by id, finds its node by the `@NodeId` property under the fragment's primary label, and with no index over it a store reads every node of the label. So `fromFragments` gives each fragment with a `@NodeId` a range index over that property, unless an item declared serves it: a range index over that property alone, or a uniqueness constraint over it alone, neither ignoring case, from any fragment of the catalog, any catalog merged with it, or any other catalog the `SchemaManager` applies on that database. It is an item like any other, made by `enforce` and listed in the owner's marker. Once made, it stays when a `@Unique` is later declared on the id (reported as an orphan of its owner), and on Neo4j it is in the way of that constraint (`BlockedByIndex`): enforce once with `drivine.schema.replace-blocking-index=true`, or drop the index first. To go without it:
+
+- one fragment: `@NodeFragment(labels = ["Person"], nodeIdIndex = false)`;
+- one catalog: `SchemaCatalog.fromFragments(...).withoutNodeIdIndexes()`;
+- every catalog the Spring starter gives the `SchemaManager`: `drivine.schema.index-node-ids: false`.
+
+A fragment never read into a `SchemaCatalog` gets none. A fragment whose `@NodeId` no index serves is warned of once per database, at WARN, naming the label, the property and the fix: after an `enforce` (or `recreateAll`), from what it lists of the store, or, where no `SchemaManager` with a catalog is built, 30 seconds after the fragment's first use. The check never reads the store in a save, and never fails one.
+
 ### Runtime enforcement (`SchemaManager`)
 
 Catalogs are applied by a `SchemaManager` bean, enforced once on startup. It's also injectable, so you can drive schema changes at runtime — e.g. build indexes *after* a bulk load, or rebuild after re-embedding:
@@ -220,6 +228,7 @@ drivine:
     violation-sample-size: 10  # conflicting rows sampled on constraint violations, and nodes named per row
     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
     index-build-timeout: 60s   # how long to wait for an index Neo4j or FalkorDB builds in the background
+    index-node-ids: true       # give each fragment's @NodeId a range index, unless one is declared
 ```
 
 Without Spring, the timeout is the `SchemaManager`'s last constructor argument: `SchemaManager(factory, registry, catalogs, policy, Duration.ofMinutes(5))`.
