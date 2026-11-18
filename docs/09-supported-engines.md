@@ -276,7 +276,9 @@ of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went fro
   Under `NLS_COMP = LINGUISTIC` with a sort such as `BINARY_CI`, a compiled statement's `=`, `<`, `ORDER BY`, grouping,
   `DISTINCT`, `IN`, a `MERGE`'s find and an index's lookup of text would ignore case or take another order, with no
   error ([drivine-cypher-spec#372](https://github.com/liberation-data/drivine-cypher-spec/issues/372)). Oracle's
-  default, `NLS_COMP = BINARY`, is already so. It is set as the statement above is, and `setsNoAdaptivePlans = false`
+  default, `NLS_COMP = BINARY`, is already so. A session of your `DataSource` stays so once Drivine gives it back, so
+  your own statements on it compare text by its code points too: one that should ignore case can say so itself, as
+  `NLSSORT(name, 'NLS_SORT = BINARY_CI')` does. It is set as the statement above is, and `setsNoAdaptivePlans = false`
   leaves it unset too: then set both in each session yourself, or give HikariCP's `connectionInitSql`
   `JdbcConnectionProvider.ORACLE_SESSION_INIT`, the block that runs both, and Drivine sets no session of that pool.
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
