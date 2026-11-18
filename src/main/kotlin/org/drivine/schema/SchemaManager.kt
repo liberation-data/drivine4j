@@ -279,8 +279,8 @@ class SchemaManager(
     }
 
     /** What the planner is asked of [database]: its startup catalogs, of every owner, and the [runtime] items on it. */
-    private fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>): PlanRequest {
-        val onDatabase = catalogs.filter { it.target.includes(database) }
+    internal fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>): PlanRequest {
+        val onDatabase = catalogs.filter { targets(it.target, database) }
         val runtimeOn = SchemaPlanner.runtimeOn(database, runtime)
         // A @NodeId's default index that another catalog's item serves is left out, as one its own serves is (#827).
         val declared = onDatabase.flatMap { it.declaredItems } + runtimeOn.flatMap { it.items }
@@ -322,8 +322,25 @@ class SchemaManager(
     private fun catalogOf(runtime: RuntimeCatalog): SchemaCatalog =
         SchemaCatalog.of(runtime.items).named(runtime.owner).withTarget(runtime.databases?.let(DatabaseTarget::Named) ?: DatabaseTarget.All)
 
-    /** The databases [target] names, as the module keeps runtime items by them: null for all. */
-    private fun databasesOf(target: DatabaseTarget): Set<String>? = (target as? DatabaseTarget.Named)?.databases
+    /**
+     * The databases [target] names, as the module keeps runtime items by them, each as the registry resolves it (the
+     * `default` alias the first-registered database, #854): null for all.
+     */
+    internal fun databasesOf(target: DatabaseTarget): Set<String>? =
+        (target as? DatabaseTarget.Named)?.databases?.mapTo(linkedSetOf()) { resolved(it) }
+
+    /**
+     * Whether [target] is for [database], a registered name: a name it gives is resolved first, as [SchemaTargets]
+     * resolved it when choosing the databases to plan, so a catalog for `default` (`forDefaultDatabase()`) is applied to
+     * the first-registered database it resolves to (#854).
+     */
+    private fun targets(target: DatabaseTarget, database: String): Boolean = when (target) {
+        is DatabaseTarget.All -> true
+        is DatabaseTarget.Named -> target.databases.any { resolved(it) == database }
+    }
+
+    /** [name] as the registry resolves it, the `default` alias included; as given where no database is registered under it. */
+    private fun resolved(name: String): String = databaseRegistry.resolveDatabaseName(name) ?: name
 
     private fun warnSkipped(resolution: SchemaTargets.Resolution) {
         val (refused, incapable) = resolution.skipped.map { it to databaseRegistry.connectionProvider(it)?.schemaRefusal }
