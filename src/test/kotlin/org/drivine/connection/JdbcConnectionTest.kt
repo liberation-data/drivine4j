@@ -388,8 +388,8 @@ class JdbcConnectionTest {
     }
 
     /**
-     * In a caller's transaction a failed build aborts it, so setting the workers back fails too: the build's failure is the
-     * one thrown, and the transaction's rollback sets the workers back.
+     * Should setting the workers back fail after a failed build in a caller's transaction, the build's failure is the one
+     * thrown, and the transaction's end sets the workers back.
      */
     @Test
     fun `a failed Postgres index build in a caller's transaction throws its own failure, not that of setting the workers back`() {
@@ -400,6 +400,116 @@ class JdbcConnectionTest {
 
         assertSame(failed, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw failed } })
         verify(statement).setString(1, "0")
+    }
+
+    /**
+     * In a transaction, a build Postgres refuses would end it, as a refused `CONCURRENTLY` does (`25001`): the build runs
+     * within a savepoint of its own, rolled back to where it fails, so the transaction goes on, the workers are set back in
+     * it, and the schema planner can run the build again without `CONCURRENTLY` (#845).
+     */
+    @Test
+    fun `a Postgres index build refused in a transaction is rolled back to its own savepoint, so the transaction goes on`() {
+        val postgres = postgresReading("2").apply { noEviction = "its connection is a transaction's that Drivine did not begin" }
+        val savepoint = Mockito.mock(java.sql.Savepoint::class.java)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        `when`(jdbc.setSavepoint()).thenReturn(savepoint)
+        val refused = SQLException("CREATE INDEX CONCURRENTLY cannot run inside a transaction block", "25001")
+
+        assertSame(refused, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw refused } })
+        val order = inOrder(jdbc, statement)
+        order.verify(statement).setString(1, "0")
+        order.verify(jdbc).setSavepoint()
+        order.verify(jdbc).rollback(savepoint)
+        order.verify(jdbc).releaseSavepoint(savepoint)
+        order.verify(statement).setString(1, "2")
+        verify(jdbc, never()).rollback()
+    }
+
+    @Test
+    fun `a Postgres index build in a transaction that succeeds releases its savepoint`() {
+        val postgres = postgresReading("2").apply { noEviction = "its connection is a transaction's that Drivine did not begin" }
+        val savepoint = Mockito.mock(java.sql.Savepoint::class.java)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        `when`(jdbc.setSavepoint()).thenReturn(savepoint)
+
+        assertEquals("built", postgres.buildingIndex { "built" })
+        verify(jdbc).releaseSavepoint(savepoint)
+        verify(jdbc, never()).rollback(savepoint)
+    }
+
+    @Test
+    fun `a Postgres index build outside a transaction takes no savepoint`() {
+        val postgres = postgresReading("2").apply { noEviction = "its data source is not a HikariCP pool, which can close a session for good" }
+        `when`(jdbc.autoCommit).thenReturn(true)
+        val failed = SQLException("could not resize shared memory segment")
+
+        assertSame(failed, assertFailsWith<SQLException> { postgres.buildingIndex<Unit> { throw failed } })
+        verify(jdbc, never()).setSavepoint()
+    }
+
+    /**
+     * A build that fails other than with the driver's error, as one Drivine wraps, is rolled back to its savepoint too; and
+     * where the rollback fails as well, as on a connection lost, the build's failure is the one thrown, the rollback's kept
+     * with it.
+     */
+    @Test
+    fun `a Postgres index build that fails in a transaction throws its own failure, though the rollback to its savepoint fails`() {
+        val postgres = postgresReading("2").apply { noEviction = "its connection is a transaction's that Drivine did not begin" }
+        val savepoint = Mockito.mock(java.sql.Savepoint::class.java)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        `when`(jdbc.setSavepoint()).thenReturn(savepoint)
+        val lost = SQLException("An I/O error occurred while sending to the backend.", "08006")
+        Mockito.doThrow(lost).`when`(jdbc).rollback(savepoint)
+        val failed = org.drivine.DrivineException("CREATE INDEX failed", SQLException("could not resize shared memory segment"))
+
+        val thrown = assertFailsWith<org.drivine.DrivineException> { postgres.buildingIndex<Unit> { throw failed } }
+        assertSame(failed, thrown)
+        assertSame(lost, thrown.suppressed.single())
+        verify(statement).setString(1, "2")
+    }
+
+    /**
+     * An index dropped online, as the schema planner drops an invalid one to build it again, is refused in a transaction as
+     * a build online is (`25001`): on a connection that commits nothing of itself it runs within a savepoint of its own,
+     * rolled back to where it fails, so the transaction goes on for the plain drop after it (#845).
+     */
+    @Test
+    fun `a Postgres DROP INDEX CONCURRENTLY refused in a transaction is rolled back to its own savepoint`() {
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+        val savepoint = Mockito.mock(java.sql.Savepoint::class.java)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        `when`(jdbc.setSavepoint()).thenReturn(savepoint)
+        val drop = "DROP INDEX CONCURRENTLY IF EXISTS person_name"
+        val refused = SQLException("DROP INDEX CONCURRENTLY cannot run inside a transaction block", "25001")
+        val dropping = Mockito.mock(PreparedStatement::class.java).also { `when`(it.execute()).thenThrow(refused) }
+        `when`(jdbc.prepareStatement(Mockito.contains("DROP INDEX"))).thenReturn(dropping)
+        val provider = Mockito.mock(ConnectionProvider::class.java)
+        `when`(provider.type).thenReturn(DatabaseType.POSTGRES)
+        `when`(provider.connect()).thenReturn(postgres)
+
+        assertFailsWith<Exception> { org.drivine.schema.SchemaExecutor(provider).execute(org.drivine.schema.SchemaStatement.Cypher(drop)) }
+        val order = inOrder(jdbc, dropping)
+        order.verify(jdbc).setSavepoint()
+        order.verify(dropping).execute()
+        order.verify(jdbc).rollback(savepoint)
+        order.verify(jdbc).releaseSavepoint(savepoint)
+        verify(jdbc, never()).rollback()
+        // A drop sets no workers: only a build does.
+        verify(jdbc, never()).prepareStatement(Mockito.contains("set_config"))
+    }
+
+    /** The plain drop the schema planner runs again after a refused one is DDL as any other: it takes no savepoint. */
+    @Test
+    fun `a plain Postgres DROP INDEX in a transaction takes no savepoint`() {
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+        `when`(jdbc.autoCommit).thenReturn(false)
+        val provider = Mockito.mock(ConnectionProvider::class.java)
+        `when`(provider.type).thenReturn(DatabaseType.POSTGRES)
+        `when`(provider.connect()).thenReturn(postgres)
+
+        org.drivine.schema.SchemaExecutor(provider).execute(org.drivine.schema.SchemaStatement.Cypher("DROP INDEX IF EXISTS person_name"))
+        verify(jdbc).prepareStatement(Mockito.contains("DROP INDEX IF EXISTS person_name"))
+        verify(jdbc, never()).setSavepoint()
     }
 
     // ----- A transaction Drivine joins: a Spring or JTA transaction's connection (#724) -----
