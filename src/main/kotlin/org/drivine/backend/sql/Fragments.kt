@@ -157,9 +157,57 @@ internal class Fragments(private val compiler: CypherCompile.FragmentCompiler, p
     }
 
     companion object {
-        /** [this] Cypher with each of [parameters] named as the fragment [names] it. */
-        private fun String.named(names: Names, parameters: Set<String>): String =
-            parameters.sortedByDescending { it.length }.fold(this) { cypher, name -> cypher.replace("\$$name", names(name)) }
+        /**
+         * [this] Cypher with each of [parameters] named as the fragment [names] it: a `$name` whose whole name is one of
+         * them, outside quoted text. A string literal (`'…'`, `"…"`, a backslash escaping the character after it), a
+         * backtick-quoted name (`` n.`$k` ``, a doubled backtick in it) and a comment are left as they are, so a property
+         * whose key spells a parameter is still read by its key (#841); and `$id` is not renamed in `$idList`.
+         */
+        internal fun String.named(names: Names, parameters: Set<String>): String {
+            val out = StringBuilder(length)
+            var i = 0
+            while (i < length) {
+                val end = endOfQuoted(this, i)
+                if (end >= 0) {
+                    out.append(this, i, end)
+                    i = end
+                    continue
+                }
+                if (this[i] == '$') {
+                    var j = i + 1
+                    while (j < length && Character.isUnicodeIdentifierPart(this[j]) && this[j] != '$') j++
+                    val name = substring(i + 1, j)
+                    if (name in parameters) {
+                        out.append(names(name))
+                        i = j
+                        continue
+                    }
+                }
+                out.append(this[i])
+                i++
+            }
+            return out.toString()
+        }
+
+        /** The index after the string literal, quoted name or comment that opens at [start] of [cypher]; -1 where none does. */
+        private fun endOfQuoted(cypher: String, start: Int): Int {
+            val c = cypher[start]
+            return when {
+                c == '\'' || c == '"' -> {
+                    var i = start + 1
+                    while (i < cypher.length && cypher[i] != c) i += if (cypher[i] == '\\') 2 else 1
+                    minOf(i + 1, cypher.length)
+                }
+                c == '`' -> {
+                    var i = start + 1
+                    while (i < cypher.length && !(cypher[i] == '`' && cypher.getOrNull(i + 1) != '`')) i += if (cypher[i] == '`') 2 else 1
+                    minOf(i + 1, cypher.length)
+                }
+                cypher.startsWith("//", start) -> cypher.indexOf('\n', start).let { if (it < 0) cypher.length else it }
+                cypher.startsWith("/*", start) -> cypher.indexOf("*/", start + 2).let { if (it < 0) cypher.length else it + 2 }
+                else -> -1
+            }
+        }
 
         /** The node a fragment is over, as its Cypher names it. */
         const val NODE = "n"
