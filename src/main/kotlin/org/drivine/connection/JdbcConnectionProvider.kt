@@ -128,9 +128,10 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         get() = dataSource
 
     /**
-     * Whether [connect] leaves each session of [dataSource] as it is: not Oracle, already set to make no adaptive plan (a
+     * Whether [connect] leaves each session of [dataSource] as it is: not Oracle, already set as [ORACLE_SESSION] says (a
      * pool this provider made, or a HikariCP pool that runs [ORACLE_SESSION_INIT] as it opens a session, as [pooled] makes
-     * one), or the application asked for its sessions to be left alone ([setsNoAdaptivePlans]).
+     * one; a pool that runs [NO_ADAPTIVE_PLANS] alone, as an earlier Drivine's did, is set again), or the application asked
+     * for its sessions to be left alone ([setsNoAdaptivePlans]).
      */
     private val leavesSessions: Boolean =
         !setsNoAdaptivePlans || type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == ORACLE_SESSION_INIT
@@ -167,7 +168,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     }
 
     /**
-     * A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]), that
+     * A connection from [dataSource], its Oracle session set as [ORACLE_SESSION] says (see [withoutAdaptivePlans]), that
      * commits each statement run outside a transaction (see [committingEach]). A session whose mode cannot be read is
      * closed and its error thrown, rather than given out.
      */
