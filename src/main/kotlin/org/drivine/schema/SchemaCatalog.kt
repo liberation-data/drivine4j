@@ -149,11 +149,14 @@ class SchemaCatalog private constructor(
      * A copy of this catalog without the items [others] declare under the same kind, label and properties, which are
      * theirs to make: as the Spring starter leaves to an application's own catalogs what its scan of `@NodeFragment`
      * classes also finds, so that an item the application names or tunes is made as it declares it. A default
-     * of [nodeIdIndexes] kept is kept as one.
+     * of [nodeIdIndexes] kept is kept as one. A default of theirs takes only a default of this one: an item this catalog
+     * declares is left out only for one they declare, so that `index-node-ids=false`, leaving out their default, doesn't
+     * leave it out too.
      */
     fun except(others: List<SchemaCatalog>): SchemaCatalog {
         val taken = others.flatMap { it.items }.map(::keyOf).toSet()
-        val kept = items.filter { keyOf(it) !in taken }
+        val declaredTaken = others.flatMap { it.declaredItems }.map(::keyOf).toSet()
+        val kept = items.filter { keyOf(it) !in (if (it in nodeIdIndexes) taken else declaredTaken) }
         val keptIndexes = kept.filterIsInstance<IndexSpec>()
         return SchemaCatalog(keptIndexes, kept.filterIsInstance<ConstraintSpec>(), target, version, name, nodeIdIndexes.filter { it in keptIndexes }.toSet())
     }

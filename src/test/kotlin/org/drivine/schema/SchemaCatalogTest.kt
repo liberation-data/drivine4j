@@ -528,5 +528,11 @@ class SchemaCatalogTest {
         val taken = scanned.except(listOf(SchemaCatalog.of(RangeIndexSpec("Message", listOf("id"), "message_id"))))
         assertEquals(emptySet<IndexSpec>(), taken.nodeIdIndexes)
         assertTrue(taken.indexes.none { it.properties == listOf("id") })
+        // Another catalog's default takes only a default: an index declared over the id stays, for index-node-ids=false
+        // leaves out the other's default.
+        val declared = SchemaCatalog.of(default).except(listOf(scanned))
+        assertEquals(listOf<IndexSpec>(default), declared.indexes)
+        assertEquals(emptySet<IndexSpec>(), declared.nodeIdIndexes)
+        assertEquals(emptyList<IndexSpec>(), scanned.except(listOf(scanned)).indexes.filter { it.properties == listOf("id") })
     }
 }
