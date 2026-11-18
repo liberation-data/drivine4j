@@ -19,6 +19,7 @@ import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
 import org.drivine.schema.TextIndexSpec
+import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorDimensionProvider
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.Test
@@ -279,6 +280,35 @@ class DrivineAutoConfigurationTest {
         app.withPropertyValues("drivine.schema.index-node-ids=false").run { context ->
             assertThat(context).hasNotFailed()
             assertThat(catalogsOf(context.getBean(SchemaManager::class.java)).single().isEmpty()).isTrue()
+        }
+    }
+
+    @Test
+    fun `drivine schema index-node-ids false leaves the scanned fragments' @NodeId defaults out too, and keeps what they declare`() {
+        // No startup run, which would reach the database.
+        val app = runner.withPropertyValues(
+            *datasourceProperties,
+            "drivine.schema.enabled=false",
+            "drivine.schema.scan-packages=org.drivine.autoconfigure.scanfixtures",
+        )
+        val nodeIdDefaults = listOf(RangeIndexSpec("ScanPerson", "id"), RangeIndexSpec("ScanJava", "id"), RangeIndexSpec("ScanNested", "id"))
+        val declared = listOf(
+            RangeIndexSpec("ScanPerson", "name"),
+            RangeIndexSpec("ScanJava", "code"),
+            UniquenessConstraintSpec("ScanAccount", "code"),
+            TextIndexSpec("ScanNested", "title"),
+        )
+        app.run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            assertThat(catalogs.flatMap { it.items }).containsAll(nodeIdDefaults).containsAll(declared)
+            assertThat(catalogs.flatMap { it.nodeIdIndexes }).containsExactlyInAnyOrderElementsOf(nodeIdDefaults)
+        }
+        app.withPropertyValues("drivine.schema.index-node-ids=false").run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            assertThat(catalogs.flatMap { it.items }).containsAll(declared).doesNotContainAnyElementsOf(nodeIdDefaults)
+            assertThat(catalogs.flatMap { it.nodeIdIndexes }).isEmpty()
         }
     }
 
