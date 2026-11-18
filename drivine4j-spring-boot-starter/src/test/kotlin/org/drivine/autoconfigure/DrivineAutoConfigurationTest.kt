@@ -284,6 +284,27 @@ class DrivineAutoConfigurationTest {
     }
 
     @Test
+    fun `an item a catalog bean for one database declares is left to it there, and scanned for the other database (#851)`() {
+        val other = datasourceProperties.map { it.replace("datasources.neo.", "datasources.other.") }.toTypedArray()
+        // No startup run, which would reach the databases.
+        runner.withUserConfiguration(NeoOnlyCatalogConfig::class.java).withPropertyValues(
+            *datasourceProperties, *other,
+            "drivine.schema.enabled=false",
+            "drivine.schema.scan-packages=org.drivine.autoconfigure.scanfixtures",
+        ).run { context ->
+            assertThat(context).hasNotFailed()
+            val catalogs = catalogsOf(context.getBean(SchemaManager::class.java))
+            val name = RangeIndexSpec("ScanPerson", "name")
+            fun on(database: String) = catalogs.filter { it.target.includes(database) }.flatMap { it.items }
+            assertThat(on("neo")).doesNotContain(name).contains(RangeIndexSpec("ScanPerson", listOf("name"), "person_name_neo"))
+            assertThat(on("other")).contains(name)
+            // The TEXT index, on both Neo4j databases.
+            assertThat(on("neo")).contains(TextIndexSpec("ScanNested", "title"))
+            assertThat(on("other")).contains(TextIndexSpec("ScanNested", "title"))
+        }
+    }
+
+    @Test
     fun `drivine schema index-node-ids false leaves the scanned fragments' @NodeId defaults out too, and keeps what they declare`() {
         // No startup run, which would reach the database.
         val app = runner.withPropertyValues(
@@ -420,6 +441,12 @@ class DrivineAutoConfigurationTest {
     class NodeIdCatalogConfig {
         @Bean
         fun nodeIdCatalog(): SchemaCatalog = SchemaCatalog.fromFragments(StarterNode::class)
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class NeoOnlyCatalogConfig {
+        @Bean
+        fun neoCatalog(): SchemaCatalog = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("name"), "person_name_neo")).forDatabase("neo")
     }
 
     class NoOpTransactionManager : PlatformTransactionManager {

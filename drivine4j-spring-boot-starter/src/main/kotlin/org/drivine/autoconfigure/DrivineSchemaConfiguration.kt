@@ -38,7 +38,7 @@ import java.time.Duration
  * Beside the catalog beans, the manager is given the schema the application's `@NodeFragment` classes declare, scanned
  * from its packages ([NodeFragmentScan]): `drivine.schema.scan-fragments=false` turns that off, and
  * `drivine.schema.scan-packages` names the packages in place of Spring Boot's auto-configuration packages. An item a
- * catalog bean declares is that bean's to make.
+ * catalog bean declares is that bean's to make, on the databases it is for.
  *
  * `drivine.schema.index-node-ids=false` gives the manager its catalogs without the range index each fragment's `@NodeId`
  * is given by default ([SchemaCatalog.withoutNodeIdIndexes]), leaving only what is declared.
@@ -87,7 +87,11 @@ class DrivineSchemaConfiguration {
         val packages = NodeFragmentScan.packages(beanFactory, configured)
         val fragments = NodeFragmentScan.fragments(packages, (beanFactory as? ConfigurableBeanFactory)?.beanClassLoader)
         // ifUnique: an application may hold several providers, for catalogs of its own, which must not fail startup here.
-        return NodeFragmentScan.catalogs(fragments, dimensions.ifUnique, declared, NodeFragmentScan.neo4jDatabases(databaseRegistry))
+        return NodeFragmentScan.catalogs(
+            fragments, dimensions.ifUnique, declared,
+            NodeFragmentScan.neo4jDatabases(databaseRegistry), NodeFragmentScan.schemaDatabases(databaseRegistry),
+            resolve = { databaseRegistry.resolveDatabaseName(it) ?: it },
+        )
     }
 
     @Bean

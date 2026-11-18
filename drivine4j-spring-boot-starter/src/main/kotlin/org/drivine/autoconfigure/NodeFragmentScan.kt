@@ -3,6 +3,7 @@ package org.drivine.autoconfigure
 import org.drivine.annotation.NodeFragment
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
+import org.drivine.schema.DatabaseTarget
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.VectorDimensionProvider
@@ -31,7 +32,8 @@ import org.springframework.util.ClassUtils
  * - a TEXT index, which only Neo4j makes, is applied to the Neo4j databases alone, so that another store does not
  *   refuse it at startup;
  * - an item an application's own catalog declares, under the same kind, label and properties, is left to that catalog
- *   ([SchemaCatalog.except]), so an application that names or tunes an item keeps its own.
+ *   on the databases it is for ([leftBy]), so an application that names or tunes an item keeps its own there, and the
+ *   scanned item is made on the others.
  */
 internal object NodeFragmentScan {
 
@@ -77,9 +79,33 @@ internal object NodeFragmentScan {
         registry.connectionProvider(name)?.let { it.type == DatabaseType.NEO4J && it.supportsSchemaManagement } == true
     }
 
+    /** The databases of [registry] that manage schema, which the scanned schema is applied to. */
+    fun schemaDatabases(registry: DatabaseRegistry): Set<String> = registry.databaseNames.filterTo(mutableSetOf()) { name ->
+        registry.connectionProvider(name)?.supportsSchemaManagement == true
+    }
+
     /**
-     * The catalogs [fragments] declare, without what [declared], the application's own catalogs, declare; none where
-     * there is nothing. A fragment's vector index takes its size from [dimensions]. A TEXT index, which only Neo4j makes
+     * [scanned] on each of [databases], without what [declared] declares there: an application's catalog for one database
+     * leaves the scanned item to it on that database alone, and the scanned item is made on the others (#851). Databases
+     * left the same items share one catalog, for them alone; where every database is left the same, as with one database,
+     * the one catalog keeps [scanned]'s target. With no [databases] known, what [declared] declares anywhere is left out. A
+     * database a catalog names is [resolve]d, as the registry resolves `default`.
+     */
+    fun leftBy(scanned: SchemaCatalog, declared: List<SchemaCatalog>, databases: Set<String>, resolve: (String) -> String = { it }): List<SchemaCatalog> {
+        if (databases.isEmpty() || declared.all { it.target == DatabaseTarget.All }) return listOf(scanned.except(declared))
+        // A name a catalog gives is resolved as the registry resolves it, `default` the first-registered database, as the
+        // schema manager applies the catalog there (#854).
+        val byDatabase = databases.sorted().associateWith { database ->
+            scanned.except(declared.filter { catalog -> catalog.target.let { it !is DatabaseTarget.Named || it.databases.any { name -> resolve(name) == database } } })
+        }
+        val groups = byDatabase.entries.groupBy({ it.value.items.toSet() to it.value.nodeIdIndexes }, { it.key })
+        if (groups.size == 1) return listOf(byDatabase.values.first())
+        return groups.values.map { names -> byDatabase.getValue(names.first()).forDatabases(*names.toTypedArray()) }
+    }
+
+    /**
+     * The catalogs [fragments] declare, without what [declared], the application's own catalogs, declare, on each of
+     * [databases] those catalogs are for ([leftBy]); none where there is nothing. A fragment's vector index takes its size from [dimensions]. A TEXT index, which only Neo4j makes
      * and every other store refuses, is given in a catalog of its own for the [neo4jDatabases] alone.
      */
     fun catalogs(
@@ -87,6 +113,8 @@ internal object NodeFragmentScan {
         dimensions: VectorDimensionProvider?,
         declared: List<SchemaCatalog>,
         neo4jDatabases: Set<String>,
+        databases: Set<String> = emptySet(),
+        resolve: (String) -> String = { it },
     ): List<SchemaCatalog> {
         val read = fragments.mapNotNull { fragment ->
             runCatching { fragment to SchemaCatalog.fromFragments(dimensions, fragment) }
@@ -116,17 +144,25 @@ internal object NodeFragmentScan {
             .toSet()
         val kept = read.filter { it.first !in clashing }.map { it.second }
         if (kept.isEmpty()) return emptyList()
-        val scanned = SchemaCatalog.merge(kept).except(declared)
+        return leftBy(SchemaCatalog.merge(kept), declared, databases, resolve).flatMap { split(it, neo4jDatabases) }
+    }
+
+    /**
+     * [scanned] with its TEXT indexes, which only Neo4j makes and every other store refuses, in a catalog of their own for
+     * the [neo4jDatabases] among those [scanned] is for.
+     */
+    private fun split(scanned: SchemaCatalog, neo4jDatabases: Set<String>): List<SchemaCatalog> {
         val text = scanned.items.filterIsInstance<TextIndexSpec>()
         // The rest through except, not of, so its @NodeId defaults stay defaults: index-node-ids=false leaves them out,
         // and one an application's own uniqueness constraint over the id serves is left out beside it.
         val rest = scanned.except(listOf(SchemaCatalog.of(text)))
-        if (text.isNotEmpty() && neo4jDatabases.isEmpty()) {
-            logger.info("The TEXT indexes of the @NodeFragment classes scanned are not made: only Neo4j makes one, and no Neo4j database is registered: {}", text)
+        val textDatabases = neo4jDatabases.filterTo(sortedSetOf()) { scanned.target.includes(it) }
+        if (text.isNotEmpty() && textDatabases.isEmpty()) {
+            logger.info("The TEXT indexes of the @NodeFragment classes scanned are not made: only Neo4j makes one, and no Neo4j database they are for is registered: {}", text)
         }
         return listOfNotNull(
             rest.takeUnless { it.isEmpty() },
-            SchemaCatalog.of(text).takeUnless { it.isEmpty() || neo4jDatabases.isEmpty() }?.forDatabases(*neo4jDatabases.toTypedArray()),
+            SchemaCatalog.of(text).takeUnless { it.isEmpty() || textDatabases.isEmpty() }?.forDatabases(*textDatabases.toTypedArray()),
         )
     }
 }
