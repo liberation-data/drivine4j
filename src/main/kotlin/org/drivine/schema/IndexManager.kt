@@ -72,7 +72,11 @@ class IndexManager internal constructor(
      * yet, the copies are filled in again even if recorded, as by [recreate], since those a field kept
      * before it lost `@CaseInsensitive` went out of step meanwhile.
      */
-    fun ensure(spec: IndexSpec): EnsureResult = checkNotNull(driver.item(ItemCall.ENSURE, spec).result)
+    fun ensure(spec: IndexSpec): EnsureResult =
+        checkNotNull(driver.item(ItemCall.ENSURE, spec).result).also { NodeIdIndexCheck.ensured(database, spec, it) }
+
+    /** The database this manager is of, for [NodeIdIndexCheck]; null for a manager with no [owner]. */
+    internal val database: String? get() = owner?.database
 
     /** Convenience for [ensure] with a [VectorIndexSpec]. */
     @JvmOverloads
@@ -142,7 +146,7 @@ class IndexManager internal constructor(
      * gives the index (on Oracle, Postgres and SQLite: a table, say), it is left as it is and a [DrivineException] is thrown.
      */
     fun recreate(spec: IndexSpec): EnsureResult.Recreated = when (val result = driver.item(ItemCall.RECREATE, spec).result) {
-        is EnsureResult.Recreated -> result
+        is EnsureResult.Recreated -> result.also { NodeIdIndexCheck.ensured(database, spec, it) }
         // The drift a recreate leaves: what stands under the item's name isn't an index, so it isn't dropped.
         is EnsureResult.Drift -> throw DrivineException(
             "Could not recreate ${spec.kind} on ${spec.label}${spec.properties}: ${result.existing.name}, an object Drivine didn't make, " +

@@ -44,6 +44,20 @@ internal object FragmentSchemaScanner {
     }
 
     /**
+     * The range index a fragment's `@NodeId` is given by default, over its property under the primary label, as each save
+     * and each load by id finds a node by it (#827); null where the fragment has no `@NodeId`, opts out
+     * ([NodeFragment.nodeIdIndex]), or has no label, as a save or load of it is refused. Whether a declared item already serves it is the catalog's to say, as another fragment
+     * of the label may declare it ([SchemaCatalog]).
+     */
+    fun nodeIdIndex(fragmentClass: Class<*>): RangeIndexSpec? {
+        val annotation = fragmentClass.getAnnotation(NodeFragment::class.java) ?: return null
+        if (!annotation.nodeIdIndex) return null
+        val label = FragmentModel.labelsFor(fragmentClass).firstOrNull() ?: return null
+        val property = fragmentModel(fragmentClass)?.nodeIdProperty ?: return null
+        return RangeIndexSpec(label, listOf(property))
+    }
+
+    /**
      * An item that ignores case is over the lowercased copies a `@CaseInsensitive` field keeps, and a
      * save keeps none of another field: such an item would hold the nodes there were when it was
      * ensured, and no node saved after.

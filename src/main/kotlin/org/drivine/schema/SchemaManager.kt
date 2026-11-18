@@ -104,6 +104,8 @@ class SchemaManager(
 
     init {
         require(!indexBuildTimeout.isNegative) { "indexBuildTimeout must not be negative: $indexBuildTimeout" }
+        // A manager with no catalog applies none, and lists nothing: its fragments are warned of as where there is none.
+        if (catalogs.any { !it.isEmpty() }) NodeIdIndexCheck.managed()
     }
 
     private val logger = LoggerFactory.getLogger(SchemaManager::class.java)
@@ -209,7 +211,11 @@ class SchemaManager(
             }
             VectorAnnotationCheck.register(listOf(catalog))
             runtime = candidate
-            planned.forEach { (planning, request) -> planning.run(request) }
+            planned.forEach { (planning, request) ->
+                planning.run(request)
+                // What an enforce listed is kept current, so a fragment first used after this isn't warned of (#828).
+                if (NodeIdIndexCheck.listedOn(request.database)) planning.listForNodeIds(request.database)
+            }
         }
     }
 
@@ -264,19 +270,29 @@ class SchemaManager(
             VectorAnnotationCheck.register(all)
             val resolution = SchemaTargets.resolve(all, databaseRegistry)
             warnSkipped(resolution)
-            resolution.databases.sorted().forEach { database -> planning(database).run(request(database, operation, runtime)) }
+            resolution.databases.sorted().forEach { database ->
+                val planning = planning(database)
+                planning.run(request(database, operation, runtime))
+                if (operation is Operation.Enforce || operation is Operation.RecreateAll) planning.listForNodeIds(database)
+            }
         }
     }
 
     /** What the planner is asked of [database]: its startup catalogs, of every owner, and the [runtime] items on it. */
-    private fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>) = PlanRequest(
-        database = database,
-        operation = operation,
-        catalogs = catalogs.filter { it.target.includes(database) }.map { DeclaredCatalog(it.name, it.version, it.items) },
-        runtime = SchemaPlanner.runtimeOn(database, runtime),
-        policy = policy,
-        buildTimeoutMillis = indexBuildTimeout.toMillis(),
-    )
+    private fun request(database: String, operation: Operation, runtime: List<RuntimeCatalog>): PlanRequest {
+        val onDatabase = catalogs.filter { it.target.includes(database) }
+        val runtimeOn = SchemaPlanner.runtimeOn(database, runtime)
+        // A @NodeId's default index that another catalog's item serves is left out, as one its own serves is (#827).
+        val declared = onDatabase.flatMap { it.declaredItems } + runtimeOn.flatMap { it.items }
+        return PlanRequest(
+            database = database,
+            operation = operation,
+            catalogs = onDatabase.map { DeclaredCatalog(it.name, it.version, it.itemsBeside(declared)) },
+            runtime = runtimeOn,
+            policy = policy,
+            buildTimeoutMillis = indexBuildTimeout.toMillis(),
+        )
+    }
 
     /** Where [database]'s plans run: its auto-commit manager, whose schema managers run what the planner decides. */
     private inner class Planning(database: String) {
@@ -286,6 +302,17 @@ class SchemaManager(
 
         fun run(request: PlanRequest) {
             driver.run(request, manager)
+        }
+
+        /**
+         * What serves a fragment's `@NodeId` on [database] once the catalogs are applied, its indexes and constraints, for
+         * [NodeIdIndexCheck] to warn of a fragment none serves (#828). A listing that fails is passed over: it only warns.
+         */
+        fun listForNodeIds(database: String) {
+            val items = runCatching { manager.indexes.list() + manager.constraints.list() }
+                .onFailure { logger.debug("Could not list the schema of '{}' to check fragments' @NodeIds: {}", database, it.toString()) }
+                .getOrNull() ?: return
+            NodeIdIndexCheck.listed(database, items, driver.store::matchesIdentity)
         }
     }
 

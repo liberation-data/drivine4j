@@ -83,6 +83,7 @@ class ConstraintManager internal constructor(
     ): EnsureResult {
         refuseUnconstrainable(spec)
         return checkNotNull(driver.item(ItemCall.ENSURE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+            .also { NodeIdIndexCheck.ensured(indexManager.database, spec, it) }
     }
 
     /** Convenience for [ensure] with a [UniquenessConstraintSpec] (single or composite). */
@@ -143,6 +144,7 @@ class ConstraintManager internal constructor(
     ): EnsureResult {
         refuseUnconstrainable(spec)
         return checkNotNull(driver.item(ItemCall.RECREATE, spec, policy(violationSampleSize, replaceBlockingIndex)).result)
+            .also { NodeIdIndexCheck.ensured(indexManager.database, spec, it) }
     }
 
     /**
