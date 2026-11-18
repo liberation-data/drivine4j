@@ -88,11 +88,16 @@ internal object NodeFragmentScan {
      * [scanned] on each of [databases], without what [declared] declares there: an application's catalog for one database
      * leaves the scanned item to it on that database alone, and the scanned item is made on the others (#851). Databases
      * left the same items share one catalog, for them alone; where every database is left the same, as with one database,
-     * the one catalog keeps [scanned]'s target. With no [databases] known, what [declared] declares anywhere is left out.
+     * the one catalog keeps [scanned]'s target. With no [databases] known, what [declared] declares anywhere is left out. A
+     * database a catalog names is [resolve]d, as the registry resolves `default`.
      */
-    fun leftBy(scanned: SchemaCatalog, declared: List<SchemaCatalog>, databases: Set<String>): List<SchemaCatalog> {
+    fun leftBy(scanned: SchemaCatalog, declared: List<SchemaCatalog>, databases: Set<String>, resolve: (String) -> String = { it }): List<SchemaCatalog> {
         if (databases.isEmpty() || declared.all { it.target == DatabaseTarget.All }) return listOf(scanned.except(declared))
-        val byDatabase = databases.sorted().associateWith { database -> scanned.except(declared.filter { it.target.includes(database) }) }
+        // A name a catalog gives is resolved as the registry resolves it, `default` the first-registered database, as the
+        // schema manager applies the catalog there (#854).
+        val byDatabase = databases.sorted().associateWith { database ->
+            scanned.except(declared.filter { catalog -> catalog.target.let { it !is DatabaseTarget.Named || it.databases.any { name -> resolve(name) == database } } })
+        }
         val groups = byDatabase.entries.groupBy({ it.value.items.toSet() to it.value.nodeIdIndexes }, { it.key })
         if (groups.size == 1) return listOf(byDatabase.values.first())
         return groups.values.map { names -> byDatabase.getValue(names.first()).forDatabases(*names.toTypedArray()) }
@@ -109,6 +114,7 @@ internal object NodeFragmentScan {
         declared: List<SchemaCatalog>,
         neo4jDatabases: Set<String>,
         databases: Set<String> = emptySet(),
+        resolve: (String) -> String = { it },
     ): List<SchemaCatalog> {
         val read = fragments.mapNotNull { fragment ->
             runCatching { fragment to SchemaCatalog.fromFragments(dimensions, fragment) }
@@ -138,7 +144,7 @@ internal object NodeFragmentScan {
             .toSet()
         val kept = read.filter { it.first !in clashing }.map { it.second }
         if (kept.isEmpty()) return emptyList()
-        return leftBy(SchemaCatalog.merge(kept), declared, databases).flatMap { split(it, neo4jDatabases) }
+        return leftBy(SchemaCatalog.merge(kept), declared, databases, resolve).flatMap { split(it, neo4jDatabases) }
     }
 
     /**

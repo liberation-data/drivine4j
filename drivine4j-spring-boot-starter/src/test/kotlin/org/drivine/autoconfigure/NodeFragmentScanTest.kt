@@ -155,6 +155,15 @@ class NodeFragmentScanTest {
     }
 
     @Test
+    fun `a catalog for the default database leaves the item to it on the database the alias resolves to (#854)`() {
+        val own = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("name"), "person_name_default")).forDefaultDatabase()
+        val resolve = { name: String -> if (name == "default") "a" else name }
+        val scanned = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), setOf("a", "b"), resolve)
+        assertTrue(name !in scanned.single { it.target == DatabaseTarget.Named(setOf("a")) }.indexes)
+        assertTrue(name in scanned.single { it.target == DatabaseTarget.Named(setOf("b")) }.indexes)
+    }
+
+    @Test
     fun `a default an application's catalog for one database serves is left out there alone, and stays a default on the others`() {
         val own = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("id"), "person_id_a")).forDatabase("a")
         val scanned = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), setOf("a", "b", "c"))

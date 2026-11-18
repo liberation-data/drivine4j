@@ -90,6 +90,7 @@ class DrivineSchemaConfiguration {
         return NodeFragmentScan.catalogs(
             fragments, dimensions.ifUnique, declared,
             NodeFragmentScan.neo4jDatabases(databaseRegistry), NodeFragmentScan.schemaDatabases(databaseRegistry),
+            resolve = { databaseRegistry.resolveDatabaseName(it) ?: it },
         )
     }
 
