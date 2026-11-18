@@ -140,6 +140,17 @@ class SchemaCatalog private constructor(
     /** Merges another catalog into this one. Both must share the same [target] and [name]. */
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
 
+    /**
+     * A copy of this catalog without the items [others] declare under the same kind, label and properties, which are
+     * theirs to make: as the Spring starter leaves to an application's own catalogs what its scan of `@NodeFragment`
+     * classes also finds, so that an item the application names or tunes is made as it declares it.
+     */
+    fun except(others: List<SchemaCatalog>): SchemaCatalog {
+        val taken = others.flatMap { it.items }.map(::keyOf).toSet()
+        val kept = items.filter { keyOf(it) !in taken }
+        return SchemaCatalog(kept.filterIsInstance<IndexSpec>(), kept.filterIsInstance<ConstraintSpec>(), target, version, name)
+    }
+
     override fun toString(): String =
         "SchemaCatalog(name=$name, target=$target, version=$version, " +
             "indexes=${indexes.size}, constraints=${constraints.size})"
@@ -244,6 +255,9 @@ class SchemaCatalog private constructor(
             )
         }
 
+        /** What two declarations of one item share: its kind, label and properties, as made, in any order. */
+        private fun keyOf(spec: SchemaItemSpec) = Triple(spec.kind, spec.label, spec.made().properties.toSet())
+
         /**
          * Collapses duplicate declarations. The key is (kind, label, property set).
          *
@@ -263,7 +277,7 @@ class SchemaCatalog private constructor(
          * which knows the property its nodes are identified by, wins.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
-            val byKey = specs.groupBy { Triple(it.kind, it.label, it.made().properties.toSet()) }
+            val byKey = specs.groupBy(::keyOf)
             return byKey.map { (key, group) -> resolveDeclarations(key, group) }
         }
 

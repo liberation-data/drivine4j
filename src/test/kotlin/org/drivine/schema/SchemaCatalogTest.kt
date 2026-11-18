@@ -373,4 +373,27 @@ class SchemaCatalogTest {
             SchemaCatalog.fromFragments(MessageFixture::class)
         assertEquals("id", handFirst.constraints.single().nodeIdProperty)
     }
+
+    @Test
+    fun `except leaves out what other catalogs declare under the same kind, label and properties, and keeps its own target, version and owner`() {
+        val own = SchemaCatalog.of(
+            RangeIndexSpec("Message", listOf("sessionId", "createdAt")),
+            UniquenessConstraintSpec("Message", listOf("sessionId", "sequence")),
+            RangeIndexSpec("Message", "sessionId"),
+        ).named("app").withVersion("v1").forDatabase("users")
+        // Named otherwise, its properties in another order, and for another database and owner: still the same item.
+        val others = listOf(
+            SchemaCatalog.of(RangeIndexSpec("Message", listOf("createdAt", "sessionId"), "other_name")).forDatabase("other"),
+            SchemaCatalog.of(TextIndexSpec("Message", "sessionId")).named("lib"),
+        )
+
+        val left = own.except(others)
+
+        assertEquals(listOf(RangeIndexSpec("Message", "sessionId")), left.indexes)
+        assertEquals(own.constraints, left.constraints)
+        assertEquals("app", left.name)
+        assertEquals("v1", left.version)
+        assertEquals(DatabaseTarget.Named(setOf("users")), left.target)
+        assertEquals(own.items, own.except(emptyList()).items)
+    }
 }
