@@ -131,6 +131,75 @@ class NodeFragmentScanTest {
         registry.register(provider("refused", DatabaseType.NEO4J, CypherDialect.NEO4J_5, refusal = "read only."))
         registry.register(provider("memgraph", DatabaseType.MEMGRAPH, CypherDialect.MEMGRAPH))
         assertEquals(setOf("neo"), NodeFragmentScan.neo4jDatabases(registry))
+        // The scanned schema goes to every database that manages schema, of any store.
+        assertEquals(setOf("neo", "memgraph"), NodeFragmentScan.schemaDatabases(registry))
+    }
+
+    // ----- An application's catalog for some databases (#851) -----
+
+    private val person = listOf(ScanPerson::class.java)
+    private val name = RangeIndexSpec("ScanPerson", "name")
+    private val id = RangeIndexSpec("ScanPerson", "id")
+
+    @Test
+    fun `an item an application's catalog declares for one database is left to it there alone, and made on the others`() {
+        val own = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("name"), "person_name_a")).forDatabase("a")
+        val scanned = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), setOf("a", "b"))
+        val onA = scanned.single { it.target == DatabaseTarget.Named(setOf("a")) }
+        val onB = scanned.single { it.target == DatabaseTarget.Named(setOf("b")) }
+        assertTrue(name !in onA.indexes)
+        assertTrue(name in onB.indexes)
+        // The id's default is a default on both, as nothing declares it.
+        assertEquals(setOf(id), onA.nodeIdIndexes)
+        assertEquals(setOf(id), onB.nodeIdIndexes)
+    }
+
+    @Test
+    fun `a default an application's catalog for one database serves is left out there alone, and stays a default on the others`() {
+        val own = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("id"), "person_id_a")).forDatabase("a")
+        val scanned = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), setOf("a", "b", "c"))
+        assertEquals(2, scanned.size)
+        val onA = scanned.single { it.target == DatabaseTarget.Named(setOf("a")) }
+        assertTrue(id !in onA.indexes)
+        assertEquals(emptySet(), onA.nodeIdIndexes)
+        // b and c are left the same, so they share one catalog.
+        val rest = scanned.single { it.target == DatabaseTarget.Named(setOf("b", "c")) }
+        assertEquals(setOf(id), rest.nodeIdIndexes)
+    }
+
+    @Test
+    fun `where every database is left the same, the one catalog keeps the scan's target, as it did before`() {
+        val everywhere = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("name"), "person_name"))
+        val forAll = NodeFragmentScan.catalogs(person, null, listOf(everywhere), emptySet(), setOf("a", "b")).single()
+        assertEquals(DatabaseTarget.All, forAll.target)
+        assertTrue(name !in forAll.indexes)
+        // One database, and a catalog for it: the same.
+        val one = NodeFragmentScan.catalogs(person, null, listOf(everywhere.forDatabase("a")), emptySet(), setOf("a")).single()
+        assertEquals(DatabaseTarget.All, one.target)
+        assertTrue(name !in one.indexes)
+    }
+
+    @Test
+    fun `a catalog for a database that doesn't manage schema, or no database known, leaves the scan one catalog for all`() {
+        val own = SchemaCatalog.of(RangeIndexSpec("ScanPerson", listOf("name"), "person_name_pg")).forDatabase("pg")
+        // pg is not among the databases that manage schema: none of them is left the item, so all keep it.
+        val elsewhere = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), setOf("a", "b")).single()
+        assertEquals(DatabaseTarget.All, elsewhere.target)
+        assertTrue(name in elsewhere.indexes)
+        // No database known: what the catalog declares is left out, wherever it is for.
+        val unknown = NodeFragmentScan.catalogs(person, null, listOf(own), emptySet(), emptySet()).single()
+        assertEquals(DatabaseTarget.All, unknown.target)
+        assertTrue(name !in unknown.indexes)
+    }
+
+    @Test
+    fun `a TEXT index goes to the Neo4j databases among those its group is for`() {
+        val nested = listOf(ScanHolder.Nested::class.java)
+        val own = SchemaCatalog.of(RangeIndexSpec("ScanNested", listOf("id"), "nested_id_a")).forDatabase("a")
+        val scanned = NodeFragmentScan.catalogs(nested, null, listOf(own), setOf("a", "b"), setOf("a", "b", "pg"))
+        val text = scanned.filter { it.items.any { item -> item is TextIndexSpec } }
+        assertEquals(setOf<DatabaseTarget>(DatabaseTarget.Named(setOf("a")), DatabaseTarget.Named(setOf("b"))), text.map { it.target }.toSet())
+        assertTrue(scanned.none { it.target is DatabaseTarget.Named && "pg" in (it.target as DatabaseTarget.Named).databases && it.items.any { item -> item is TextIndexSpec } })
     }
 
     private fun provider(name: String, type: DatabaseType, dialect: CypherDialect, refusal: String? = null) = object : ConnectionProvider {
