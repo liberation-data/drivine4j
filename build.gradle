@@ -26,9 +26,9 @@ java {
 }
 
 // The Cypher compiler, drivine-cypher-spec's compiler/ module, at the version gradle/cypher-compiler.properties pins.
-// A release is read from Maven Central. A commit between releases (0.0.0-<commit>) is read from .compiler-repo, a Maven
-// repository in this checkout that scripts/compiler-local.sh publishes that commit's JVM build into; CI runs the same
-// script. Nothing else is read from it.
+// It is read from .compiler-repo, a Maven repository in this checkout that scripts/compiler-local.sh fetches a release
+// into from Maven Central, or publishes a commit's JVM build into between releases (0.0.0-<commit>); CI runs the same
+// script. Without it there, a release is read from Maven Central. Nothing else is read from .compiler-repo.
 def cypherCompiler = new Properties()
 file('gradle/cypher-compiler.properties').withInputStream { cypherCompiler.load(it) }
 ext.cypherCompilerVersion = cypherCompiler.getProperty('version')

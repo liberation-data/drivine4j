@@ -25,8 +25,8 @@ runs:
       shell: bash
       run: chmod +x gradlew
 
-    # The Cypher compiler gradle/cypher-compiler.properties pins: a release is read from Maven Central, and a commit
-    # between releases is published into .compiler-repo for the build to read: see the script.
+    # The Cypher compiler gradle/cypher-compiler.properties pins: a release is fetched from Maven Central and a commit
+    # between releases is built, either way into .compiler-repo for the build to read: see the script.
     - name: Cache the pinned Cypher compiler
       uses: actions/cache@v4
       with:
