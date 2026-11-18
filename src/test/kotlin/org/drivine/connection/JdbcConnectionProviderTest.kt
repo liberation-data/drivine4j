@@ -84,8 +84,10 @@ class JdbcConnectionProviderTest {
         provider.connect()
         provider.connect()
 
-        // The data source hands out the same session twice, as a pool does: it is set the first time only.
-        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        // The data source hands out the same session twice, as a pool does: it is set the first time only, to make no
+        // adaptive plan and to compare text by its code points (drivine-cypher-spec#372), each statement in turn.
+        assertEquals(2, JdbcConnectionProvider.ORACLE_SESSION.size)
+        for (set in JdbcConnectionProvider.ORACLE_SESSION) verify(statement, times(1)).execute(set)
         verify(statement, times(1)).close()
     }
 
@@ -154,11 +156,31 @@ class JdbcConnectionProviderTest {
     fun `a session of the application's HikariCP pool that already runs the statement as it opens one is not set again`() {
         val pool = object : com.zaxxer.hikari.HikariDataSource() {
             override fun getConnection(): java.sql.Connection = jdbc
-        }.apply { connectionInitSql = JdbcConnectionProvider.NO_ADAPTIVE_PLANS }
+        }.apply { connectionInitSql = JdbcConnectionProvider.ORACLE_SESSION_INIT }
 
         JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect()
 
         verify(jdbc, never()).createStatement()
+    }
+
+    @Test
+    fun `a session of the application's HikariCP pool that only makes no adaptive plan as it opens one is set to compare text by its code points`() {
+        val pool = object : com.zaxxer.hikari.HikariDataSource() {
+            override fun getConnection(): java.sql.Connection = jdbc
+        }.apply { connectionInitSql = JdbcConnectionProvider.NO_ADAPTIVE_PLANS }
+
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect()
+
+        verify(statement, times(1)).execute("ALTER SESSION SET NLS_COMP = BINARY NLS_SORT = BINARY")
+    }
+
+    @Test
+    fun `the block a pool runs as it opens a session runs each statement of the session in turn`() {
+        assertEquals(
+            "BEGIN EXECUTE IMMEDIATE 'ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE'; " +
+                "EXECUTE IMMEDIATE 'ALTER SESSION SET NLS_COMP = BINARY NLS_SORT = BINARY'; END;",
+            JdbcConnectionProvider.ORACLE_SESSION_INIT,
+        )
     }
 
     @Test

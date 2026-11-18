@@ -150,8 +150,9 @@ class OracleConnectionIntegrationTest {
             assertEquals(3, pool.maximumPoolSize)
             assertEquals(20_000, pool.connectionTimeout)
             assertEquals("64", pool.dataSourceProperties.getProperty("oracle.jdbc.implicitStatementCacheSize"))
-            // Each session the pool opens makes no adaptive plan (OracleAdaptivePlansTest asks Oracle for the plan).
-            assertEquals(JdbcConnectionProvider.NO_ADAPTIVE_PLANS, pool.connectionInitSql)
+            // Each session the pool opens makes no adaptive plan (OracleAdaptivePlansTest asks Oracle for the plan), and
+            // compares text by its code points (OracleBinaryTextSessionTest).
+            assertEquals(JdbcConnectionProvider.ORACLE_SESSION_INIT, pool.connectionInitSql)
             val connection = provider.connect()
             try {
                 assertEquals(listOf<Any>("Ada"), connection.query(spec("SELECT \$name FROM dual", "name" to "Ada")))
