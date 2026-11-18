@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Publishes the Cypher compiler that gradle/cypher-compiler.properties pins into .compiler-repo, the Maven repository
-# in this checkout that the build reads it from, unless it is there already, or the pin is a release, which the build
-# reads from Maven Central. CI runs this before Gradle; run it once in a new checkout, and again after the pin moves.
+# in this checkout that the build reads it from, unless it is there already: a release is fetched from Maven
+# Central, a commit between releases is built. CI runs this before Gradle; run it once in a new checkout, and again
+# after the pin moves.
 #
 #   scripts/compiler-local.sh [<drivine-cypher-spec checkout>]
 #
@@ -17,7 +18,29 @@ repo="$root/.compiler-repo"
 jar="$repo/org/drivine/drivine-cypher-compiler-jvm/$version/drivine-cypher-compiler-jvm-$version.jar"
 case "$version" in
   0.0.0-*) ;;
-  *) echo "compiler-local: $version is a release, read from Maven Central"; exit 0 ;;
+  *)
+    # A release is on Maven Central, and the build would read it from there. Fetched here into .compiler-repo instead,
+    # once, and kept by CI's cache of .compiler-repo, which is keyed on the pin: CI's parallel jobs each fetching it
+    # from Central were refused now and then (429 Too Many Requests, #852). curl retries a refused request with a
+    # growing wait. Should a file not come, nothing is put in .compiler-repo, and the build reads Central as before.
+    if [ -f "$jar" ]; then
+      echo "compiler-local: $version is in .compiler-repo"
+      exit 0
+    fi
+    central="${COMPILER_LOCAL_CENTRAL:-https://repo.maven.apache.org/maven2}/org/drivine"
+    fetched=$(mktemp -d)
+    fetch() { mkdir -p "$fetched/$1/$version" && curl -fsSL --retry 8 -o "$fetched/$1/$version/$1-$version.$2" "$central/$1/$version/$1-$version.$2"; }
+    # What the build reads of it, the JVM variant drivine4j depends on: its POM, its Gradle module and its jar.
+    if fetch drivine-cypher-compiler-jvm pom && fetch drivine-cypher-compiler-jvm module && fetch drivine-cypher-compiler-jvm jar; then
+      mkdir -p "$repo/org/drivine"
+      cp -R "$fetched"/. "$repo/org/drivine/"
+      echo "compiler-local: fetched release $version from Maven Central into .compiler-repo"
+    else
+      echo "compiler-local: could not fetch release $version from Maven Central; the build reads it from there" >&2
+    fi
+    rm -rf "$fetched"
+    exit 0
+    ;;
 esac
 # Before the published build is taken, so a commit moved without its version isn't built against the old one.
 case "$version" in

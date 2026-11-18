@@ -23,7 +23,10 @@ set -euo pipefail
 variant=${1:?Usage: scripts/ci-test-part.sh <variant> <part>}
 part=${2:?Usage: scripts/ci-test-part.sh <variant> <part>}
 
-gradle=(./gradlew --no-daemon --init-script gradle/ci-test-sets.gradle)
+# Maven Central refuses a burst of requests from CI's parallel jobs now and then (429 Too Many Requests), and a refused
+# dependency fails the build at compileKotlin with no compiler message (#852): a refused request is tried eight times
+# rather than Gradle's default three, the wait doubling from 1 s each time, about two minutes in all.
+gradle=(./gradlew --no-daemon --init-script gradle/ci-test-sets.gradle -Dorg.gradle.internal.repository.max.tentatives=8)
 
 # The selection of a part of the pull request set, or of the nightly set, and the kind of part it is.
 case "$part" in

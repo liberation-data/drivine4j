@@ -199,8 +199,9 @@ jobs:
       - name: Publish the pinned Cypher compiler
         run: scripts/compiler-local.sh
 
+      # Retries a request Maven Central refuses, as scripts/ci-test-part.sh does: this build runs beside the other jobs.
       - name: Build with Gradle
-        run: ./gradlew build -x test -x standaloneTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon -Dorg.gradle.internal.repository.max.tentatives=8
 
       # The build writes each module's model file, .drivine/model.json, and the one committed must be it.
       - name: Check the model files are current
