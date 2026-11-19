@@ -2,6 +2,7 @@ package org.drivine.migration
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.mapper.toMap
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -112,6 +113,33 @@ class StoreLayoutMigrationDeclarationsTest {
             listOf(org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Sensor", "readings", org.drivine.cypher.store.migrate.LayoutMigration.Kind.FLOAT)),
         )
         assertEquals(listOf("readings"), rewrite.invalid.map { it.property }, props)
+    }
+
+    @NodeFragment(labels = ["Gauge"])
+    data class Gauge(
+        @NodeId val id: String,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) val level: Double,
+        @get:com.fasterxml.jackson.databind.annotation.JsonSerialize(using = com.fasterxml.jackson.databind.ser.std.ToStringSerializer::class) val peak: Double,
+        val low: Double,
+    )
+
+    @org.drivine.annotation.RelationshipFragment
+    data class Feeds(@com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) val rate: Double, val target: Gauge)
+
+    @Test
+    fun `a field written as its JsonFormat or JsonSerialize says is not declared, as its saved form can't be told from its type`() {
+        assertEquals(listOf(Declaration("Gauge", "low", Kind.FLOAT)), StoreLayoutMigration.declarationsOf(Gauge::class.java))
+        assertEquals(emptyList(), StoreLayoutMigration.declarationsOf("FEEDS", Feeds::class.java))
+        // What drivine4j 0.7.0's save wrote of the shaped fields: texts, which the module reads as no float.
+        val saved = org.drivine.mapper.Neo4jObjectMapper.instance.toMap(Gauge("g", 1.5, 2.5, 0.5))
+        val props = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper().writeValueAsString(saved)
+        val rewrite = @OptIn(org.drivine.DrivineInternalApi::class) org.drivine.cypher.store.migrate.LayoutMigration.rewrite(
+            props, org.drivine.cypher.api.Store.SQLITE, listOf("Gauge"),
+            listOf("level", "peak").map {
+                org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Gauge", it, org.drivine.cypher.store.migrate.LayoutMigration.Kind.FLOAT)
+            },
+        )
+        assertEquals(listOf("level", "peak"), rewrite.invalid.map { it.property }.sorted(), props)
     }
 
     @NodeFragment(labels = ["Signal"])

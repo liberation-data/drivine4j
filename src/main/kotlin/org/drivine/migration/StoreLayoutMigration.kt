@@ -13,6 +13,8 @@ import org.drivine.cypher.store.migrate.MigrationStep
 import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.JsonPacked
+import com.fasterxml.jackson.annotation.JsonFormat
+import com.fasterxml.jackson.databind.annotation.JsonSerialize
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import kotlin.reflect.KClass
@@ -178,8 +180,8 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text, by the
-         * name it is stored under: what a migration of the nodes it maps is told.
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text,
+         * and one that carries `@JsonSerialize` or `@JsonFormat`, saved as it says, by the name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
         fun declarationsOf(type: Class<*>): List<Declaration> {
@@ -226,13 +228,16 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
         }
 
         /**
-         * The fields of [type] that are `@JsonPacked`, on the field, its getter or its constructor parameter: saved as a JSON
-         * text, which the module reads as no value of a kind, so a declaration would refuse the migration.
+         * The fields of [type] that are `@JsonPacked`, on the field, its getter or its constructor parameter, saved as a JSON
+         * text, or carry `@JsonSerialize` or `@JsonFormat`, saved as they say (a float as its text, say), which can't be told
+         * from the field's type: what the module may read as no value of a kind, so a declaration would refuse the migration.
          */
         private fun packed(type: Class<*>): Set<String> =
             INTROSPECTOR.serializationConfig.introspect(INTROSPECTOR.constructType(type)).findProperties()
-                .filter { p -> listOfNotNull(p.field, p.getter, p.constructorParameter).any { it.hasAnnotation(JsonPacked::class.java) } }
+                .filter { p -> listOfNotNull(p.field, p.getter, p.constructorParameter).any { m -> SHAPING.any(m::hasAnnotation) } }
                 .map { it.name }.toSet()
+
+        private val SHAPING = listOf(JsonPacked::class.java, JsonSerialize::class.java, JsonFormat::class.java)
 
         private val INTROSPECTOR = jacksonObjectMapper()
 
