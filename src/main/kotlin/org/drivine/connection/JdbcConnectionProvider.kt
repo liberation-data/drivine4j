@@ -168,7 +168,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     internal val sqlGraph: SqlGraph? get() = graph
 
     /**
-     * A connection that neither makes the graph's tables nor judges its store layout, as [connect] does first: what a
+     * A connection that neither makes the graph's tables nor judges its store layout, as [connect] does first, its Oracle
+     * session set as [connect]'s is (see [withoutAdaptivePlans]), so its statements compare text alike: what a
      * store layout migration runs on, as the graph it migrates is one [connect] refuses (see
      * [org.drivine.migration.StoreLayoutMigration]).
      */

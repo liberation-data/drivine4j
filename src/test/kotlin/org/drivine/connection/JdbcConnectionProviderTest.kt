@@ -368,6 +368,23 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
+    fun `a store layout migration's connection makes no tables and judges no layout, its Oracle session set as a connection's is`() {
+        val sessionStatement = Mockito.mock(java.sql.Statement::class.java)
+        val unjudged = recording().also { `when`(it.createStatement()).thenReturn(sessionStatement) }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(unjudged) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source, graphName = "ledger")
+
+        provider.connectUnjudged().release()
+
+        // The migration's statements compare text, as the compiler's do, by code points (drivine-cypher-spec#372).
+        for (set in JdbcConnectionProvider.ORACLE_SESSION) verify(sessionStatement, times(1)).execute(set)
+        assertEquals(emptyList(), statementsOn(unjudged))
+        verify(source, times(1)).connection
+        assertEquals("ledger", assertIs<OracleGraph>(provider.sqlGraph).name)
+        assertNull(JdbcConnectionProvider("neo4j", DatabaseType.NEO4J, dataSource).sqlGraph)
+    }
+
+    @Test
     fun `on SQLite the tables are looked for, and made only when they are not all there`() {
         val ensuring = recording()
         val handedOut = recording()
