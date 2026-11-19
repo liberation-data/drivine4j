@@ -5,11 +5,9 @@ import org.drivine.connection.JdbcConnection
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.cypher.store.marker.StoreStamp
 import org.drivine.cypher.store.marker.StoreStampStatements
-import org.drivine.cypher.store.migrate.LayoutMigration
 import org.drivine.cypher.store.migrate.LayoutMigrator
 import org.drivine.cypher.store.migrate.MigrationAction
 import org.drivine.cypher.store.migrate.MigrationOutcome
-import org.drivine.cypher.store.migrate.MigrationReport
 import org.drivine.cypher.store.migrate.MigrationRequest
 import org.drivine.cypher.store.migrate.MigrationStep
 import org.drivine.annotation.GraphProperty
@@ -27,23 +25,22 @@ import java.util.UUID
 /**
  * Marks the store layout migration as not yet proven on every store: its statements are the shared module's, pinned by
  * the spec, but their runs on Postgres, Oracle and SQLite are still to be made (liberation-data/drivine4j#832). A call
- * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class, DrivineInternalApi::class)`: its
- * declarations ([LayoutMigration.Declaration]) and report ([MigrationReport]) are the module's, marked
- * `org.drivine.DrivineInternalApi`, and may change in any release.
+ * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class)`, and its [Declaration], [Kind]
+ * and [MigrationReport] may change in any release until it is proven.
  */
 @RequiresOptIn(
     level = RequiresOptIn.Level.ERROR,
-    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it, to DrivineInternalApi too, as its declarations and report are the module's.",
+    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it.",
 )
 @Retention(AnnotationRetention.BINARY)
-@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR)
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR, AnnotationTarget.PROPERTY, AnnotationTarget.TYPEALIAS)
 annotation class ExperimentalStoreLayoutMigration
 
 /**
  * Moves a graph on Postgres, Oracle or SQLite from store layout 1, which every Drivine before 0.8.0 wrote, to layout 2,
  * which this version reads, in place of reloading it (liberation-data/drivine-cypher-spec#256). The shared module's
  * [LayoutMigrator] decides each round, as every library migrates alike; this runs what it decides on the provider's
- * store, and gives back its [MigrationReport].
+ * store, and gives back what it reports, as a [MigrationReport].
  *
  * Run it while nothing else uses the graph, with a backup taken first: a migration stopped at any moment is resumed by
  * running it again, with the same declarations. What layout 1 can't tell, which texts are dates or moments, which whole
@@ -81,13 +78,13 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
      */
     @JvmOverloads
     fun migrate(
-        declarations: List<LayoutMigration.Declaration>,
+        declarations: List<Declaration>,
         batchSize: Int = 1000,
         dryRun: Boolean = false,
         keepInvalid: Boolean = false,
     ): MigrationReport {
         val migrator = LayoutMigrator(store)
-        val request = MigrationRequest(declarations, batchSize, dryRun, keepInvalid)
+        val request = MigrationRequest(declarations.map { it.toModule() }, batchSize, dryRun, keepInvalid)
         migrator.validate(request)?.let { throw IllegalArgumentException(it) }
         val work = provider.connectUnjudged()
         var lock: JdbcConnection? = null
@@ -125,7 +122,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
                 }
                 step = migrator.resume(step.state, outcomes)
             }
-            val report = (step as MigrationStep.Done).report
+            val report = MigrationReport.of((step as MigrationStep.Done).report)
             logger.info("Store layout migration of '{}': {}: {}", store.name, report.status?.word, report.message)
             report.notes.forEach { logger.warn("Store layout migration of '{}': {}", store.name, it) }
             return report
@@ -183,7 +180,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          * name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
-        fun declarationsOf(type: Class<*>): List<LayoutMigration.Declaration> {
+        fun declarationsOf(type: Class<*>): List<Declaration> {
             val model = FragmentModel.from(type)
             return model.labels.flatMap { label -> declared(model, label) }
         }
@@ -193,18 +190,18 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          * [relationshipType]: each of its properties but the one that points at the node it reaches, as [declarationsOf].
          */
         @JvmStatic
-        fun declarationsOf(relationshipType: String, type: Class<*>): List<LayoutMigration.Declaration> =
+        fun declarationsOf(relationshipType: String, type: Class<*>): List<Declaration> =
             type.kotlin.memberProperties.filter { property ->
                 val target = (property.returnType.classifier as? KClass<*>)?.java
                 target?.isAnnotationPresent(NodeFragment::class.java) != true && target?.isAnnotationPresent(GraphView::class.java) != true
             }.mapNotNull { property ->
                 val stored = property.findAnnotation<GraphProperty>()?.value?.takeIf { it.isNotEmpty() } ?: property.name
-                kindOf(property.returnType.toString())?.let { LayoutMigration.Declaration(relationshipType, stored, it) }
+                kindOf(property.returnType.toString())?.let { Declaration(relationshipType, stored, it) }
             }
 
         private fun declared(model: FragmentModel, label: String) = model.fields
             .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null }
-            .mapNotNull { field -> kindOf(field.typeString)?.let { LayoutMigration.Declaration(label, field.propertyName, it) } }
+            .mapNotNull { field -> kindOf(field.typeString)?.let { Declaration(label, field.propertyName, it) } }
 
         /**
          * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`,
@@ -212,7 +209,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, and for a list of lists,
          * whose items the module reads as no value of a kind, so a declaration would refuse the migration.
          */
-        internal fun kindOf(typeString: String): LayoutMigration.Kind? {
+        internal fun kindOf(typeString: String): Kind? {
             val type = plain(typeString)
             val item = COLLECTION.matchEntire(type)?.groupValues?.get(2)?.let(::plain)
                 ?: type.takeIf { it.endsWith("[]") && it != "byte[]" }?.removeSuffix("[]")
@@ -227,20 +224,20 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
         private val COLLECTION = Regex("""(kotlin\.collections\.(?:\(Mutable\)|Mutable)?\w*(?:List|Set|Collection)|java\.util\.\w*(?:List|Set|Collection)|kotlin\.Array)<(?:out |\(out\) |\? extends )?(.+)>""")
 
         private val KINDS = mapOf(
-            "java.time.LocalDate" to LayoutMigration.Kind.DATE,
-            "java.time.LocalTime" to LayoutMigration.Kind.LOCAL_TIME,
-            "java.time.OffsetTime" to LayoutMigration.Kind.TIME,
-            "java.time.LocalDateTime" to LayoutMigration.Kind.LOCAL_DATE_TIME,
-            "java.time.ZonedDateTime" to LayoutMigration.Kind.DATE_TIME,
-            "java.time.OffsetDateTime" to LayoutMigration.Kind.DATE_TIME,
-            "java.time.Instant" to LayoutMigration.Kind.DATE_TIME,
-            "java.util.Date" to LayoutMigration.Kind.DATE_TIME,
-            "java.time.Duration" to LayoutMigration.Kind.DURATION,
-            "java.time.Period" to LayoutMigration.Kind.DURATION,
-            "kotlin.Double" to LayoutMigration.Kind.FLOAT, "java.lang.Double" to LayoutMigration.Kind.FLOAT, "double" to LayoutMigration.Kind.FLOAT,
-            "kotlin.Float" to LayoutMigration.Kind.FLOAT, "java.lang.Float" to LayoutMigration.Kind.FLOAT, "float" to LayoutMigration.Kind.FLOAT,
-            "kotlin.DoubleArray" to LayoutMigration.Kind.FLOAT, "kotlin.FloatArray" to LayoutMigration.Kind.FLOAT,
-            "kotlin.ByteArray" to LayoutMigration.Kind.BYTES, "byte[]" to LayoutMigration.Kind.BYTES,
+            "java.time.LocalDate" to Kind.DATE,
+            "java.time.LocalTime" to Kind.LOCAL_TIME,
+            "java.time.OffsetTime" to Kind.TIME,
+            "java.time.LocalDateTime" to Kind.LOCAL_DATE_TIME,
+            "java.time.ZonedDateTime" to Kind.DATE_TIME,
+            "java.time.OffsetDateTime" to Kind.DATE_TIME,
+            "java.time.Instant" to Kind.DATE_TIME,
+            "java.util.Date" to Kind.DATE_TIME,
+            "java.time.Duration" to Kind.DURATION,
+            "java.time.Period" to Kind.DURATION,
+            "kotlin.Double" to Kind.FLOAT, "java.lang.Double" to Kind.FLOAT, "double" to Kind.FLOAT,
+            "kotlin.Float" to Kind.FLOAT, "java.lang.Float" to Kind.FLOAT, "float" to Kind.FLOAT,
+            "kotlin.DoubleArray" to Kind.FLOAT, "kotlin.FloatArray" to Kind.FLOAT,
+            "kotlin.ByteArray" to Kind.BYTES, "byte[]" to Kind.BYTES,
         )
     }
 }

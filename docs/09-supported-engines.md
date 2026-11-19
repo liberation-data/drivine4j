@@ -249,8 +249,8 @@ import it with this one, or migrate it in place (below). A graph a later Drivine
 
 **Migrating a graph from layout 1 to layout 2.** `org.drivine.migration.StoreLayoutMigration` moves a graph on Oracle,
 Postgres or SQLite from layout 1 to layout 2 in place, by the shared compiler's migrator, which every Drivine runs alike.
-It is experimental, opted in to with `@OptIn(ExperimentalStoreLayoutMigration::class, DrivineInternalApi::class)`, as its
-declarations and report are the module's (`org.drivine.cypher.store.migrate`), which may change in any release. Run it
+It is experimental, opted in to with `@OptIn(ExperimentalStoreLayoutMigration::class)`, and its `Declaration`, `Kind`
+and `MigrationReport` (in `org.drivine.migration`) may change in any release until it is proven. Run it
 while nothing else uses the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
 dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
@@ -261,9 +261,10 @@ that are no value of their declared kind, the properties whose values all read a
 the uniqueness constraints' keys that may collide. A migration ends with a `MigrationReport` whose status says how:
 `migrated`, `current` or `empty` (nothing to do), `dryRun` (a dry run's), `inProgress` (a dry run of a graph part way
 through a migration, which only resuming it goes on with), `invalid` (a value not of its kind: declare it otherwise, or
-pass `keepInvalid = true`), `collisions` (keys a uniqueness constraint holds once that layout 2 reads as one: correct
+pass `keepInvalid = true`; or one written during the migration, its batch not written), `collisions` (keys a uniqueness constraint holds once that layout 2 reads as one: correct
 them with plain SQL and run it again), `refused` (a graph of another layout, or one changed since its migration began,
-or resumed, before every row is written, with other declarations or `keepInvalid`), or `failed` (the store's error). One stopped at any moment, or by `collisions`, is
+or resumed, before every row is written, with other declarations or `keepInvalid`, or another migration of it began or
+finished meanwhile), or `failed` (the store's error, or a finished graph not judged of layout 2). One stopped at any moment, or by `collisions`, is
 resumed by running it again with the same declarations. It makes no index or constraint, which the application's schema
 plan makes at its next start, and leaves the count store unseeded.
 

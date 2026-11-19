@@ -2,8 +2,6 @@ package org.drivine.migration
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
-import org.drivine.cypher.store.migrate.LayoutMigration.Declaration
-import org.drivine.cypher.store.migrate.LayoutMigration.Kind
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate

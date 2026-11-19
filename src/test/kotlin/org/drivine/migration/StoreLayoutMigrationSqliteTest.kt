@@ -4,9 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.connection.StoreLayoutException
-import org.drivine.cypher.store.migrate.LayoutMigration.Declaration
-import org.drivine.cypher.store.migrate.LayoutMigration.Kind
-import org.drivine.cypher.store.migrate.Status
+import org.drivine.migration.MigrationReport.Status
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
