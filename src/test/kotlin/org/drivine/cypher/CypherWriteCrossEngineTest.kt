@@ -1,5 +1,6 @@
 package org.drivine.cypher
 
+import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DataSourceMap
@@ -905,15 +906,15 @@ class CypherWriteOracleTest : CypherWriteContract() {
     }
 
     @Test
-    fun `a map an unwound item holds, with a key as extended JSON's, is written as the map it is`() {
-        // Only a text a write takes from its row is read through the row's text (#309): a map is read as JSON, as before, and
-        // not from extended JSON, which would read {"${'$'}numberLong": "5"} as the number 5.
+    fun `a map an unwound item holds, with a key as extended JSON's, is refused as a property, not read as a number`() {
+        // A map is no property, as in Neo4j (liberation-data/drivine-cypher-spec#367): the write is refused whole, not taken
+        // from extended JSON, which would read {"${'$'}numberLong": "5"} as the number 5 (#309), and nothing is written.
         val items = listOf(mapOf("id" to 1, "m" to mapOf("\$numberLong" to "5")), mapOf("id" to 2, "m" to mapOf("\$numberDouble" to "2.0")))
-        pm.query(QuerySpecification.withStatement(CypherStatement("UNWIND \$items AS t CREATE (:CyWrite {id: t.id, m: t.m})")).bind(mapOf("items" to items)))
-        assertEquals(
-            items.map { mapOf("id" to (it["id"] as Int).toLong(), "m" to it["m"]) },
-            pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"))),
-        )
+        val refused = assertFailsWith<DrivineException> {
+            pm.query(QuerySpecification.withStatement(CypherStatement("UNWIND \$items AS t CREATE (:CyWrite {id: t.id, m: t.m})")).bind(mapOf("items" to items)))
+        }
+        assertTrue("not a map, as in Neo4j" in (refused.message ?: ""), refused.message)
+        assertEquals(emptyList(), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN n.id"))))
     }
 
     @Test

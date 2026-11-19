@@ -113,7 +113,7 @@ class SqliteConnectionTest {
         val graph = SqliteTestDatabase.graphManager("cyconn")
         SqliteTestDatabase.clear(graph)
         fun cypher(statement: String) = graph.query(QuerySpecification.withStatement(CypherStatement(statement)))
-        assertEquals(listOf(mapOf("name" to "Ada", "tags" to listOf("a", 1.0))), cypher("CREATE (p:CyConn {name: 'Ada', tags: ['a', 1.0]}) RETURN properties(p)"))
+        assertEquals(listOf(mapOf("name" to "Ada", "tags" to listOf("a", "b"))), cypher("CREATE (p:CyConn {name: 'Ada', tags: ['a', 'b']}) RETURN properties(p)"))
         assertEquals(listOf(listOf("Ada", 1L)), cypher("MATCH (p:CyConn) RETURN p.name, count(*)"))
         // A write that fails partway leaves nothing of what it wrote: its savepoint is rolled back.
         cypher("MATCH (p:CyConn) CREATE (p)-[:KNOWS]->(:CyConn {name: 'Bob'})")

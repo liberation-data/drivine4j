@@ -54,13 +54,6 @@ abstract class PropertyKeyIndexContract {
     open val storesNaN = true
 
     /**
-     * Whether a list is found by an equal list whose whole numbers are its floats, `[1, 2.5]` the stored `[1.0, 2.50]`: false
-     * where the compiler the build is pinned to doesn't yet (liberation-data/drivine-cypher-spec#354), so the step is held,
-     * and fails once it is found, to have the hold taken out.
-     */
-    open val findsEqualList = true
-
-    /**
      * Whether an APOC batch's rows, whose keys are written out long, find their nodes through the index: false where the
      * store's compiled test isn't one its index answers (liberation-data/drivine-cypher-spec#358), so the plan's check is
      * held, and fails once it is, to have the hold taken out. The batch's rows are checked either way.
@@ -75,7 +68,7 @@ abstract class PropertyKeyIndexContract {
         query("UNWIND range(0, ${IMPORTED - 1}) AS k CREATE (:`$IMPORT_LABEL` {`$IMPORT_ID`: k})")
         query("UNWIND range(0, ${NODES - 1}) AS k CREATE (:Person {id: 'p' + toString(k), k: k})")
         query("CREATE (:Person {id: 7, k: -1}), (:Person {id: 8.0, k: -2}), (:Person {id: true, k: -3}), (:Person {id: [1, 2], k: -4})")
-        query("CREATE (:Person {id: ['a', 'b'], k: -5}), (:Person {id: [], k: -6}), (:Person {id: [1], k: -7}), (:Person {id: [[1, 2]], k: -8})")
+        query("CREATE (:Person {id: ['a', 'b'], k: -5}), (:Person {id: [], k: -6}), (:Person {id: [1], k: -7})")
         query("CREATE (:Person {id: 0.1, k: -9}), (:Person {id: 1.0e20, k: -10}), (:Person {id: -7, k: -11}), (:Person {id: 0, k: -12})")
         query("CREATE (:Person {id: '', k: -13}), (:Person {id: \$big, k: -14}), (:Person {id: \$long, k: -15})", mapOf("big" to BIG, "long" to LONG))
         analyze()
@@ -86,15 +79,16 @@ abstract class PropertyKeyIndexContract {
 
     @Test
     fun `a row's value of each kind finds the nodes it is equal to, as JSON compares them`() {
-        // 7.0 is 7, and 8 is 8.0, as in Cypher; a list, empty, of one item or of lists, is equal to the same list only, not to its item or
-        // to its items in another order; null and a missing key are equal to nothing.
+        // 7.0 is 7, and 8 is 8.0, as in Cypher; a list, empty or of one item, is equal to the same list only, not to its item or to
+        // its items in another order; null and a missing key are equal to nothing. No node holds a list of lists, which a write
+        // refuses as Neo4j does (liberation-data/drivine-cypher-spec#367), so that row finds none.
         val rows = listOf(
             mapOf("s" to "p5"), mapOf("s" to 7), mapOf("s" to 7.0), mapOf("s" to 8), mapOf("s" to true), mapOf("s" to listOf(1, 2)),
             mapOf("s" to null), emptyMap<String, Any?>(), mapOf("s" to "nobody"), mapOf("s" to "7"),
             mapOf("s" to listOf("a", "b")), mapOf("s" to emptyList<Any>()), mapOf("s" to listOf(1)), mapOf("s" to listOf(listOf(1, 2))),
             mapOf("s" to listOf(2, 1)), mapOf("s" to 1),
         )
-        val expected = listOf(-8L, -7L, -6L, -5L, -4L, -3L, -2L, -1L, -1L, 5L)
+        val expected = listOf(-7L, -6L, -5L, -4L, -3L, -2L, -1L, -1L, 5L)
         assertEquals(expected, query("UNWIND \$rows AS row MATCH (a:Person {id: row.s}) RETURN a.k ORDER BY a.k", mapOf("rows" to rows)))
         // The same, compared in a WHERE.
         assertEquals(expected, query("UNWIND \$rows AS row MATCH (a:Person) WHERE a.id = row.s RETURN a.k ORDER BY a.k", mapOf("rows" to rows)))
@@ -184,7 +178,7 @@ abstract class PropertyKeyIndexContract {
         val rows = listOf("p3", 7.0, 8, listOf(1, 2), true, 0.1, "").map { mapOf("s" to it) }
         val statement = "UNWIND \$rows AS row MERGE (a:Person {id: row.s}) RETURN a.k ORDER BY a.k"
         assertEquals(listOf(-13L, -9L, -4L, -3L, -2L, -1L, 3L), query(statement, mapOf("rows" to rows)))
-        assertEquals(listOf((NODES + 15).toLong()), query("MATCH (a:Person) RETURN count(a)"))
+        assertEquals(listOf((NODES + 14).toLong()), query("MATCH (a:Person) RETURN count(a)"))
     }
 
     @Test
@@ -222,11 +216,6 @@ abstract class PropertyKeyIndexContract {
             listOf(listOf(1L, 2.5)) to listOf(5L),
         )) {
             val bound = mapOf("rows" to rows.map { mapOf("s" to it) })
-            if (!findsEqualList && rows.first() is List<*>) {
-                assertEquals(emptyList(), query(statement, bound), "held for liberation-data/drivine-cypher-spec#354, and passing: take the hold out")
-                assertEquals(emptyList(), query("UNWIND \$rows AS row MATCH (a:Scaled) WHERE a.id = row.s RETURN a.k ORDER BY a.k", bound), "held for liberation-data/drivine-cypher-spec#354 in a WHERE, and passing: take the hold out")
-                continue
-            }
             assertEquals(expected, query(statement, bound), "$rows")
             assertEquals(expected, query("UNWIND \$rows AS row MATCH (a:Scaled) WHERE a.id = row.s RETURN a.k ORDER BY a.k", bound), "$rows in a WHERE")
         }
@@ -386,9 +375,6 @@ class SqlitePropertyKeyIndexTest : PropertyKeyIndexContract() {
 
     /** SQLite stores an infinity (#295) but no NaN, which only a row gives here. */
     override val storesNaN = false
-
-    /** Held: the compiler this build is pinned to finds no list by an equal one of whole numbers (liberation-data/drivine-cypher-spec#354). */
-    override val findsEqualList = false
 
     /** Held: the pinned compiler binds a long row key in a subquery around the index's test, so the label's index is scanned (liberation-data/drivine-cypher-spec#358). */
     override val apocBatchProbesIndex = false

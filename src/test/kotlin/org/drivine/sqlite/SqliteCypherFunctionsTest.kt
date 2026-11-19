@@ -31,8 +31,9 @@ class SqliteCypherFunctionsTest {
 
     @Test
     fun `drivine_add sums, joins lists, takes a null into a list, and writes texts and numbers one after the other`() {
+        // A text and a truth value are put together, as Neo4j does (liberation-data/drivine-cypher-spec#347).
         assertEquals(
-            listOf("3", "3.5", "[1,2,3]", "[1,null]", "[0,1]", "\"a1\"", "\"1.5b\"", null, null),
+            listOf("3", "3.5", "[1,2,3]", "[1,null]", "[0,1]", "\"a1\"", "\"1.5b\"", "\"trueb\"", null),
             row(
                 "SELECT drivine_add('1', '2'), drivine_add('1', '2.5'), drivine_add('[1]', '[2,3]'), drivine_add('[1]', NULL), drivine_add('0', '[1]'), " +
                     "drivine_add('\"a\"', '1'), drivine_add('1.5', '\"b\"'), drivine_add('true', '\"b\"'), drivine_add('1', NULL)"
