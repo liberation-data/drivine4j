@@ -287,7 +287,7 @@ abstract class IdKindContract {
 
     @Test
     fun `refuses a time id at an offset with seconds as a save does, and writes nothing`() {
-        // A zone's local mean time, as Europe/Dublin's before 1916: Cypher has no such offset, and the module refuses its text
+        // A zone's local mean time, as Africa/Monrovia's until 1972: Cypher has no such offset, and the module refuses its text
         // (liberation-data/drivine-cypher-spec#357). The write plan's key refuses it as the save does, not with the module's
         // own exception (#840).
         val lmt = OffsetDateTime.of(1971, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -44, -30))
