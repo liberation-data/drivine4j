@@ -163,11 +163,12 @@ class OracleNamesTest {
             val checked = ensuring.indexOf(check(name))
             val version = "-- drivine:" + graph.store.versions.getValue(name)
             assertTrue(ensuring.indexOf("INSTR(s.text, '$version') > 0", checked) > checked, "checks the version of $name: $version")
-            // A long one, as the function of temporal arithmetic, in CLOB pieces a PL/SQL literal holds.
-            val wrapped = ensuring.indexOf("BEGIN EXECUTE IMMEDIATE ${org.drivine.cypher.store.OracleSql.clob(statement)}; EXCEPTION WHEN e_denied THEN NULL; END;")
+            // A long one, as the function of temporal arithmetic, in CLOB pieces a PL/SQL literal holds. Made by the block's
+            // compile, which compiles it again after a failed compile and then names why (drivine#818).
+            val wrapped = ensuring.indexOf("compile('${name.uppercase()}', ${org.drivine.cypher.store.OracleSql.clob(statement)});")
             assertTrue(checked >= functionsChecked && wrapped > checked, "wraps: $statement")
         }
-        assertEquals(graph.functions.size, Regex("BEGIN EXECUTE IMMEDIATE ").findAll(ensuring).count())
+        assertEquals(graph.functions.size, Regex("""\n\s*compile\('""").findAll(ensuring).count())
         // Nothing in the block is read as a parameter: the JSON paths are inside literals.
         assertTrue(SqlParameters.positional(ensuring).names.isEmpty())
     }
