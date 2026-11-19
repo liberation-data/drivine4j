@@ -13,8 +13,10 @@ import org.drivine.connection.JacksonEncoder
 import org.drivine.cypher.api.CompileJson
 import org.drivine.cypher.api.Store
 import org.drivine.cypher.json.CypherJson
+import org.drivine.cypher.json.TemporalValue
 import org.drivine.cypher.spec.CypherSpec.Companion.expanded
 import org.drivine.cypher.sql.CompiledCypher
+import org.drivine.cypher.sql.Temporal
 import org.drivine.cypher.sql.Temporals
 import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
@@ -33,6 +35,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetTime
 import java.time.ZonedDateTime
+import java.time.format.DateTimeParseException
 import java.util.Base64
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -443,13 +446,22 @@ class HostSpecTest {
         is Map<*, *> -> when (value.keys) {
             setOf(BYTES) -> Base64.getDecoder().decode(value[BYTES] as String)
             setOf(TEMPORAL, "text") -> (value["text"] as String).let { text ->
-                when (val kind = value[TEMPORAL]) {
-                    "DATE" -> LocalDate.parse(text)
-                    "LOCAL_TIME" -> LocalTime.parse(text)
-                    "TIME" -> OffsetTime.parse(text)
-                    "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
-                    "DATE_TIME" -> ZonedDateTime.parse(text)
-                    else -> error("No temporal kind $kind in the runner")
+                val kind = value[TEMPORAL] as String
+                // A text no java.time value of its kind holds, as a month 13, and any duration, which java.time splits over
+                // two types: given as the module's own value of the kind, as a save gives a temporal a load held as its tag
+                // (HeldTemporals), so the module reads the text, and refuses one that isn't of its kind.
+                try {
+                    when (kind) {
+                        "DATE" -> LocalDate.parse(text)
+                        "LOCAL_TIME" -> LocalTime.parse(text)
+                        "TIME" -> OffsetTime.parse(text)
+                        "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
+                        "DATE_TIME" -> ZonedDateTime.parse(text)
+                        "DURATION" -> TemporalValue(Temporal.DURATION, text)
+                        else -> error("No temporal kind $kind in the runner")
+                    }
+                } catch (_: DateTimeParseException) {
+                    TemporalValue(Temporal.valueOf(kind), text)
                 }
             }
             setOf(MAP) -> (value[MAP] as Map<*, *>).mapValues { writeValue(it.value) }
