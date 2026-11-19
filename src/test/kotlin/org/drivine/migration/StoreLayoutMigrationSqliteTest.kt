@@ -116,6 +116,13 @@ class StoreLayoutMigrationSqliteTest {
         assertFailsWith<StoreLayoutException> { provider(path).connect() }
 
         sql(path, "DROP TRIGGER test_stop")
+        // Part way through: a dry run reads only a graph that hasn't begun, and other declarations don't resume it.
+        val dry = StoreLayoutMigration(provider).migrate(declarations, batchSize = 2, dryRun = true)
+        assertEquals(Status.IN_PROGRESS, dry.status, dry.message)
+        val other = StoreLayoutMigration(provider).migrate(declarations.dropLast(1), batchSize = 2)
+        assertEquals(Status.REFUSED, other.status, other.message)
+        assertTrue(other.message.orEmpty().contains("other declarations"), other.message)
+        assertEquals("{\"\$t\":1,\"\$x\":\"y\",\"name\":\"R2\"}", props(path, 6), "neither writes")
         assertEquals(Status.COLLISIONS, StoreLayoutMigration(provider).migrate(declarations, batchSize = 2).status)
         sql(path, "DELETE FROM drivine_node WHERE nid = 8")
         val migrated = StoreLayoutMigration(provider).migrate(declarations, batchSize = 2)

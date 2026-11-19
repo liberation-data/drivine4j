@@ -176,7 +176,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type, a float or bytes, or a list of one of them, by the
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment), a float or bytes, or a list, a set or an array of one, by the
          * name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
@@ -204,21 +204,24 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
             .mapNotNull { field -> kindOf(field.typeString)?.let { LayoutMigration.Declaration(label, field.propertyName, it) } }
 
         /**
-         * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`)
-         * is declared: its own, or for a list or a set, its items'; null for one layout 1 holds as layout 2 does, and for a list
-         * of lists, whose items the module reads as no value of a kind, so a declaration would refuse the migration.
+         * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`,
+         * or as Kotlin writes a Java field's, `kotlin.collections.(Mutable)List<java.time.LocalDate!>!`) is declared: its own, or
+         * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, and for a list of lists,
+         * whose items the module reads as no value of a kind, so a declaration would refuse the migration.
          */
         internal fun kindOf(typeString: String): LayoutMigration.Kind? {
-            val type = typeString.trim().removeSuffix("?").removeSuffix("!")
-            COLLECTION.matchEntire(type)?.let { list ->
-                val item = list.groupValues[2].trim().removeSuffix("?").removeSuffix("!")
-                return if (COLLECTION.matches(item)) null else KINDS[item]
-            }
-            return KINDS[type]
+            val type = plain(typeString)
+            val item = COLLECTION.matchEntire(type)?.groupValues?.get(2)?.let(::plain)
+                ?: type.takeIf { it.endsWith("[]") && it != "byte[]" }?.removeSuffix("[]")
+                ?: return KINDS[type]
+            return if (COLLECTION.matches(item) || item.endsWith("[]")) null else KINDS[item]
         }
 
-        /** A list's or a set's type, its items' in the second group. */
-        private val COLLECTION = Regex("""(kotlin\.collections\.(?:Mutable)?(?:List|Set|Collection)|java\.util\.(?:List|Set|Collection))<(?:out |\? extends )?(.+)>""")
+        /** [type] without its nullability, or a Java type's `!`. */
+        private fun plain(type: String) = type.trim().removeSuffix("?").removeSuffix("!")
+
+        /** A list's, a set's or an array's type, its items' in the second group. */
+        private val COLLECTION = Regex("""(kotlin\.collections\.(?:\(Mutable\)|Mutable)?\w*(?:List|Set|Collection)|java\.util\.\w*(?:List|Set|Collection)|kotlin\.Array)<(?:out |\(out\) |\? extends )?(.+)>""")
 
         private val KINDS = mapOf(
             "java.time.LocalDate" to LayoutMigration.Kind.DATE,
@@ -228,10 +231,12 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
             "java.time.ZonedDateTime" to LayoutMigration.Kind.DATE_TIME,
             "java.time.OffsetDateTime" to LayoutMigration.Kind.DATE_TIME,
             "java.time.Instant" to LayoutMigration.Kind.DATE_TIME,
+            "java.util.Date" to LayoutMigration.Kind.DATE_TIME,
             "java.time.Duration" to LayoutMigration.Kind.DURATION,
             "java.time.Period" to LayoutMigration.Kind.DURATION,
             "kotlin.Double" to LayoutMigration.Kind.FLOAT, "java.lang.Double" to LayoutMigration.Kind.FLOAT, "double" to LayoutMigration.Kind.FLOAT,
             "kotlin.Float" to LayoutMigration.Kind.FLOAT, "java.lang.Float" to LayoutMigration.Kind.FLOAT, "float" to LayoutMigration.Kind.FLOAT,
+            "kotlin.DoubleArray" to LayoutMigration.Kind.FLOAT, "kotlin.FloatArray" to LayoutMigration.Kind.FLOAT,
             "kotlin.ByteArray" to LayoutMigration.Kind.BYTES, "byte[]" to LayoutMigration.Kind.BYTES,
         )
     }

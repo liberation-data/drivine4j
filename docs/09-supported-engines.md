@@ -253,14 +253,16 @@ It is experimental, opted in to with `@OptIn(ExperimentalStoreLayoutMigration::c
 the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
 dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
-fragment's fields (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
+fragment's fields of a temporal type (a `java.util.Date` is a moment), a float or bytes, or a list, a set or an array
+of one (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
 relationship fragment's. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
 that are no value of their declared kind, the properties whose values all read as one kind (candidates to declare), and
 the uniqueness constraints' keys that may collide. A migration ends with a `MigrationReport` whose status says how:
-`migrated`, `current` or `empty` (nothing to do), `invalid` (a value not of its kind: declare it otherwise, or pass
-`keepInvalid = true`), `collisions` (keys a uniqueness constraint holds once that layout 2 reads as one: correct them
-with plain SQL and run it again), `refused` (a graph of another layout, or one changed since its migration began, or
-resumed with other declarations), or `failed` (the store's error). One stopped at any moment, or by `collisions`, is
+`migrated`, `current` or `empty` (nothing to do), `dryRun` (a dry run's), `inProgress` (a dry run of a graph part way
+through a migration, which only resuming it goes on with), `invalid` (a value not of its kind: declare it otherwise, or
+pass `keepInvalid = true`), `collisions` (keys a uniqueness constraint holds once that layout 2 reads as one: correct
+them with plain SQL and run it again), `refused` (a graph of another layout, or one changed since its migration began,
+or resumed, before every row is written, with other declarations or `keepInvalid`), or `failed` (the store's error). One stopped at any moment, or by `collisions`, is
 resumed by running it again with the same declarations. It makes no index or constraint, which the application's schema
 plan makes at its next start, and leaves the count store unseeded.
 

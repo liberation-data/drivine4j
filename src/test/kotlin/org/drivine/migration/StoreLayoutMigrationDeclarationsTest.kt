@@ -83,4 +83,33 @@ class StoreLayoutMigrationDeclarationsTest {
             StoreLayoutMigration.declarationsOf(Alarm::class.java).toSet(),
         )
     }
+
+    @Test
+    fun `a Java node fragment's and relationship fragment's fields are declared as a Kotlin one's`() {
+        val each = listOf("days" to Kind.DATE, "weight" to Kind.FLOAT, "stamped" to Kind.DATE_TIME)
+        assertEquals(
+            (each + ("born" to Kind.DATE)).map { (p, k) -> Declaration("JavaDated", p, k) }.toSet(),
+            StoreLayoutMigration.declarationsOf(JavaDated.Node::class.java).toSet(),
+        )
+        assertEquals(
+            (each + ("since" to Kind.DATE)).map { (p, k) -> Declaration("LINKS", p, k) }.toSet(),
+            StoreLayoutMigration.declarationsOf("LINKS", JavaDated.Link::class.java).toSet(),
+        )
+    }
+
+    @Test
+    fun `a Date is a moment, and a list of any class of list or set, or an array, is its items' kind`() {
+        assertEquals(Kind.DATE_TIME, StoreLayoutMigration.kindOf("java.util.Date"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("java.util.ArrayList<java.time.LocalDate>"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("kotlin.collections.HashSet<java.time.LocalDate>"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("kotlin.Array<java.time.LocalDate>"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("java.time.LocalDate[]"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("kotlin.Array<(out) java.time.LocalDate!>!"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("kotlin.collections.(Mutable)Set<java.time.LocalDate!>!"))
+        assertEquals(Kind.FLOAT, StoreLayoutMigration.kindOf("kotlin.DoubleArray"))
+        assertEquals(Kind.FLOAT, StoreLayoutMigration.kindOf("double[]"))
+        assertEquals(Kind.BYTES, StoreLayoutMigration.kindOf("byte[]"))
+        assertNull(StoreLayoutMigration.kindOf("java.time.LocalDate[][]"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.(Mutable)List<kotlin.collections.(Mutable)List<java.time.LocalDate!>!>!"))
+    }
 }
