@@ -81,7 +81,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull(SqliteSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
-        mapOf("id" to ids.json(root.id)),
+        mapOf("id" to ids.rootJson(root)),
     )
 
     /**

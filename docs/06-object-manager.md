@@ -283,6 +283,25 @@ fun getPerson(uuid: String): PersonCareer? {
 
 On Oracle, Postgres and SQLite the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id finds its node the same way. The graph engines compare the text as it is given.
 
+On the same stores, a node whose id another writer stored as a temporal value (`date('2026-01-05')`, say) is found only by
+that value, kind and text, so the class that loads it must declare an id that a save writes back the same. A load refuses
+it, by name, where the class doesn't, rather than give an object whose save would make a second node
+([#860](https://github.com/liberation-data/drivine4j/issues/860), [#861](https://github.com/liberation-data/drivine4j/issues/861)):
+
+- an id declared a `String`, a number, a `Boolean`, a `UUID` or an enum: `Day's @NodeId id is declared a String, but the
+  node whose id is '2026-01-05' holds it as a date: declare id as a date to load it.`
+- an id declared a `java.time` type (or a `Date`) of another kind or precision: `Day's @NodeId id is declared a LocalDate,
+  but the node whose id is '2026-01-05T10:11:12' holds it as a localdatetime, which a LocalDate can't save back: declare id
+  as a LocalDateTime to load it.` A date is held by a `LocalDate`, a local datetime by a `LocalDateTime`, a datetime at UTC
+  by an `OffsetDateTime`, an `Instant` or a `ZonedDateTime` (by a `Date` to the millisecond), and a local time by a
+  `LocalTime`. A datetime at another offset, a time and a duration are held by none: Jackson reads a datetime at UTC, and a
+  save writes an `OffsetTime`, a `Duration` and a `Period` as text or a number. Declare those `Any`.
+
+Every read that maps a node does so: a load, a search, a view's root and related nodes, a path, a grouped read's key and
+`update`'s load. An id declared `Any` is not refused: it is loaded as the value's text, and a save, `saveAll`, `update` or a
+view's save binds it as the value the node holds while it is the very text the load gave, as do a `load`, `delete`,
+`patchAll` or `relate` by it; an id changed since, or given afresh as the same text, is written as it is given.
+
 #### Count
 
 `count` returns a `Long` and is **consistent with `loadAll`** — it counts exactly the objects `loadAll` would return for the same type and filter. There are three overloads, mirroring `loadAll`/`deleteAll`:
