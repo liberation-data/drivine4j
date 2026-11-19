@@ -37,7 +37,8 @@ import java.time.temporal.TemporalAmount
  */
 object TemporalCoercer : ParameterCoercer {
 
-    private val time: DateTimeFormatter = DateTimeFormatterBuilder()
+    /** A time with its offset, at one width: all nine digits of its second, and its seconds on a minute too. */
+    internal val time: DateTimeFormatter = DateTimeFormatterBuilder()
         .appendValue(ChronoField.HOUR_OF_DAY, 2).appendLiteral(':')
         .appendValue(ChronoField.MINUTE_OF_HOUR, 2).appendLiteral(':')
         .appendValue(ChronoField.SECOND_OF_MINUTE, 2)

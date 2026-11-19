@@ -68,8 +68,8 @@ abstract class TemporalAmountsContract {
         assertEquals(listOf("a"), ids("MATCH (n:Amounts) WHERE n.`waits.queue` = duration('PT3M') RETURN n.id"))
         assertEquals(listOf("a"), ids("MATCH (n:Amounts) WHERE duration('PT-1.5S') IN n.durations RETURN n.id"))
         if (pm.type == DatabaseType.MEMGRAPH) {
-            // Memgraph has no time with an offset and no period: each is its text, as a save wrote it before.
-            assertEquals(listOf("a"), ids("MATCH (n:Amounts) WHERE n.time = '10:11:12+02:00' AND n.period = 'P1Y2M' RETURN n.id"))
+            // Memgraph has no time with an offset and no period: each is its text, a time at one width as FalkorDB's.
+            assertEquals(listOf("a"), ids("MATCH (n:Amounts) WHERE n.time = '10:11:12.000000000+02:00' AND n.period = 'P1Y2M' RETURN n.id"))
             return
         }
         assertEquals(listOf("a"), ids("MATCH (n:Amounts) WHERE n.time = time('10:11:12+02:00') RETURN n.id"))
