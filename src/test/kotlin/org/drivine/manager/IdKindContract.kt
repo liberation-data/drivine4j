@@ -229,6 +229,23 @@ abstract class IdKindContract {
         assertEquals(listOf("one", "text"), cypher("MATCH (n:IdKindRun:Keyed) RETURN n.name ORDER BY n.name"))
     }
 
+    /**
+     * A related node whose id, declared `Any`, a load gave as its tag's text is held by a `replace` as the tag, as the plan
+     * keys the node: its relationship is kept, and its node too under DELETE_UNREFERENCED. The plan's key marks a text apart
+     * (drivine-cypher-spec#391), so the text alone would drop it.
+     */
+    @ParameterizedTest(name = "held as {0}")
+    @MethodSource("kinds")
+    fun `a replace keeps a related node whose id declared Any was loaded from a tag`(literal: String, kind: String, text: String) {
+        reset(literal)
+        gom.save(gom.load("o", OwnedAny::class.java)!!, Replace(OwnedAny::keyed))
+        assertEquals(1, ownsEdges())
+        gom.save(gom.load("o", OwnedAny::class.java)!!, Replace(OwnedAny::keyed, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        assertEquals(1, ownsEdges())
+        assertEquals(1, keyedCount())
+        assertEquals(1, heldAs(literal))
+    }
+
     @ParameterizedTest(name = "held as {0}")
     @MethodSource("kinds")
     fun `saves a view's related node whose id is declared Any onto the same node, by update too`(literal: String, kind: String, text: String) {
