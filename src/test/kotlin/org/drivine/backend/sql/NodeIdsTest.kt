@@ -137,7 +137,6 @@ class NodeIdsTest {
         assertEquals(tag["v"].asText(), key(Store.POSTGRES, moment))
         assertEquals(tag["v"].asText(), key(Store.ORACLE, moment))
         assertEquals("2024-01-02", key(Store.POSTGRES, LocalDate.of(2024, 1, 2)))
-        assertNull(NodeIds.temporalText("2024-01-02"))
         assertEquals("7", key(Store.POSTGRES, 7L))
         assertEquals("3", key(Store.ORACLE, 3.0))
         // The text and the date of one text, and the text and the number, key apart (drivine-cypher-spec#391); a float on

@@ -3,7 +3,6 @@ package org.drivine.backend.postgres
 import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.under
-import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.drivine.query.JdbcParameterCoercer
 import org.drivine.schema.SimilarityFunction

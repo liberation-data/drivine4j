@@ -94,8 +94,8 @@ internal class SqlSavePlan(
             if (depth == 0) rootNode(fragment, model, replaces, before) else relatedNode(fragment, model, before, after)
 
         /**
-         * The ids are compared as keys: a number with the text the store reads a JSON number back as, and a temporal value
-         * with its tag's text. An id read from the digest, as text, is first made the target's `@NodeId` type, as a save
+         * The ids are compared as keys ([org.drivine.cypher.store.IdSql.planKeyOf]): a number with the text the store reads a
+         * JSON number back as, a temporal value with its tag's text, and a text marked apart from both. An id read from the digest, as text, is first made the target's `@NodeId` type, as a save
          * writes it, so a temporal id is keyed by its tag's text and not by the text Jackson wrote it as.
          */
         override fun removal(field: Field, root: Int, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>) {

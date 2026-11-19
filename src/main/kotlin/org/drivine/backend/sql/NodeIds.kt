@@ -3,9 +3,6 @@ package org.drivine.backend.sql
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.Store
-import org.drivine.cypher.json.CypherJson
-import org.drivine.cypher.json.ObjectNode
-import org.drivine.cypher.store.ValueLayout
 import org.drivine.mapper.HeldTemporals
 import org.drivine.mapper.toPropertyValue
 import org.drivine.model.FragmentModel
@@ -74,17 +71,6 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
             val held = HeldTemporals.of(id) ?: return null
             val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type ?: return null
             return held.value().takeIf { type.isAssignableFrom(String::class.java) && type != String::class.java }
-        }
-
-        /**
-         * The text a temporal [id] is held by in its tag, its canonical text `v` ([ValueLayout.TEXT]), as the module writes
-         * it ([CypherJson.temporalTag]); its text where the module keeps it as one; null for an id that is no temporal value.
-         * A write plan keys such a node by it, and reads a stored id back as it, so the two agree.
-         */
-        fun temporalText(id: Any): String? = when (val tag = CypherJson.temporalTag(id)) {
-            null -> null
-            is ObjectNode -> tag[ValueLayout.TEXT]?.textValue()
-            else -> tag.textValue()
         }
     }
 }

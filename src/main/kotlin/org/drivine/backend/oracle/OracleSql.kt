@@ -6,7 +6,6 @@ import org.drivine.backend.sql.SqlKind
 import org.drivine.model.Stamps
 import org.drivine.query.SqlParameters
 import org.drivine.schema.SimilarityFunction
-import java.math.BigDecimal
 import org.drivine.cypher.store.OracleSql as Shared
 
 /** What `JSON_VALUE` is told to return to read a property as this kind: nothing for text, which it returns by default. */
@@ -57,9 +56,9 @@ internal object OracleSql {
             "(SELECT ${Shared.valueClass("JSON(i.v EXTENDED)")}, ${Shared.valueKey("JSON(i.v EXTENDED)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
 
     /**
-     * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
-     * as its text `v`, anything else as `JSON_VALUE` reads it, as the module's Postgres write function reads a target's id
-     * (`COALESCE(props -> key ->> 'v', props ->> key)`) and SQLite's writer does ([org.drivine.backend.sqlite.SqliteSql.keyText]).
+     * The id held under [key] of the node [alias] as its text: a temporal value's tag read as its text `v`, anything else as
+     * `JSON_VALUE` reads it, as SQLite's select does ([org.drivine.backend.sqlite.SqliteSql.keyText]). A write plan keys a
+     * target by the module's [org.drivine.cypher.store.IdSql.planKey], not by this text.
      */
     fun keyText(alias: String, key: String): String =
         "COALESCE(JSON_VALUE($alias.props, ${path(key, ".${org.drivine.cypher.store.ValueLayout.TEXT}")}), JSON_VALUE($alias.props, ${path(key)}))"
