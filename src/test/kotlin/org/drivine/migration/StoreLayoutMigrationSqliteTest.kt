@@ -1,5 +1,6 @@
 package org.drivine.migration
 
+import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.connection.StoreLayoutException
@@ -11,10 +12,15 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Test
+import org.mockito.Mockito
+import org.springframework.jdbc.datasource.ConnectionHolder
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
+import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -94,5 +100,114 @@ class StoreLayoutMigrationSqliteTest {
         // Layout 1's indexes are dropped; the migration made none, and no checkpoint is left.
         val objects = snapshot(path).filter { it.startsWith("drivine_") }.map { it.substringBefore('|') }
         assertTrue(objects.none { it.startsWith("drivine_uq_") || it == "drivine_migrate2" }, "$objects")
+    }
+
+    @Test
+    fun `a run stopped by a failed batch is reported failed, its committed batches kept, and resumed to the end once the store is fixed`() {
+        val path = fixture()
+        val provider = provider(path)
+        // The Robot's write fails, in the third batch of two: the two before it are committed, the rest unwritten.
+        sql(path, "CREATE TRIGGER test_stop BEFORE UPDATE ON drivine_node WHEN OLD.nid = 6 BEGIN SELECT RAISE(ABORT, 'stopped by the test'); END")
+        val failed = StoreLayoutMigration(provider).migrate(declarations, batchSize = 2)
+        assertEquals(Status.FAILED, failed.status, failed.message)
+        assertTrue(failed.message.orEmpty().contains("stopped by the test"), failed.message)
+        assertTrue(props(path, 1) != "{\"born\":\"1815-12-10\",\"height\":1.65,\"name\":\"Ada\",\"visits\":3}", "a committed batch is kept: ${props(path, 1)}")
+        assertEquals("{\"\$t\":1,\"\$x\":\"y\",\"name\":\"R2\"}", props(path, 6), "the failed batch is rolled back")
+        assertFailsWith<StoreLayoutException> { provider(path).connect() }
+
+        sql(path, "DROP TRIGGER test_stop")
+        assertEquals(Status.COLLISIONS, StoreLayoutMigration(provider).migrate(declarations, batchSize = 2).status)
+        sql(path, "DELETE FROM drivine_node WHERE nid = 8")
+        val migrated = StoreLayoutMigration(provider).migrate(declarations, batchSize = 2)
+        assertEquals(Status.MIGRATED, migrated.status, migrated.message)
+        provider.end()
+
+        // Each row rewritten once: the Robot's `$t` is the user's, not escaped twice.
+        val after = provider(path)
+        val pm = NonTransactionalPersistenceManager(after, "migration", DatabaseType.SQLITE, SubtypeRegistry())
+        fun one(cypher: String): Any? = pm.query(QuerySpecification.withStatement(CypherStatement(cypher))).single()
+        assertEquals(1L, (one("MATCH (r:Robot) RETURN r.`\$t`") as Number).toLong())
+        assertEquals("1815-12-10", one("MATCH (p:Person {name: 'Ada'}) RETURN toString(p.born)"))
+        after.end()
+    }
+
+    @Test
+    fun `a graph in layout 2 is current, and another run of a migrated graph finds nothing to do`() {
+        val fresh = directory.resolve("fresh.sqlite").toString()
+        val made = provider(fresh)
+        made.connect().release()
+        NonTransactionalPersistenceManager(made, "migration", DatabaseType.SQLITE, SubtypeRegistry())
+            .execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Person {name: 'Ada', born: date('1815-12-10')})")))
+        val untouched = snapshot(fresh)
+        assertEquals(Status.CURRENT, StoreLayoutMigration(made).migrate(declarations).status)
+        assertEquals(untouched, snapshot(fresh), "a current graph is left as it is")
+        made.end()
+
+        val path = fixture()
+        val provider = provider(path)
+        assertEquals(Status.COLLISIONS, StoreLayoutMigration(provider).migrate(declarations).status)
+        sql(path, "DELETE FROM drivine_node WHERE nid = 8")
+        assertEquals(Status.MIGRATED, StoreLayoutMigration(provider).migrate(declarations).status)
+        assertEquals(Status.CURRENT, StoreLayoutMigration(provider).migrate(declarations).status)
+        provider.end()
+    }
+
+    @Test
+    fun `a value not of its declared kind refuses the graph before anything is written, and a dry run that keeps it names it`() {
+        val path = fixture()
+        val provider = provider(path)
+        val untouched = snapshot(path)
+        val wrong = declarations + Declaration("Person", "name", Kind.DATE)
+        val invalid = StoreLayoutMigration(provider).migrate(wrong)
+        assertEquals(Status.INVALID, invalid.status, invalid.message)
+        assertEquals(untouched, snapshot(path), "an invalid graph is refused before any write")
+        val kept = StoreLayoutMigration(provider).migrate(wrong, dryRun = true, keepInvalid = true)
+        assertEquals(Status.DRY_RUN, kept.status, kept.message)
+        assertTrue(kept.invalidCount > 0, "$kept")
+        assertEquals(untouched, snapshot(path))
+        provider.end()
+    }
+
+    @Test
+    fun `a request the module refuses, and a store that keeps no graph, are refused before any connection`() {
+        val path = fixture()
+        val provider = provider(path)
+        assertFailsWith<IllegalArgumentException> { StoreLayoutMigration(provider).migrate(declarations, batchSize = 0) }
+        assertFailsWith<IllegalArgumentException> {
+            StoreLayoutMigration(provider).migrate(listOf(Declaration("Person", "born", Kind.DATE), Declaration("Person", "born", Kind.DATE_TIME)))
+        }
+        provider.end()
+        val neo4j = JdbcConnectionProvider("neo4j", DatabaseType.NEO4J, Mockito.mock(DataSource::class.java))
+        assertFailsWith<DrivineException> { StoreLayoutMigration(neo4j) }
+    }
+
+    @Test
+    fun `a migration is refused on a connection of the application's transaction, which would hold its writes and roll them back`() {
+        val path = fixture()
+        val untouched = snapshot(path)
+        val held = DriverManager.getConnection("jdbc:sqlite:$path").apply { autoCommit = false }
+        val source = Mockito.mock(DataSource::class.java)
+        val provider = JdbcConnectionProvider("migration", DatabaseType.SQLITE, TransactionAwareDataSourceProxy(source), graphName = "drivine")
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(source, ConnectionHolder(held))
+        try {
+            val refused = assertFailsWith<DrivineException> { StoreLayoutMigration(provider).migrate(declarations) }
+            assertTrue(refused.message.orEmpty().contains("outside a transaction"), refused.message)
+        } finally {
+            TransactionSynchronizationManager.unbindResource(source)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+            held.rollback()
+            held.close()
+        }
+        assertEquals(untouched, snapshot(path))
+    }
+
+    private fun sql(path: String, statement: String) =
+        DriverManager.getConnection("jdbc:sqlite:$path").use { it.createStatement().executeUpdate(statement) }
+
+    private fun props(path: String, nid: Int): String = DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
+        c.createStatement().executeQuery("SELECT props FROM drivine_node WHERE nid = $nid").use { rs -> rs.next(); rs.getString(1) }
     }
 }

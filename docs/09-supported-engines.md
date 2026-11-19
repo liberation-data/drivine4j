@@ -245,7 +245,24 @@ reads it on its first connection, before anything is made. A graph an earlier Dr
 node but Drivine's own, its stamp and its schema marker, has that layout's indexes dropped and is stamped layout 2.
 One that holds the application's nodes is refused, on that connection and every one after it, with a
 `StoreLayoutException` that names the graph and says what to do: export it with the Drivine version that wrote it, and
-import it with this one. Nothing is migrated. A graph a later Drivine stamped with a later layout is refused too.
+import it with this one, or migrate it in place (below). A graph a later Drivine stamped with a later layout is refused too.
+
+**Migrating a graph from layout 1 to layout 2.** `org.drivine.migration.StoreLayoutMigration` moves a graph on Oracle,
+Postgres or SQLite from layout 1 to layout 2 in place, by the shared compiler's migrator, which every Drivine runs alike.
+It is experimental, opted in to with `@OptIn(ExperimentalStoreLayoutMigration::class)`. Run it while nothing else uses
+the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
+dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
+property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
+fragment's fields (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
+relationship fragment's. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
+that are no value of their declared kind, the properties whose values all read as one kind (candidates to declare), and
+the uniqueness constraints' keys that may collide. A migration ends with a `MigrationReport` whose status says how:
+`migrated`, `current` or `empty` (nothing to do), `invalid` (a value not of its kind: declare it otherwise, or pass
+`keepInvalid = true`), `collisions` (keys a uniqueness constraint holds once that layout 2 reads as one: correct them
+with plain SQL and run it again), `refused` (a graph of another layout, or one changed since its migration began, or
+resumed with other declarations), or `failed` (the store's error). One stopped at any moment, or by `collisions`, is
+resumed by running it again with the same declarations. It makes no index or constraint, which the application's schema
+plan makes at its next start, and leaves the count store unseeded.
 
 **Hand-written SQL and the indexes.** In layout 2, the index Drivine makes for a range index or a uniqueness
 constraint holds a property as layout 2 holds it, not as its text:

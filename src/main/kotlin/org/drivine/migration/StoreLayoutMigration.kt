@@ -57,6 +57,8 @@ annotation class ExperimentalStoreLayoutMigration
  * What stays drivine4j's: the connections. Statements run on a connection of their own that neither makes the graph's
  * tables nor judges its layout, as [JdbcConnectionProvider.connect] would, and refuse the graph; the lock is held on
  * another, in a transaction left open until the migration ends; a transaction's statements commit together or not at all.
+ * A migration given a connection of the application's transaction (a Spring or JTA one) is refused before it reads the
+ * graph, as that transaction would hold every round's writes until it ends.
  *
  * @param provider the store and graph to migrate
  */
@@ -87,6 +89,11 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
         val work = provider.connectUnjudged()
         var lock: JdbcConnection? = null
         try {
+            // A transaction of the application's (Spring's, or JTA's) would hold every round's writes, and the lock's, until it
+            // ends, and the lock's rollback would mark it to roll back: the migration is run outside one.
+            if (work.joined) {
+                throw DrivineException("A store layout migration of '${store.name}' runs on connections of its own, and was given one in a transaction of the application's: run it outside a transaction.")
+            }
             var step = migrator.start(request)
             while (step is MigrationStep.Run) {
                 val outcomes = mutableListOf<MigrationOutcome>()
@@ -94,7 +101,11 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
                     val outcome = try {
                         when (action) {
                             is MigrationAction.Lock -> {
-                                lock = lock ?: provider.connectUnjudged().also { held ->
+                                // Kept as soon as it is had, so the finally below gives it back where its transaction or
+                                // its statement fails, as Oracle's does when another migration holds the row past its wait.
+                                if (lock == null) {
+                                    val held = provider.connectUnjudged()
+                                    lock = held
                                     held.startTransaction()
                                     held.query(QuerySpecification.withStatement(action.statement))
                                 }

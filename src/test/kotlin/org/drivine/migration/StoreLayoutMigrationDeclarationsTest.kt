@@ -69,4 +69,18 @@ class StoreLayoutMigrationDeclarationsTest {
         assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.collections.List<java.time.LocalDate>>"))
         assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.String>"))
     }
+
+    @NodeFragment(labels = ["Signal"])
+    open class Signal(@NodeId open val id: String = "", open val at: Instant? = null)
+
+    @NodeFragment(labels = ["Alarm"])
+    class Alarm(override val id: String = "", override val at: Instant? = null, val level: Double = 0.0) : Signal(id, at)
+
+    @Test
+    fun `a subtype's fields are declared under its own labels and those it inherits`() {
+        assertEquals(
+            setOf("Alarm", "Signal").flatMap { label -> listOf(Declaration(label, "at", Kind.DATE_TIME), Declaration(label, "level", Kind.FLOAT)) }.toSet(),
+            StoreLayoutMigration.declarationsOf(Alarm::class.java).toSet(),
+        )
+    }
 }
