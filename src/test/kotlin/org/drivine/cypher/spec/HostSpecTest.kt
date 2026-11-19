@@ -30,10 +30,12 @@ import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 import java.sql.SQLException
 import java.sql.Types
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetTime
+import java.time.Period
 import java.time.ZonedDateTime
 import java.time.format.DateTimeParseException
 import java.util.Base64
@@ -447,9 +449,11 @@ class HostSpecTest {
             setOf(BYTES) -> Base64.getDecoder().decode(value[BYTES] as String)
             setOf(TEMPORAL, "text") -> (value["text"] as String).let { text ->
                 val kind = value[TEMPORAL] as String
-                // A text no java.time value of its kind holds, as a month 13, and any duration, which java.time splits over
-                // two types: given as the module's own value of the kind, as a save gives a temporal a load held as its tag
-                // (HeldTemporals), so the module reads the text, and refuses one that isn't of its kind.
+                // A text no java.time value of its kind holds, a value java.time reads but can't be (a month 13), or a
+                // duration neither a Period nor a Duration writes as the text: given as the module's own value of the kind, as
+                // a save gives a temporal a load held as its tag (HeldTemporals), so the module reads the text, and refuses one
+                // that isn't of its kind. A duration a save would give as a Period or a Duration is given as one, and a text
+                // java.time can't read at all fails here, so no step a save gives as java.time is run otherwise.
                 try {
                     when (kind) {
                         "DATE" -> LocalDate.parse(text)
@@ -457,10 +461,13 @@ class HostSpecTest {
                         "TIME" -> OffsetTime.parse(text)
                         "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
                         "DATE_TIME" -> ZonedDateTime.parse(text)
-                        "DURATION" -> TemporalValue(Temporal.DURATION, text)
+                        "DURATION" -> listOf<(String) -> Any>(Period::parse, Duration::parse)
+                            .firstNotNullOfOrNull { parse -> runCatching { parse(text) }.getOrNull()?.takeIf { it.toString() == text } }
+                            ?: TemporalValue(Temporal.DURATION, text)
                         else -> error("No temporal kind $kind in the runner")
                     }
-                } catch (_: DateTimeParseException) {
+                } catch (e: DateTimeParseException) {
+                    if (e.cause == null) throw IllegalArgumentException("$text is no ISO text java.time reads as a $kind: the runner can't give it as a save would", e)
                     TemporalValue(Temporal.valueOf(kind), text)
                 }
             }

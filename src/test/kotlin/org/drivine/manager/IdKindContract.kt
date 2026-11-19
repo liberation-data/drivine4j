@@ -292,7 +292,8 @@ abstract class IdKindContract {
         // own exception (#840).
         val lmt = OffsetDateTime.of(1971, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -44, -30))
         val refused = assertFailsWith<DrivineException> { gom.save(KeyedOffsetDateTime(lmt, "lmt")) }
-        assertTrue(!refused.message.isNullOrBlank(), "$refused")
+        assertTrue(refused.message.orEmpty().startsWith("A value given as a DATE_TIME isn't one: "), "$refused")
+        assertTrue(refused.message.orEmpty().endsWith("(the store holds an offset to the minute)."), "$refused")
         assertEquals(0, keyedCount())
     }
 
