@@ -39,6 +39,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -105,6 +106,16 @@ class HostSpecTest {
          * the hold comes off when it passes. Matched within the note, as the module's HostSpecTest matches it.
          */
         const val HELD = "drivine4j#421 (layout 2)"
+
+        /**
+         * The refusals the compiler names a time in by Java's text for it, which leaves out seconds that are zero, until it
+         * writes them with their seconds (liberation-data/drivine-cypher-spec#398): the spec's message, and the JVM's. The
+         * step must give the JVM's, so the hold comes off once it gives the spec's.
+         */
+        val JVM_TIME_TEXT = mapOf(
+            "A value given as a TIME isn't one: 12:00:00+05:30:15 (the store holds an offset to the minute)." to
+                "A value given as a TIME isn't one: 12:00+05:30:15 (the store holds an offset to the minute).",
+        )
 
         /** SQLite's errors of a call it won't make, which no held step's failure can be: the step names no function of the store's. */
         val RUNNER_ERRORS = listOf("no such function", "wrong number of arguments")
@@ -411,7 +422,14 @@ class HostSpecTest {
         }
         if ("error" in step) {
             val error = step["error"] as? String ?: throw IllegalArgumentException("$where: error is a text, not ${step["error"]}")
-            assertEquals(error, got.exceptionOrNull()?.message ?: fail("$where: refused with \"$error\", but wrote ${got.getOrNull()}"), where)
+            val message = got.exceptionOrNull()?.message ?: fail("$where: refused with \"$error\", but wrote ${got.getOrNull()}")
+            val held = JVM_TIME_TEXT[error]
+            if (held == null) {
+                assertEquals(error, message, where)
+            } else {
+                assertNotEquals(error, message, "$where: held for liberation-data/drivine-cypher-spec#398, and passing: take the hold out")
+                assertEquals(held, message, where)
+            }
         } else {
             assertEquals(step["result"] as String, got.getOrElse { fail("$where: refused: ${it.message}") }, where)
         }
