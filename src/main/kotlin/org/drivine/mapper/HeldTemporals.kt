@@ -76,9 +76,10 @@ internal object HeldTemporals {
         return Held(kind, text)
     }
 
+    /** Keeps [tag] by its text, weakly: what is held is given a copy of the text, so it doesn't keep the key alive. */
     private fun keep(tag: Held) {
         expunge()
-        held[Key(tag.text, gone)] = tag
+        held[Key(tag.text, gone)] = tag.copy(text = StringBuilder(tag.text).toString())
     }
 
     private fun expunge() {

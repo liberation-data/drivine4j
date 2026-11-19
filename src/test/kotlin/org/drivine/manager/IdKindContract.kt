@@ -233,6 +233,18 @@ abstract class IdKindContract {
         assertEquals(1, heldAs(literal))
     }
 
+    @Test
+    fun `saves a date's node and a text's node of the same text, both loaded into Any, each onto its own node`() {
+        cypher("CREATE (:IdKindRun:Keyed {id: date('2026-01-05'), name: 'date'}), (:IdKindRun:Keyed {id: '2026-01-05', name: 'text'})")
+        val loaded = gom.loadAll(KeyedAny::class.java).sortedBy { it.name }
+        assertEquals(listOf("date", "text"), loaded.map { it.name })
+        gom.saveAll(loaded.map { it.copy(name = "${it.name}-batched") })
+        gom.loadAll(KeyedAny::class.java).forEach { gom.save(it.copy(name = "${it.name}-saved")) }
+        assertEquals(2, keyedCount())
+        assertEquals(listOf("date-batched-saved"), cypher("MATCH (n:IdKindRun:Keyed) WHERE n.id = date('2026-01-05') RETURN n.name"))
+        assertEquals(listOf("text-batched-saved"), cypher("MATCH (n:IdKindRun:Keyed) WHERE n.id = '2026-01-05' RETURN n.name"))
+    }
+
     // ----- Declared a java.time type (#861) -----
 
     @ParameterizedTest(name = "{1} over {0}")
