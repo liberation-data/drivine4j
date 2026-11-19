@@ -181,7 +181,8 @@ internal class SqlSavePlan(
             fragment: Any, model: FragmentModel, values: Map<String, Any?>, previous: JsonNode?, nullPolicy: NullPolicy,
             writeFields: Set<String>?, readsStore: Boolean, index: String? = null, root: RootStep? = null,
         ): Int {
-            val id = idOf(model, values)
+            // An id loaded as the text of the tag its node holds is bound as that tag, while unchanged (see NodeIds.held).
+            val id = NodeIds.held(model, idOf(model, values))
             val key = keyOf(model)
             val writing = NodeWriting(model, values, clears = nullPolicy == NullPolicy.CLEAR, writeFields, previous, readsStore)
             val labels = writing.labels()

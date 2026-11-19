@@ -6,8 +6,10 @@ import org.drivine.cypher.api.Store
 import org.drivine.cypher.json.CypherJson
 import org.drivine.cypher.json.ObjectNode
 import org.drivine.cypher.store.ValueLayout
+import org.drivine.mapper.HeldTemporals
 import org.drivine.mapper.toPropertyValue
 import org.drivine.model.FragmentModel
+import org.drivine.query.StampWrite
 
 /**
  * A node's id as a SQL store holds it, in the store layout 2 (liberation-data/drivine-cypher-spec#161), and an id given to
@@ -33,6 +35,7 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
      */
     fun of(model: FragmentModel, given: Any?): Any? {
         if (given == null) return null
+        heldTag(model, given)?.let { return it }
         val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type?.kotlin?.javaObjectType ?: return given
         val typed = if (type == String::class.java || type.isInstance(given)) given else try {
             objectMapper.convertValue(given, type)
@@ -52,7 +55,26 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
      */
     fun json(id: Any): String = CypherCompile.storeText(id, store)
 
+    /** The id of the save's [root] as the JSON its node holds it as, as the save bound it ([held]): what finds it to read its stamp. */
+    fun rootJson(root: StampWrite): String = json(held(FragmentModel.from(root.fragmentClass), root.id))
+
     companion object {
+        /**
+         * [id], a `@NodeId` value of a node of [model], as a save binds it: the tag the node held it as, where [id] is the
+         * very text a load read that tag as and the id is declared a type that takes the text as it is, such as `Any`
+         * ([HeldTemporals]); else [id]. So a node whose id is a temporal, loaded into such an id and saved while the id is
+         * unchanged, is found, and written, by its tag, as it is held: the text alone finds no node (drivine4j#861). An id
+         * declared a scalar or a temporal type never holds such a text: its load is refused, or read as the type
+         * ([org.drivine.mapper.IdKinds]).
+         */
+        fun held(model: FragmentModel, id: Any): Any = heldTag(model, id) ?: id
+
+        private fun heldTag(model: FragmentModel, id: Any): Any? {
+            val held = HeldTemporals.of(id) ?: return null
+            val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type ?: return null
+            return held.value().takeIf { type.isAssignableFrom(String::class.java) && type != String::class.java }
+        }
+
         /**
          * The text a temporal [id] is held by in its tag, its canonical text `v` ([ValueLayout.TEXT]), as the module writes
          * it ([CypherJson.temporalTag]); its text where the module keeps it as one; null for an id that is no temporal value.
