@@ -254,7 +254,8 @@ and `MigrationReport` (in `org.drivine.migration`) may change in any release unt
 while nothing else uses the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
 dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
-fragment's fields of a temporal type (a `java.util.Date` is a moment), a float or bytes, or a list, a set or an array
+fragment's fields of a temporal type (a `java.util.Date` is a moment; a `java.time.Duration` is not declared, as layout 1
+saved one as its seconds, a number, which it keeps), a float or bytes, or a list, a set or an array
 of a temporal type or a float (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
 relationship fragment's. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
 that are no value of their declared kind, the properties whose values all read as one kind (candidates to declare), and

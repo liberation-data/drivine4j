@@ -42,7 +42,7 @@ class StoreLayoutMigrationDeclarationsTest {
     fun `a node fragment's temporal, float and bytes fields are declared under each of its labels`() {
         val expected = listOf(
             "born" to Kind.DATE, "wakes" to Kind.LOCAL_TIME, "meets" to Kind.TIME, "seen" to Kind.LOCAL_DATE_TIME,
-            "at" to Kind.DATE_TIME, "logged" to Kind.DATE_TIME, "tenure" to Kind.DURATION, "height" to Kind.FLOAT,
+            "at" to Kind.DATE_TIME, "logged" to Kind.DATE_TIME, "height" to Kind.FLOAT,
             "ratio" to Kind.FLOAT, "photo" to Kind.BYTES, "days" to Kind.DATE,
         )
         val declared = StoreLayoutMigration.declarationsOf(Person::class.java)
@@ -58,6 +58,25 @@ class StoreLayoutMigrationDeclarationsTest {
             setOf(Declaration("KNOWS", "since", Kind.DATE), Declaration("KNOWS", "weight", Kind.FLOAT)),
             StoreLayoutMigration.declarationsOf("KNOWS", Knows::class.java).toSet(),
         )
+    }
+
+    @Test
+    fun `a Duration is not declared, as layout 1 saved it as its seconds, a number, which the module reads as no duration`() {
+        // How drivine4j 0.7.0, the last of layout 1, saved a field: its mapper's JavaTimeModule, dates as text, not the
+        // Duration serializer drivine4j#862 added later.
+        val layout1 = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+            .registerModule(com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
+            .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        val props = layout1.writeValueAsString(mapOf("tenure" to Duration.ofHours(1), "span" to java.time.Period.ofDays(2)))
+        val rewrite = @OptIn(org.drivine.DrivineInternalApi::class) org.drivine.cypher.store.migrate.LayoutMigration.rewrite(
+            props, org.drivine.cypher.api.Store.SQLITE, listOf("Person"),
+            listOf(org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Person", "tenure", org.drivine.cypher.store.migrate.LayoutMigration.Kind.DURATION)),
+        )
+        assertEquals(listOf("tenure"), rewrite.invalid.map { it.property }, props)
+        assertNull(StoreLayoutMigration.kindOf("java.time.Duration"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<java.time.Duration>"))
+        // A Period JavaTimeModule wrote as its text, which the module reads as a duration.
+        assertEquals(Kind.DURATION, StoreLayoutMigration.kindOf("java.time.Period"))
     }
 
     @Test

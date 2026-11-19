@@ -176,7 +176,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment), a float or bytes, or a list, a set or an array of a temporal type or a float, by the
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, by the
          * name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
@@ -206,7 +206,8 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
         /**
          * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`,
          * or as Kotlin writes a Java field's, `kotlin.collections.(Mutable)List<java.time.LocalDate!>!`) is declared: its own, or
-         * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, and for a list of lists or
+         * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, for a `java.time.Duration`,
+         * which layout 1 saved as its seconds, a number, that the module reads as no duration, and for a list of lists or
          * of arrays (`DoubleArray`, `ByteArray`), whose items the module reads as no value of a kind, so a declaration would
          * refuse the migration.
          */
@@ -233,7 +234,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
             "java.time.OffsetDateTime" to Kind.DATE_TIME,
             "java.time.Instant" to Kind.DATE_TIME,
             "java.util.Date" to Kind.DATE_TIME,
-            "java.time.Duration" to Kind.DURATION,
+            // Not a java.time.Duration: layout 1 saved one as its seconds, a number (before drivine4j#862), no duration.
             "java.time.Period" to Kind.DURATION,
             "kotlin.Double" to Kind.FLOAT, "java.lang.Double" to Kind.FLOAT, "double" to Kind.FLOAT,
             "kotlin.Float" to Kind.FLOAT, "java.lang.Float" to Kind.FLOAT, "float" to Kind.FLOAT,
