@@ -30,8 +30,9 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
     /**
      * [given] as a node of [model] holds its id: a value of the `@NodeId` field's type, as a save writes the field. A text
      * given for an id of another type is read as that type; a value of the type, or any value for a `String` id, is
-     * written as it is. Null where [given] is no value of the type, or where the class has no `@NodeId` field: no node is
-     * found by it.
+     * written as it is, except a text a load read from a temporal tag, given for an id declared `Any`: that is the tag
+     * ([held]). Null where [given] is no value of the type, or where the class has no `@NodeId` field: no node is found by
+     * it.
      */
     fun of(model: FragmentModel, given: Any?): Any? {
         if (given == null) return null

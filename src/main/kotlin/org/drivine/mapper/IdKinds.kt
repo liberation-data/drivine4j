@@ -33,8 +33,8 @@ import java.util.UUID
  * Either way a save of the loaded object made a second node, with no error. So each read that maps a node into a model
  * comes here first ([TransformPostProcessor]): a fragment, a view's root, related node and nested view, a relationship
  * fragment's node and a path's node, by every load, search, grouped key and update. A pair Jackson can't read is refused
- * here too, by name. An id declared `Any` (or any type that is none of these) is not refused: it is loaded as the text,
- * and a save binds it as the tag it was read from while it is unchanged ([HeldTemporals]).
+ * here too, by name. An id declared `Any` (or another type a `String` is, such as `CharSequence`) is not refused: it is
+ * loaded as the text, and a save binds it as the tag it was read from while it is unchanged ([HeldTemporals]).
  *
  * The messages are shared, in shape, with Drivine for TypeScript and drivine-python.
  */
