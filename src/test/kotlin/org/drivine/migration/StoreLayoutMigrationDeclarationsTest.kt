@@ -70,9 +70,12 @@ class StoreLayoutMigrationDeclarationsTest {
         val props = layout1.writeValueAsString(mapOf("tenure" to Duration.ofHours(1), "span" to java.time.Period.ofDays(2)))
         val rewrite = @OptIn(org.drivine.DrivineInternalApi::class) org.drivine.cypher.store.migrate.LayoutMigration.rewrite(
             props, org.drivine.cypher.api.Store.SQLITE, listOf("Person"),
-            listOf(org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Person", "tenure", org.drivine.cypher.store.migrate.LayoutMigration.Kind.DURATION)),
+            listOf("tenure", "span").map {
+                org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Person", it, org.drivine.cypher.store.migrate.LayoutMigration.Kind.DURATION)
+            },
         )
         assertEquals(listOf("tenure"), rewrite.invalid.map { it.property }, props)
+        assertEquals(listOf("span"), rewrite.changes.map { it.property }, props)
         assertNull(StoreLayoutMigration.kindOf("java.time.Duration"))
         assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<java.time.Duration>"))
         // A Period JavaTimeModule wrote as its text, which the module reads as a duration.
