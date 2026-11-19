@@ -5,7 +5,11 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.connection.StoreLayoutException
 import org.drivine.migration.MigrationReport.Status
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
@@ -18,6 +22,8 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
+import java.time.Duration
+import java.time.LocalDate
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -103,6 +109,37 @@ class StoreLayoutMigrationSqliteTest {
         // Layout 1's indexes are dropped; the migration made none, and no checkpoint is left.
         val objects = snapshot(path).filter { it.startsWith("drivine_") }.map { it.substringBefore('|') }
         assertTrue(objects.none { it.startsWith("drivine_uq_") || it == "drivine_migrate2" }, "$objects")
+    }
+
+    @NodeFragment(labels = ["Person"])
+    data class Timed(@NodeId val name: String, val born: LocalDate?, val tenure: Duration?)
+
+    @Test
+    fun `a Duration 0_7_0 saved as its seconds is kept a number by the migration, and loads back as the Duration it was`() {
+        // 0.7.0 saved a Duration as its seconds, a number, as Jackson's JavaTimeModule writes one (before drivine4j#862):
+        // the migration declares it no kind and keeps the number (drivine-cypher-spec#405), which this version still
+        // loads as the Duration, and saves again as a duration.
+        val path = fixture()
+        DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
+            c.createStatement().executeUpdate("UPDATE drivine_node SET props = json_set(props, '$.tenure', 3600.0) WHERE json_extract(props, '$.name') = 'Ada'")
+            c.createStatement().executeUpdate("DELETE FROM drivine_node WHERE nid = 8")
+        }
+        val provider = provider(path)
+        val timed = StoreLayoutMigration.declarationsOf(Timed::class.java)
+        assertEquals(listOf(Declaration("Person", "born", Kind.DATE)), timed)
+        val migrated = StoreLayoutMigration(provider).migrate(declarations + timed)
+        assertEquals(Status.MIGRATED, migrated.status, migrated.message)
+        provider.end()
+
+        val after = provider(path)
+        val pm = NonTransactionalPersistenceManager(after, "migration", DatabaseType.SQLITE, SubtypeRegistry())
+        assertEquals(3600L, (pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (p:Person {name: 'Ada'}) RETURN p.tenure"))).single() as Number).toLong())
+        val manager = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        val ada = manager.load("Ada", Timed::class.java)!!
+        assertEquals(Timed("Ada", LocalDate.of(1815, 12, 10), Duration.ofHours(1)), ada)
+        manager.save(ada.copy(tenure = Duration.ofMinutes(90)))
+        assertEquals(Duration.ofMinutes(90), manager.load("Ada", Timed::class.java)!!.tenure)
+        after.end()
     }
 
     @Test
