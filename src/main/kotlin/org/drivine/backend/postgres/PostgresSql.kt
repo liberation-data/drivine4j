@@ -143,17 +143,6 @@ internal object PostgresSql {
     }
 
     /**
-     * The id [id] as the text a write plan keys its node by, within the plan: what `->>` reads its stored property back as.
-     * A property is written as JSON, so a number is its JSON form, which `jsonb` keeps as it was written. A temporal value
-     * is held as its tag, and keyed by the tag's text, as the module writes it ([NodeIds.temporalText]). A node is found
-     * by its id's JSON, not by this text: see [NodeIds].
-     */
-    fun key(id: Any): String = NodeIds.temporalText(id) ?: when (id) {
-        is Number, is Boolean -> Neo4jObjectMapper.instance.writeValueAsString(id)
-        else -> id.toString()
-    }
-
-    /**
      * Whether the property [key] (as stored, [org.drivine.cypher.store.ValueLayout.escape]d) of the node [alias] is the id
      * whose JSON, as the node holds it ([NodeIds]), is the text [json]: the property's JSON compared with it, as a range
      * index or a uniqueness constraint is made over it ([Shared.indexed]), so the index answers it, and a temporal id's

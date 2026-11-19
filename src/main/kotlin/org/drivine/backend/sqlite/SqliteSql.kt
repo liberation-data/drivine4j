@@ -177,9 +177,6 @@ internal object SqliteSql {
         return "SELECT $read FROM json_each($parameter) v"
     }
 
-    /** An id as the text a write plan keys its node by: see [PostgresSql.key], whose text the stores share. */
-    fun key(id: Any): String = PostgresSql.key(id)
-
     /**
      * Whether the property [key] (as stored, [org.drivine.cypher.store.ValueLayout.escape]d) of the node [alias] is the id
      * whose JSON, as the node holds it ([org.drivine.backend.sql.NodeIds]), is [json], JSON text: its class and key, as a

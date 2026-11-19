@@ -7,17 +7,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.drivine.query.SqlParameters
+import org.drivine.connection.CypherCompile
+import org.drivine.cypher.api.Store
+import org.drivine.cypher.store.IdSql
 
 class OracleNamesTest {
 
     @Test
-    fun `a number is written as the plain form Oracle reads a JSON number back as`() {
-        assertEquals("3", OracleSql.key(3.0))
-        assertEquals("3", OracleSql.key(3.0f))
-        assertEquals("3", OracleSql.key(BigDecimal("3.00")))
-        assertEquals("2.5", OracleSql.key(2.5))
-        assertEquals("42", OracleSql.key(42L))
-        assertEquals("ada", OracleSql.key("ada"))
+    fun `a number is keyed in a plan as the plain form Oracle reads a JSON number back as, a text apart`() {
+        fun key(id: Any) = IdSql.planKeyOf(Store.ORACLE, CypherCompile.storeText(id, Store.ORACLE))
+        assertEquals("3", key(3.0))
+        assertEquals("3", key(3.0f))
+        assertEquals("3", key(BigDecimal("3.00")))
+        assertEquals("2.5", key(2.5))
+        assertEquals("42", key(42L))
+        assertEquals("0.0000001", key(1.0E-7))
+        // A text id is marked apart from a number that reads alike (drivine-cypher-spec#391).
+        assertEquals("t:ada", key("ada"))
+        assertEquals("t:3", key("3"))
     }
 
     @Test

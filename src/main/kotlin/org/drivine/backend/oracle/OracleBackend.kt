@@ -48,7 +48,6 @@ internal class OracleBackend(
     override fun select(graphClass: Class<*>, collectionSorts: List<CollectionSortSpec>, depthOverrides: Map<String, Int>, indexed: Boolean): OracleSelect =
         OracleSelect(graph, graphClass, collectionSorts, depthOverrides, if (indexed) labelled.current() else LabelledIndexes.NONE)
 
-    override fun key(id: Any): String = OracleSql.key(id)
 
     // ----- Searching -----
 

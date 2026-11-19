@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import com.fasterxml.jackson.databind.node.ObjectNode
+import org.drivine.cypher.api.Store
+import org.drivine.cypher.store.IdSql
 import org.drivine.backend.sql.WriteReturns
 import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
@@ -326,8 +328,9 @@ internal class SqlitePlanWriter(
         val held = strings(step["held"]).toSet()
         val keep = flag(step, "keep", false)
         val delete = flag(step, "delete", false)
-        // Each target's id as the text the plan keys it by in `ids` and `held`: a temporal value's tag as its text.
-        val key = SqliteSql.keyText("t", shape.key)
+        // Each target's id as the key the plan keys it by in `ids` and `held` (IdSql.planKey): a text id marked apart from a
+        // temporal value's tag, read as its text, or a number that reads alike (drivine-cypher-spec#391).
+        val key = IdSql.planKey(Store.SQLITE, "t", shape.key)
         val labels = SqliteSql.hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()
         // A relationship from the node to itself is read as leaving it, and so once when both directions are read.
         val reached = statements.rows(

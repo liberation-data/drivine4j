@@ -20,6 +20,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.StoredPropertyKeys
+import org.drivine.cypher.store.IdSql
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
@@ -60,10 +61,12 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     ): S
 
     /**
-     * An id as the text a write plan keys its node by, within the plan, and reads a target's stored id back as. A node is
-     * found by its id's JSON ([NodeIds]), not by this text.
+     * An id as the key a write plan keys its node by, within the plan, and reads a target's stored id back as: the module's
+     * of the id's JSON on the store ([IdSql.planKeyOf]), a text id marked apart from a temporal value or a number that reads
+     * alike (drivine-cypher-spec#391), a number as the store reads it back. A node is found by its id's JSON ([NodeIds]), not
+     * by this key.
      */
-    protected abstract fun key(id: Any): String
+    private fun key(id: Any): String = IdSql.planKeyOf(blocks.store, ids.json(id))
 
     /**
      * [statement], which finds the root of [select] by the id bound as [GraphBackend.ID_PARAM], binding the id it is given as
