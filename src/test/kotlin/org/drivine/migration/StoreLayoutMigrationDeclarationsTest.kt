@@ -90,6 +90,30 @@ class StoreLayoutMigrationDeclarationsTest {
         assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.String>"))
     }
 
+    @NodeFragment(labels = ["Sensor"])
+    data class Sensor(
+        @NodeId val id: String,
+        @org.drivine.annotation.JsonPacked val readings: List<Double>,
+        @field:org.drivine.annotation.JsonPacked val calibrated: List<LocalDate>? = null,
+        val level: Double,
+    )
+
+    @org.drivine.annotation.RelationshipFragment
+    data class Reads(@org.drivine.annotation.JsonPacked val samples: List<Double>, val target: Sensor)
+
+    @Test
+    fun `a JsonPacked field is not declared, as layout 1 saved it as a JSON text, which the module reads as no value of its kind`() {
+        assertEquals(listOf(Declaration("Sensor", "level", Kind.FLOAT)), StoreLayoutMigration.declarationsOf(Sensor::class.java))
+        assertEquals(emptyList(), StoreLayoutMigration.declarationsOf("READS", Reads::class.java))
+        // The text a @JsonPacked List<Double> is saved as.
+        val props = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper().writeValueAsString(mapOf("readings" to "[1.0,2.5]"))
+        val rewrite = @OptIn(org.drivine.DrivineInternalApi::class) org.drivine.cypher.store.migrate.LayoutMigration.rewrite(
+            props, org.drivine.cypher.api.Store.SQLITE, listOf("Sensor"),
+            listOf(org.drivine.cypher.store.migrate.LayoutMigration.Declaration("Sensor", "readings", org.drivine.cypher.store.migrate.LayoutMigration.Kind.FLOAT)),
+        )
+        assertEquals(listOf("readings"), rewrite.invalid.map { it.property }, props)
+    }
+
     @NodeFragment(labels = ["Signal"])
     open class Signal(@NodeId open val id: String = "", open val at: Instant? = null)
 

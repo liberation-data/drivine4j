@@ -256,7 +256,7 @@ dates or moments, which whole numbers are floats and which texts are bytes, so i
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
 fragment's fields of a temporal type (a `java.util.Date` is a moment; a `java.time.Duration` is not declared, as layout 1
 saved one as its seconds, a number, which it keeps), a float or bytes, or a list, a set or an array
-of a temporal type or a float (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
+of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
 relationship fragment's. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
 that are no value of their declared kind, the properties whose values all read as one kind (candidates to declare), and
 the uniqueness constraints' keys that may collide. A migration ends with a `MigrationReport` whose status says how:

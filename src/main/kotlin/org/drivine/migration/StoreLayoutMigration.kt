@@ -12,6 +12,7 @@ import org.drivine.cypher.store.migrate.MigrationRequest
 import org.drivine.cypher.store.migrate.MigrationStep
 import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.JsonPacked
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import kotlin.reflect.KClass
@@ -19,6 +20,7 @@ import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.time.Instant
 import java.util.UUID
 
@@ -176,13 +178,14 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, by the
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text, by the
          * name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
         fun declarationsOf(type: Class<*>): List<Declaration> {
             val model = FragmentModel.from(type)
-            return model.labels.flatMap { label -> declared(model, label) }
+            val packed = packed(type)
+            return model.labels.flatMap { label -> declared(model, label, packed) }
         }
 
         /**
@@ -190,17 +193,20 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          * [relationshipType]: each of its properties but the one that points at the node it reaches, as [declarationsOf].
          */
         @JvmStatic
-        fun declarationsOf(relationshipType: String, type: Class<*>): List<Declaration> =
-            type.kotlin.memberProperties.filter { property ->
+        fun declarationsOf(relationshipType: String, type: Class<*>): List<Declaration> {
+            val packed = packed(type)
+            return type.kotlin.memberProperties.filter { property ->
                 val target = (property.returnType.classifier as? KClass<*>)?.java
-                target?.isAnnotationPresent(NodeFragment::class.java) != true && target?.isAnnotationPresent(GraphView::class.java) != true
+                property.name !in packed &&
+                    target?.isAnnotationPresent(NodeFragment::class.java) != true && target?.isAnnotationPresent(GraphView::class.java) != true
             }.mapNotNull { property ->
                 val stored = property.findAnnotation<GraphProperty>()?.value?.takeIf { it.isNotEmpty() } ?: property.name
                 kindOf(property.returnType.toString())?.let { Declaration(relationshipType, stored, it) }
             }
+        }
 
-        private fun declared(model: FragmentModel, label: String) = model.fields
-            .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null }
+        private fun declared(model: FragmentModel, label: String, packed: Set<String>) = model.fields
+            .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null && it.name !in packed }
             .mapNotNull { field -> kindOf(field.typeString)?.let { Declaration(label, field.propertyName, it) } }
 
         /**
@@ -218,6 +224,17 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
                 ?: return KINDS[type]
             return if (COLLECTION.matches(item) || item.endsWith("[]") || item.endsWith("Array")) null else KINDS[item]
         }
+
+        /**
+         * The fields of [type] that are `@JsonPacked`, on the field, its getter or its constructor parameter: saved as a JSON
+         * text, which the module reads as no value of a kind, so a declaration would refuse the migration.
+         */
+        private fun packed(type: Class<*>): Set<String> =
+            INTROSPECTOR.serializationConfig.introspect(INTROSPECTOR.constructType(type)).findProperties()
+                .filter { p -> listOfNotNull(p.field, p.getter, p.constructorParameter).any { it.hasAnnotation(JsonPacked::class.java) } }
+                .map { it.name }.toSet()
+
+        private val INTROSPECTOR = jacksonObjectMapper()
 
         /** [type] without its nullability, or a Java type's `!`. */
         private fun plain(type: String) = type.trim().removeSuffix("?").removeSuffix("!")
