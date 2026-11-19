@@ -13,6 +13,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.OffsetTime
+import java.time.Period
 import java.time.ZoneOffset
 import java.time.temporal.TemporalAccessor
 import java.time.temporal.TemporalAmount
@@ -40,14 +41,17 @@ import java.util.UUID
  */
 internal object IdKinds {
 
-    /** The `java.time` type that holds each kind, as a node holds it, to suggest. */
-    private val HOLDERS: Map<Temporal, Class<*>> = mapOf(
-        Temporal.DATE to LocalDate::class.java,
-        Temporal.LOCAL_DATE_TIME to LocalDateTime::class.java,
-        Temporal.DATE_TIME to OffsetDateTime::class.java,
-        Temporal.TIME to OffsetTime::class.java,
-        Temporal.LOCAL_TIME to LocalTime::class.java,
-        Temporal.DURATION to Duration::class.java,
+    /**
+     * The `java.time` types that hold each kind, as a node holds it, to suggest: the first that saves the node's value back.
+     * A duration of time only (`PT26H`) is a `Duration`'s, one of months and days only a `Period`'s (liberation-data/drivine4j#862).
+     */
+    private val HOLDERS: Map<Temporal, List<Class<*>>> = mapOf(
+        Temporal.DATE to listOf(LocalDate::class.java),
+        Temporal.LOCAL_DATE_TIME to listOf(LocalDateTime::class.java),
+        Temporal.DATE_TIME to listOf(OffsetDateTime::class.java),
+        Temporal.TIME to listOf(OffsetTime::class.java),
+        Temporal.LOCAL_TIME to listOf(LocalTime::class.java),
+        Temporal.DURATION to listOf(Duration::class.java, Period::class.java),
     )
 
     /** Refuses [data], a node's map a load gives, mapped into [type], where its `@NodeId` is held as a tag the id can't save back. */
@@ -66,7 +70,7 @@ internal object IdKinds {
             scalar(declared) -> "${type.simpleName}'s @NodeId ${field.name} is declared ${a(name(field.type))}, but the node whose id is " +
                 "'${held.text}' holds it as ${a(held.word)}: declare ${field.name} as ${a(held.word)} to load it."
             temporal(declared) && !savesBack(declared, held, objectMapper) -> {
-                val suggested = HOLDERS[held.kind]?.takeIf { savesBack(it, held, objectMapper) }?.let { a(it.simpleName) } ?: "Any"
+                val suggested = HOLDERS[held.kind].orEmpty().firstOrNull { savesBack(it, held, objectMapper) }?.let { a(it.simpleName) } ?: "Any"
                 "${type.simpleName}'s @NodeId ${field.name} is declared ${a(name(field.type))}, but the node whose id is '${held.text}' " +
                     "holds it as ${a(described(held, declared))}, which ${a(name(field.type))} can't save back: " +
                     "declare ${field.name} as $suggested to load it."
