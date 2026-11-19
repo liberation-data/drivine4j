@@ -13,6 +13,7 @@ import java.time.OffsetTime
 import java.time.ZonedDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /** The declarations a migration is told, from a fragment's fields' types (liberation-data/drivine4j#832): no store. */
 @OptIn(ExperimentalStoreLayoutMigration::class)
@@ -59,5 +60,13 @@ class StoreLayoutMigrationDeclarationsTest {
             setOf(Declaration("KNOWS", "since", Kind.DATE), Declaration("KNOWS", "weight", Kind.FLOAT)),
             StoreLayoutMigration.declarationsOf("KNOWS", Knows::class.java).toSet(),
         )
+    }
+
+    @Test
+    fun `a list's items are declared, and a list of lists is not, as the module reads its items as no value of a kind`() {
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("kotlin.collections.List<java.time.LocalDate>"))
+        assertEquals(Kind.DATE, StoreLayoutMigration.kindOf("java.util.Set<? extends java.time.LocalDate>"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.collections.List<java.time.LocalDate>>"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.String>"))
     }
 }

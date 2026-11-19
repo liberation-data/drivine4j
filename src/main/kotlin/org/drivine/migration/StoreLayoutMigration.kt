@@ -194,11 +194,15 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`)
-         * is declared: its own, or for a list or a set, its items'; null for one layout 1 holds as layout 2 does.
+         * is declared: its own, or for a list or a set, its items'; null for one layout 1 holds as layout 2 does, and for a list
+         * of lists, whose items the module reads as no value of a kind, so a declaration would refuse the migration.
          */
         internal fun kindOf(typeString: String): LayoutMigration.Kind? {
             val type = typeString.trim().removeSuffix("?").removeSuffix("!")
-            COLLECTION.matchEntire(type)?.let { return kindOf(it.groupValues[2]) }
+            COLLECTION.matchEntire(type)?.let { list ->
+                val item = list.groupValues[2].trim().removeSuffix("?").removeSuffix("!")
+                return if (COLLECTION.matches(item)) null else KINDS[item]
+            }
             return KINDS[type]
         }
 
