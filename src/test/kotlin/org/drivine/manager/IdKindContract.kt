@@ -209,6 +209,22 @@ abstract class IdKindContract {
 
     @ParameterizedTest(name = "held as {0}")
     @MethodSource("kinds")
+    fun `finds the node by an id declared Any as it was loaded, to patch, load, relate, unlink and delete it`(literal: String, kind: String, text: String) {
+        reset(literal)
+        val loaded = gom.loadAll(KeyedAny::class.java).single()
+        assertEquals(listOf(PatchResult(found = true, applied = true, changed = true)), gom.patchAll(listOf(loaded.copy(name = "patched")), only = setOf(KeyedAny::name)))
+        assertEquals("patched", gom.load(loaded.id.toString(), KeyedAny::class.java)?.name)
+        assertTrue(gom.edges.relate(NodeRef(Owner::class.java, "o"), NodeRef(KeyedAny::class.java, loaded.id), "LIKES"))
+        assertEquals(1, gom.edges.unrelate(NodeRef(Owner::class.java, "o"), NodeRef(KeyedAny::class.java, loaded.id), "LIKES"))
+        // An update that drops the related node unlinks it, as the load gave its id.
+        gom.update("o", OwnedAny::class.java) { it.copy(keyed = emptyList()) }
+        assertEquals(0, ownsEdges())
+        assertEquals(1, gom.delete(loaded.id.toString(), KeyedAny::class.java))
+        assertEquals(0, keyedCount())
+    }
+
+    @ParameterizedTest(name = "held as {0}")
+    @MethodSource("kinds")
     fun `finds a stale save's node by the tag an id declared Any was loaded from`(literal: String, kind: String, text: String) {
         reset(literal)
         val first = gom.loadAll(KeyedAny::class.java).single()

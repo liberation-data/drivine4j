@@ -299,8 +299,8 @@ it, by name, where the class doesn't, rather than give an object whose save woul
 
 Every read that maps a node does so: a load, a search, a view's root and related nodes, a path, a grouped read's key and
 `update`'s load. An id declared `Any` is not refused: it is loaded as the value's text, and a save, `saveAll`, `update` or a
-view's save binds it as the value the node holds while it is the very text the load gave; an id changed since, or given
-afresh as the same text, is written as it is given.
+view's save binds it as the value the node holds while it is the very text the load gave, as do a `load`, `delete`,
+`patchAll` or `relate` by it; an id changed since, or given afresh as the same text, is written as it is given.
 
 #### Count
 
