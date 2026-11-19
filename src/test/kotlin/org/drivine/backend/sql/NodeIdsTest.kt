@@ -145,12 +145,15 @@ class NodeIdsTest {
 
     @Test
     fun `a temporal id the module refuses is refused as drivine4j's when a plan keys it, as a save of it is`() {
-        // An offset with seconds, as a zone's local mean time: Cypher has none, and the module refuses its text (#840).
+        // An offset with seconds, as a zone's local mean time: Cypher has none, and the module refuses its text (#840). A time
+        // with an offset is keyed by its tag too, since #862.
         val lmt = OffsetDateTime.of(1971, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -44, -30))
-        for (key in listOf(NodeIds::temporalText, PostgresSql::key, OracleSql::key)) {
-            val refused = assertFailsWith<DrivineException> { key(lmt) }
-            assertTrue(refused.message.orEmpty().startsWith("A value given as a DATE_TIME isn't one: "), "$refused")
-            assertTrue(refused.message.orEmpty().endsWith("(the store holds an offset to the minute)."), "$refused")
+        for ((id, kind) in listOf(lmt to "DATE_TIME", lmt.toOffsetTime() to "TIME")) {
+            for (key in listOf(NodeIds::temporalText, PostgresSql::key, OracleSql::key)) {
+                val refused = assertFailsWith<DrivineException> { key(id) }
+                assertTrue(refused.message.orEmpty().startsWith("A value given as a $kind isn't one: "), "$refused")
+                assertTrue(refused.message.orEmpty().endsWith("(the store holds an offset to the minute)."), "$refused")
+            }
         }
     }
 
