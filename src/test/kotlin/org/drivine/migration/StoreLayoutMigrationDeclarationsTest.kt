@@ -108,6 +108,11 @@ class StoreLayoutMigrationDeclarationsTest {
         assertEquals(Kind.FLOAT, StoreLayoutMigration.kindOf("double[]"))
         assertEquals(Kind.BYTES, StoreLayoutMigration.kindOf("byte[]"))
         assertNull(StoreLayoutMigration.kindOf("java.time.LocalDate[][]"))
+        // A list of arrays is a list of lists, whose items the module reads as no float and no bytes.
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.List<kotlin.DoubleArray>"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.collections.(Mutable)List<kotlin.ByteArray!>!"))
+        assertNull(StoreLayoutMigration.kindOf("kotlin.Array<kotlin.FloatArray>"))
+        assertNull(StoreLayoutMigration.kindOf("byte[][]"))
         assertNull(StoreLayoutMigration.kindOf("kotlin.collections.(Mutable)List<kotlin.collections.(Mutable)List<java.time.LocalDate!>!>!"))
     }
 }

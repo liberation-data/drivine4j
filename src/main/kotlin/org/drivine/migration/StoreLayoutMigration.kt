@@ -176,7 +176,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment), a float or bytes, or a list, a set or an array of one, by the
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment), a float or bytes, or a list, a set or an array of a temporal type or a float, by the
          * name it is stored under: what a migration of the nodes it maps is told.
          */
         @JvmStatic
@@ -206,15 +206,16 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
         /**
          * The kind a field whose type is written [typeString] (`java.time.LocalDate`, `kotlin.collections.List<java.time.LocalDate>`,
          * or as Kotlin writes a Java field's, `kotlin.collections.(Mutable)List<java.time.LocalDate!>!`) is declared: its own, or
-         * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, and for a list of lists,
-         * whose items the module reads as no value of a kind, so a declaration would refuse the migration.
+         * for a list, a set or an array, its items'; null for one layout 1 holds as layout 2 does, and for a list of lists or
+         * of arrays (`DoubleArray`, `ByteArray`), whose items the module reads as no value of a kind, so a declaration would
+         * refuse the migration.
          */
         internal fun kindOf(typeString: String): Kind? {
             val type = plain(typeString)
             val item = COLLECTION.matchEntire(type)?.groupValues?.get(2)?.let(::plain)
                 ?: type.takeIf { it.endsWith("[]") && it != "byte[]" }?.removeSuffix("[]")
                 ?: return KINDS[type]
-            return if (COLLECTION.matches(item) || item.endsWith("[]")) null else KINDS[item]
+            return if (COLLECTION.matches(item) || item.endsWith("[]") || item.endsWith("Array")) null else KINDS[item]
         }
 
         /** [type] without its nullability, or a Java type's `!`. */
