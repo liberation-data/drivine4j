@@ -72,6 +72,46 @@ class TemporalWriteMappingTest {
         assertEquals(mapOf("v" to values), m.convertValueForNeo4j(mapOf("v" to values)))
     }
 
+    data class Read(val duration: java.time.Duration? = null, val period: java.time.Period? = null)
+
+    @Test
+    fun `a duration a Bolt driver gives is read into a Duration without months and a Period without time`() {
+        // #862: Jackson made a map of the driver's IsoDuration, which neither reads.
+        fun iso(months: Long, days: Long, seconds: Long, nanos: Int) = org.neo4j.driver.Values.isoDuration(months, days, seconds, nanos).asIsoDuration()
+        fun duration(iso: org.neo4j.driver.types.IsoDuration) = runCatching { m.convertValue(mapOf("duration" to iso), Read::class.java).duration }.getOrNull()
+        fun period(iso: org.neo4j.driver.types.IsoDuration) = runCatching { m.convertValue(mapOf("period" to iso), Read::class.java).period }.getOrNull()
+
+        // A duration as the driver gives Java's own: all its time in seconds.
+        assertEquals(java.time.Duration.ofHours(26), duration(iso(0, 0, 93600, 0)))
+        // As Cypher's duration('P1DT2H') is held: a day and two hours.
+        assertEquals(java.time.Duration.ofHours(26), duration(iso(0, 1, 7200, 0)))
+        assertEquals(null, period(iso(0, 1, 7200, 0)), "a period holds no hours")
+        assertEquals(java.time.Duration.ofMillis(-1500), duration(iso(0, 0, -2, 500_000_000)))
+        assertEquals(java.time.Period.of(1, 2, 0), period(iso(14, 0, 0, 0)))
+        assertEquals(null, duration(iso(14, 0, 0, 0)), "a duration holds no months")
+        assertEquals(java.time.Period.of(-1, -2, 2), period(iso(-14, 2, 0, 0)))
+        assertEquals(java.time.Period.ofDays(3) to java.time.Duration.ofDays(3), period(iso(0, 3, 0, 0)) to duration(iso(0, 3, 0, 0)))
+        assertEquals(java.time.Period.ZERO to java.time.Duration.ZERO, period(iso(0, 0, 0, 0)) to duration(iso(0, 0, 0, 0)))
+        assertEquals(null to null, period(iso(1, 0, 1, 0)) to duration(iso(1, 0, 1, 0)), "neither holds months and time")
+
+        assertEquals(listOf("P1Y2M3DT2H", "PT26H", "P1DT2H", "PT-1.5S", "P-1Y-2M2D", "PT0S"), listOf(
+            iso(14, 3, 7200, 0), iso(0, 0, 93600, 0), iso(0, 1, 7200, 0), iso(0, 0, -2, 500_000_000), iso(-14, 2, 0, 0), iso(0, 0, 0, 0),
+        ).map { m.convertValue(it, String::class.java) })
+    }
+
+    @Test
+    fun `a period is read from the text of a duration of no time, and of no other`() {
+        // #862: a saved Period.ZERO is stored as the duration of nothing, PT0S, which Period.parse refuses.
+        fun period(text: String) = runCatching { m.readValue<Read>("""{"period": "$text"}""").period }.getOrNull()
+        assertEquals(java.time.Period.ZERO, period("PT0S"))
+        assertEquals(java.time.Period.ofDays(1), period("P1DT0S"))
+        assertEquals(java.time.Period.of(1, 2, 3), period("P1Y2M3D"))
+        assertEquals(null, period("PT1H"))
+        assertEquals(null, period("P1DT0.5S"))
+        assertEquals(null, m.readValue<Read>("""{"period": null}""").period)
+        assertEquals(java.time.Period.ofDays(4), m.convertValue(mapOf("period" to java.time.Period.ofDays(4)), Read::class.java).period)
+    }
+
     @Test
     fun `reads and real JSON still use ISO strings`() {
         val json = m.writeValueAsString(node(instant))

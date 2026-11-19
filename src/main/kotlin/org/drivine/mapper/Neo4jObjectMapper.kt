@@ -4,17 +4,23 @@ import com.fasterxml.jackson.annotation.JsonAutoDetect
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.PropertyAccessor
 import com.fasterxml.jackson.core.JsonGenerator
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.core.JsonToken
 import com.fasterxml.jackson.databind.*
 import com.fasterxml.jackson.databind.introspect.AnnotationIntrospectorPair
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.databind.util.TokenBuffer
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
+import com.fasterxml.jackson.datatype.jsr310.deser.JSR310StringParsableDeserializer
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import org.neo4j.driver.types.IsoDuration
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetDateTime
+import java.time.Period
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.Date
@@ -78,6 +84,10 @@ object Neo4jObjectMapper {
             registerModule(SimpleModule().apply {
                 addSerializer(Enum::class.java, EnumToStringSerializer())
                 addSerializer(UUID::class.java, UuidToStringSerializer())
+                // A duration Neo4j or Memgraph gives, read into a Duration or a Period field as the SQL stores' text is
+                // (liberation-data/drivine4j#862): Jackson made a map of the driver's own.
+                addSerializer(IsoDuration::class.java, IsoDurationTextSerializer())
+                addDeserializer(Period::class.java, PeriodDeserializer())
                 // A set loads in the order the store holds its list, and is written back in that
                 // order, where Jackson's own HashSet would give it in hash order.
                 @Suppress("UNCHECKED_CAST")
@@ -101,6 +111,58 @@ object Neo4jObjectMapper {
     internal class UuidToStringSerializer : JsonSerializer<UUID>() {
         override fun serialize(value: UUID, gen: JsonGenerator, serializers: SerializerProvider) {
             gen.writeString(value.toString())
+        }
+    }
+
+    /**
+     * Serializes a duration a Bolt driver gives, [IsoDuration], as its ISO 8601 text ([isoText]), so a node's duration is
+     * read into a `Duration` or a `Period` field as the SQL stores' tag text is: Jackson made a map of the driver's own,
+     * which neither reads.
+     */
+    internal class IsoDurationTextSerializer : JsonSerializer<IsoDuration>() {
+        override fun serialize(value: IsoDuration, gen: JsonGenerator, serializers: SerializerProvider) {
+            gen.writeString(isoText(value.months(), value.days(), value.seconds(), value.nanoseconds()))
+        }
+    }
+
+    /**
+     * A duration of [months], [days], [seconds] and [nanos] as ISO 8601 text, each part only when it is not zero, the months
+     * carried into years, as Neo4j's `toString` writes one: `P1Y2M`, `P3D`, `P1DT2H`, `PT-1.5S`, and `PT0S` for none. So a
+     * duration of days and time only is read by `Duration.parse` (a day as 24 hours), and one of months and days only by
+     * `Period.parse`; one of months and time is read by neither, as on the SQL stores.
+     */
+    internal fun isoText(months: Long, days: Long, seconds: Long, nanos: Int): String {
+        val date = buildString {
+            if (months / 12 != 0L) append(months / 12).append('Y')
+            if (months % 12 != 0L) append(months % 12).append('M')
+            if (days != 0L) append(days).append('D')
+        }
+        val time = Duration.ofSeconds(seconds, nanos.toLong())
+        return when {
+            !time.isZero -> "P$date${time.toString().substring(1)}"
+            date.isNotEmpty() -> "P$date"
+            else -> "PT0S"
+        }
+    }
+
+    /**
+     * Reads a `Period` as JavaTimeModule does, and besides from the text of a duration whose time is zero, as a store
+     * writes a duration of nothing, `PT0S`, which `Period.parse` refuses (liberation-data/drivine4j#862): a saved
+     * `Period.ZERO` is stored as that duration, on the SQL stores as on Neo4j.
+     */
+    internal class PeriodDeserializer : JsonDeserializer<Period>() {
+        override fun deserialize(p: JsonParser, ctxt: DeserializationContext): Period {
+            if (p.hasToken(JsonToken.VALUE_STRING)) noTime(p.text.trim())?.let { return it }
+            @Suppress("UNCHECKED_CAST")
+            return JSR310StringParsableDeserializer.PERIOD.deserialize(p, ctxt) as Period
+        }
+
+        /** The period of [text], an ISO 8601 duration with a time part of zero, as `PT0S` or `P1DT0S`; else null. */
+        private fun noTime(text: String): Period? {
+            val t = text.indexOf('T').takeIf { it > 0 && text.startsWith("P") } ?: return null
+            val time = runCatching { Duration.parse("PT" + text.substring(t + 1)) }.getOrNull()?.takeIf { it.isZero } ?: return null
+            val date = text.substring(0, t)
+            return if (date == "P") Period.ZERO else runCatching { Period.parse(date) }.getOrNull()
         }
     }
 
