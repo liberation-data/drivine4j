@@ -124,6 +124,8 @@ class TransformPostProcessor<S, T>(
         }
 
         if (type.isAnnotationPresent(NodeFragment::class.java)) {
+            // A node whose @NodeId is held as a temporal the declared id can't save back is refused, before it is mapped.
+            IdKinds.refuse(type, data, objectMapper)
             val fragmentModel = try {
                 FragmentModel.from(type)
             } catch (e: Exception) {
