@@ -8,8 +8,8 @@ import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What each `@JsonPacked` property and each `Set` property of a stamped fragment held when a load
- * made the fragment, as the load read it, by field name: kept beside the fragment, not on it, for as
+ * What each `@JsonPacked` property, each `Set` property and each `OffsetTime`, `Duration` and `Period` property
+ * of a stamped fragment held when a load made the fragment, as the load read it, by field name: kept beside the fragment, not on it, for as
  * long as the fragment is.
  *
  * A checked save on Neo4j compares each field of the root as it was loaded ([org.drivine.query.FragmentMergeBuilder]).
@@ -47,7 +47,7 @@ internal object AsStored {
     /** The kinds a node may hold as other than a save writes them (liberation-data/drivine4j#862). */
     private val AMOUNTS = setOf(java.time.OffsetTime::class.java, java.time.Duration::class.java, java.time.Period::class.java)
 
-    /** The packed and set fields of each class, by name: read once. */
+    /** The fields of each class kept ([keptFields]), by name: read once. */
     private val kept = ConcurrentHashMap<Class<*>, Set<String>>()
 
     /**

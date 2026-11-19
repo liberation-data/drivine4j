@@ -92,6 +92,8 @@ class TemporalCoercerTest {
         assertTrue(out["at"] === at)
         assertEquals(listOf("10:11:12+02:00", d), out["list"])
         assertEquals(mapOf("p" to "P1Y2M3D"), out["map"])
+        // As text a period's months are not carried into years, as a duration's are.
+        assertEquals("P14M", MemgraphTemporalCoercer.coerce(mapOf("p" to java.time.Period.ofMonths(14)))["p"])
     }
 
     @Test
