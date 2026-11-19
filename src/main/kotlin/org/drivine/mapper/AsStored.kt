@@ -89,7 +89,7 @@ internal object AsStored {
         while (true) held.remove(gone.poll() ?: return)
     }
 
-    /** The fields of [type] kept: those `@JsonPacked`, those declared a `Set`, and those but the id of [AMOUNTS] or a collection of them. */
+    /** The fields of [type] kept: those `@JsonPacked`, those declared a `Set`, and those but the id of [AMOUNTS] or a collection or a map (a property bag) of them. */
     private fun keptFields(type: Class<*>, objectMapper: ObjectMapper): Set<String> = kept.getOrPut(type) {
         val model = FragmentModel.from(type)
         if (model.stampField == null) return@getOrPut emptySet()

@@ -3,6 +3,7 @@ package org.drivine.mapper
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
+import org.drivine.annotation.PropertyBag
 import org.junit.jupiter.api.Test
 import sample.stateless.Claim
 import sample.stateless.ClaimWithTagsView
@@ -22,6 +23,10 @@ data class AsStoredAmounts(
     val name: String? = null,
     @NodeStamp val stamp: String? = null,
 )
+
+/** A stamped node with a property bag of durations, which a save before liberation-data/drivine4j#862 wrote as seconds. */
+@NodeFragment(labels = ["AsStoredBagged"])
+data class AsStoredBagged(@NodeId val id: String, @PropertyBag val waits: Map<String, java.time.Duration> = emptyMap(), @NodeStamp val stamp: String? = null)
 
 @NodeFragment(labels = ["AsStoredKeyedDuration"])
 data class AsStoredKeyedDuration(@NodeId val id: java.time.Duration, @NodeStamp val stamp: String? = null)
@@ -98,5 +103,14 @@ class AsStoredTest {
         // An id is kept as the object holds it: the save finds the node by it.
         val keyed = loaded(AsStoredKeyedDuration::class.java, mapOf("id" to days, "stamp" to stamp))
         assertNull(AsStored.of(keyed, stamp))
+    }
+
+    @Test
+    fun `a load keeps what a property bag of durations held, as a node saved before 862 holds it`() {
+        // A checked save compares a bag's entries with what the load read too, so seconds aren't taken for a change.
+        val bagged = loaded(AsStoredBagged::class.java, mapOf("id" to "b1", "stamp" to stamp, "waits.queue" to 180L))
+
+        assertEquals(mapOf("queue" to java.time.Duration.ofMinutes(3)), bagged.waits)
+        assertEquals(mapOf("waits" to mapOf("queue" to 180L)), AsStored.of(bagged, stamp))
     }
 }
