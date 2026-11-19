@@ -27,11 +27,13 @@ import java.util.UUID
 /**
  * Marks the store layout migration as not yet proven on every store: its statements are the shared module's, pinned by
  * the spec, but their runs on Postgres, Oracle and SQLite are still to be made (liberation-data/drivine4j#832). A call
- * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class)`.
+ * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class, DrivineInternalApi::class)`: its
+ * declarations ([LayoutMigration.Declaration]) and report ([MigrationReport]) are the module's, marked
+ * `org.drivine.DrivineInternalApi`, and may change in any release.
  */
 @RequiresOptIn(
     level = RequiresOptIn.Level.ERROR,
-    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it.",
+    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it, to DrivineInternalApi too, as its declarations and report are the module's.",
 )
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR)
@@ -74,7 +76,8 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
      * Migrates the graph, or with [dryRun] reports what a migration would do and writes nothing, by [declarations], reading
      * and writing [batchSize] rows at a time. Where [keepInvalid], a value that is no value of its declared kind is kept as
      * it is, and named in the report, where it would otherwise refuse the graph. A declaration is refused before anything
-     * runs where one label's property is declared two kinds, or where it is Drivine's own label's.
+     * runs, with an [IllegalArgumentException], where one label's property is declared two kinds, or where it is Drivine's
+     * own label's, and so is a [batchSize] under 1.
      */
     @JvmOverloads
     fun migrate(
