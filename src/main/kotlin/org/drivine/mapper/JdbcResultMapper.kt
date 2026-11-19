@@ -88,9 +88,11 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         /**
          * [value], read from a SQL store's JSON, as the store layout 2 holds it read back as the caller's
          * (liberation-data/drivine-cypher-spec#161): a temporal value's tag, `{"$t", "v", "s"}`, as its text `v`, and each
-         * map's key that begins with `$$` with one `$` fewer, at any depth, by the compiler's module ([ValueLayout.readValue]).
+         * map's key that begins with `$$` with one `$` fewer, at any depth, as the compiler's module reads it
+         * ([ValueLayout.readValue]). The text of a node's temporal property is kept with its tag ([HeldTemporals]), so a load
+         * can tell what the node held its id as.
          */
-        private fun layout(value: Any?): Any? = ValueLayout.readValue(value)
+        private fun layout(value: Any?): Any? = HeldTemporals.read(value)
 
         /**
          * [number] as [PostgresCypherCompiler.read] reads it: NaN or an infinity where it stands for one, and otherwise its
