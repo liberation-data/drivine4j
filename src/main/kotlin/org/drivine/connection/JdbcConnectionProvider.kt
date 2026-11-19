@@ -435,9 +435,11 @@ class JdbcConnectionProvider @JvmOverloads constructor(
          * `NLS_SORT` (`OracleSession`, drivine-cypher-spec#372). Under `NLS_COMP=LINGUISTIC` with `BINARY_CI`, `=`, an
          * order, a grouping, a `MERGE`'s find and an index's lookup would ignore case, with no error.
          */
+        @JvmField
         val ORACLE_SESSION: List<String> = listOf(NO_ADAPTIVE_PLANS) + OracleSession.STATEMENTS
 
         /** [ORACLE_SESSION] as one block, which a pool runs as it opens each session (HikariCP's `connectionInitSql` takes one statement). */
+        @JvmField
         val ORACLE_SESSION_INIT: String =
             "BEGIN " + ORACLE_SESSION.joinToString(" ") { "EXECUTE IMMEDIATE '${it.replace("'", "''")}';" } + " END;"
 

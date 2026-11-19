@@ -48,6 +48,28 @@ class JavaJdbcConnectionProviderConstructorsTest {
     }
 
     @Test
+    void eachStatementOfTheSessionIsAFieldAJavaCallerReads() throws SQLException {
+        new JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource).connect();
+
+        for (String set : JdbcConnectionProvider.ORACLE_SESSION) verify(statement, times(1)).execute(set);
+    }
+
+    @Test
+    void aJavaCallersHikariPoolThatRunsTheSessionBlockAsItOpensOneIsNotSetAgain() throws SQLException {
+        com.zaxxer.hikari.HikariDataSource pool = new com.zaxxer.hikari.HikariDataSource() {
+            @Override
+            public Connection getConnection() {
+                return jdbc;
+            }
+        };
+        pool.setConnectionInitSql(JdbcConnectionProvider.ORACLE_SESSION_INIT);
+
+        new JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect();
+
+        verify(jdbc, never()).createStatement();
+    }
+
+    @Test
     void theFullFormCanLeaveEachSessionAsItIs() throws SQLException {
         new JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, null, false, "drivine", false).connect();
 
