@@ -51,7 +51,8 @@ data class Declaration(val label: String, val property: String, val kind: Kind) 
  * - [tables]: for `nodes` and `edges`, the rows read and the rows changed: in a dry run, what would change; once written,
  *   what was.
  * - [properties]: for each label (a relationship's type, for one) and property that a rewrite changes or finds a value of
- *   not of its declared kind, the count of each change and each such value.
+ *   not of its declared kind, the count of each change and each such value. A property of a node of two labels is counted
+ *   under both.
  * - [observed]: for each label and property no declaration names, the count of its values of each class.
  * - [candidates]: the properties no declaration names whose values all read as one kind a declaration would change them
  *   by: what to declare, never applied unless declared.

@@ -70,6 +70,11 @@ class StoreLayoutMigrationSqliteTest {
         assertEquals(2, dryRun.notes.size)
         // Person.nick holds a text that reads as a date, in its one row: a candidate, never applied.
         assertTrue(dryRun.candidates.any { it.label == "Person" && it.property == "nick" && it.kind == "date" }, "${dryRun.candidates}")
+        // The module's report, as drivine4j's: each label and property as the module names it.
+        assertEquals("dryRun", dryRun.toMap()["status"])
+        assertTrue(dryRun.tables.getValue("nodes").let { it.rows > 0 && it.changed > 0 }, "${dryRun.tables}")
+        assertTrue(dryRun.properties.any { it.label == "Person" && it.property == "born" && (it.changes["temporal"] ?: 0) > 0 }, "${dryRun.properties}")
+        assertTrue(dryRun.observed.any { it.label == "Person" && it.property == "nick" && it.classes["date"] == 1L }, "${dryRun.observed}")
 
         // The two spellings of one moment are one value in layout 2: the run stops, every value rewritten, the graph refused.
         val stopped = StoreLayoutMigration(provider).migrate(declarations)
@@ -169,6 +174,7 @@ class StoreLayoutMigrationSqliteTest {
         val kept = StoreLayoutMigration(provider).migrate(wrong, dryRun = true, keepInvalid = true)
         assertEquals(Status.DRY_RUN, kept.status, kept.message)
         assertTrue(kept.invalidCount > 0, "$kept")
+        assertTrue(kept.properties.single { it.label == "Person" && it.property == "name" }.invalid.all { it.table == "nodes" && it.kind == "date" }, "${kept.properties}")
         assertEquals(untouched, snapshot(path))
         provider.end()
     }
