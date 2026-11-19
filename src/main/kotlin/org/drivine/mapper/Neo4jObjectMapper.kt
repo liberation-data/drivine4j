@@ -20,6 +20,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetDateTime
+import java.time.OffsetTime
 import java.time.Period
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -193,6 +194,11 @@ internal class Neo4jTemporalWriteModule : SimpleModule() {
         addSerializer(LocalDate::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
         addSerializer(LocalDateTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
         addSerializer(LocalTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        // A time with its offset, a duration and a period, as bind() keeps them (liberation-data/drivine4j#862): without
+        // these, JavaTimeModule wrote the first and last as text and a duration as its seconds, a number.
+        addSerializer(OffsetTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(Duration::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(Period::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
     }
 }
 

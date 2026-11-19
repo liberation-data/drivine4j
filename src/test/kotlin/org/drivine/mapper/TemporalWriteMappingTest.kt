@@ -72,6 +72,34 @@ class TemporalWriteMappingTest {
         assertEquals(mapOf("v" to values), m.convertValueForNeo4j(mapOf("v" to values)))
     }
 
+    data class Amounts(
+        val time: java.time.OffsetTime,
+        val duration: java.time.Duration,
+        val period: java.time.Period,
+        val durations: List<java.time.Duration>,
+        val periods: Map<String, java.time.Period>,
+    )
+
+    private val amounts = Amounts(
+        java.time.OffsetTime.parse("10:11:12+02:00"), java.time.Duration.parse("P1DT2H"), java.time.Period.parse("P1Y2M"),
+        listOf(java.time.Duration.ofMillis(-1500)), mapOf("trial" to java.time.Period.ofDays(30)),
+    )
+
+    @Test
+    fun `toMap keeps a time with its offset, a duration and a period native, alone, in a list and in a map`() {
+        // #862: JavaTimeModule wrote the time and the period as text and the duration as its seconds.
+        val map = m.toMap(amounts)
+        assertTrue(map["time"] === amounts.time, "got ${map["time"]?.javaClass}")
+        assertTrue(map["duration"] === amounts.duration, "got ${map["duration"]?.javaClass}")
+        assertTrue(map["period"] === amounts.period, "got ${map["period"]?.javaClass}")
+        assertEquals(amounts.durations, map["durations"])
+        assertEquals(amounts.periods, map["periods"])
+        listOf(amounts.time, amounts.duration, amounts.period).forEach { assertTrue(m.toPropertyValue(it) === it, "$it") }
+        // What a save writes is what bind() sends, and the map converts back to the object, as a save's returned copy is made.
+        assertEquals(m.convertValueForNeo4j(amounts.duration), m.convertValueForNeo4j(map["duration"]))
+        assertEquals(amounts, m.convertValue(map, Amounts::class.java))
+    }
+
     data class Read(val duration: java.time.Duration? = null, val period: java.time.Period? = null)
 
     @Test
