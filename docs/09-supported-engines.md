@@ -202,7 +202,7 @@ To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
 Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
 statement cache on there yourself. A Cypher statement compiled to SQL is kept out of that cache too. It does set each of its sessions, the first time it connects with one, to make no
-adaptive plan, unless you ask it not to (see the notes below). For a pool of Drivine's own (HikariCP) without the YAML:
+adaptive plan and to compare text by its code points, unless you ask it not to (see the notes below). For a pool of Drivine's own (HikariCP) without the YAML:
 
 ```kotlin
 val provider = JdbcConnectionProvider.pooled(
@@ -271,6 +271,18 @@ of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went fro
   `JdbcConnectionProvider`. It is on by default because, without it, a read can come back with no rows and no error;
   if you turn it off, run that statement in each session yourself (HikariCP's `connectionInitSql`, say).
   Drivine's own pool sets its sessions either way.
+- Each Oracle session Drivine uses also compares and sorts text by its code points, as Cypher does
+  (`ALTER SESSION SET NLS_COMP = BINARY NLS_SORT = BINARY`), whatever the database's or your session's NLS settings.
+  Under `NLS_COMP = LINGUISTIC` with a sort such as `BINARY_CI`, a compiled statement's `=`, `<`, `ORDER BY`, grouping,
+  `DISTINCT`, `IN`, a `MERGE`'s find and an index's lookup of text would ignore case or take another order, with no
+  error ([drivine-cypher-spec#372](https://github.com/liberation-data/drivine-cypher-spec/issues/372)). Oracle's
+  default, `NLS_COMP = BINARY`, is not enough on its own: an `ORDER BY` still sorts as `NLS_SORT` says, which follows
+  the session's `NLS_LANGUAGE`, and Oracle's thin driver takes that from the JVM's locale (`GERMAN` puts `a` before
+  `B`). A session of your `DataSource` stays so once Drivine gives it back, so
+  your own statements on it compare text by its code points too: one that should ignore case can say so itself, as
+  `NLSSORT(name, 'NLS_SORT = BINARY_CI')` does. It is set as the statement above is, and `setsNoAdaptivePlans = false`
+  leaves it unset too: then set both in each session yourself, or give HikariCP's `connectionInitSql`
+  `JdbcConnectionProvider.ORACLE_SESSION_INIT`, the block that runs both, and Drivine sets no session of that pool.
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
   bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.

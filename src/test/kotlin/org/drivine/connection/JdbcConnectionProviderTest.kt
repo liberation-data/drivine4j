@@ -84,8 +84,10 @@ class JdbcConnectionProviderTest {
         provider.connect()
         provider.connect()
 
-        // The data source hands out the same session twice, as a pool does: it is set the first time only.
-        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        // The data source hands out the same session twice, as a pool does: it is set the first time only, to make no
+        // adaptive plan and to compare text by its code points (drivine-cypher-spec#372), each statement in turn.
+        assertEquals(2, JdbcConnectionProvider.ORACLE_SESSION.size)
+        for (set in JdbcConnectionProvider.ORACLE_SESSION) verify(statement, times(1)).execute(set)
         verify(statement, times(1)).close()
     }
 
@@ -96,6 +98,21 @@ class JdbcConnectionProviderTest {
 
         assertSame(refused, assertFailsWith<SQLException> { JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource).connect() })
         verify(jdbc).close()
+    }
+
+    @Test
+    fun `a session of the application's Oracle data source that cannot be set to compare text by its code points is closed, not given out, and set again on the next connect`() {
+        val refused = SQLException("ORA-12705: Cannot access NLS data files or invalid environment specified")
+        `when`(statement.execute(JdbcConnectionProvider.ORACLE_SESSION.last())).thenThrow(refused).thenReturn(false)
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource)
+
+        assertSame(refused, assertFailsWith<SQLException> { provider.connect() })
+        verify(jdbc).close()
+        provider.connect()
+
+        // Not taken for set after its first statement alone: both run again on the next connect.
+        verify(statement, times(2)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        verify(statement, times(2)).execute(JdbcConnectionProvider.ORACLE_SESSION.last())
     }
 
     @Test
@@ -154,11 +171,31 @@ class JdbcConnectionProviderTest {
     fun `a session of the application's HikariCP pool that already runs the statement as it opens one is not set again`() {
         val pool = object : com.zaxxer.hikari.HikariDataSource() {
             override fun getConnection(): java.sql.Connection = jdbc
-        }.apply { connectionInitSql = JdbcConnectionProvider.NO_ADAPTIVE_PLANS }
+        }.apply { connectionInitSql = JdbcConnectionProvider.ORACLE_SESSION_INIT }
 
         JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect()
 
         verify(jdbc, never()).createStatement()
+    }
+
+    @Test
+    fun `a session of the application's HikariCP pool that only makes no adaptive plan as it opens one is set to compare text by its code points`() {
+        val pool = object : com.zaxxer.hikari.HikariDataSource() {
+            override fun getConnection(): java.sql.Connection = jdbc
+        }.apply { connectionInitSql = JdbcConnectionProvider.NO_ADAPTIVE_PLANS }
+
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect()
+
+        verify(statement, times(1)).execute("ALTER SESSION SET NLS_COMP = BINARY NLS_SORT = BINARY")
+    }
+
+    @Test
+    fun `the block a pool runs as it opens a session runs each statement of the session in turn`() {
+        assertEquals(
+            "BEGIN EXECUTE IMMEDIATE 'ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE'; " +
+                "EXECUTE IMMEDIATE 'ALTER SESSION SET NLS_COMP = BINARY NLS_SORT = BINARY'; END;",
+            JdbcConnectionProvider.ORACLE_SESSION_INIT,
+        )
     }
 
     @Test
@@ -315,7 +352,7 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
-    fun `on the application's Oracle data source the session the tables are made on is set to make no adaptive plan first, as is the one handed out`() {
+    fun `on the application's Oracle data source the session the tables are made on is set to make no adaptive plan and to compare text by its code points first, as is the one handed out`() {
         val ensuringStatement = Mockito.mock(java.sql.Statement::class.java)
         val handedOutStatement = Mockito.mock(java.sql.Statement::class.java)
         val ensuring = recording().also { `when`(it.createStatement()).thenReturn(ensuringStatement) }
@@ -325,9 +362,9 @@ class JdbcConnectionProviderTest {
         JdbcConnectionProvider("default", DatabaseType.ORACLE, source).connect()
 
         val order = Mockito.inOrder(ensuringStatement, ensuring)
-        order.verify(ensuringStatement).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        for (set in JdbcConnectionProvider.ORACLE_SESSION) order.verify(ensuringStatement).execute(set)
         order.verify(ensuring, Mockito.atLeastOnce()).prepareStatement(Mockito.anyString())
-        verify(handedOutStatement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        for (set in JdbcConnectionProvider.ORACLE_SESSION) verify(handedOutStatement, times(1)).execute(set)
     }
 
     @Test

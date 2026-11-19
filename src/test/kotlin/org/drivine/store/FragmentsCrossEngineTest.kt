@@ -120,7 +120,7 @@ abstract class FragmentsContract {
             listOf(false, true).forEachIndexed { at, descending -> check("ORDER BY $order${if (descending) " DESC" else ""}", entry["rows"][at].map { it.asText() }, null, order, descending, emptyMap()) }
         }
         assertTrue(wrong.isEmpty(), "${wrong.size} of $checked differ from Neo4j:\n${wrong.joinToString("\n")}")
-        assertEquals(25 + table["conditions"].size() * positions.size + table["orders"].size() * 2, checked, "fragments.yaml's cases with rows and its table")
+        assertEquals(26 + table["conditions"].size() * positions.size + table["orders"].size() * 2, checked, "fragments.yaml's cases with rows and its table")
     }
 }
 

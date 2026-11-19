@@ -45,6 +45,8 @@ import sample.idkind.Ownership
 import sample.idkind.RenamedId
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -281,6 +283,18 @@ abstract class IdKindContract {
         val before = stored()
         assertEquals(message, assertFailsWith<DrivineException> { gom.loadAll(type) }.message)
         assertEquals(before, stored())
+    }
+
+    @Test
+    fun `refuses a time id at an offset with seconds as a save does, and writes nothing`() {
+        // A zone's local mean time, as Africa/Monrovia's until 1972: Cypher has no such offset, and the module refuses its text
+        // (liberation-data/drivine-cypher-spec#357). The write plan's key refuses it as the save does, not with the module's
+        // own exception (#840).
+        val lmt = OffsetDateTime.of(1971, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -44, -30))
+        val refused = assertFailsWith<DrivineException> { gom.save(KeyedOffsetDateTime(lmt, "lmt")) }
+        assertTrue(refused.message.orEmpty().startsWith("A value given as a DATE_TIME isn't one: "), "$refused")
+        assertTrue(refused.message.orEmpty().endsWith("(the store holds an offset to the minute)."), "$refused")
+        assertEquals(0, keyedCount())
     }
 
     @Test

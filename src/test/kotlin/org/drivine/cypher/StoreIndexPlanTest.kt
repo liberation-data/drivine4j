@@ -128,8 +128,8 @@ abstract class StoreIndexPlanContract {
         /** A label of nodes with the same properties and values, which an index over the case's label leaves out. */
         const val DECOY = "Decoy"
 
-        /** An index made, its name and the line that makes it. */
-        private val CREATE = Regex("""CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+) ON [^\n]*""")
+        /** An index made, its name and the line that makes it: built online on Postgres (drivine-cypher-spec#381), or not. */
+        private val CREATE = Regex("""CREATE (?:UNIQUE )?INDEX (?:CONCURRENTLY )?IF NOT EXISTS (\w+) ON [^\n]*""")
     }
 }
 

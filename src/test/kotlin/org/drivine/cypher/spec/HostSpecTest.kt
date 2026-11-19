@@ -13,8 +13,10 @@ import org.drivine.connection.JacksonEncoder
 import org.drivine.cypher.api.CompileJson
 import org.drivine.cypher.api.Store
 import org.drivine.cypher.json.CypherJson
+import org.drivine.cypher.json.TemporalValue
 import org.drivine.cypher.spec.CypherSpec.Companion.expanded
 import org.drivine.cypher.sql.CompiledCypher
+import org.drivine.cypher.sql.Temporal
 import org.drivine.cypher.sql.Temporals
 import org.drivine.cypher.store.StoreValues
 import org.drivine.cypher.store.ValueLayout
@@ -28,17 +30,21 @@ import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 import java.sql.SQLException
 import java.sql.Types
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetTime
+import java.time.Period
 import java.time.ZonedDateTime
+import java.time.format.DateTimeParseException
 import java.util.Base64
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -105,6 +111,16 @@ class HostSpecTest {
          * the hold comes off when it passes. Matched within the note, as the module's HostSpecTest matches it.
          */
         const val HELD = "drivine4j#421 (layout 2)"
+
+        /**
+         * The refusals the compiler names a time in by Java's text for it, which leaves out seconds that are zero, until it
+         * writes them with their seconds (liberation-data/drivine-cypher-spec#398): the spec's message, and the JVM's. The
+         * step must give the JVM's, so the hold comes off once it gives the spec's.
+         */
+        val JVM_TIME_TEXT = mapOf(
+            "A value given as a TIME isn't one: 12:00:00+05:30:15 (the store holds an offset to the minute)." to
+                "A value given as a TIME isn't one: 12:00+05:30:15 (the store holds an offset to the minute).",
+        )
 
         /** SQLite's errors of a call it won't make, which no held step's failure can be: the step names no function of the store's. */
         val RUNNER_ERRORS = listOf("no such function", "wrong number of arguments")
@@ -411,7 +427,14 @@ class HostSpecTest {
         }
         if ("error" in step) {
             val error = step["error"] as? String ?: throw IllegalArgumentException("$where: error is a text, not ${step["error"]}")
-            assertEquals(error, got.exceptionOrNull()?.message ?: fail("$where: refused with \"$error\", but wrote ${got.getOrNull()}"), where)
+            val message = got.exceptionOrNull()?.message ?: fail("$where: refused with \"$error\", but wrote ${got.getOrNull()}")
+            val held = JVM_TIME_TEXT[error]
+            if (held == null) {
+                assertEquals(error, message, where)
+            } else {
+                assertNotEquals(error, message, "$where: held for liberation-data/drivine-cypher-spec#398, and passing: take the hold out")
+                assertEquals(held, message, where)
+            }
         } else {
             assertEquals(step["result"] as String, got.getOrElse { fail("$where: refused: ${it.message}") }, where)
         }
@@ -425,13 +448,27 @@ class HostSpecTest {
         is Map<*, *> -> when (value.keys) {
             setOf(BYTES) -> Base64.getDecoder().decode(value[BYTES] as String)
             setOf(TEMPORAL, "text") -> (value["text"] as String).let { text ->
-                when (val kind = value[TEMPORAL]) {
-                    "DATE" -> LocalDate.parse(text)
-                    "LOCAL_TIME" -> LocalTime.parse(text)
-                    "TIME" -> OffsetTime.parse(text)
-                    "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
-                    "DATE_TIME" -> ZonedDateTime.parse(text)
-                    else -> error("No temporal kind $kind in the runner")
+                val kind = value[TEMPORAL] as String
+                // A text no java.time value of its kind holds, a value java.time reads but can't be (a month 13), or a
+                // duration neither a Period nor a Duration writes as the text: given as the module's own value of the kind, as
+                // a save gives a temporal a load held as its tag (HeldTemporals), so the module reads the text, and refuses one
+                // that isn't of its kind. A duration a save would give as a Period or a Duration is given as one, and a text
+                // java.time can't read at all fails here, so no step a save gives as java.time is run otherwise.
+                try {
+                    when (kind) {
+                        "DATE" -> LocalDate.parse(text)
+                        "LOCAL_TIME" -> LocalTime.parse(text)
+                        "TIME" -> OffsetTime.parse(text)
+                        "LOCAL_DATE_TIME" -> LocalDateTime.parse(text)
+                        "DATE_TIME" -> ZonedDateTime.parse(text)
+                        "DURATION" -> listOf<(String) -> Any>(Period::parse, Duration::parse)
+                            .firstNotNullOfOrNull { parse -> runCatching { parse(text) }.getOrNull()?.takeIf { it.toString() == text } }
+                            ?: TemporalValue(Temporal.DURATION, text)
+                        else -> error("No temporal kind $kind in the runner")
+                    }
+                } catch (e: DateTimeParseException) {
+                    if (e.cause == null) throw IllegalArgumentException("$text is no ISO text java.time reads as a $kind: the runner can't give it as a save would", e)
+                    TemporalValue(Temporal.valueOf(kind), text)
                 }
             }
             setOf(MAP) -> (value[MAP] as Map<*, *>).mapValues { writeValue(it.value) }

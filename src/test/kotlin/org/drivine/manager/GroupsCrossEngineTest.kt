@@ -1104,11 +1104,15 @@ class GroupsOracleTest : GroupsContract() {
             setPassword(OracleTestContainer.getConnectionPassword())
         }
         // Each session sorts text without case, as an application's may: "a" and "B" in the other order to Cypher's.
+        // Drivine is asked to leave its sessions as they are, since it would otherwise set them to sort by code point
+        // (drivine-cypher-spec#372): the query's own order is what this proves. The session makes no adaptive plan (#289).
         val folding = object : DataSource by plain {
             override fun getConnection(): java.sql.Connection =
-                plain.connection.also { session -> session.createStatement().use { it.execute("ALTER SESSION SET NLS_SORT = BINARY_CI") } }
+                plain.connection.also { session ->
+                    session.createStatement().use { s -> listOf(JdbcConnectionProvider.NO_ADAPTIVE_PLANS, "ALTER SESSION SET NLS_SORT = BINARY_CI").forEach(s::execute) }
+                }
         }
-        val provider = JdbcConnectionProvider("contracts", DatabaseType.ORACLE, folding, graphName = "contracts")
+        val provider = JdbcConnectionProvider("contracts", DatabaseType.ORACLE, folding, graphName = "contracts", setsNoAdaptivePlans = false)
         val folded = NonTransactionalPersistenceManager(provider, "contracts", DatabaseType.ORACLE, SubtypeRegistry())
         assertEquals(
             listOf<Any?>("BINARY_CI"),

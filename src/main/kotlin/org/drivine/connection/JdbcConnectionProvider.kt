@@ -12,6 +12,7 @@ import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSchemaGrammar
 import org.drivine.backend.sqlite.SqliteVersion
 import org.drivine.backend.sql.SqlGraph
+import org.drivine.cypher.store.ddl.OracleSession
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.schema.SchemaGrammar
@@ -72,10 +73,12 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     /** The graph the object managers read and write: it names the property graph and its tables. */
     override val graphName: String = DEFAULT_GRAPH,
     /**
-     * Whether [connect] sets each Oracle session of the application's [dataSource] to make no adaptive plan, the first
-     * time it connects with it (see [NO_ADAPTIVE_PLANS]). On by default: an adaptive plan can give a read of the graph
-     * no rows (#289). False leaves the application's sessions as it set them. A pool this provider made runs the
-     * statement as it opens a session either way.
+     * Whether [connect] sets each Oracle session of the application's [dataSource] to make no adaptive plan and to compare
+     * text by its code points, the first time it connects with it (see [ORACLE_SESSION]). On by default: an adaptive plan
+     * can give a read of the graph no rows (#289), and a session set to compare text linguistically gives Cypher's
+     * comparisons, orders and lookups of text another order and case (drivine-cypher-spec#372). False leaves the
+     * application's sessions as it set them, which then compare text as they say. A pool this provider made runs the
+     * statements as it opens a session either way.
      */
     private val setsNoAdaptivePlans: Boolean = true,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
@@ -125,12 +128,13 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         get() = dataSource
 
     /**
-     * Whether [connect] leaves each session of [dataSource] as it is: not Oracle, already set to make no adaptive plan (a
-     * pool this provider made, or a HikariCP pool that runs [NO_ADAPTIVE_PLANS] as it opens a session, as [pooled] makes
-     * one), or the application asked for its sessions to be left alone ([setsNoAdaptivePlans]).
+     * Whether [connect] leaves each session of [dataSource] as it is: not Oracle, already set as [ORACLE_SESSION] says (a
+     * pool this provider made, or a HikariCP pool that runs [ORACLE_SESSION_INIT] as it opens a session, as [pooled] makes
+     * one; a pool that runs [NO_ADAPTIVE_PLANS] alone, as an earlier Drivine's did, is set again), or the application asked
+     * for its sessions to be left alone ([setsNoAdaptivePlans]).
      */
     private val leavesSessions: Boolean =
-        !setsNoAdaptivePlans || type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == NO_ADAPTIVE_PLANS
+        !setsNoAdaptivePlans || type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == ORACLE_SESSION_INIT
 
     /**
      * The sessions of the application's [dataSource] that [connect] has set, by the driver's connection behind a pool's
@@ -139,15 +143,16 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     private val setSessions: MutableSet<java.sql.Connection> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
 
     /**
-     * Sets a session of the application's Oracle data source to make no adaptive plan, once (see [NO_ADAPTIVE_PLANS]).
-     * A session that cannot be set is closed and its error thrown, rather than given out unset.
+     * Sets a session of the application's Oracle data source to make no adaptive plan and to compare text by its code
+     * points, once (see [ORACLE_SESSION]). A session that cannot be set is closed and its error thrown, rather than given
+     * out unset.
      */
     private fun withoutAdaptivePlans(connection: java.sql.Connection): java.sql.Connection {
         if (leavesSessions) return connection
         val session = runCatching { connection.unwrap(java.sql.Connection::class.java) }.getOrNull() ?: connection
         if (session in setSessions) return connection
         try {
-            connection.createStatement().use { it.execute(NO_ADAPTIVE_PLANS) }
+            connection.createStatement().use { statement -> ORACLE_SESSION.forEach { statement.execute(it) } }
         } catch (e: Exception) {
             runCatching { connection.close() }.exceptionOrNull()?.let(e::addSuppressed)
             throw e
@@ -163,7 +168,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     }
 
     /**
-     * A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]), that
+     * A connection from [dataSource], its Oracle session set as [ORACLE_SESSION] says (see [withoutAdaptivePlans]), that
      * commits each statement run outside a transaction (see [committingEach]). A session whose mode cannot be read is
      * closed and its error thrown, rather than given out.
      */
@@ -425,6 +430,20 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         const val NO_ADAPTIVE_PLANS = "ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE"
 
         /**
+         * Run in each Oracle session Drivine opens or is given, in order: [NO_ADAPTIVE_PLANS], then the session the
+         * compiler's statements need, text compared and sorted by its code points whatever the session's `NLS_COMP` and
+         * `NLS_SORT` (`OracleSession`, drivine-cypher-spec#372). Under `NLS_COMP=LINGUISTIC` with `BINARY_CI`, `=`, an
+         * order, a grouping, a `MERGE`'s find and an index's lookup would ignore case, with no error.
+         */
+        @JvmField
+        val ORACLE_SESSION: List<String> = listOf(NO_ADAPTIVE_PLANS) + OracleSession.STATEMENTS
+
+        /** [ORACLE_SESSION] as one block, which a pool runs as it opens each session (HikariCP's `connectionInitSql` takes one statement). */
+        @JvmField
+        val ORACLE_SESSION_INIT: String =
+            "BEGIN " + ORACLE_SESSION.joinToString(" ") { "EXECUTE IMMEDIATE '${it.replace("'", "''")}';" } + " END;"
+
+        /**
          * Why Drivine runs no Cypher on the Oracle [metaData] describes: one older than 23.9, which has no `UUID()`, the
          * random version 4 UUID compiled Cypher's `randomUUID()` is (#401). Null for 23.9 or later. The driver gives 23.26.3
          * as major version 23, minor version 26.
@@ -498,9 +517,9 @@ class JdbcConnectionProvider @JvmOverloads constructor(
                 idleTimeoutMillis?.let { idleTimeout = it.toLong() }
                 // A save is the same block each time. Kept by the driver, it is neither sent nor parsed again.
                 if (type == DatabaseType.ORACLE) addDataSourceProperty("oracle.jdbc.implicitStatementCacheSize", STATEMENT_CACHE.toString())
-                // Each session the pool opens makes no adaptive plan. One whose statement fails is a connection that
-                // failed: the pool closes it, and never hands it out.
-                if (type == DatabaseType.ORACLE) connectionInitSql = NO_ADAPTIVE_PLANS
+                // Each session the pool opens makes no adaptive plan and compares text by its code points. One whose
+                // statement fails is a connection that failed: the pool closes it, and never hands it out.
+                if (type == DatabaseType.ORACLE) connectionInitSql = ORACLE_SESSION_INIT
                 // A string is sent with no type, as a literal is, so the statement says what it is: `jsonb`, a number, a date.
                 if (type == DatabaseType.POSTGRES) addDataSourceProperty("stringtype", "unspecified")
             }

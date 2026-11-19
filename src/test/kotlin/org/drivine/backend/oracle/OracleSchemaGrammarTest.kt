@@ -85,7 +85,8 @@ class OracleSchemaGrammarTest {
         // Each property's class and then its key, as the module compares a value an index holds.
         val shared = graph.store.sharedColumns(spec.properties)
         assertEquals(listOf(StoreSql.indexClass("props", "name"), StoreSql.indexKey("props", "name")), shared.take(2))
-        index.waitsOutBusy("CREATE INDEX IF NOT EXISTS $name ON g_node (${shared.joinToString(", ")})")
+        // Built online, so writes go on while it is built (drivine-cypher-spec#381).
+        index.waitsOutBusy("CREATE INDEX IF NOT EXISTS $name ON g_node (${shared.joinToString(", ")}) ONLINE")
         assertFalse(index.contains("Person"), "a range index does not depend on the label")
 
         val labelled = graph.objectName("lx", listOf("Person") + spec.properties)
@@ -94,7 +95,7 @@ class OracleSchemaGrammarTest {
         val columns = graph.store.labelledColumns("Person", spec.properties)
         assertEquals(StoreSql.labelledIndex("n", "Person", "name"), columns.take(2))
         assertTrue(columns.all { it.startsWith("CASE WHEN $person THEN ") }, "null on a node without the label: $columns")
-        val ddl = "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (${columns.joinToString(", ")})"
+        val ddl = "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (${columns.joinToString(", ")}) ONLINE"
         // Made unless a uniqueness constraint's index over the one property stands for it.
         labelledIndex.inOrder(
             "PRAGMA EXCEPTION_INIT(e_busy, -54);",
@@ -208,8 +209,10 @@ class OracleSchemaGrammarTest {
     fun `a uniqueness constraint is a unique index with one expression per property, null for a node that is not constrained`() {
         val spec = UniquenessConstraintSpec("Person", listOf("email", "tenant"))
         val texts = checked(grammar.createConstraint(spec))
-        // Over several properties, the range index is made whole first: no unique index stands for its labelled index.
-        assertEquals(checked(grammar.createIndex(RangeIndexSpec("Person", listOf("email", "tenant")), null)), texts.take(3))
+        // Over several properties, the range index is made whole first: no unique index stands for its labelled index. A
+        // constraint's indexes are built as they were, blocking writes; an index's own are built online (drivine-cypher-spec#381).
+        val range = checked(grammar.createIndex(RangeIndexSpec("Person", listOf("email", "tenant")), null)).map { it.replace(") ONLINE';", ")';") }
+        assertEquals(range, texts.take(3))
         val (index, record) = texts.drop(3)
 
         val name = graph.objectName("uq", listOf("Person", "email", "tenant"))
