@@ -128,6 +128,14 @@ class TemporalWriteMappingTest {
     }
 
     @Test
+    fun `a duration a Bolt driver gave is bound back as it is, alone and in a list`() {
+        // #862: a checked save binds a duration as the load read it, the driver's own, which toMap() can't make a map of.
+        val iso = org.neo4j.driver.Values.isoDuration(0, 1, 7200, 0).asIsoDuration()
+        assertTrue(m.convertValueForNeo4j(iso) === iso)
+        assertEquals(listOf(iso), m.convertValueForNeo4j(listOf(iso)))
+    }
+
+    @Test
     fun `a period is read from the text of a duration of no time, and of no other`() {
         // #862: a saved Period.ZERO is stored as the duration of nothing, PT0S, which Period.parse refuses.
         fun period(text: String) = runCatching { m.readValue<Read>("""{"period": "$text"}""").period }.getOrNull()

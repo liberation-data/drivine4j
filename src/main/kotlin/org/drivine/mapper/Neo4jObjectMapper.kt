@@ -128,7 +128,7 @@ object Neo4jObjectMapper {
 
     /**
      * A duration of [months], [days], [seconds] and [nanos] as ISO 8601 text, each part only when it is not zero, the months
-     * carried into years, as Neo4j's `toString` writes one: `P1Y2M`, `P3D`, `P1DT2H`, `PT-1.5S`, and `PT0S` for none. So a
+     * carried into years, as Cypher's `toString` writes one: `P1Y2M`, `P3D`, `P1DT2H`, `PT-1.5S`, and `PT0S` for none. So a
      * duration of days and time only is read by `Duration.parse` (a day as 24 hours), and one of months and days only by
      * `Period.parse`; one of months and time is read by neither, as on the SQL stores.
      */
@@ -274,6 +274,8 @@ fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
         // with its offset and a duration among them, which toMap() can't make a map of (liberation-data/drivine4j#833)
         is ZonedDateTime, is OffsetDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime,
         is java.time.OffsetTime, is java.time.Duration, is java.time.Period -> value
+        // A duration a Bolt driver gave, as a checked save binds a field as the load read it (liberation-data/drivine4j#862)
+        is IsoDuration -> value
         // Recursively handle collections
         is Collection<*> -> value.map { convertValueForNeo4j(it) }
         // Handle arrays (convert to list and recursively process)

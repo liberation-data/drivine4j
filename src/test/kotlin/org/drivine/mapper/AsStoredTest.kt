@@ -1,5 +1,8 @@
 package org.drivine.mapper
 
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeStamp
 import org.junit.jupiter.api.Test
 import sample.stateless.Claim
 import sample.stateless.ClaimWithTagsView
@@ -7,6 +10,21 @@ import sample.stateless.ClaimWithTags
 import sample.stateless.SetProbe
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+
+/** A stamped node of the three temporal kinds a save wrote as text or a number before liberation-data/drivine4j#862. */
+@NodeFragment(labels = ["AsStoredAmounts"])
+data class AsStoredAmounts(
+    @NodeId val id: String,
+    val time: java.time.OffsetTime? = null,
+    val duration: java.time.Duration? = null,
+    val period: java.time.Period? = null,
+    val durations: List<java.time.Duration> = emptyList(),
+    val name: String? = null,
+    @NodeStamp val stamp: String? = null,
+)
+
+@NodeFragment(labels = ["AsStoredKeyedDuration"])
+data class AsStoredKeyedDuration(@NodeId val id: java.time.Duration, @NodeStamp val stamp: String? = null)
 
 class AsStoredTest {
 
@@ -62,5 +80,23 @@ class AsStoredTest {
         assertEquals(listOf("b", "a", "c"), probe.tags.toList())
         assertEquals(mapOf("tags" to listOf("b", "a", "b", "c")), AsStored.of(probe, stamp))
         assertNull(AsStored.of(probe.copy(), stamp), "no load made a copy")
+    }
+
+    @Test
+    fun `a load keeps what each time with an offset, duration and period property held, as a node saved before 862 holds it or as Cypher wrote it`() {
+        // #862: a save compares each field as written, natively, where a node saved before holds the text or the seconds,
+        // and where Cypher's duration('P1DT2H') holds a day that Java's PT26H doesn't: neither would ever be the same.
+        val days = org.neo4j.driver.Values.isoDuration(0, 1, 7200, 0).asIsoDuration()
+        val row = mapOf(
+            "id" to "a1", "stamp" to stamp, "name" to "one",
+            "time" to "10:11:12+02:00", "duration" to 93600.0, "period" to "P1Y2M", "durations" to listOf(days, 1.5),
+        )
+        val amounts = loaded(AsStoredAmounts::class.java, row)
+
+        assertEquals(java.time.Duration.ofHours(26), amounts.duration)
+        assertEquals(row - "id" - "stamp" - "name", AsStored.of(amounts, stamp))
+        // An id is kept as the object holds it: the save finds the node by it.
+        val keyed = loaded(AsStoredKeyedDuration::class.java, mapOf("id" to days, "stamp" to stamp))
+        assertNull(AsStored.of(keyed, stamp))
     }
 }
