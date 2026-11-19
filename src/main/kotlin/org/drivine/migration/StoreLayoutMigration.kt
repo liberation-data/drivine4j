@@ -180,14 +180,17 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
         /**
          * What the node fragment [type] (`@NodeFragment`) says of its properties that layout 1 can't tell, a declaration for
-         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment; not a `java.time.Duration`, which layout 1 saved as a number), a float or bytes, or a list, a set or an array of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text,
-         * and one that carries `@JsonSerialize` or `@JsonFormat`, saved as it says, by the name it is stored under: what a migration of the nodes it maps is told.
+         * each of its labels and each of its fields of a temporal type (a `java.util.Date` a moment), a float or bytes, or a
+         * list, a set or an array of a temporal type or a float, by the name it is stored under: what a migration of the nodes
+         * it maps is told. A field layout 1 saved in another form than its kind's gets none, as the module would read it as no
+         * value of its kind and refuse the migration: a `java.time.Duration`, saved as its seconds, a number ([kindOf]), and
+         * one that is `@JsonPacked`, saved as a JSON text, or carries `@JsonSerialize` or `@JsonFormat`, saved as it says ([shaped]).
          */
         @JvmStatic
         fun declarationsOf(type: Class<*>): List<Declaration> {
             val model = FragmentModel.from(type)
-            val packed = packed(type)
-            return model.labels.flatMap { label -> declared(model, label, packed) }
+            val shaped = shaped(type)
+            return model.labels.flatMap { label -> declared(model, label, shaped) }
         }
 
         /**
@@ -196,10 +199,10 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          */
         @JvmStatic
         fun declarationsOf(relationshipType: String, type: Class<*>): List<Declaration> {
-            val packed = packed(type)
+            val shaped = shaped(type)
             return type.kotlin.memberProperties.filter { property ->
                 val target = (property.returnType.classifier as? KClass<*>)?.java
-                property.name !in packed &&
+                property.name !in shaped &&
                     target?.isAnnotationPresent(NodeFragment::class.java) != true && target?.isAnnotationPresent(GraphView::class.java) != true
             }.mapNotNull { property ->
                 val stored = property.findAnnotation<GraphProperty>()?.value?.takeIf { it.isNotEmpty() } ?: property.name
@@ -207,8 +210,8 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
             }
         }
 
-        private fun declared(model: FragmentModel, label: String, packed: Set<String>) = model.fields
-            .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null && it.name !in packed }
+        private fun declared(model: FragmentModel, label: String, shaped: Set<String>) = model.fields
+            .filter { !it.stamp && it.nodeLabels == null && it.propertyBag == null && it.name !in shaped }
             .mapNotNull { field -> kindOf(field.typeString)?.let { Declaration(label, field.propertyName, it) } }
 
         /**
@@ -232,7 +235,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
          * text, or carry `@JsonSerialize` or `@JsonFormat`, saved as they say (a float as its text, say), which can't be told
          * from the field's type: what the module may read as no value of a kind, so a declaration would refuse the migration.
          */
-        private fun packed(type: Class<*>): Set<String> =
+        private fun shaped(type: Class<*>): Set<String> =
             INTROSPECTOR.serializationConfig.introspect(INTROSPECTOR.constructType(type)).findProperties()
                 .filter { p -> listOfNotNull(p.field, p.getter, p.constructorParameter).any { m -> SHAPING.any(m::hasAnnotation) } }
                 .map { it.name }.toSet()

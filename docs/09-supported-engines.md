@@ -254,10 +254,12 @@ and `MigrationReport` (in `org.drivine.migration`) may change in any release unt
 while nothing else uses the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
 dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node
-fragment's fields of a temporal type (a `java.util.Date` is a moment; a `java.time.Duration` is not declared, as layout 1
-saved one as its seconds, a number, which it keeps), a float or bytes, or a list, a set or an array
-of a temporal type or a float, but a `@JsonPacked` one, saved as a JSON text, or one that carries `@JsonSerialize` or `@JsonFormat`, saved as it says (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)` from a
-relationship fragment's. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
+fragment's fields of a temporal type (a `java.util.Date` is a moment), a float or bytes, or a list, a set or an array
+of a temporal type or a float (each of its labels, inherited ones too), and `declarationsOf("KNOWS", Knows::class.java)`
+from a relationship fragment's. A field layout 1 saved in another form than its kind's is not declared, as the migration
+would read it as no value of its kind and refuse the graph, and is kept as it is: a `java.time.Duration`, saved as its
+seconds, a number, and one that is `@JsonPacked`, saved as a JSON text, or carries `@JsonSerialize` or `@JsonFormat`,
+saved as it says. `migrate(declarations, dryRun = true)` writes nothing, and reports what would change, the values
 that are no value of their declared kind, the properties whose values all read as one kind (candidates to declare), and
 the uniqueness constraints' keys that may collide. A migration ends with a `MigrationReport` whose status says how:
 `migrated`, `current` or `empty` (nothing to do), `dryRun` (a dry run's), `inProgress` (a dry run of a graph part way
