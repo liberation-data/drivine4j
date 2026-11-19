@@ -336,12 +336,21 @@ abstract class IdKindContract {
             Arguments.of("datetime('2026-01-05T10:11:12.123Z')", KeyedUtilDate::class.java),
             Arguments.of("localtime('10:11:12')", KeyedLocalTime::class.java),
             Arguments.of("localtime('10:11:12.123456789')", KeyedLocalTime::class.java),
+            // #862: a save writes each of these three as a tag of its kind.
+            Arguments.of("time('10:11:12+02:00')", KeyedOffsetTime::class.java),
+            Arguments.of("time('10:11:12.123456789-05:30')", KeyedOffsetTime::class.java),
+            Arguments.of("duration('PT26H')", KeyedDuration::class.java),
+            Arguments.of("duration('PT-1.5S')", KeyedDuration::class.java),
+            Arguments.of("duration('PT0S')", KeyedDuration::class.java),
+            Arguments.of("duration('P1Y2M')", KeyedPeriod::class.java),
+            Arguments.of("duration('P1Y2M3D')", KeyedPeriod::class.java),
+            Arguments.of("duration('P3D')", KeyedPeriod::class.java),
         )
 
         /**
          * Each java.time id a save would write another tag of: of another kind, at UTC where the node held an offset, to the
-         * millisecond where it held a finer fraction, or not as a tag at all (an `OffsetTime`, a `Duration` and a `Period`
-         * are written as their text or a number). A pair Jackson can't read is refused so too.
+         * millisecond where it held a finer fraction, or of another text (a `Duration` is written in hours, never in days, and
+         * holds no months; a `Period` holds no time). A pair Jackson can't read is refused so too.
          */
         @JvmStatic
         fun inexact(): List<Arguments> = listOf(
@@ -355,12 +364,17 @@ abstract class IdKindContract {
             inexact("datetime('2026-01-05T10:11:12+02:00')", KeyedZonedDateTime::class.java, "a ZonedDateTime", "2026-01-05T10:11:12+02:00", "a datetime at the offset +02:00", "Any"),
             inexact("datetime('2026-01-05T10:11:12.123456789Z')", KeyedUtilDate::class.java, "a Date", "2026-01-05T10:11:12.123456789Z", "a datetime below the millisecond", "an OffsetDateTime"),
             inexact("date('2026-01-05')", KeyedUtilDate::class.java, "a Date", "2026-01-05", "a date", "a LocalDate"),
-            inexact("time('10:11:12+02:00')", KeyedOffsetTime::class.java, "an OffsetTime", "10:11:12+02:00", "a time", "Any"),
+            // A duration of a day and two hours: a Duration writes it as PT26H, and a Period holds no hours.
             inexact("duration('P1DT2H')", KeyedDuration::class.java, "a Duration", "P1DT2H", "a duration", "Any"),
-            inexact("duration('P1Y2M')", KeyedPeriod::class.java, "a Period", "P1Y2M", "a duration", "Any"),
+            inexact("duration('P1DT2H')", KeyedPeriod::class.java, "a Period", "P1DT2H", "a duration", "Any"),
+            // A duration of days only, or of months, is a Period's.
+            inexact("duration('P3D')", KeyedDuration::class.java, "a Duration", "P3D", "a duration", "a Period"),
+            inexact("duration('P1Y2M')", KeyedDuration::class.java, "a Duration", "P1Y2M", "a duration", "a Period"),
+            // A duration of hours only is a Duration's.
+            inexact("duration('PT26H')", KeyedPeriod::class.java, "a Period", "PT26H", "a duration", "a Duration"),
             // Pairs Jackson can't read, refused by name before it is asked.
             inexact("localdatetime('2026-01-05T10:11:12')", KeyedInstant::class.java, "an Instant", "2026-01-05T10:11:12", "a localdatetime", "a LocalDateTime"),
-            inexact("time('10:11:12+02:00')", KeyedLocalTime::class.java, "a LocalTime", "10:11:12+02:00", "a time", "Any"),
+            inexact("time('10:11:12+02:00')", KeyedLocalTime::class.java, "a LocalTime", "10:11:12+02:00", "a time", "an OffsetTime"),
         )
 
         private fun inexact(literal: String, type: Class<*>, declared: String, text: String, held: String, suggested: String): Arguments =

@@ -293,9 +293,11 @@ it, by name, where the class doesn't, rather than give an object whose save woul
 - an id declared a `java.time` type (or a `Date`) of another kind or precision: `Day's @NodeId id is declared a LocalDate,
   but the node whose id is '2026-01-05T10:11:12' holds it as a localdatetime, which a LocalDate can't save back: declare id
   as a LocalDateTime to load it.` A date is held by a `LocalDate`, a local datetime by a `LocalDateTime`, a datetime at UTC
-  by an `OffsetDateTime`, an `Instant` or a `ZonedDateTime` (by a `Date` to the millisecond), and a local time by a
-  `LocalTime`. A datetime at another offset, a time and a duration are held by none: Jackson reads a datetime at UTC, and a
-  save writes an `OffsetTime`, a `Duration` and a `Period` as text or a number. Declare those `Any`.
+  by an `OffsetDateTime`, an `Instant` or a `ZonedDateTime` (by a `Date` to the millisecond), a local time by a
+  `LocalTime`, a time by an `OffsetTime`, a duration of time only (`PT26H`) by a `Duration`, and one of months and days
+  only (`P1Y2M`, `P3D`) by a `Period`. A datetime at another offset, and a duration of days and time (`P1DT2H`) or of
+  months and time, are held by none: Jackson reads a datetime at UTC, a `Duration` is written in hours, never in days,
+  and a `Period` holds no time. Declare those `Any`.
 
 Every read that maps a node does so: a load, a search, a view's root and related nodes, a path, a grouped read's key and
 `update`'s load. An id declared `Any` is not refused: it is loaded as the value's text, and a save, `saveAll`, `update` or a
@@ -1330,6 +1332,12 @@ graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGN
 ```
 
 A save is one Cypher statement: the root, the relationships it drops, each related node and the relationship to it. It is applied whole or not at all, with or without a transaction, on Neo4j, FalkorDB and Memgraph. Under `NullPolicy.CLEAR`, a root with a `@PropertyBag` or an open `@NodeLabels` field is read first, for the keys and labels it holds: one more statement, which writes nothing.
+
+A temporal field is stored as a value of its kind, as `bind()` sends one: on Neo4j the driver's own, on the SQL stores the store layout's tagged value, so Cypher's `datetime(...)`, `time(...)` and `duration(...)` compare with it. An `OffsetTime` is a `time`, and a `Duration` and a `Period` are each a `duration`. Memgraph has no time with an offset and no duration of months, so it holds an `OffsetTime` and a `Period` as their ISO 8601 text, and FalkorDB holds every temporal value as its text.
+
+- A `Duration` is stored as Java holds one, in seconds: `Duration.parse("P1DT2H")` is the duration `PT26H`, and on Neo4j and the SQL stores Cypher compares each part of a duration on its own, so it is equal to `duration('PT26H')` and not to `duration('P1DT2H')`. Memgraph holds a duration as microseconds alone, and finds it by either. Where a `Period` is stored as a duration, its months are carried into years: `Period.ofMonths(14)` loads as `P1Y2M`, the same period, though `Period.equals` tells the two apart. As text, on Memgraph and FalkorDB, it loads as `P14M`.
+- A duration loads into a `Duration` field when it has no months, a day read as 24 hours, and into a `Period` field when it has no hours, minutes or seconds. One that has both, such as Cypher's `duration('P1M2DT3H')`, loads into neither, and the load fails naming it.
+- Releases up to 0.7.0 wrote an `OffsetTime` and a `Period` as their text and a `Duration` as its number of seconds (liberation-data/drivine4j#862). A node saved by one still loads into its fields, and on Neo4j `update` and a save given `from` compare each such field, and each entry of a `@PropertyBag` of them, as the load read it, as a duration Cypher wrote with days is compared too, but a load or a Cypher statement given a value of the kind doesn't find it by that property until it is saved again: compare the stored text or number, or save each such node once. Nothing is migrated.
 
 `only` and `except` name fields of the object, and for a view fields of its root. A view's relationships are written whatever they name. Give one or the other: both together are refused, and so is a property of a class other than the one saved.
 

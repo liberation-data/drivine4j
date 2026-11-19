@@ -8,8 +8,8 @@ import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What each `@JsonPacked` property and each `Set` property of a stamped fragment held when a load
- * made the fragment, as the load read it, by field name: kept beside the fragment, not on it, for as
+ * What each `@JsonPacked` property, each `Set` property and each `OffsetTime`, `Duration` and `Period` property
+ * of a stamped fragment held when a load made the fragment, as the load read it, by field name: kept beside the fragment, not on it, for as
  * long as the fragment is.
  *
  * A checked save on Neo4j compares each field of the root as it was loaded ([org.drivine.query.FragmentMergeBuilder]).
@@ -20,6 +20,9 @@ import java.util.concurrent.ConcurrentHashMap
  * - A set is stored as a list, and Neo4j compares lists item by item. The list may hold an item
  *   twice, which the set does not, and the set may iterate in another order than the list, as a
  *   `HashSet` does.
+ * - A time with an offset, a duration and a period are written as their kind, but a node saved before
+ *   liberation-data/drivine4j#862 holds the text or the seconds, and a duration Cypher wrote, such as
+ *   `duration('P1DT2H')`, holds days that Java's `PT26H` does not.
  *
  * Compared so, the node would differ on every attempt though nothing changed. So the save compares
  * what the load read.
@@ -41,7 +44,10 @@ internal object AsStored {
         override fun equals(other: Any?) = other === this || (other is Key && get().let { it != null && it === other.get() })
     }
 
-    /** The packed and set fields of each class, by name: read once. */
+    /** The kinds a node may hold as other than a save writes them (liberation-data/drivine4j#862). */
+    private val AMOUNTS = setOf(java.time.OffsetTime::class.java, java.time.Duration::class.java, java.time.Period::class.java)
+
+    /** The fields of each class kept ([keptFields]), by name: read once. */
     private val kept = ConcurrentHashMap<Class<*>, Set<String>>()
 
     /**
@@ -83,13 +89,16 @@ internal object AsStored {
         while (true) held.remove(gone.poll() ?: return)
     }
 
-    /** The fields of [type] kept: those `@JsonPacked`, and those declared a `Set`. */
+    /** The fields of [type] kept: those `@JsonPacked`, those declared a `Set`, and those but the id of [AMOUNTS] or a collection or a map (a property bag) of them. */
     private fun keptFields(type: Class<*>, objectMapper: ObjectMapper): Set<String> = kept.getOrPut(type) {
-        if (FragmentModel.from(type).stampField == null) return@getOrPut emptySet()
+        val model = FragmentModel.from(type)
+        if (model.stampField == null) return@getOrPut emptySet()
         objectMapper.serializationConfig.introspect(objectMapper.constructType(type)).findProperties()
             .filter { property ->
                 listOfNotNull(property.field, property.getter, property.constructorParameter).any { it.hasAnnotation(JsonPacked::class.java) } ||
-                    property.primaryType.isTypeOrSubTypeOf(Set::class.java)
+                    property.primaryType.isTypeOrSubTypeOf(Set::class.java) ||
+                    // The id is not compared: a save finds the node by it, as the object holds it.
+                    (property.name != model.nodeIdField && property.primaryType.let { it.rawClass in AMOUNTS || it.contentType?.rawClass in AMOUNTS })
             }
             .map { it.name }.toSet()
     }

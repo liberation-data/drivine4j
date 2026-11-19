@@ -78,6 +78,27 @@ class TemporalCoercerTest {
     }
 
     @Test
+    fun `Memgraph is given a time with its offset and a period as their text, and every other temporal value as it is`() {
+        // #862: Memgraph's Bolt server refuses a time with an offset, and folds a period's months into microseconds.
+        val t = OffsetTime.parse("10:11:12+02:00")
+        val p = java.time.Period.of(1, 2, 3)
+        val d = java.time.Duration.ofHours(26)
+        val at = Instant.parse("2026-04-23T00:00:00Z")
+        val out = MemgraphTemporalCoercer.coerce(mapOf("t" to t, "p" to p, "d" to d, "at" to at, "list" to listOf(t, d), "map" to mapOf("p" to p)))
+
+        assertEquals("10:11:12.000000000+02:00", out["t"])
+        assertEquals("P1Y2M3D", out["p"])
+        assertTrue(out["d"] === d)
+        assertTrue(out["at"] === at)
+        assertEquals(listOf("10:11:12.000000000+02:00", d), out["list"])
+        // At one width, as FalkorDB's: a time on a minute keeps its seconds.
+        assertEquals("10:11:00.000000000Z", MemgraphTemporalCoercer.coerce(mapOf("t" to OffsetTime.parse("10:11Z")))["t"])
+        assertEquals(mapOf("p" to "P1Y2M3D"), out["map"])
+        // As text a period's months are not carried into years, as a duration's are.
+        assertEquals("P14M", MemgraphTemporalCoercer.coerce(mapOf("p" to java.time.Period.ofMonths(14)))["p"])
+    }
+
+    @Test
     fun `list of temporal values is coerced recursively`() {
         val a = Instant.parse("2026-04-23T00:00:00Z")
         val b = Instant.parse("2026-04-24T00:00:00Z")
