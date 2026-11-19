@@ -293,9 +293,11 @@ it, by name, where the class doesn't, rather than give an object whose save woul
 - an id declared a `java.time` type (or a `Date`) of another kind or precision: `Day's @NodeId id is declared a LocalDate,
   but the node whose id is '2026-01-05T10:11:12' holds it as a localdatetime, which a LocalDate can't save back: declare id
   as a LocalDateTime to load it.` A date is held by a `LocalDate`, a local datetime by a `LocalDateTime`, a datetime at UTC
-  by an `OffsetDateTime`, an `Instant` or a `ZonedDateTime` (by a `Date` to the millisecond), and a local time by a
-  `LocalTime`. A datetime at another offset, a time and a duration are held by none: Jackson reads a datetime at UTC, and a
-  save writes an `OffsetTime`, a `Duration` and a `Period` as text or a number. Declare those `Any`.
+  by an `OffsetDateTime`, an `Instant` or a `ZonedDateTime` (by a `Date` to the millisecond), a local time by a
+  `LocalTime`, a time by an `OffsetTime`, a duration of time only (`PT26H`) by a `Duration`, and one of months and days
+  only (`P1Y2M`, `P3D`) by a `Period`. A datetime at another offset, and a duration of days and time (`P1DT2H`) or of
+  months and time, are held by none: Jackson reads a datetime at UTC, a `Duration` is written in hours, never in days,
+  and a `Period` holds no time. Declare those `Any`.
 
 Every read that maps a node does so: a load, a search, a view's root and related nodes, a path, a grouped read's key and
 `update`'s load. An id declared `Any` is not refused: it is loaded as the value's text, and a save, `saveAll`, `update` or a
