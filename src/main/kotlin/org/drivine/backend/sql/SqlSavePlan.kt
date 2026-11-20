@@ -26,7 +26,8 @@ import org.drivine.query.StampWrite
  * gained by saving the nodes of a field together.
  *
  * @param blocks how the store carries out a plan
- * @param key an id as the text a step keys its node by within the plan, and the store reads a target's stored id back as
+ * @param key an id as the key a step keys its node by within the plan, and the store reads a target's stored id back as
+ *   ([org.drivine.cypher.store.IdSql.planKeyOf]): a text id marked apart from a temporal value or a number that reads alike
  * @param ids an id as a node of a class holds it: an id read from a digest, as text, is made the `@NodeId` field's type
  */
 internal class SqlSavePlan(
