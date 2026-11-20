@@ -35,7 +35,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # The same toolchain as cli-native.yml: JDK 21 (temurin) compiles the module as the toolchain asks, named in
-      # JAVA_HOME_21_X64 for the build, and GraalVM takes JAVA_HOME and builds the image from the JDK 21 bytecode.
+      # JAVA_HOME_21_ARM64 for the build (the macos-14 runner is Apple silicon), and GraalVM takes JAVA_HOME and
+      # builds the image from the JDK 21 bytecode.
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
@@ -61,7 +62,7 @@ jobs:
         run: scripts/compiler-local.sh
 
       - name: Build the native binary
-        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 :drivine4j-cli:nativeCompile
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_ARM64 :drivine4j-cli:nativeCompile
 
       - name: Record the binary's size and start
         run: |
