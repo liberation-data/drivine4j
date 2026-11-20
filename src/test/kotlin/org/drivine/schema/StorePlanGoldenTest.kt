@@ -257,7 +257,10 @@ class StorePlanGoldenTest {
         query["listing"]?.let { listing ->
             val catalog = store["catalog"]["stores"][id]
             val name = listing.textValue()
-            val statement = if (name == "constraints") catalog["constraints"] else catalog["indexes"][name.removePrefix("indexes.")]
+            val statement = when (name) {
+                "constraints", "onlineBuilds" -> catalog[name]
+                else -> catalog["indexes"][name.removePrefix("indexes.")]
+            } ?: fail("store.yaml lists no $name on $id")
             return Sent(SCHEMA, statement.textValue(), emptyMap(), answer, delay, round)
         }
         query["indexState"]?.let {

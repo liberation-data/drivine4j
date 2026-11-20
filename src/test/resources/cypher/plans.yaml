@@ -3182,6 +3182,12 @@ cases:
               - now: 1000000
                 actions:
                   - {query: {sample: {spec: "Uniqueness constraint", limit: 10}}, rows: [{properties: {email: "dup@example.com"}, count: 2, nodes: [{elementId: "4:a:1"}, {elementId: "4:a:2"}]}]}
+              - now: 1000000
+                actions:
+                  - {query: {listing: "onlineBuilds"}, rows: []}
+              - now: 1000000
+                actions:
+                  - {execute: {statement: "DO $incomplete$\nDECLARE\n    v_table regclass;\nBEGIN\n    SELECT x.indrelid::regclass INTO v_table FROM pg_index x WHERE x.indexrelid = to_regclass('drivine_uq2_Personemail_5482a751') AND CASE WHEN x.indisvalid THEN NULL WHEN EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.index_relid = x.indexrelid OR (p.index_relid IS NULL AND p.datname = current_database())) THEN 'BUILDING' ELSE 'INVALID' END = 'INVALID';\n    IF v_table IS NOT NULL THEN\n        EXECUTE 'LOCK TABLE ' || v_table || ' IN ACCESS EXCLUSIVE MODE';\n        IF EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('drivine_uq2_Personemail_5482a751') AND NOT indisvalid) THEN\n            DROP INDEX drivine_uq2_Personemail_5482a751;\n        END IF;\n    END IF;\nEND\n$incomplete$"}}
             done: 1000000
             report:
               owners:
@@ -3219,6 +3225,10 @@ cases:
                   - {query: {sample: {spec: "Uniqueness constraint", limit: 10}}, rows: [{properties: {email: "dup@example.com"}, count: 2, nodes: [{elementId: "4:a:1"}, {elementId: "4:a:2"}]}]}
               - now: 1000000
                 actions:
+                  - {query: {listing: "onlineBuilds"}, rows: []}
+              - now: 1000000
+                actions:
+                  - {execute: {statement: "DO $incomplete$\nDECLARE\n    v_table regclass;\nBEGIN\n    SELECT x.indrelid::regclass INTO v_table FROM pg_index x WHERE x.indexrelid = to_regclass('drivine_uq2_Personemail_5482a751') AND CASE WHEN x.indisvalid THEN NULL WHEN EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.index_relid = x.indexrelid OR (p.index_relid IS NULL AND p.datname = current_database())) THEN 'BUILDING' ELSE 'INVALID' END = 'INVALID';\n    IF v_table IS NOT NULL THEN\n        EXECUTE 'LOCK TABLE ' || v_table || ' IN ACCESS EXCLUSIVE MODE';\n        IF EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass('drivine_uq2_Personemail_5482a751') AND NOT indisvalid) THEN\n            DROP INDEX drivine_uq2_Personemail_5482a751;\n        END IF;\n    END IF;\nEND\n$incomplete$"}}
                   - {query: {listing: "constraints"}, items: []}
               - now: 1000000
                 actions:
