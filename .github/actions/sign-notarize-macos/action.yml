@@ -102,7 +102,9 @@ runs:
         set +x
         p8="$RUNNER_TEMP/notary-key.p8"
         printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$p8"
-        set -x
+        # Tracing stays off (set +x) for the rest of the step: notarytool submit and log carry the key id, issuer id
+        # and team id, which are secrets, so an xtrace echo of the command line must not reach the log. The explicit
+        # echoes below and `tee` of the JSON give the diagnostics without expanding the secret arguments.
         result="$RUNNER_TEMP/notarize-result.json"
         # Turn errexit off around the pipeline: under -eo pipefail a failing `submit | tee` (Invalid, timeout, auth
         # error) would end the step at this line, before PIPESTATUS could be read, which is exactly when we need the
