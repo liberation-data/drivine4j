@@ -66,8 +66,8 @@ class RecordingStore(
     private fun answered(ran: Ran): List<Any?> = when (val outcome = answer(ran)) {
         is Throwable -> throw outcome
         null -> emptyList()
-        else -> (outcome as List<Any?>).ifEmpty { if (claims(ran)) listOf("recording") else outcome }
-    }
+        else -> outcome as List<Any?>
+    }.ifEmpty { if (claims(ran)) listOf("recording") else emptyList() }
 
     /**
      * Whether [ran] takes an ensure's turn to build an item on Postgres (drivine-cypher-spec#382), which a recording store

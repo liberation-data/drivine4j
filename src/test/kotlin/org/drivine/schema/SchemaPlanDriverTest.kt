@@ -14,9 +14,11 @@ import org.drivine.cypher.store.plan.Operation
 import org.drivine.cypher.store.plan.PlanRequest
 import org.drivine.query.QueryLanguage
 import org.drivine.test.RecordingStore
+import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
+import java.time.Duration
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -244,6 +246,20 @@ class SchemaPlanDriverTest {
         val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
         assertContains(debug, "Reading the online index builds under way failed (treating as none under way): no listing yet")
         assertTrue(debug.none { it.startsWith("Index introspection failed") }, "no listing of indexes failed: $debug")
+    }
+
+    @Test
+    fun `a recording store whose answer is null still gives a Postgres ensure its turn, so it builds without polling for one`() {
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = RangeIndexSpec("Turned", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, spec.label, spec.properties)), false)
+        var created = false
+        val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+            if (ran.statement.startsWith("CREATE INDEX")) created = true
+            if (created && ran.statement == grammar.listIndexesQuery(SchemaItemKind.RANGE_INDEX)) listed else null
+        }
+        assertTimeoutPreemptively(Duration.ofSeconds(20)) { assertIs<EnsureResult.Created>(store.indexes.ensure(spec)) }
+        assertTrue(store.schema.any { it.startsWith("INSERT INTO") && "'CLAIM:RANGE_INDEX'" in it }, "the turn was claimed: ${store.schema}")
     }
 
     @Test
