@@ -153,6 +153,11 @@ jobs:
     needs: [build-arm64, build-x86_64]
     runs-on: macos-15
     timeout-minutes: 30
+    # The eight Apple secrets live in the `apple-signing` environment, whose deployment branches are limited to main
+    # and v* tags. Only this job references them, so only this job declares the environment; the per-arch builds need
+    # no secrets. A consequence of the branch limit: a workflow_dispatch run on a feature branch can't reach the
+    # secrets, so the first signed run is from main (or a tag) after this merges.
+    environment: apple-signing
     steps:
       - uses: actions/checkout@v4
 
