@@ -40,14 +40,14 @@ jobs:
   # Build the unsigned native binary on each architecture; GraalVM can't cross-compile, so one runner per arch. Each
   # uploads its raw binary; the sign-notarize job joins them.
   build-arm64:
-    name: build arm64 (macos-14)
-    runs-on: macos-14
+    name: build arm64 (macos-15)
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       # The same toolchain as cli-native.yml: JDK 21 (temurin) compiles the module as the toolchain asks, named in
-      # JAVA_HOME_21_ARM64 for the build (the macos-14 runner is Apple silicon), and GraalVM takes JAVA_HOME and
+      # JAVA_HOME_21_ARM64 for the build (the macos-15 runner is Apple silicon), and GraalVM takes JAVA_HOME and
       # builds the image from the JDK 21 bytecode.
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -151,7 +151,7 @@ jobs:
   sign-notarize:
     name: lipo, sign and notarize (universal)
     needs: [build-arm64, build-x86_64]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

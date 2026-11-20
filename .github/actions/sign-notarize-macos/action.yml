@@ -104,6 +104,10 @@ runs:
         printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$p8"
         set -x
         result="$RUNNER_TEMP/notarize-result.json"
+        # Turn errexit off around the pipeline: under -eo pipefail a failing `submit | tee` (Invalid, timeout, auth
+        # error) would end the step at this line, before PIPESTATUS could be read, which is exactly when we need the
+        # JSON and the log. `|| true` would not do: it resets PIPESTATUS to (0) and hides the real code.
+        set +e
         xcrun notarytool submit "$DRIVINE_NOTARIZE_ZIP" \
           --key "$p8" \
           --key-id "$APPLE_API_KEY_ID" \
@@ -112,6 +116,7 @@ runs:
           --wait \
           --output-format json | tee "$result"
         submit_rc=${PIPESTATUS[0]}
+        set -e
         echo "notarytool submit exit code: $submit_rc"
         status=$(/usr/bin/plutil -extract status raw -o - "$result" 2>/dev/null \
           || python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$result" 2>/dev/null \
