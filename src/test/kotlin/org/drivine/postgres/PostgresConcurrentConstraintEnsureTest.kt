@@ -38,7 +38,9 @@ class PostgresConcurrentConstraintEnsureTest {
                 "INSERT INTO ${graph}_node (labels, props) SELECT '[\"Big\"]'::jsonb, jsonb_build_object('id', g) FROM generate_series(1, $repeats) g",
             )
         }
-        PostgresTestDatabase.vacuum(graph)
+        // Without parallel workers: a pooled session that ran a vacuum in parallel keeps a segment of /dev/shm until it
+        // disconnects, which leaves a later HNSW build in the container's 64 MB too little (PostgresIndexBuildSharedMemoryTest).
+        PostgresTestDatabase.run("VACUUM (PARALLEL 0, ANALYZE) ${graph}_edge", "VACUUM (PARALLEL 0, ANALYZE) ${graph}_node")
         return pm
     }
 
