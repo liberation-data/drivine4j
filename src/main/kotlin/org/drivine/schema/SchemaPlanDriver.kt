@@ -159,7 +159,18 @@ internal class SchemaPlanDriver(
                 // before a drop of an index left invalid (drivine-cypher-spec#382).
                 (store.ddl as? SqlStoreDdl)?.onlineBuildsQuery ->
                     logger("IndexManager").debug("Reading the online index builds under way failed (treating as none under way): {}", e.message)
-                else -> logger("IndexManager").debug("Index introspection failed (treating as no indexes exist): {}", e.message)
+                // An ensure's turn to build an item on Postgres, taken (an insert) or given up (a delete) as a row of kind
+                // `CLAIM:<kind>` (drivine-cypher-spec#382): no listing, and a claim that fails is ensured without its turn.
+                else -> if ("'CLAIM:" in action.statement) {
+                    val manager = logger(if ("'CLAIM:UNIQUENESS_CONSTRAINT'" in action.statement) "ConstraintManager" else "IndexManager")
+                    if (action.statement.trimStart().startsWith("INSERT", ignoreCase = true)) {
+                        manager.debug("Claiming the turn to build it failed (ensuring it without its turn): {}", e.message)
+                    } else {
+                        manager.debug("Giving up the turn to build it failed: {}", e.message)
+                    }
+                } else {
+                    logger("IndexManager").debug("Index introspection failed (treating as no indexes exist): {}", e.message)
+                }
             }
             Purpose.STATE -> logger("IndexManager").debug("Reading the state of index '{}' failed: {}", action.parameters["name"], e.message)
             Purpose.SAMPLE -> logger("ConstraintManager").debug("Could not read the keys that repeat: {}", e.message)

@@ -249,6 +249,47 @@ class SchemaPlanDriverTest {
     }
 
     @Test
+    fun `a Postgres claim of a turn to build that fails is logged at DEBUG as that, not as a listing that failed`() {
+        val logger = LoggerFactory.getLogger(ConstraintManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = UniquenessConstraintSpec("Unclaimed", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, spec.label, spec.properties)), true)
+        var created = false
+        try {
+            val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    "'CLAIM:" in ran.statement -> RuntimeException("claim refused")
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> emptyList<Any?>().also { created = true }
+                    created && ran.statement == grammar.listConstraintsQuery() -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertIs<EnsureResult.Created>(store.constraints.ensure(spec))
+            // The turn taken (a recording store grants it), and its release refused.
+            created = false
+            val releasing = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    ran.statement.startsWith("DELETE") && "'CLAIM:" in ran.statement -> RuntimeException("release refused")
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> emptyList<Any?>().also { created = true }
+                    created && ran.statement == grammar.listConstraintsQuery() -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertIs<EnsureResult.Created>(releasing.constraints.ensure(spec))
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Claiming the turn to build it failed (ensuring it without its turn): claim refused")
+        assertContains(debug, "Giving up the turn to build it failed: release refused")
+    }
+
+    @Test
     fun `a recording store whose answer is null still gives a Postgres ensure its turn, so it builds without polling for one`() {
         val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
         val spec = RangeIndexSpec("Turned", "k")

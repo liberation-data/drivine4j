@@ -228,6 +228,32 @@ class PostgresConcurrentConstraintEnsureTest {
     }
 
     @Test
+    fun `a claim of the turn older than 60 seconds, left by a session that ended, is taken over at once`() {
+        // A session that claimed its turn to build the constraint and ended without giving it up (drivine-cypher-spec#382):
+        // with no online build under way, the next ensure takes the claim over, rather than wait 60 seconds for it.
+        val graph = "cc382_stale"
+        val pm = seeded(graph, nodes = 1_000)
+        try {
+            run(
+                "INSERT INTO ${graph}_schema (kind, label, properties, details) VALUES ('CLAIM:UNIQUENESS_CONSTRAINT', 'Big', '[\"id\"]', " +
+                    "jsonb_build_object('at', (clock_timestamp() - interval '2 minutes')::text))",
+            )
+            val started = System.nanoTime()
+            assertIs<EnsureResult.Created>(pm.constraints.ensure(spec))
+            val seconds = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started)
+            assertTrue(seconds < 30, "the stale claim was waited out, not taken over: $seconds s")
+            assertEquals(listOf(true), uniqueIndexes(graph).values.toList())
+            assertTrue(enforced(pm))
+            val claims = PostgresTestDatabase.pm.query(
+                QuerySpecification.withStatement(sqlStatement("SELECT count(*) FROM ${graph}_schema WHERE kind LIKE 'CLAIM:%'")).transform(Long::class.java),
+            ).single()
+            assertEquals(0L, claims, "the claim taken over was given up once done")
+        } finally {
+            PostgresTestDatabase.drop(graph)
+        }
+    }
+
+    @Test
     fun `two ensures at once of different items on one table both make theirs`() {
         // A constraint and a range index on the same node table, built online at once: Postgres cancels one as a deadlock,
         // which waits for the other's build to end, and is made then.
