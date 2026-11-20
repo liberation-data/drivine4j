@@ -1,13 +1,21 @@
 package org.drivine.postgres
 
 import org.drivine.DrivineException
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
 import org.drivine.query.sqlStatement
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.UniquenessConstraintSpec
+import org.drivine.test.PostgresTestContainer
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInstance
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -22,25 +30,59 @@ import kotlin.test.assertTrue
  * reported made is enforced, and none is reported made where nothing enforces it.
  */
 @PostgresTests
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PostgresConcurrentConstraintEnsureTest {
 
     private val spec = UniquenessConstraintSpec("Big", "id")
 
+    /**
+     * A pool of the class's own, ended after its tests, which every statement over the big tables runs on: a session that
+     * ran anything in parallel over them (a sample of the keys that repeat, the build the invalid-index test has refused)
+     * keeps a segment of /dev/shm until it disconnects, which in PostgresTestDatabase's pool would last the test JVM and
+     * leave a later HNSW build in the container's 64 MB too little (PostgresIndexBuildSharedMemoryTest).
+     */
+    private lateinit var provider: JdbcConnectionProvider
+    private lateinit var own: NonTransactionalPersistenceManager
+
+    @BeforeAll
+    fun open() {
+        provider = JdbcConnectionProvider.pooled(
+            "cc382", DatabaseType.POSTGRES, PostgresTestContainer.getJdbcUrl(),
+            PostgresTestContainer.getConnectionUsername(), PostgresTestContainer.getConnectionPassword(),
+        )
+        own = NonTransactionalPersistenceManager(provider, "cc382", DatabaseType.POSTGRES, SubtypeRegistry())
+    }
+
+    @AfterAll
+    fun end() {
+        provider.end()
+    }
+
+    /** Runs each statement on its own, committed as it runs, on the class's own pool. */
+    private fun run(vararg statements: String) = statements.forEach { own.execute(QuerySpecification.withStatement(it)) }
+
+    /** A manager for the graph [graph], with its tables made, as [PostgresTestDatabase.graphManager] makes one, over the class's own pool. */
+    private fun manager(graph: String): NonTransactionalPersistenceManager = SubtypeRegistry().let { registry ->
+        NonTransactionalPersistenceManager(
+            JdbcConnectionProvider(graph, DatabaseType.POSTGRES, provider.nativeDriver, registry, graphName = graph), graph, DatabaseType.POSTGRES, registry,
+        ).also { PostgresGraph(graph).ensure(it) }
+    }
+
     /** A fresh graph of [nodes] nodes labelled Big, each with its own id, and [repeats] more repeating ids 1 to [repeats]. */
     private fun seeded(graph: String, nodes: Int = NODES, repeats: Int = 0): NonTransactionalPersistenceManager {
         PostgresTestDatabase.drop(graph)
-        val pm = PostgresTestDatabase.graphManager(graph)
-        PostgresTestDatabase.run(
+        val pm = manager(graph)
+        run(
             "INSERT INTO ${graph}_node (labels, props) SELECT '[\"Big\"]'::jsonb, jsonb_build_object('id', g) FROM generate_series(1, $nodes) g",
         )
         if (repeats > 0) {
-            PostgresTestDatabase.run(
+            run(
                 "INSERT INTO ${graph}_node (labels, props) SELECT '[\"Big\"]'::jsonb, jsonb_build_object('id', g) FROM generate_series(1, $repeats) g",
             )
         }
         // Without parallel workers: a pooled session that ran a vacuum in parallel keeps a segment of /dev/shm until it
         // disconnects, which leaves a later HNSW build in the container's 64 MB too little (PostgresIndexBuildSharedMemoryTest).
-        PostgresTestDatabase.run("VACUUM (PARALLEL 0, ANALYZE) ${graph}_edge", "VACUUM (PARALLEL 0, ANALYZE) ${graph}_node")
+        run("VACUUM (PARALLEL 0, ANALYZE) ${graph}_edge", "VACUUM (PARALLEL 0, ANALYZE) ${graph}_node")
         return pm
     }
 
@@ -64,7 +106,7 @@ class PostgresConcurrentConstraintEnsureTest {
 
     /** Two ensures of [spec] at once, each of its own manager over [graph], started together; what each gave, or threw. */
     private fun together(graph: String): List<Any> {
-        val managers = List(2) { PostgresTestDatabase.graphManager(graph) }
+        val managers = List(2) { manager(graph) }
         val barrier = CyclicBarrier(2)
         val pool = Executors.newFixedThreadPool(2)
         try {
@@ -167,13 +209,13 @@ class PostgresConcurrentConstraintEnsureTest {
                 val definition = PostgresTestDatabase.pm.query(
                     QuerySpecification.withStatement(sqlStatement("SELECT pg_get_indexdef('$name'::regclass)")).transform(String::class.java),
                 ).single()
-                PostgresTestDatabase.run("DROP INDEX $name")
-                PostgresTestDatabase.run("INSERT INTO ${graph}_node (labels, props) VALUES ('[\"Big\"]'::jsonb, '{\"id\": 7}'::jsonb)")
+                run("DROP INDEX $name")
+                run("INSERT INTO ${graph}_node (labels, props) VALUES ('[\"Big\"]'::jsonb, '{\"id\": 7}'::jsonb)")
                 assertFailsWith<DrivineException> {
-                    PostgresTestDatabase.run(definition.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY "))
+                    run(definition.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY "))
                 }
                 assertEquals(mapOf(name to false), uniqueIndexes(graph), "the refused build left it invalid")
-                PostgresTestDatabase.run("DELETE FROM ${graph}_node WHERE nid = (SELECT max(nid) FROM ${graph}_node)")
+                run("DELETE FROM ${graph}_node WHERE nid = (SELECT max(nid) FROM ${graph}_node)")
 
                 val results = together(graph)
                 assertTrue(results.all(::reportsMade), "round $round: $results")
@@ -193,8 +235,8 @@ class PostgresConcurrentConstraintEnsureTest {
             val graph = "cc382_apart$round"
             val pm = seeded(graph)
             try {
-                PostgresTestDatabase.run("UPDATE ${graph}_node SET props = props || jsonb_build_object('n', props -> 'id')")
-                val managers = List(2) { PostgresTestDatabase.graphManager(graph) }
+                run("UPDATE ${graph}_node SET props = props || jsonb_build_object('n', props -> 'id')")
+                val managers = List(2) { manager(graph) }
                 val barrier = CyclicBarrier(2)
                 val pool = Executors.newFixedThreadPool(2)
                 val results = try {
