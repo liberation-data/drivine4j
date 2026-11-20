@@ -1,9 +1,12 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSchemaGrammar
 import org.drivine.connection.DatabaseType
+import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.cypher.store.marker.MarkerStatements
 import org.drivine.connection.ReusedIdsException
 import org.drivine.cypher.store.plan.DeclaredCatalog
@@ -13,6 +16,7 @@ import org.drivine.query.QueryLanguage
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
+import java.sql.SQLException
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -23,6 +27,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFails
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 /**
@@ -205,6 +210,40 @@ class SchemaPlanDriverTest {
         val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
         assertContains(debug, "Constraint introspection failed (treating as no constraints exist): no listing yet")
         assertContains(debug, "Could not read the keys that repeat: sample lost")
+    }
+
+    @Test
+    fun `a read of Postgres's online builds that fails, which the planner reads as none under way, is logged at DEBUG as that`() {
+        val logger = LoggerFactory.getLogger(IndexManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = UniquenessConstraintSpec("Deadlocked", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, spec.label, spec.properties)), true)
+        lateinit var onlineBuilds: String
+        var creates = 0
+        try {
+            val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    ran.statement == onlineBuilds -> RuntimeException("no listing yet")
+                    // The first build is cancelled as a deadlock with another session's online build; the ensure waits, then builds again.
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> if (creates++ == 0) SQLException("deadlock detected", "40P01") else emptyList<Any?>()
+                    ran.statement == grammar.listConstraintsQuery() && creates > 1 -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            onlineBuilds = checkNotNull((store.indexes.driver.store.ddl as SqlStoreDdl).onlineBuildsQuery)
+            assertIs<EnsureResult.Created>(store.constraints.ensure(spec))
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        assertEquals(2, creates, "built again after the deadlock")
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Reading the online index builds under way failed (treating as none under way): no listing yet")
+        assertTrue(debug.none { it.startsWith("Index introspection failed") }, "no listing of indexes failed: $debug")
     }
 
     @Test

@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.backend.sql.DdlContention
 import org.drivine.connection.ReusedIdsException
 import org.drivine.cypher.store.ddl.DdlStatement
+import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.cypher.store.plan.DatabaseReport
 import org.drivine.cypher.store.plan.ItemCall
 import org.drivine.cypher.store.plan.ItemReport
@@ -151,10 +152,14 @@ internal class SchemaPlanDriver(
      */
     private fun logUnread(action: PlanAction.Query, e: Exception) {
         when (action.purpose) {
-            Purpose.LISTING -> if (action.statement == store.ddl.listConstraintsQuery()) {
-                logger("ConstraintManager").debug("Constraint introspection failed (treating as no constraints exist): {}", e.message)
-            } else {
-                logger("IndexManager").debug("Index introspection failed (treating as no indexes exist): {}", e.message)
+            Purpose.LISTING -> when (action.statement) {
+                store.ddl.listConstraintsQuery() ->
+                    logger("ConstraintManager").debug("Constraint introspection failed (treating as no constraints exist): {}", e.message)
+                // Postgres's builds under way on the node table, read before an ensure is run again after a deadlock and
+                // before a drop of an index left invalid (drivine-cypher-spec#382).
+                (store.ddl as? SqlStoreDdl)?.onlineBuildsQuery ->
+                    logger("IndexManager").debug("Reading the online index builds under way failed (treating as none under way): {}", e.message)
+                else -> logger("IndexManager").debug("Index introspection failed (treating as no indexes exist): {}", e.message)
             }
             Purpose.STATE -> logger("IndexManager").debug("Reading the state of index '{}' failed: {}", action.parameters["name"], e.message)
             Purpose.SAMPLE -> logger("ConstraintManager").debug("Could not read the keys that repeat: {}", e.message)
