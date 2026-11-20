@@ -1,6 +1,10 @@
-# Builds the drivine CLI as a native binary on macOS (Apple silicon) with GraalVM, exactly as cli-native.yml builds it
-# on linux, then signs it with a Developer ID Application certificate and notarizes it with Apple's notarytool, and
-# uploads the signed, notarized binary as an artifact. This is how a macOS user's download is trusted by Gatekeeper.
+# Builds the drivine CLI as a native binary on macOS with GraalVM, exactly as cli-native.yml builds it on linux, once
+# per architecture (Apple silicon and Intel), joins the two into one universal binary with lipo, then signs it with a
+# Developer ID Application certificate and notarizes it with Apple's notarytool, and uploads the signed, notarized
+# universal binary as an artifact. This is how a macOS user's download is trusted by Gatekeeper on both architectures.
+#
+# GraalVM native-image can't cross-compile, so each architecture is built on its own runner, and the two are joined on
+# a third job with lipo. (macos-13, the last Intel image, is retired; macos-15-intel is the Intel runner.)
 #
 # This workflow needs eight repo secrets (listed under the signing step's env). Until they are set it will fail at the
 # signing step; that is expected while the signing material is being provisioned.
@@ -13,22 +17,30 @@ name: CLI macOS signed
 on:
   workflow_dispatch:
   # Enable once signing is proven green by hand, to sign the binary on each published release. Left commented so the
-  # draft defaults to by-hand runs only; see the PR's OPEN QUESTIONS on release vs dispatch.
+  # draft defaults to by-hand runs only; see the PR's OPEN QUESTIONS on release vs dispatch. When it is enabled, the
+  # sign-notarize job gets a job-level `contents: write` and uploads the artifact to the release with `gh release
+  # upload`; the workflow default below stays read-only.
   # release:
   #   types: [published]
 
-# No repo write is needed: the signed artifact is uploaded to the run, not committed. Secrets are read from the job's
-# env below.
+# No repo write is needed while this is dispatch-only: the signed artifact is uploaded to the run, not committed.
+# Secrets are read from the job's env below.
 permissions:
   contents: read
 
 concurrency:
   group: cli-macos-signed-${{ github.ref }}
+  # Fine for workflow_dispatch: a newer manual run replaces an older one. BUT when the release: published trigger is
+  # later enabled this must be false for release runs — a second release event must not cancel a notarization already
+  # in flight (notarytool --wait can run for minutes), or the release ends up with no signed binary. Split the group
+  # or set cancel-in-progress per event when that trigger goes live.
   cancel-in-progress: true
 
 jobs:
-  build-sign:
-    name: build, sign and notarize (macos arm64)
+  # Build the unsigned native binary on each architecture; GraalVM can't cross-compile, so one runner per arch. Each
+  # uploads its raw binary; the sign-notarize job joins them.
+  build-arm64:
+    name: build arm64 (macos-14)
     runs-on: macos-14
     timeout-minutes: 45
     steps:
@@ -70,10 +82,100 @@ jobs:
           bytes=$(stat -f %z "$binary")
           "$binary" --version
           {
-            echo "### drivine, native, macOS arm64"
+            echo "### drivine, native, macOS arm64 (unsigned)"
             echo
             echo "- Size: $bytes bytes ($(du -h "$binary" | cut -f1))"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivine-arm64
+          path: drivine4j-cli/build/native/nativeCompile/drivine
+          if-no-files-found: error
+          retention-days: 7
+
+  build-x86_64:
+    name: build x86_64 (macos-15-intel)
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # As build-arm64, but on the Intel runner, which sets JAVA_HOME_21_X64.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: graalvm-community
+          java-version: '25.0.2'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      - name: Build the native binary
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64 :drivine4j-cli:nativeCompile
+
+      - name: Record the binary's size and start
+        run: |
+          binary=drivine4j-cli/build/native/nativeCompile/drivine
+          bytes=$(stat -f %z "$binary")
+          "$binary" --version
+          {
+            echo "### drivine, native, macOS x86_64 (unsigned)"
+            echo
+            echo "- Size: $bytes bytes ($(du -h "$binary" | cut -f1))"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivine-x86_64
+          path: drivine4j-cli/build/native/nativeCompile/drivine
+          if-no-files-found: error
+          retention-days: 7
+
+  # Join the two architectures into one universal binary with lipo, then sign and notarize it once. A universal
+  # binary carries both slices, so one signed download runs on Apple silicon and Intel.
+  sign-notarize:
+    name: lipo, sign and notarize (universal)
+    needs: [build-arm64, build-x86_64]
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Artifacts drop the exec bit, so each slice is made executable again before lipo and the joined binary again
+      # before signing.
+      - name: Download the arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: drivine-arm64
+          path: arm64
+      - name: Download the x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: drivine-x86_64
+          path: x86_64
+
+      - name: Join into a universal binary
+        run: |
+          chmod +x arm64/drivine x86_64/drivine
+          lipo -create -output drivine arm64/drivine x86_64/drivine
+          lipo -info drivine
+          chmod +x drivine
+          ./drivine --version
 
       # Sign with Developer ID + hardened runtime + timestamp, then notarize with notarytool --wait. The eight secrets
       # are passed through env; the action reads them from env and never from inputs, so none is interpolated into a
@@ -81,7 +183,7 @@ jobs:
       - name: Sign and notarize
         uses: ./.github/actions/sign-notarize-macos
         with:
-          binary-path: drivine4j-cli/build/native/nativeCompile/drivine
+          binary-path: drivine
         env:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -92,26 +194,15 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
 
-      # Zip the signed binary again for the artifact (an artifact keeps no file mode, and the binary is a lone
-      # executable), so the download is the signed, notarized drivine.
+      # Zip the signed binary for the artifact (an artifact keeps no file mode, and the binary is a lone executable),
+      # so the download is the signed, notarized universal drivine.
       - name: Package the signed binary
         run: |
-          ditto -c -k --keepParent \
-            drivine4j-cli/build/native/nativeCompile/drivine \
-            "$RUNNER_TEMP/drivine-macos-arm64.zip"
+          ditto -c -k --keepParent drivine "$RUNNER_TEMP/drivine-macos-universal.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: drivine-macos-arm64-signed
-          path: ${{ runner.temp }}/drivine-macos-arm64.zip
+          name: drivine-macos-universal-signed
+          path: ${{ runner.temp }}/drivine-macos-universal.zip
           if-no-files-found: error
           retention-days: 7
-
-  # TODO(#707): an x86_64 (Intel) signed binary. The same job on runs-on: macos-13 (the last Intel image) builds and
-  # signs the x86_64 binary; the composite action is architecture-agnostic. Left as a stub to keep this draft focused
-  # on one architecture; add it once the arm64 path is proven green.
-  #
-  # build-sign-x86_64:
-  #   name: build, sign and notarize (macos x86_64)
-  #   runs-on: macos-13
-  #   ... same steps as build-sign, artifact name drivine-macos-x86_64-signed ...

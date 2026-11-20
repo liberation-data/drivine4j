@@ -68,7 +68,10 @@ runs:
       shell: bash
       run: |
         set +x
+        # --identifier pins the signature's bundle identifier (and so the designated requirement) to
+        # org.drivine.cli, rather than letting codesign derive it from the file name "drivine".
         codesign --force --options runtime --timestamp \
+          --identifier org.drivine.cli \
           --sign "$APPLE_SIGNING_IDENTITY" \
           "${{ inputs.binary-path }}"
         set -x
@@ -88,6 +91,11 @@ runs:
     # password. --wait blocks until Apple reaches a verdict. We don't trust --wait's exit code alone: we read the
     # returned status from its JSON and fail unless it is exactly "Accepted". On anything else, fetch the detailed log
     # for that submission so the reason (e.g. an unsigned nested item) is in the run.
+    #
+    # `shell: bash` runs with -eo pipefail, so a failing `submit | tee` (Invalid, timeout, auth error) would kill the
+    # step before we can parse the JSON or dump the log. We capture the pipeline's real exit code from PIPESTATUS and
+    # carry on, letting the status/id parse decide the outcome. If no submission id came back at all (an auth failure
+    # that never created one), we print the JSON and fail without calling `notarytool log`, which needs an id.
     - name: Notarize with notarytool
       shell: bash
       run: |
@@ -103,13 +111,22 @@ runs:
           --team-id "$APPLE_TEAM_ID" \
           --wait \
           --output-format json | tee "$result"
+        submit_rc=${PIPESTATUS[0]}
+        echo "notarytool submit exit code: $submit_rc"
         status=$(/usr/bin/plutil -extract status raw -o - "$result" 2>/dev/null \
-          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$result")
+          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$result" 2>/dev/null \
+          || true)
         id=$(/usr/bin/plutil -extract id raw -o - "$result" 2>/dev/null \
-          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$result")
-        echo "notarization status: $status"
+          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "$result" 2>/dev/null \
+          || true)
+        echo "notarization status: ${status:-<none>}"
+        if [ -z "$id" ]; then
+          echo "::error::notarytool returned no submission id (exit $submit_rc); nothing was submitted."
+          cat "$result" || true
+          exit 1
+        fi
         if [ "$status" != "Accepted" ]; then
-          echo "::error::notarization was not Accepted (status: $status)"
+          echo "::error::notarization was not Accepted (status: ${status:-<none>})"
           xcrun notarytool log "$id" \
             --key "$p8" --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER_ID" --team-id "$APPLE_TEAM_ID" || true
@@ -120,11 +137,16 @@ runs:
     # comment and the PR's OPEN QUESTIONS). Wrapping the binary in a signed .pkg or .dmg, then `xcrun stapler staple`
     # on that, is the follow-up once the distribution format is decided.
 
-    # Verify the signature, and ask Gatekeeper for its verdict. For a notarized-but-not-stapled binary there is no
-    # local ticket, so spctl reaches Apple over the network to fetch the notarization result: this step needs network
-    # and is informational (|| true) rather than a hard gate, since a bare executable assessed as type exec can report
-    # "rejected" purely for lacking a stapled ticket even when notarization succeeded. codesign --verify above is the
-    # hard gate on the signature itself.
+    # Verify the signature, and ask Gatekeeper for its verdict. The codesign --verify is the hard gate on the
+    # signature itself. The spctl call is deliberately informational (|| true), and the `|| true` must stay:
+    #   - For a notarized-but-not-stapled binary there is no local ticket, so spctl reaches Apple over the network to
+    #     fetch the notarization result — this step needs network.
+    #   - spctl -t exec on a bare CLI commonly prints "rejected ... does not seem to be an app" even when
+    #     notarization succeeded, because Gatekeeper's exec assessment expects an app bundle, not a lone executable.
+    #     That is not a signing failure, so it must not fail the job.
+    # For a positive confirmation use the notarization record itself (`xcrun notarytool info <id>`) or the signature's
+    # Authority/Timestamp chain from `codesign -dvv`, which the `codesign --display --verbose=4` in the signing step
+    # already prints.
     - name: Verify signature and Gatekeeper assessment
       shell: bash
       run: |
