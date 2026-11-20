@@ -92,7 +92,7 @@ class PostgresConcurrentConstraintEnsureTest {
         val pm = seeded(graph, nodes = 1_000_000)
         val building = {
             PostgresTestDatabase.pm.query(
-                QuerySpecification.withStatement(sqlStatement("SELECT count(*) FROM pg_stat_progress_create_index WHERE datname = current_database()"))
+                QuerySpecification.withStatement(sqlStatement("SELECT count(*) FROM pg_stat_progress_create_index WHERE relid = '${graph}_node'::regclass"))
                     .transform(Long::class.java),
             ).single()
         }
