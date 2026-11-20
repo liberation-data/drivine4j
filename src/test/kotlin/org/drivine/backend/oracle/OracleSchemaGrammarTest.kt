@@ -209,9 +209,9 @@ class OracleSchemaGrammarTest {
     fun `a uniqueness constraint is a unique index with one expression per property, null for a node that is not constrained`() {
         val spec = UniquenessConstraintSpec("Person", listOf("email", "tenant"))
         val texts = checked(grammar.createConstraint(spec))
-        // Over several properties, the range index is made whole first: no unique index stands for its labelled index. Its
-        // indexes are built online, as an index's own are (drivine-cypher-spec#382); the unique index is built blocking writes.
-        val range = checked(grammar.createIndex(RangeIndexSpec("Person", listOf("email", "tenant")), null))
+        // Over several properties, the range index is made whole first: no unique index stands for its labelled index. A
+        // constraint's indexes are built as they were, blocking writes; an index's own are built online (drivine-cypher-spec#381).
+        val range = checked(grammar.createIndex(RangeIndexSpec("Person", listOf("email", "tenant")), null)).map { it.replace(") ONLINE';", ")';") }
         assertEquals(range, texts.take(3))
         val (index, record) = texts.drop(3)
 
@@ -422,7 +422,7 @@ class OracleSchemaGrammarTest {
 
         val ix = graph.objectName("ix", listOf("email"))
         val uq = graph.objectName("uq", listOf("Person", "email"))
-        shared.waitsOutBusy("CREATE INDEX IF NOT EXISTS $ix ON g_node (${graph.store.sharedColumns(listOf("email")).joinToString(", ")}) ONLINE")
+        shared.waitsOutBusy("CREATE INDEX IF NOT EXISTS $ix ON g_node (${graph.store.sharedColumns(listOf("email")).joinToString(", ")})")
         assertFalse("lx" in range || "CASE WHEN" in range, "no labelled index is made:\n$range")
         range.inOrder("'RANGE_INDEX' AS kind, 'Person' AS label, '[\"email\"]' AS properties", "'$ix', '{\"form\": $form, \"unique\": \"$uq\"}'")
         assertFalse("WHEN MATCHED THEN UPDATE" in range, "a range index there already is changed only once the unique index is made")
