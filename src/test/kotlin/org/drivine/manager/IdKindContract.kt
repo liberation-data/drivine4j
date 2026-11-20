@@ -196,6 +196,58 @@ abstract class IdKindContract {
         assertEquals(listOf("batched"), gom.loadAll(KeyedAny::class.java).map { it.name })
     }
 
+    /** The owner `o`, owning a date's node and the date's text's, and a number's node and the number's text's, made by Cypher. */
+    private fun ownedAlike() = cypher(
+        "CREATE (o:IdKindRun:Owner {id: 'o', name: 'owner'}), (d:IdKindRun:Keyed {id: date('2026-01-05'), name: 'date'}), " +
+            "(t:IdKindRun:Keyed {id: '2026-01-05', name: 'text'}), (n:IdKindRun:Keyed {id: 1, name: 'number'}), (s:IdKindRun:Keyed {id: '1', name: 'one'}) " +
+            "CREATE (o)-[:OWNS]->(d), (o)-[:OWNS]->(t), (o)-[:OWNS]->(n), (o)-[:OWNS]->(s)",
+    )
+
+    private fun owned(): List<Any?> = cypher("MATCH (:IdKindRun:Owner {id: 'o'})-[:OWNS]->(k) RETURN k.name ORDER BY k.name")
+
+    /**
+     * A write plan keys a related node by its id, a text id apart from a date or a number that reads alike
+     * (drivine-cypher-spec#391): a `replace` that keeps the text's node drops the date's relationship, and the number's.
+     * Before, the plan keyed the text `'2026-01-05'` and the date `2026-01-05` alike, and `'1'` and `1`, so it kept all four,
+     * with no error.
+     */
+    @Test
+    fun `a replace that keeps a text id's node drops the relationship to a date or a number whose text it is`() {
+        ownedAlike()
+        gom.save(Owned(Owner("o", "owner"), listOf(KeyedText("2026-01-05", "text"), KeyedText("1", "one"))), Replace(Owned::keyed))
+        assertEquals(listOf("one", "text"), owned())
+        assertEquals(5L, (cypher("MATCH (n:IdKindRun) RETURN count(n)").single() as Number).toLong(), "a replace that keeps removed targets deletes none")
+    }
+
+    /** As a `replace` keys them, DELETE_UNREFERENCED deletes the date's and the number's nodes, not the texts' it holds. */
+    @Test
+    fun `DELETE_UNREFERENCED deletes the date's node and the number's, not the text ids' nodes the view holds`() {
+        ownedAlike()
+        gom.save(
+            Owned(Owner("o", "owner"), listOf(KeyedText("2026-01-05", "text"), KeyedText("1", "one"))),
+            Replace(Owned::keyed, removedTargets = RemovedTargets.DELETE_UNREFERENCED),
+        )
+        assertEquals(listOf("one", "text"), owned())
+        assertEquals(listOf("one", "text"), cypher("MATCH (n:IdKindRun:Keyed) RETURN n.name ORDER BY n.name"))
+    }
+
+    /**
+     * A related node whose id, declared `Any`, a load gave as its tag's text is held by a `replace` as the tag, as the plan
+     * keys the node: its relationship is kept, and its node too under DELETE_UNREFERENCED. The plan's key marks a text apart
+     * (drivine-cypher-spec#391), so the text alone would drop it.
+     */
+    @ParameterizedTest(name = "held as {0}")
+    @MethodSource("kinds")
+    fun `a replace keeps a related node whose id declared Any was loaded from a tag`(literal: String, kind: String, text: String) {
+        reset(literal)
+        gom.save(gom.load("o", OwnedAny::class.java)!!, Replace(OwnedAny::keyed))
+        assertEquals(1, ownsEdges())
+        gom.save(gom.load("o", OwnedAny::class.java)!!, Replace(OwnedAny::keyed, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        assertEquals(1, ownsEdges())
+        assertEquals(1, keyedCount())
+        assertEquals(1, heldAs(literal))
+    }
+
     @ParameterizedTest(name = "held as {0}")
     @MethodSource("kinds")
     fun `saves a view's related node whose id is declared Any onto the same node, by update too`(literal: String, kind: String, text: String) {

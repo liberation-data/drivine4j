@@ -1,5 +1,7 @@
 package org.drivine.backend.oracle
 
+import org.drivine.connection.CypherCompile
+import org.drivine.cypher.store.IdSql
 import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlSavePlan
 import com.fasterxml.jackson.databind.JsonNode
@@ -97,7 +99,7 @@ internal fun planSteps(bindings: Map<String, Any?>): List<Map<String, Any?>> {
 /** The steps a save on Oracle plans: what `SaveStatementBuilder` decides for the graph engines, written for the write block. */
 class OracleSavePlanTest {
 
-    private val planner = SqlSavePlan(OracleWriteBlocks(OracleGraph("g")), Neo4jObjectMapper.instance, OracleSql::key, NodeIds(Neo4jObjectMapper.instance, Store.ORACLE))
+    private val planner = SqlSavePlan(OracleWriteBlocks(OracleGraph("g")), Neo4jObjectMapper.instance, { id: Any -> IdSql.planKeyOf(Store.ORACLE, CypherCompile.storeText(id, Store.ORACLE)) }, NodeIds(Neo4jObjectMapper.instance, Store.ORACLE))
     private val digests = SnapshotDigest(Neo4jObjectMapper.instance)
 
     private val stamp = "aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb"
@@ -177,7 +179,7 @@ class OracleSavePlanTest {
         assertEquals(0, root["s"])
         assertEquals("id", root["key"])
         assertEquals("c1", root["id"])
-        assertEquals("c1", root["k"])
+        assertEquals("t:c1", root["k"])
         assertEquals(listOf("Claim"), root["labels"])
         assertEquals(mapOf("text" to "one"), root["set"])
         assertNotNull(root["fresh"])
@@ -193,7 +195,7 @@ class OracleSavePlanTest {
         val (root, ada, cites, bob, citesBob) = steps
         assertEquals(0, root["r"])
         assertEquals(1, ada["r"])
-        assertEquals("ada", ada["k"])
+        assertEquals("t:ada", ada["k"])
         assertEquals(listOf("Human"), ada["labels"])
         assertFalse("root" in ada, "only the root says it is the root: $ada")
         assertEquals(mapOf("op" to "link", "from" to 0, "to" to 1, "type" to "CITES", "dir" to "OUT", "props" to mapOf("page" to 3)), cites)
@@ -247,7 +249,7 @@ class OracleSavePlanTest {
         assertEquals("SUPPORTS", unlink["type"])
         assertEquals("OUT", unlink["dir"])
         assertEquals(0, unlink["s"], "the supported claims are of the root's own shape")
-        assertEquals(listOf("k1", "k2"), unlink["ids"])
+        assertEquals(listOf("t:k1", "t:k2"), unlink["ids"])
         assertEquals(true, unlink["keep"])
         assertEquals(true, unlink["delete"])
         // Replacing a list overwrites the root's relationships, so the whole stamp is checked.
@@ -265,8 +267,8 @@ class OracleSavePlanTest {
         unlinks.forEach { assertFalse("delete" in it, it.toString()) }
         unlinks.forEach { assertEquals(true, it["keep"]) }
         val supports = unlinks.last()
-        assertEquals(listOf("s1"), supports["ids"])
-        assertEquals(listOf("lead", "s1"), supports["held"], "every claim the object holds, in whichever field, is held")
+        assertEquals(listOf("t:s1"), supports["ids"])
+        assertEquals(listOf("t:lead", "t:s1"), supports["held"], "every claim the object holds, in whichever field, is held")
 
         val deleting = stepsOf(ClaimPair(Claim("c1", "one"), lead = Claim("lead", "L"), supports = listOf(Claim("s1", "S"))), replaced = RemovedTargets.DELETE_UNREFERENCED)
         assertTrue(deleting.ofKind("unlink").all { it["delete"] == true })
@@ -299,7 +301,7 @@ class OracleSavePlanTest {
 
         assertEquals(listOf("node", "unlink"), steps.map { it["op"] }, "k2 is as it was: no step for it")
         val unlink = steps.ofKind("unlink").single()
-        assertEquals(listOf("k1"), unlink["ids"])
+        assertEquals(listOf("t:k1"), unlink["ids"])
         assertFalse("keep" in unlink, "the named targets go, not every other: $unlink")
         assertFalse("delete" in unlink, unlink.toString())
         assertFalse("held" in unlink, unlink.toString())
@@ -313,7 +315,7 @@ class OracleSavePlanTest {
 
         assertEquals(listOf("node", "node"), steps.map { it["op"] })
         val k2 = steps.last()
-        assertEquals("k2", k2["k"])
+        assertEquals("t:k2", k2["k"])
         assertEquals(mapOf("text" to "b2"), k2["set"])
         assertEquals(listOf("note"), k2["unset"])
         assertTrue(steps.ofKind("link").isEmpty(), "the relationship was loaded, and is not made again")
@@ -326,7 +328,7 @@ class OracleSavePlanTest {
         val steps = steps(build(changed, before = digests.of(loaded), after = digests.of(changed)))
 
         assertEquals(listOf("node", "node", "link"), steps.map { it["op"] })
-        assertEquals("ada", steps[1]["k"])
+        assertEquals("t:ada", steps[1]["k"])
         assertFalse("set" in steps[1], "ada is as she was: nothing of her is written: ${steps[1]}")
         val link = steps.last()
         assertEquals(mapOf("page" to 9), link["props"])
@@ -375,7 +377,7 @@ class OracleSavePlanTest {
     fun `a node two fields hold is a step of each, found by one key and one shape`() {
         val steps = stepsOf(ClaimPair(Claim("c1", "one"), lead = Claim("x", "lead"), supports = listOf(Claim("x", "lead"))))
 
-        val x = steps.ofKind("node").filter { it["k"] == "x" }
+        val x = steps.ofKind("node").filter { it["k"] == "t:x" }
         assertEquals(2, x.size)
         assertEquals(1, x.map { it["s"] }.distinct().size)
         assertEquals(listOf(1, 2), x.map { it["r"] }, "each is a node of its own to the steps that join it")
@@ -535,7 +537,7 @@ class OracleSavePlanTest {
         assertEquals(listOf("node", "node", "node", "link", "link"), steps.map { it["op"] })
         val (root, inner, ada, mentions, covers) = steps
         assertEquals(true, root["root"])
-        assertEquals("k1", inner["k"])
+        assertEquals("t:k1", inner["k"])
         assertFalse("root" in inner || "expect" in inner, "the root of a nested view is saved as any related node is: $inner")
         assertEquals("0", inner["i"], "and its stamp is handed back under its index")
         assertEquals(listOf(stamp), statement.carried)
@@ -578,7 +580,7 @@ class OracleSavePlanTest {
         val steps = planSteps(bindings)
         assertEquals(listOf("node", "node", "node"), steps.map { it["op"] })
         assertEquals(listOf("0", "1", "2"), steps.map { it["i"] })
-        assertEquals(listOf("a", "b", "c"), steps.map { it["k"] })
+        assertEquals(listOf("t:a", "t:b", "t:c"), steps.map { it["k"] })
         steps.forEach { assertFalse("root" in it, "a batch has no root: $it") }
         assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK), bindings.keys)
         assertContains(text, "JSON_TABLE(v_result")

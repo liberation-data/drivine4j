@@ -41,7 +41,6 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     override fun select(graphClass: Class<*>, collectionSorts: List<CollectionSortSpec>, depthOverrides: Map<String, Int>, indexed: Boolean): PostgresSelect =
         PostgresSelect(graph, graphClass, collectionSorts, depthOverrides)
 
-    override fun key(id: Any): String = PostgresSql.key(id)
 
     // ----- Searching -----
 

@@ -177,9 +177,6 @@ internal object SqliteSql {
         return "SELECT $read FROM json_each($parameter) v"
     }
 
-    /** An id as the text a write plan keys its node by: see [PostgresSql.key], whose text the stores share. */
-    fun key(id: Any): String = PostgresSql.key(id)
-
     /**
      * Whether the property [key] (as stored, [org.drivine.cypher.store.ValueLayout.escape]d) of the node [alias] is the id
      * whose JSON, as the node holds it ([org.drivine.backend.sql.NodeIds]), is [json], JSON text: its class and key, as a
@@ -200,8 +197,9 @@ internal object SqliteSql {
             listOfNotNull(hasId("f", key, "v.value"), hasLabels("f", labels)).joinToString(" AND ") + ")"
 
     /**
-     * The id held under [key] of the node [alias] as the text a write plan keys it by ([key]): a temporal value's tag read
-     * as its text `v` ([Shared.searchedProperty]), anything else as [property] reads it.
+     * The id held under [key] of the node [alias] as its text: a temporal value's tag read as its text `v`
+     * ([Shared.searchedProperty]), anything else as [property] reads it. A write plan keys a target by the module's
+     * [org.drivine.cypher.store.IdSql.planKey], not by this text.
      */
     fun keyText(alias: String, key: String): String = Shared.searchedProperty(alias, key)
 

@@ -489,7 +489,7 @@ class OracleBackendTest {
         assertEquals("0", first.first()["i"])
         assertEquals("499", first.last()["i"])
         assertEquals("500", second.single()["i"])
-        assertEquals("h500", second.single()["k"])
+        assertEquals("t:h500", second.single()["k"])
         // One text for every block: the plan is data, so the driver keeps one statement prepared.
         assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
     }
@@ -501,9 +501,9 @@ class OracleBackendTest {
 
         val (first, second) = specs.map { steps(it.parameters) }
         assertEquals(500, first.size)
-        assertEquals((0..500).map { "h${500 - it}" }, (first + second).map { it["k"] })
+        assertEquals((0..500).map { "t:h${500 - it}" }, (first + second).map { it["k"] })
         // The node `h0` was given last, and is returned under the index it was given at.
-        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500"), "id" to "h0"), second.single())
+        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "t:h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500"), "id" to "h0"), second.single())
         assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
         assertContains(specs[0].statement!!.text, "JSON_TABLE(v_result")
     }
@@ -628,8 +628,8 @@ class OracleBackendTest {
         )
 
         val (from, to, link) = steps(statement.bindings)
-        assertEquals(mapOf("op" to "ref", "r" to 0, "s" to 0, "k" to "c1", "id" to "c1"), from)
-        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to 1, "k" to "h1", "id" to "h1"), to)
+        assertEquals(mapOf("op" to "ref", "r" to 0, "s" to 0, "k" to "t:c1", "id" to "c1"), from)
+        assertEquals(mapOf("op" to "ref", "r" to 1, "s" to 1, "k" to "t:h1", "id" to "h1"), to)
         assertEquals(mapOf("op" to "link", "from" to 0, "to" to 1, "type" to "MENTIONS", "dir" to "OUT", "props" to mapOf("page" to 3)), link)
         // The labels the ref adds are part of how the node is found.
         assertContains(statement.statement, "\"Vip\"")

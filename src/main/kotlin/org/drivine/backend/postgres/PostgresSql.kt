@@ -3,7 +3,6 @@ package org.drivine.backend.postgres
 import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.under
-import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.drivine.query.JdbcParameterCoercer
 import org.drivine.schema.SimilarityFunction
@@ -140,17 +139,6 @@ internal object PostgresSql {
             SqlKind.LOCAL_DATE -> "($text)::date"
         }
         return "SELECT $read FROM jsonb_array_elements(CAST($parameter AS jsonb)) v"
-    }
-
-    /**
-     * The id [id] as the text a write plan keys its node by, within the plan: what `->>` reads its stored property back as.
-     * A property is written as JSON, so a number is its JSON form, which `jsonb` keeps as it was written. A temporal value
-     * is held as its tag, and keyed by the tag's text, as the module writes it ([NodeIds.temporalText]). A node is found
-     * by its id's JSON, not by this text: see [NodeIds].
-     */
-    fun key(id: Any): String = NodeIds.temporalText(id) ?: when (id) {
-        is Number, is Boolean -> Neo4jObjectMapper.instance.writeValueAsString(id)
-        else -> id.toString()
     }
 
     /**

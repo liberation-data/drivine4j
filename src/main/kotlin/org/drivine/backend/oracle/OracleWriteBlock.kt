@@ -1,5 +1,7 @@
 package org.drivine.backend.oracle
 
+import org.drivine.cypher.api.Store
+import org.drivine.cypher.store.IdSql
 import org.drivine.backend.sql.NodeShape
 import org.drivine.backend.sql.StepKind
 import org.drivine.backend.sql.WritePlan
@@ -922,11 +924,12 @@ END;
      * The arm of `joined` that reads the relationships to the targets of [shape]: those that leave the
      * node when [outgoing], else those that reach it. A relationship from the node to itself is read
      * as leaving it, and so once when both directions are read. Each target's id is read as the text the
-     * plan keys it by in `ids` and `held` ([OracleSql.keyText]): a temporal value's tag as its text.
+     * plan keys it by in `ids` and `held` ([IdSql.planKey]): a text id marked apart from a temporal value's tag, read as its
+     * text, or a number that reads alike (drivine-cypher-spec#391).
      */
     private fun joiner(index: Int, shape: NodeShape, outgoing: Boolean): String = """
                 WHEN $index THEN
-                    SELECT e.eid, t.nid, ${OracleSql.keyText("t", shape.key)} BULK COLLECT INTO v_eids, v_nids, v_keys
+                    SELECT e.eid, t.nid, ${IdSql.planKey(Store.ORACLE, "t", shape.key)} BULK COLLECT INTO v_eids, v_nids, v_keys
                     FROM ${graph.edges} e JOIN ${graph.nodes} t ON t.nid = e.${if (outgoing) "dst" else "src"}
                     WHERE e.${if (outgoing) "src" else "dst"} = p_from AND e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()}${if (outgoing) "" else " AND (p_dir = 'IN' OR e.src <> p_from)"};
     """.trimEnd().trimStart('\n')
