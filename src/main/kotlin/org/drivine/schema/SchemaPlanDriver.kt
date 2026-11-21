@@ -149,8 +149,9 @@ internal class SchemaPlanDriver(
     /**
      * Logs at DEBUG a read that failed and that the planner takes as nothing there (a listing, an index's state, a
      * sample of the data), as drivine4j's managers logged it: the report's lines are INFO and above, and say nothing of it.
+     * [error] is [e] as the module reads it.
      */
-    private fun logUnread(action: PlanAction.Query, e: Exception) {
+    private fun logUnread(action: PlanAction.Query, e: Exception, error: StoreError) {
         when (action.purpose) {
             Purpose.LISTING -> when (action.statement) {
                 store.ddl.listConstraintsQuery() ->
@@ -159,12 +160,20 @@ internal class SchemaPlanDriver(
                 // before a drop of an index left invalid (drivine-cypher-spec#382).
                 (store.ddl as? SqlStoreDdl)?.onlineBuildsQuery ->
                     logger("IndexManager").debug("Reading the online index builds under way failed (treating as none under way): {}", e.message)
-                // An ensure's turn to build an item on Postgres, taken (an insert) or given up (a delete) as a row of kind
-                // `CLAIM:<kind>` (drivine-cypher-spec#382): no listing, and a claim that fails is ensured without its turn.
+                // An ensure's turn to build an item, taken (an insert, in a block on Oracle) or given up (a delete) as a row
+                // of kind `CLAIM:<kind>` (drivine-cypher-spec#382), and on Oracle the count of claims held polled before
+                // the take (drivine4j#777): no listing, and a claim, or a count, that fails is ensured without its turn,
+                // but a take Oracle refuses as a key the catalog has (ORA-00001) is another session's turn, polled for.
                 else -> if ("'CLAIM:" in action.statement) {
                     val manager = logger(if ("'CLAIM:UNIQUENESS_CONSTRAINT'" in action.statement) "ConstraintManager" else "IndexManager")
-                    if (action.statement.trimStart().startsWith("INSERT", ignoreCase = true)) {
-                        manager.debug("Claiming the turn to build it failed (ensuring it without its turn): {}", e.message)
+                    if (action.statement.trimStart().startsWith("SELECT", ignoreCase = true)) {
+                        manager.debug("Reading the claims held of the turn to build it failed (ensuring it without its turn): {}", e.message)
+                    } else if ("INSERT INTO" in action.statement.uppercase()) {
+                        if (store.isViolation(error)) {
+                            manager.debug("Another session holds the turn to build it (polling for it): {}", e.message)
+                        } else {
+                            manager.debug("Claiming the turn to build it failed (ensuring it without its turn): {}", e.message)
+                        }
                     } else {
                         manager.debug("Giving up the turn to build it failed: {}", e.message)
                     }
@@ -220,7 +229,7 @@ internal class SchemaPlanDriver(
         private fun failed(action: PlanAction, e: Exception): PlanOutcome.Failed {
             val error = StoreErrors.of(e)
             thrown[error] = e
-            if (action is PlanAction.Query) logUnread(action, e)
+            if (action is PlanAction.Query) logUnread(action, e, error)
             if (action is PlanAction.Query && action.purpose == Purpose.SAMPLE) unread += e
             if (action is PlanAction.AwaitIndex) waitFailed = e
             return PlanOutcome.Failed(error)
