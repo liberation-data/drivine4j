@@ -1,6 +1,8 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteGraph
@@ -287,6 +289,50 @@ class SchemaPlanDriverTest {
         val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
         assertContains(debug, "Claiming the turn to build it failed (ensuring it without its turn): claim refused")
         assertContains(debug, "Giving up the turn to build it failed: release refused")
+    }
+
+    @Test
+    fun `an Oracle turn's count of claims, take and release that fail are each logged at DEBUG as that, and a take refused as held as another's turn`() {
+        val logger = LoggerFactory.getLogger(ConstraintManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val grammar = OracleSchemaGrammar(OracleGraph("g"))
+        val spec = UniquenessConstraintSpec("Unclaimed", "k")
+        val listed = StorePlanListingRows.rows("oracle", listOf(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, spec.label, spec.properties)), true)
+        fun ensured(refused: (RecordingStore.Ran) -> Any?) {
+            var created = false
+            val store = RecordingStore(DatabaseType.ORACLE, ddl = grammar, graphName = "g") { ran ->
+                refused(ran) ?: when {
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> emptyList<Any?>().also { created = true }
+                    created && ran.statement == grammar.listConstraintsQuery() -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertTimeoutPreemptively(Duration.ofSeconds(20)) { assertIs<EnsureResult.Created>(store.constraints.ensure(spec)) }
+        }
+        fun held(ran: RecordingStore.Ran) = "'CLAIM:" in ran.statement && ran.statement.startsWith("SELECT")
+        fun take(ran: RecordingStore.Ran) = "'CLAIM:" in ran.statement && "INSERT INTO" in ran.statement
+        fun release(ran: RecordingStore.Ran) = "'CLAIM:" in ran.statement && ran.statement.startsWith("DECLARE") && !take(ran)
+        var takes = 0
+        try {
+            ensured { ran -> if (held(ran)) RuntimeException("count refused") else null }
+            ensured { ran -> if (take(ran)) RuntimeException("claim refused") else null }
+            // Another session's claim stands at the first take; the second is this ensure's.
+            ensured { ran -> if (take(ran) && takes++ == 0) SQLException("ORA-00001: unique constraint violated", "23000", 1) else null }
+            ensured { ran -> if (release(ran)) RuntimeException("release refused") else null }
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        assertEquals(2, takes, "taken again after another session's claim")
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Reading the claims held of the turn to build it failed (ensuring it without its turn): count refused")
+        assertContains(debug, "Claiming the turn to build it failed (ensuring it without its turn): claim refused")
+        assertContains(debug, "Another session holds the turn to build it (polling for it): ORA-00001: unique constraint violated")
+        assertContains(debug, "Giving up the turn to build it failed: release refused")
+        assertEquals(1, debug.count { it.startsWith("Giving up the turn") }, "only the release is logged as one: $debug")
     }
 
     @Test

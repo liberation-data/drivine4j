@@ -274,7 +274,7 @@ class StorePlanGoldenTest {
             return Sent(SCHEMA, pinned["stores"][id].textValue(), emptyMap(), answer, delay, round)
         }
         query["statement"]?.let { return Sent(SCHEMA, it.textValue(), emptyMap(), answer, delay, round) }
-        // An ensure's turn to build an item on Postgres, taken and given up as its case pins it (drivine-cypher-spec#382).
+        // An ensure's turn to build an item, taken and given up as its case pins it (drivine-cypher-spec#382, drivine4j#777).
         // Oracle's take binds the ensure's mark, `at`; Postgres's binds nothing.
         val marked = query["at"]?.let { mapOf("at" to it.textValue()) }.orEmpty()
         query["claim"]?.let { return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["claim"].textValue(), marked, answer, delay, round) }
