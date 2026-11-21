@@ -26,7 +26,8 @@ import org.drivine.query.StampWrite
  * gained by saving the nodes of a field together.
  *
  * @param blocks how the store carries out a plan
- * @param key an id as the text a step keys its node by within the plan, and the store reads a target's stored id back as
+ * @param key an id as the key a step keys its node by within the plan, and the store reads a target's stored id back as
+ *   ([org.drivine.cypher.store.IdSql.planKeyOf]): a text id marked apart from a temporal value or a number that reads alike
  * @param ids an id as a node of a class holds it: an id read from a digest, as text, is made the `@NodeId` field's type
  */
 internal class SqlSavePlan(
@@ -94,8 +95,8 @@ internal class SqlSavePlan(
             if (depth == 0) rootNode(fragment, model, replaces, before) else relatedNode(fragment, model, before, after)
 
         /**
-         * The ids are compared as keys: a number with the text the store reads a JSON number back as, and a temporal value
-         * with its tag's text. An id read from the digest, as text, is first made the target's `@NodeId` type, as a save
+         * The ids are compared as keys ([org.drivine.cypher.store.IdSql.planKeyOf]): a number with the text the store reads a
+         * JSON number back as, a temporal value with its tag's text, and a text marked apart from both. An id read from the digest, as text, is first made the target's `@NodeId` type, as a save
          * writes it, so a temporal id is keyed by its tag's text and not by the text Jackson wrote it as.
          */
         override fun removal(field: Field, root: Int, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>) {

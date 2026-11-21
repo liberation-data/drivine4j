@@ -172,7 +172,15 @@ class StoreMarkerGoldenTest {
             val expected = markerOf(id)
             same(statements(expected["constraint"]), made(id, store.grammar, SchemaMarker.CONSTRAINT), "$id: the marker's constraint made")
             if (id == "falkordb") continue // its constraint is built in the background, which a recording store never finishes
-            val recording = recording(id)
+            // The store lists the constraint once its create has run, as a real one does: an ensure reads the listing again
+            // after the create, and one that still doesn't list it was not made (drivine-cypher-spec#382).
+            val creates = statements(expected["constraint"]).toSet()
+            val constraint = SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, SchemaMarker.CONSTRAINT.label, SchemaMarker.CONSTRAINT.properties)
+            var created = false
+            val recording = recording(id) { ran ->
+                if (ran.statement in creates) created = true
+                if (created && ran.statement == store.grammar.listConstraintsQuery()) StorePlanListingRows.rows(id, listOf(constraint), true) else emptyList<Any?>()
+            }
             SchemaVersionStore(recording, "owner").ensureSingleton()
             same(expected["deleteAllButNewest"].textValue(), recording.executed.single().statement, "$id: the duplicates removed")
             same(mapOf("scope" to "owner"), recording.executed.single().parameters, "$id: of the scope")

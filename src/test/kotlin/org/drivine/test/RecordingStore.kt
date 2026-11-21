@@ -67,7 +67,13 @@ class RecordingStore(
         is Throwable -> throw outcome
         null -> emptyList()
         else -> outcome as List<Any?>
-    }
+    }.ifEmpty { if (claims(ran)) listOf("recording") else emptyList() }
+
+    /**
+     * Whether [ran] takes an ensure's turn to build an item on Postgres (drivine-cypher-spec#382), which a recording store
+     * gives where its answer gives nothing: with no row, the ensure would poll for its turn as long as a build is waited for.
+     */
+    private fun claims(ran: Ran) = ran.statement.startsWith("INSERT INTO") && "'CLAIM:" in ran.statement
 
     private val provider = object : ConnectionProvider, NativeSchemaCommandExecutor {
         override val name = "recording"

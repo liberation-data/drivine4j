@@ -3,9 +3,9 @@ package org.drivine.backend.sql
 import org.drivine.DrivineException
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
-import org.drivine.backend.oracle.OracleSql
-import org.drivine.backend.postgres.PostgresSql
+import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.Store
+import org.drivine.cypher.store.IdSql
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
@@ -17,6 +17,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -132,15 +133,22 @@ class NodeIdsTest {
     }
 
     @Test
-    fun `a temporal id is keyed in a plan by its tag's text, which the stores read a target's id back as`() {
+    fun `a temporal id is keyed in a plan by its tag's text, which the stores read a target's id back as, and a text apart`() {
+        fun key(store: Store, id: Any) = IdSql.planKeyOf(store, CypherCompile.storeText(id, store))
         val moment = LocalDateTime.of(2024, 1, 2, 10, 0)
         val tag = Neo4jObjectMapper.instance.readTree(ids.json(moment))
-        assertEquals(tag["v"].asText(), PostgresSql.key(moment))
-        assertEquals(tag["v"].asText(), OracleSql.key(moment))
-        assertEquals("2024-01-02", PostgresSql.key(LocalDate.of(2024, 1, 2)))
-        assertNull(NodeIds.temporalText("2024-01-02"))
-        assertEquals("7", PostgresSql.key(7L))
-        assertEquals("3", OracleSql.key(3.0))
+        assertEquals(tag["v"].asText(), key(Store.POSTGRES, moment))
+        assertEquals(tag["v"].asText(), key(Store.ORACLE, moment))
+        assertEquals("2024-01-02", key(Store.POSTGRES, LocalDate.of(2024, 1, 2)))
+        assertEquals("7", key(Store.POSTGRES, 7L))
+        assertEquals("3", key(Store.ORACLE, 3.0))
+        // The text and the date of one text, and the text and the number, key apart (drivine-cypher-spec#391); a float on
+        // Postgres is keyed as `numeric` reads it back, not as Jackson writes it.
+        for (store in listOf(Store.POSTGRES, Store.SQLITE, Store.ORACLE)) {
+            assertNotEquals(key(store, "2024-01-02"), key(store, LocalDate.of(2024, 1, 2)))
+            assertNotEquals(key(store, "7"), key(store, 7L))
+        }
+        assertEquals("0.00000010", key(Store.POSTGRES, 1.0E-7))
     }
 
     @Test
@@ -149,8 +157,9 @@ class NodeIdsTest {
         // with an offset is keyed by its tag too, since #862.
         val lmt = OffsetDateTime.of(1971, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -44, -30))
         for ((id, kind) in listOf(lmt to "DATE_TIME", lmt.toOffsetTime() to "TIME")) {
-            for (key in listOf(NodeIds::temporalText, PostgresSql::key, OracleSql::key)) {
-                val refused = assertFailsWith<DrivineException> { key(id) }
+            // A plan keys an id by its JSON on the store (IdSql.planKeyOf), so it is refused there, before any key is made.
+            for (store in listOf(Store.POSTGRES, Store.ORACLE, Store.SQLITE)) {
+                val refused = assertFailsWith<DrivineException> { NodeIds(Neo4jObjectMapper.instance, store).json(id) }
                 assertTrue(refused.message.orEmpty().startsWith("A value given as a $kind isn't one: "), "$refused")
                 assertTrue(refused.message.orEmpty().endsWith("(the store holds an offset to the minute)."), "$refused")
             }

@@ -257,7 +257,10 @@ class StorePlanGoldenTest {
         query["listing"]?.let { listing ->
             val catalog = store["catalog"]["stores"][id]
             val name = listing.textValue()
-            val statement = if (name == "constraints") catalog["constraints"] else catalog["indexes"][name.removePrefix("indexes.")]
+            val statement = when (name) {
+                "constraints", "onlineBuilds" -> catalog[name]
+                else -> catalog["indexes"][name.removePrefix("indexes.")]
+            } ?: fail("store.yaml lists no $name on $id")
             return Sent(SCHEMA, statement.textValue(), emptyMap(), answer, delay, round)
         }
         query["indexState"]?.let {
@@ -271,7 +274,14 @@ class StorePlanGoldenTest {
             return Sent(SCHEMA, pinned["stores"][id].textValue(), emptyMap(), answer, delay, round)
         }
         query["statement"]?.let { return Sent(SCHEMA, it.textValue(), emptyMap(), answer, delay, round) }
+        // An ensure's turn to build an item on Postgres, taken and given up as its case pins it (drivine-cypher-spec#382).
+        query["claim"]?.let { return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["claim"].textValue(), emptyMap(), answer, delay, round) }
+        query["release"]?.let {
+            return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["release"].textValue(), mapOf("at" to query["at"].textValue()), answer, delay, round)
+        }
         return when (val name = query["marker"].textValue()) {
+            "claim" -> Sent(SCHEMA, markerStore(id)["claim"].textValue(), emptyMap(), answer, delay, round)
+            "release" -> Sent(SCHEMA, markerStore(id)["release"].textValue(), mapOf("at" to query["at"].textValue()), answer, delay, round)
             "read.version", "read.items" ->
                 Sent(MANAGER_QUERY, markerStore(id)["read"][name.removePrefix("read.")].textValue(), mapOf("scope" to query["scope"].textValue()), answer, delay, round)
             "scopes" -> Sent(MANAGER_QUERY, markerStore(id)["scopes"]?.takeUnless { it.isNull }?.textValue() ?: marker["scopesCypher"].textValue(), emptyMap(), answer, delay, round)

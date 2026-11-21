@@ -96,7 +96,10 @@ class SchemaExecutor internal constructor(
         /** A Postgres statement that builds an index, as PostgresSchemaGrammar writes one: a uniqueness constraint's too. */
         val INDEX_BUILD = Regex("""^\s*CREATE\s+(UNIQUE\s+)?INDEX\b""", RegexOption.IGNORE_CASE)
 
-        /** A Postgres statement that drops an index online, as the schema planner drops an invalid one to build it again. */
+        /**
+         * A Postgres statement that drops an index online, which a transaction refuses (`25001`). The schema planner sent
+         * one to drop an invalid index before drivine-cypher-spec#382; it now drops one in a block that holds the table.
+         */
         val ONLINE_DROP = Regex("""^\s*DROP\s+INDEX\s+CONCURRENTLY\b""", RegexOption.IGNORE_CASE)
     }
 }

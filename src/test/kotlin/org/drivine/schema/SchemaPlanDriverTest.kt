@@ -1,9 +1,12 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSchemaGrammar
 import org.drivine.connection.DatabaseType
+import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.cypher.store.marker.MarkerStatements
 import org.drivine.connection.ReusedIdsException
 import org.drivine.cypher.store.plan.DeclaredCatalog
@@ -11,8 +14,11 @@ import org.drivine.cypher.store.plan.Operation
 import org.drivine.cypher.store.plan.PlanRequest
 import org.drivine.query.QueryLanguage
 import org.drivine.test.RecordingStore
+import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
+import java.sql.SQLException
+import java.time.Duration
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -23,6 +29,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFails
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 /**
@@ -205,6 +212,95 @@ class SchemaPlanDriverTest {
         val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
         assertContains(debug, "Constraint introspection failed (treating as no constraints exist): no listing yet")
         assertContains(debug, "Could not read the keys that repeat: sample lost")
+    }
+
+    @Test
+    fun `a read of Postgres's online builds that fails, which the planner reads as none under way, is logged at DEBUG as that`() {
+        val logger = LoggerFactory.getLogger(IndexManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = UniquenessConstraintSpec("Deadlocked", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, spec.label, spec.properties)), true)
+        lateinit var onlineBuilds: String
+        var creates = 0
+        try {
+            val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    ran.statement == onlineBuilds -> RuntimeException("no listing yet")
+                    // The first build is cancelled as a deadlock with another session's online build; the ensure waits, then builds again.
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> if (creates++ == 0) SQLException("deadlock detected", "40P01") else emptyList<Any?>()
+                    ran.statement == grammar.listConstraintsQuery() && creates > 1 -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            onlineBuilds = checkNotNull((store.indexes.driver.store.ddl as SqlStoreDdl).onlineBuildsQuery)
+            assertIs<EnsureResult.Created>(store.constraints.ensure(spec))
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        assertEquals(2, creates, "built again after the deadlock")
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Reading the online index builds under way failed (treating as none under way): no listing yet")
+        assertTrue(debug.none { it.startsWith("Index introspection failed") }, "no listing of indexes failed: $debug")
+    }
+
+    @Test
+    fun `a Postgres claim of a turn to build that fails is logged at DEBUG as that, not as a listing that failed`() {
+        val logger = LoggerFactory.getLogger(ConstraintManager::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = UniquenessConstraintSpec("Unclaimed", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, spec.label, spec.properties)), true)
+        var created = false
+        try {
+            val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    "'CLAIM:" in ran.statement -> RuntimeException("claim refused")
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> emptyList<Any?>().also { created = true }
+                    created && ran.statement == grammar.listConstraintsQuery() -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertIs<EnsureResult.Created>(store.constraints.ensure(spec))
+            // The turn taken (a recording store grants it), and its release refused.
+            created = false
+            val releasing = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+                when {
+                    ran.statement.startsWith("DELETE") && "'CLAIM:" in ran.statement -> RuntimeException("release refused")
+                    ran.statement.startsWith("CREATE UNIQUE INDEX") -> emptyList<Any?>().also { created = true }
+                    created && ran.statement == grammar.listConstraintsQuery() -> listed
+                    else -> emptyList<Any?>()
+                }
+            }
+            assertIs<EnsureResult.Created>(releasing.constraints.ensure(spec))
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        val debug = appender.list.filter { it.level == Level.DEBUG }.map { it.formattedMessage }
+        assertContains(debug, "Claiming the turn to build it failed (ensuring it without its turn): claim refused")
+        assertContains(debug, "Giving up the turn to build it failed: release refused")
+    }
+
+    @Test
+    fun `a recording store whose answer is null still gives a Postgres ensure its turn, so it builds without polling for one`() {
+        val grammar = PostgresSchemaGrammar(PostgresGraph("g"))
+        val spec = RangeIndexSpec("Turned", "k")
+        val listed = StorePlanListingRows.rows("postgres", listOf(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, spec.label, spec.properties)), false)
+        var created = false
+        val store = RecordingStore(DatabaseType.POSTGRES, ddl = grammar, graphName = "g") { ran ->
+            if (ran.statement.startsWith("CREATE INDEX")) created = true
+            if (created && ran.statement == grammar.listIndexesQuery(SchemaItemKind.RANGE_INDEX)) listed else null
+        }
+        assertTimeoutPreemptively(Duration.ofSeconds(20)) { assertIs<EnsureResult.Created>(store.indexes.ensure(spec)) }
+        assertTrue(store.schema.any { it.startsWith("INSERT INTO") && "'CLAIM:RANGE_INDEX'" in it }, "the turn was claimed: ${store.schema}")
     }
 
     @Test

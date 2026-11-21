@@ -41,7 +41,6 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     override fun select(graphClass: Class<*>, collectionSorts: List<CollectionSortSpec>, depthOverrides: Map<String, Int>, indexed: Boolean): SqliteSelect =
         SqliteSelect(graph, graphClass, collectionSorts, depthOverrides)
 
-    override fun key(id: Any): String = SqliteSql.key(id)
 
     // ----- Searching -----
 
