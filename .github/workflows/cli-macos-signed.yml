@@ -11,29 +11,29 @@
 #
 # Kept apart from cli-native.yml on purpose: that workflow is permissions: contents: read with no secrets, so fork
 # pull requests can run it safely. Signing needs secrets, so it runs only on triggers under this repo's control
-# (workflow_dispatch, and optionally release), never on a fork pull request.
+# (by hand, from release.yml, or on a published release), never on a fork pull request.
 name: CLI macOS signed
 
 on:
+  # By hand: builds, signs and notarizes, and keeps the zip as the run's artifact. Nothing is attached to a release.
   workflow_dispatch:
-  # Enable once signing is proven green by hand, to sign the binary on each published release. Left commented so the
-  # default is by-hand runs only. When it is enabled, the job gets a job-level `contents: write` and uploads the
-  # artifact to the release with `gh release upload`; the workflow default below stays read-only.
-  # release:
-  #   types: [published]
+  # From release.yml, after it creates the GitHub release: signs the release's commit and attaches the zip to it.
+  # release.yml makes its releases with GITHUB_TOKEN, and GitHub starts no workflow for an event that token caused,
+  # so the release trigger below would never fire for them; release.yml calls this workflow instead.
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag (vX.Y.Z) to attach the signed zip to.
+        required: true
+        type: string
+  # A release published by a person, in the web UI or with gh, does fire this, and gets the zip attached the same way.
+  release:
+    types: [published]
 
-# No repo write is needed while this is dispatch-only: the signed artifact is uploaded to the run, not committed.
-# Secrets are read from the job's env below.
+# Read-only by default. Only the attach job below, which runs no build code and sees no Apple secret, may write to
+# the repo, and only to upload the release asset.
 permissions:
   contents: read
-
-concurrency:
-  group: cli-macos-signed-${{ github.ref }}
-  # Fine for workflow_dispatch: a newer manual run replaces an older one. BUT when the release: published trigger is
-  # later enabled this must be false for release runs — a second release event must not cancel a notarization already
-  # in flight (notarytool --wait can run for minutes), or the release ends up with no signed binary. Split the group
-  # or set cancel-in-progress per event when that trigger goes live.
-  cancel-in-progress: true
 
 jobs:
   build-sign:
@@ -44,6 +44,11 @@ jobs:
     # and v* tags. A consequence of that branch limit: a workflow_dispatch run on a feature branch can't reach the
     # secrets, so the first signed run is from main (or a tag) after this merges.
     environment: apple-signing
+    # One signing run per release tag (or per ref, by hand). A newer manual run replaces an older one, but a release
+    # run is never cancelled: a second event must not kill a notarization in flight and leave the release unsigned.
+    concurrency:
+      group: cli-macos-signed-${{ inputs.tag || github.event.release.tag_name || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,3 +123,23 @@ jobs:
           path: ${{ runner.temp }}/drivine-macos-arm64.zip
           if-no-files-found: error
           retention-days: 7
+
+  # Attach the signed zip to the release. A job of its own, so the token that may write to the repo never shares a job
+  # with the Gradle and GraalVM build or with the Apple secrets. Skipped on a by-hand run, which has no tag.
+  attach:
+    name: attach to the release
+    needs: build-sign
+    if: ${{ (inputs.tag || github.event.release.tag_name) != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: drivine-macos-arm64-signed
+      # --clobber, so re-running a failed release run replaces the asset rather than failing on it.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: gh release upload "$TAG" drivine-macos-arm64.zip --repo "$GITHUB_REPOSITORY" --clobber

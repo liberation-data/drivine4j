@@ -369,3 +369,17 @@ jobs:
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes "${prerelease[@]}"
           fi
+
+  # Sign and notarize the macOS CLI for this release, and attach the zip to it. cli-macos-signed.yml does the work;
+  # it is called here because a release created with GITHUB_TOKEN fires no `release` event, so its own release
+  # trigger never sees these. Its signing job reads the Apple secrets from the `apple-signing` environment, which
+  # allows main and v* tags: the refs a release runs on. A failure here leaves the release published without the macOS
+  # zip; re-run this job to attach it.
+  macos-cli:
+    needs: [check, github-release]
+    if: ${{ !cancelled() && needs.github-release.result == 'success' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cli-macos-signed.yml
+    with:
+      tag: ${{ needs.check.outputs.tag }}
