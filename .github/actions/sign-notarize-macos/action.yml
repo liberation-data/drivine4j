@@ -1,0 +1,177 @@
+# Signs the drivine CLI native binary with a Developer ID Application certificate and notarizes it with Apple's
+# notarytool, so macOS Gatekeeper trusts it. The caller passes the eight values below from repo secrets through the
+# job's env; nothing secret is read from inputs, printed, or written anywhere the log can see it. Runs on a macOS
+# runner only: it uses /usr/bin/security, codesign, ditto and xcrun notarytool, which ship with Xcode's command line
+# tools on the GitHub macOS images.
+#
+# NOTE ON STAPLING: a bare Mach-O binary cannot be stapled. `xcrun stapler` writes the notarization ticket into the
+# resource fork of an .app, .dmg or .pkg; a lone executable has nowhere to carry it. Notarization still registers the
+# binary with Apple, so an online machine reaches Gatekeeper's verdict over the network, but an offline first run has
+# no stapled ticket to check. To get an offline-checkable, staplable artifact the binary must be wrapped in a signed
+# .pkg or .dmg. That packaging choice is left open on purpose; see the PR's OPEN QUESTIONS.
+name: Sign and notarize the macOS drivine binary
+description: >-
+  Signs a built drivine Mach-O binary with a Developer ID Application certificate (hardened runtime, secure timestamp)
+  and notarizes it with notarytool. Reads its secrets from env; the caller maps those from repo secrets.
+
+inputs:
+  binary-path:
+    description: Path to the built drivine Mach-O binary to sign and notarize.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A keychain of this job's own, so the imported key never touches the login keychain and is thrown away with the
+    # runner. set +x stays on around every secret so a traced shell can't echo one; GitHub masks the secret values in
+    # the log regardless, but we don't rely on that alone.
+    - name: Create a throwaway keychain
+      shell: bash
+      run: |
+        set +x
+        keychain="$RUNNER_TEMP/drivine-signing.keychain-db"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+        # Lock the keychain after 6 hours, and on sleep, so a stuck runner doesn't leave it unlocked.
+        security set-keychain-settings -lut 21600 "$keychain"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+        # Put it on the search list ahead of the others, and make it the default, so codesign finds the identity.
+        security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+        security default-keychain -s "$keychain"
+        echo "DRIVINE_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+    # Decode the .p12 to a temp file and import it for codesign's use only. set-key-partition-list grants codesign
+    # non-interactive access to the private key, so signing doesn't block on the macOS unlock prompt.
+    - name: Import the Developer ID certificate
+      shell: bash
+      run: |
+        set +x
+        p12="$RUNNER_TEMP/developer-id.p12"
+        printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$p12"
+        security import "$p12" \
+          -k "$DRIVINE_SIGNING_KEYCHAIN" \
+          -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" \
+          -T /usr/bin/codesign
+        security set-key-partition-list \
+          -S apple-tool:,apple:,codesign: \
+          -s -k "$KEYCHAIN_PASSWORD" \
+          "$DRIVINE_SIGNING_KEYCHAIN" > /dev/null
+
+    # Hardened runtime (--options runtime) and a secure timestamp (--timestamp) are what notarization requires. --force
+    # replaces any ad-hoc signature native-image left on the binary. The verify reads the signature back and fails the
+    # job if it isn't well formed.
+    #
+    # No --entitlements: the GraalVM native image is ahead-of-time compiled and needs no JIT or dynamic-code
+    # entitlements (allow-jit, allow-unsigned-executable-memory and the like). Plain hardened runtime is correct for
+    # this CLI. Those JIT entitlements belong to the Electron Studio app in a different repo and are deliberately kept
+    # out of here.
+    - name: Codesign the binary
+      shell: bash
+      run: |
+        set +x
+        # --identifier pins the signature's bundle identifier (and so the designated requirement) to
+        # org.drivine.cli, rather than letting codesign derive it from the file name "drivine".
+        codesign --force --options runtime --timestamp \
+          --identifier org.drivine.cli \
+          --sign "$APPLE_SIGNING_IDENTITY" \
+          "${{ inputs.binary-path }}"
+        set -x
+        codesign --verify --strict --verbose=2 "${{ inputs.binary-path }}"
+        codesign --display --verbose=4 "${{ inputs.binary-path }}"
+
+    # notarytool takes a zip, not a bare binary. ditto --keepParent keeps the file name inside the archive.
+    - name: Zip the signed binary for submission
+      shell: bash
+      run: |
+        set -x
+        zip="$RUNNER_TEMP/drivine-notarize.zip"
+        ditto -c -k --keepParent "${{ inputs.binary-path }}" "$zip"
+        echo "DRIVINE_NOTARIZE_ZIP=$zip" >> "$GITHUB_ENV"
+
+    # Authenticate to notarytool with an App Store Connect API key (.p8 + key id + issuer id), not an Apple ID
+    # password. --wait blocks until Apple reaches a verdict. We don't trust --wait's exit code alone: we read the
+    # returned status from its JSON and fail unless it is exactly "Accepted". On anything else, fetch the detailed log
+    # for that submission so the reason (e.g. an unsigned nested item) is in the run.
+    #
+    # `shell: bash` runs with -eo pipefail, so a failing `submit | tee` (Invalid, timeout, auth error) would kill the
+    # step before we can parse the JSON or dump the log. We capture the pipeline's real exit code from PIPESTATUS and
+    # carry on, letting the status/id parse decide the outcome. If no submission id came back at all (an auth failure
+    # that never created one), we print the JSON and fail without calling `notarytool log`, which needs an id.
+    - name: Notarize with notarytool
+      shell: bash
+      run: |
+        set +x
+        p8="$RUNNER_TEMP/notary-key.p8"
+        printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$p8"
+        # Tracing stays off (set +x) for the rest of the step: notarytool submit and log carry the key id, issuer id
+        # and team id, which are secrets, so an xtrace echo of the command line must not reach the log. The explicit
+        # echoes below and `tee` of the JSON give the diagnostics without expanding the secret arguments.
+        result="$RUNNER_TEMP/notarize-result.json"
+        # Turn errexit off around the pipeline: under -eo pipefail a failing `submit | tee` (Invalid, timeout, auth
+        # error) would end the step at this line, before PIPESTATUS could be read, which is exactly when we need the
+        # JSON and the log. `|| true` would not do: it resets PIPESTATUS to (0) and hides the real code.
+        set +e
+        xcrun notarytool submit "$DRIVINE_NOTARIZE_ZIP" \
+          --key "$p8" \
+          --key-id "$APPLE_API_KEY_ID" \
+          --issuer "$APPLE_API_ISSUER_ID" \
+          --team-id "$APPLE_TEAM_ID" \
+          --wait \
+          --output-format json | tee "$result"
+        submit_rc=${PIPESTATUS[0]}
+        set -e
+        echo "notarytool submit exit code: $submit_rc"
+        status=$(/usr/bin/plutil -extract status raw -o - "$result" 2>/dev/null \
+          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$result" 2>/dev/null \
+          || true)
+        id=$(/usr/bin/plutil -extract id raw -o - "$result" 2>/dev/null \
+          || python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "$result" 2>/dev/null \
+          || true)
+        echo "notarization status: ${status:-<none>}"
+        if [ -z "$id" ]; then
+          echo "::error::notarytool returned no submission id (exit $submit_rc); nothing was submitted."
+          cat "$result" || true
+          exit 1
+        fi
+        if [ "$status" != "Accepted" ]; then
+          echo "::error::notarization was not Accepted (status: ${status:-<none>})"
+          xcrun notarytool log "$id" \
+            --key "$p8" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" --team-id "$APPLE_TEAM_ID" || true
+          exit 1
+        fi
+
+    # Stapling is intentionally not attempted: a bare Mach-O binary has no container to hold the ticket (see the header
+    # comment and the PR's OPEN QUESTIONS). Wrapping the binary in a signed .pkg or .dmg, then `xcrun stapler staple`
+    # on that, is the follow-up once the distribution format is decided.
+
+    # Verify the signature, and ask Gatekeeper for its verdict. The codesign --verify is the hard gate on the
+    # signature itself. The spctl call is deliberately informational (|| true), and the `|| true` must stay:
+    #   - For a notarized-but-not-stapled binary there is no local ticket, so spctl reaches Apple over the network to
+    #     fetch the notarization result — this step needs network.
+    #   - spctl -t exec on a bare CLI commonly prints "rejected ... does not seem to be an app" even when
+    #     notarization succeeded, because Gatekeeper's exec assessment expects an app bundle, not a lone executable.
+    #     That is not a signing failure, so it must not fail the job.
+    # For a positive confirmation use the notarization record itself (`xcrun notarytool info <id>`) or the signature's
+    # Authority/Timestamp chain from `codesign -dvv`, which the `codesign --display --verbose=4` in the signing step
+    # already prints.
+    - name: Verify signature and Gatekeeper assessment
+      shell: bash
+      run: |
+        set -x
+        codesign --verify --strict --verbose=2 "${{ inputs.binary-path }}"
+        spctl -a -vvv -t exec "${{ inputs.binary-path }}" || true
+
+    # Always: remove the keychain from the search list and delete it, and shred the decoded secrets and the zip,
+    # whether or not an earlier step failed, so nothing secret survives on the runner.
+    - name: Clean up signing material
+      if: always()
+      shell: bash
+      run: |
+        set +x
+        if [ -n "${DRIVINE_SIGNING_KEYCHAIN:-}" ]; then
+          security delete-keychain "$DRIVINE_SIGNING_KEYCHAIN" 2>/dev/null || true
+        fi
+        rm -f \
+          "$RUNNER_TEMP/developer-id.p12" \
+          "$RUNNER_TEMP/notary-key.p8" \
+          "${DRIVINE_NOTARIZE_ZIP:-$RUNNER_TEMP/drivine-notarize.zip}" || true
