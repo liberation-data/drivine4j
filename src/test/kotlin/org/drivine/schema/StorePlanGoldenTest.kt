@@ -275,12 +275,17 @@ class StorePlanGoldenTest {
         }
         query["statement"]?.let { return Sent(SCHEMA, it.textValue(), emptyMap(), answer, delay, round) }
         // An ensure's turn to build an item on Postgres, taken and given up as its case pins it (drivine-cypher-spec#382).
-        query["claim"]?.let { return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["claim"].textValue(), emptyMap(), answer, delay, round) }
+        // Oracle's take binds the ensure's mark, `at`; Postgres's binds nothing.
+        val marked = query["at"]?.let { mapOf("at" to it.textValue()) }.orEmpty()
+        query["claim"]?.let { return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["claim"].textValue(), marked, answer, delay, round) }
+        // How many claims of an item another session holds, polled before an Oracle take (drivine4j#777).
+        query["held"]?.let { return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["held"].textValue(), emptyMap(), answer, delay, round) }
         query["release"]?.let {
             return Sent(SCHEMA, storeCase(it.textValue())["stores"][id]["release"].textValue(), mapOf("at" to query["at"].textValue()), answer, delay, round)
         }
         return when (val name = query["marker"].textValue()) {
-            "claim" -> Sent(SCHEMA, markerStore(id)["claim"].textValue(), emptyMap(), answer, delay, round)
+            "claim" -> Sent(SCHEMA, markerStore(id)["claim"].textValue(), marked, answer, delay, round)
+            "held" -> Sent(SCHEMA, markerStore(id)["held"].textValue(), emptyMap(), answer, delay, round)
             "release" -> Sent(SCHEMA, markerStore(id)["release"].textValue(), mapOf("at" to query["at"].textValue()), answer, delay, round)
             "read.version", "read.items" ->
                 Sent(MANAGER_QUERY, markerStore(id)["read"][name.removePrefix("read.")].textValue(), mapOf("scope" to query["scope"].textValue()), answer, delay, round)
