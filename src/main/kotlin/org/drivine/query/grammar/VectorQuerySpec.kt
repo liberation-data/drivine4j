@@ -34,8 +34,7 @@ import org.drivine.schema.SimilarityFunction
  *   the ordinary case, where the label is a compile-time constant from the fragment and the emitted
  *   text is unchanged.
  * @param vectorSource an expression the query vector is read from in place of [vectorParam], or null to
- *   read the parameter. A search for each of many nodes reads each one's own embedding here (see
- *   [org.drivine.query.NearestAmongBuilder]), so the vector differs from row to row.
+ *   read the parameter: a node's own embedding, say, so the vector differs from row to row.
  * @param carried the variables in scope before the head that its closing `WITH` carries on beside the
  *   node and the score. Empty for a search that starts the query, which has none in scope.
  */

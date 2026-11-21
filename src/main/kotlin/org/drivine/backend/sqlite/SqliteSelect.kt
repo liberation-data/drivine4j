@@ -1,5 +1,7 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.cypher.api.VectorIndex
+import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
@@ -464,34 +466,8 @@ internal class SqliteSelect(
      * SQLite has no `LATERAL`, so each root's nearest are not a query of their own: every pair is
      * scored once, numbered within its root best first, and a root keeps the first [topK].
      */
-    fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?): GraphStatement {
-        val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        val members = Query(
-            "c.nid, ${SqliteSql.keyText("c", ValueLayout.escape(idProperty))} AS id, c.props", Table(graph.nodes, "c"),
-            listOfNotNull(
-                SqliteSql.hasLabels("c", rootLabels()), "${SqliteSql.type("c", key)} = 'array'",
-                SqliteSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids), graph.nodes, rootLabels()),
-            ),
-        )
-        val scored = Query(
-            "s.nid AS seed, o.nid, o.id, ${SqliteSql.score("o", key, similarity, SqliteSql.value("s", key))} AS score",
-            Paired(MEMBERS, "s", "o", "o.nid <> s.nid"),
-        )
-        val ranked = Query(
-            "p.seed, p.nid, p.id, p.score, ROW_NUMBER() OVER (PARTITION BY p.seed ORDER BY p.score DESC, p.nid) AS place",
-            Derived(scored.text(), "p"), listOf("p.score IS NOT NULL"),
-        )
-        val near = Query(
-            SqliteSql.arrayOf(SqliteSql.plainObject(listOf("id" to "r.id", "score" to "r.score")), "r.score DESC, r.nid"),
-            Table(RANKED, "r"),
-            listOfNotNull("r.seed = s.nid", "r.place <= ${scope.bound(topK)}", threshold?.let { "r.score >= ${scope.bound(it)}" }),
-        )
-        val result = SqliteSql.plainObject(listOf("seed" to "s.id", "near" to "json(${near.nested()})"))
-        return GraphStatement(
-            "${SqliteSql.JSON_ROWS}\nWITH $MEMBERS AS ${members.nested()},\n$RANKED AS ${ranked.nested()}\n" + Query("$result AS result", Table(MEMBERS, "s")).text(),
-            bindings(),
-        )
-    }
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement =
+        GraphStatement(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex()), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the

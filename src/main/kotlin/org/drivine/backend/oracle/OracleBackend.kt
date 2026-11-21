@@ -74,8 +74,8 @@ internal class OracleBackend(
     override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
-        return select.nearestAmong(index.storedProperty, index.similarity, idsJson(select, ids), topK, threshold, embeddings, searchK)
+        val dimensions = madeDimensions(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        return select.nearestAmong(index, idsJson(select, ids), topK, threshold, dimensions, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
@@ -99,6 +99,17 @@ internal class OracleBackend(
      * The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not
      * been made, or, given [dimensions], when it is a vector index made for embeddings of another size.
      */
+    /** The size of embeddings a recorded index of [kind] on [label]'s [properties] was made for; null when it has not been made. */
+    private fun madeDimensions(kind: SchemaItemKind, label: String, properties: List<String>): Int? = persistenceManager.query(
+        QuerySpecification
+            .withStatement(
+                "SELECT JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) FROM ${graph.catalog} " +
+                    "WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL"
+            )
+            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)))
+            .transform(Number::class.java)
+    ).firstOrNull()?.toInt()
+
     private fun made(kind: SchemaItemKind, label: String, properties: List<String>, dimensions: Int? = null): String? = persistenceManager.query(
         QuerySpecification
             .withStatement(
