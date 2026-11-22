@@ -7,7 +7,8 @@ import org.drivine.model.Stamps
 
 /**
  * Statements for a relationship whose type is known only at runtime — between two stored nodes that
- * are matched, never created.
+ * are matched, never created. Each takes the value it binds a ref's id as from `id`, the ref's own id
+ * unless the caller makes it the value a save wrote (`org.drivine.backend.GivenIds`).
  */
 internal object EdgeStatements {
 
@@ -27,9 +28,9 @@ internal object EdgeStatements {
      * `MERGE` that finds every such relationship there, carrying these properties already, changes
      * neither; one that finds several and rewrites any of them changes both.
      */
-    fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): MergeStatement {
+    fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode, id: (NodeRef) -> Any? = NodeRef::id): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
-        val bindings = mutableMapOf<String, Any?>(FROM to from.id, TO to to.id, MARK to Stamps.fresh())
+        val bindings = mutableMapOf<String, Any?>(FROM to id(from), TO to id(to), MARK to Stamps.fresh())
         val written = properties.filterValues { it != null }.entries.mapIndexed { i, (key, value) ->
             bindings["_rel$i"] = value
             quotedIdentifier(key) to "\$_rel$i"
@@ -63,7 +64,7 @@ internal object EdgeStatements {
      * Remove every [type] relationship from [from] to [to], and count them: 0 when there was none, or
      * when either node is absent.
      */
-    fun unrelate(from: NodeRef, to: NodeRef, type: String): MergeStatement {
+    fun unrelate(from: NodeRef, to: NodeRef, type: String, id: (NodeRef) -> Any? = NodeRef::id): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
         val statement = """
             MATCH ${from.pattern("a", FROM)}-[r:${quotedIdentifier(type)}]->${to.pattern("b", TO)}
@@ -71,11 +72,11 @@ internal object EdgeStatements {
             SET ${relinked("a")}, ${relinked("b")}
             RETURN count(r)
         """.trimIndent()
-        return MergeStatement(statement, mapOf(FROM to from.id, TO to to.id, MARK to Stamps.fresh()))
+        return MergeStatement(statement, mapOf(FROM to id(from), TO to id(to), MARK to Stamps.fresh()))
     }
 
     /** Remove every [type] relationship [from] has in [direction], and count them. */
-    fun unrelateAll(from: NodeRef, type: String, direction: Direction): MergeStatement {
+    fun unrelateAll(from: NodeRef, type: String, direction: Direction, id: (NodeRef) -> Any? = NodeRef::id): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
         val edge = "[r:${quotedIdentifier(type)}]"
         val arrow = when (direction) {
@@ -89,7 +90,7 @@ internal object EdgeStatements {
             SET ${relinked("a")}, ${relinked("b")}
             RETURN count(r)
         """.trimIndent()
-        return MergeStatement(statement, mapOf(FROM to from.id, MARK to Stamps.fresh()))
+        return MergeStatement(statement, mapOf(FROM to id(from), MARK to Stamps.fresh()))
     }
 
     /**
@@ -97,7 +98,7 @@ internal object EdgeStatements {
      * [direction] — each once. Engines differ on whether two such relationships to one node give one
      * row or two, so the answer is made the same everywhere.
      */
-    fun relatedMatch(from: NodeRef, type: String, direction: Direction, targetLabels: List<String>): MergeStatement {
+    fun relatedMatch(from: NodeRef, type: String, direction: Direction, targetLabels: List<String>, id: (NodeRef) -> Any? = NodeRef::id): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
         val edge = "[:${quotedIdentifier(type)}]"
         val arrow = when (direction) {
@@ -106,6 +107,6 @@ internal object EdgeStatements {
             Direction.UNDIRECTED -> "-$edge-"
         }
         val target = targetLabels.joinToString("") { ":${quotedIdentifier(it)}" }
-        return MergeStatement("MATCH ${from.pattern("a", FROM)}$arrow(n$target)\nWITH DISTINCT n", mapOf(FROM to from.id))
+        return MergeStatement("MATCH ${from.pattern("a", FROM)}$arrow(n$target)\nWITH DISTINCT n", mapOf(FROM to id(from)))
     }
 }

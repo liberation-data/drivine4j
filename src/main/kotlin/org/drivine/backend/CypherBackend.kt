@@ -50,7 +50,7 @@ import org.neo4j.driver.exceptions.TransientException
 internal class CypherBackend(
     private val persistenceManager: PersistenceManager,
     private val grammar: CypherGrammar,
-    objectMapper: ObjectMapper,
+    private val objectMapper: ObjectMapper,
 ) : GraphBackend {
 
     override val cypherGrammar: CypherGrammar
@@ -100,6 +100,23 @@ internal class CypherBackend(
 
     /** The builder of the statements that read and delete [graphClass]: a fragment's or a view's. */
     private fun builder(graphClass: Class<*>) = GraphObjectQueryBuilder.forClass(graphClass, grammar)
+
+    /** The fragment whose `@NodeId` finds a node of [graphClass] by its id: the root of a view, or the fragment itself. */
+    private fun idModel(graphClass: Class<*>): FragmentModel = FragmentModel.from(
+        if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass).rootFragment.fragmentType else graphClass
+    )
+
+    /** [given] as the value a save wrote for [model]'s `@NodeId` ([GivenIds]): `"5"` for a `Long` id is 5, and `"abc"` is null, which finds no node. */
+    private fun idOf(model: FragmentModel, given: Any?): Any? = GivenIds.valueOf(objectMapper, model, given)
+
+    /** [ref]'s id as the value a save wrote for its class's `@NodeId` ([idOf]). */
+    private fun idOf(ref: NodeRef): Any? = idOf(FragmentModel.from(ref.fragmentClass), ref.id)
+
+    /** [statement], which finds a node of [graphClass] by the id bound as [GraphBackend.ID_PARAM], binding it as [idOf] makes it. */
+    private fun typedId(graphClass: Class<*>, statement: GraphStatement): GraphStatement {
+        val model = idModel(graphClass)
+        return statement.bindingId { given -> idOf(model, given) }
+    }
 
     // ----- Reading -----
 
@@ -152,7 +169,7 @@ internal class CypherBackend(
 
     override fun load(graphClass: Class<*>): GraphStatement {
         val builder = builder(graphClass)
-        return GraphStatement(builder.buildQuery(builder.buildIdWhereClause(GraphBackend.ID_PARAM)))
+        return typedId(graphClass, GraphStatement(builder.buildQuery(builder.buildIdWhereClause(GraphBackend.ID_PARAM))))
     }
 
     override fun count(graphClass: Class<*>, where: String?): GraphStatement =
@@ -192,15 +209,16 @@ internal class CypherBackend(
     override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
         val builder = builder(graphClass)
         val fullWhereClause = byId(builder, where)
-        return GraphStatement(
-            if (cascade == CascadeType.NONE) builder.buildDeleteQuery(fullWhereClause) else builder.buildCascadeDeleteQuery(fullWhereClause, cascade)
+        return typedId(
+            graphClass,
+            GraphStatement(if (cascade == CascadeType.NONE) builder.buildDeleteQuery(fullWhereClause) else builder.buildCascadeDeleteQuery(fullWhereClause, cascade)),
         )
     }
 
     override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
         // A fragment has no relationships to cascade through.
         val builder = builder(graphClass) as? GraphViewQueryBuilder ?: return emptyList()
-        return builder.buildCascadeDepthChecks(byId(builder, where))
+        return builder.buildCascadeDepthChecks(byId(builder, where)).map { CascadeDepthCheck(it.view, it.field, it.maxDepth, typedId(graphClass, it.statement)) }
     }
 
     /** The conditions a delete by id selects its root by: the checks it runs first read the same root. */
@@ -255,7 +273,7 @@ internal class CypherBackend(
     override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
         val model = FragmentModel.from(graphClass)
         val statement = patches.unwind(model, properties, clears)
-        return rows.map { mapOf("i" to it.index.toString(), "id" to it.id, "stamp" to Stamps.fresh(), "v" to it.values) }
+        return rows.map { mapOf("i" to it.index.toString(), "id" to idOf(model, it.id), "stamp" to Stamps.fresh(), "v" to it.values) }
             .chunked(PatchRow.toAStatement(model, properties, BatchSaveOperations.UNWIND_CHUNK_SIZE))
             .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(PatchStatementBuilder.ROWS to chunk)).transform(String::class.java) }
     }
@@ -270,7 +288,7 @@ internal class CypherBackend(
         val given = values.values.withIndex().filter { it.value != null }.associate { "${PatchStatementBuilder.VALUE}${it.index}" to it.value }
         return GraphStatement(
             statement,
-            ctx.bindings + given + mapOf(PatchStatementBuilder.ID to CypherGenerator.convertToNeo4jValue(id), Stamps.NEW_PARAM to Stamps.fresh()),
+            ctx.bindings + given + mapOf(PatchStatementBuilder.ID to CypherGenerator.convertToNeo4jValue(idOf(idModel(graphClass), id)), Stamps.NEW_PARAM to Stamps.fresh()),
         )
     }
 
@@ -289,17 +307,17 @@ internal class CypherBackend(
     // ----- Relationships on their own -----
 
     override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement =
-        EdgeStatements.relate(from, to, type, properties, mode).graphStatement()
+        EdgeStatements.relate(from, to, type, properties, mode, ::idOf).graphStatement()
 
     override fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement =
-        EdgeStatements.unrelate(from, to, type).graphStatement()
+        EdgeStatements.unrelate(from, to, type, ::idOf).graphStatement()
 
     override fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement =
-        EdgeStatements.unrelateAll(from, type, direction).graphStatement()
+        EdgeStatements.unrelateAll(from, type, direction, ::idOf).graphStatement()
 
     override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
         val model = FragmentModel.from(targetClass)
-        val match = EdgeStatements.relatedMatch(from, type, direction, model.labels)
+        val match = EdgeStatements.relatedMatch(from, type, direction, model.labels, ::idOf)
         return GraphStatement(FragmentQueryBuilder(model).buildQueryMatching(match.statement), match.bindings)
     }
 

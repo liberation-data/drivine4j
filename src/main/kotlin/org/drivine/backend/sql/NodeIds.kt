@@ -1,10 +1,9 @@
 package org.drivine.backend.sql
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.backend.GivenIds
 import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.Store
-import org.drivine.mapper.HeldTemporals
-import org.drivine.mapper.toPropertyValue
 import org.drivine.model.FragmentModel
 import org.drivine.query.StampWrite
 
@@ -24,24 +23,8 @@ import org.drivine.query.StampWrite
  */
 internal class NodeIds(private val objectMapper: ObjectMapper, private val store: Store) {
 
-    /**
-     * [given] as a node of [model] holds its id: a value of the `@NodeId` field's type, as a save writes the field. A text
-     * given for an id of another type is read as that type; a value of the type, or any value for a `String` id, is
-     * written as it is, except a text a load read from a temporal tag, given for an id declared `Any`: that is the tag
-     * ([held]). Null where [given] is no value of the type, or where the class has no `@NodeId` field: no node is found by
-     * it.
-     */
-    fun of(model: FragmentModel, given: Any?): Any? {
-        if (given == null) return null
-        heldTag(model, given)?.let { return it }
-        val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type?.kotlin?.javaObjectType ?: return given
-        val typed = if (type == String::class.java || type.isInstance(given)) given else try {
-            objectMapper.convertValue(given, type)
-        } catch (e: IllegalArgumentException) {
-            return null
-        } ?: return null
-        return objectMapper.toPropertyValue(typed)
-    }
+    /** [given] as a node of [model] holds its id, as a save writes the `@NodeId` field: see [GivenIds.valueOf]. */
+    fun of(model: FragmentModel, given: Any?): Any? = GivenIds.valueOf(objectMapper, model, given)
 
     /** [given] as the JSON text a node of [model] holds its id as ([of], then [json]); null where it finds no node. */
     fun json(model: FragmentModel, given: Any?): String? = of(model, given)?.let(::json)
@@ -60,17 +43,11 @@ internal class NodeIds(private val objectMapper: ObjectMapper, private val store
         /**
          * [id], a `@NodeId` value of a node of [model], as a save binds it: the tag the node held it as, where [id] is the
          * very text a load read that tag as and the id is declared a type that takes the text as it is, such as `Any`
-         * ([HeldTemporals]); else [id]. So a node whose id is a temporal, loaded into such an id and saved while the id is
+         * ([org.drivine.mapper.HeldTemporals]); else [id]. So a node whose id is a temporal, loaded into such an id and saved while the id is
          * unchanged, is found, and written, by its tag, as it is held: the text alone finds no node (drivine4j#861). An id
          * declared a scalar or a temporal type never holds such a text: its load is refused, or read as the type
          * ([org.drivine.mapper.IdKinds]).
          */
-        fun held(model: FragmentModel, id: Any): Any = heldTag(model, id) ?: id
-
-        private fun heldTag(model: FragmentModel, id: Any): Any? {
-            val held = HeldTemporals.of(id) ?: return null
-            val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type ?: return null
-            return held.value().takeIf { type.isAssignableFrom(String::class.java) && type != String::class.java }
-        }
+        fun held(model: FragmentModel, id: Any): Any = GivenIds.heldTag(model, id) ?: id
     }
 }
