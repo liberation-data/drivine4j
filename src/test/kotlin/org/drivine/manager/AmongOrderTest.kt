@@ -28,6 +28,7 @@ class AmongOrderTest {
     @NodeFragment(labels = ["Dated"]) data class Dated(@NodeId val id: LocalDate)
     @NodeFragment(labels = ["Zoned"]) data class Zoned(@NodeId val id: ZonedDateTime)
     @GraphView data class CountedView(@Root val counted: Counted)
+    @NodeFragment(labels = ["Unkeyed"]) data class Unkeyed(val name: String)
 
     private val mapper = ObjectMapper().registerModule(JavaTimeModule())
 
@@ -95,5 +96,10 @@ class AmongOrderTest {
     @Test
     fun `a class that is neither a view nor a fragment keeps its ids, for the search to refuse it`() {
         assertEquals(listOf("b", "a"), AmongOrder.of(String::class.java, listOf("b", "a"), mapper))
+    }
+
+    @Test
+    fun `a fragment with no @NodeId keeps its ids, for the search to refuse it`() {
+        assertEquals(listOf("b", "a"), AmongOrder.of(Unkeyed::class.java, listOf("b", "a"), mapper))
     }
 }

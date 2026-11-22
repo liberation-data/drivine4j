@@ -563,6 +563,9 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   ```kotlin
   graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
   ```
+
+  From Java, give every argument: `loadNearestAmong(PropositionNode.class, batchIds, 5, AmongNeighbours.AFTER, null, null, null)`.
+  There is no shorter form taking the neighbours, as one would make a call such as `loadNearestAmong(cls, ids, 5, null)` ambiguous.
 - It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
