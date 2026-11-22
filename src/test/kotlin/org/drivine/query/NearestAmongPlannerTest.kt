@@ -70,6 +70,23 @@ class NearestAmongPlannerTest {
         assertTrue(listOf("A", "B") in plan.bindings.values && 3 in plan.bindings.values && 0.5 in plan.bindings.values, "${plan.bindings}")
     }
 
+    /** For each pair once, the neighbours kept reach the module's request, which writes another statement than for all (drivine4j#868). */
+    @Test
+    fun `for each pair once the module is asked for the ids after each id`() {
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+        val plan = VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, grammar, org.drivine.manager.AmongNeighbours.AFTER)
+        val asked = VectorRequest(
+            labels = listOf("Doc"), property = "embedding", similarity = SimilarityFunction.COSINE, topK = 2, searchK = 3,
+            index = org.drivine.cypher.api.VectorIndex(name = "Doc_embedding_vector"),
+            among = VectorAmong(listOf("A", "B"), "id", null, org.drivine.cypher.api.AmongNeighbours.After),
+        )
+        val module = VectorSearch.plan(SearchStore.NEO4J, GraphOptions(""), asked) as VectorPlan
+        assertEquals(module.cypher, plan.statement)
+        assertEquals(module.parameters, plan.bindings)
+        val all = VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, grammar)
+        assertFalse(all.statement == plan.statement && all.bindings == plan.bindings, "AFTER plans as ALL:\n${plan.statement}")
+    }
+
     @Test
     fun `a view searches its root fragment, and no threshold binds none`() {
         val plan = VectorSearchPlanner.planAmong(DocView::class.java, null, listOf("A"), 2, null, 3, MemgraphGrammar(CallSubqueryEmitter()))
