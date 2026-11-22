@@ -1,5 +1,7 @@
 package org.drivine.backend.postgres
 
+import org.drivine.cypher.api.VectorIndex
+import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.connection.CypherCompile
 import org.drivine.backend.sql.Fragments
@@ -461,50 +463,20 @@ internal class PostgresSelect(
     }
 
     /**
-     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
-     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * For each root among [ids] that holds the embedding [index] searches, its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`, as the shared module writes it ([among]): see
+     * [org.drivine.backend.GraphBackend.nearestAmong].
      * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
      * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
      * roots, whose embeddings are of its size: the answer is exact. With them, each root asks the
-     * index over the embeddings of [label] for its [searchK] nearest, as [nearestThrough] does, and
+     * index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
      * keeps those among the roots: approximate, as the index is.
      */
-    fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?, label: String, dimensions: Int?, searchK: Int): GraphStatement {
-        val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        val embedded = dimensions?.let { PostgresSql.holdsEmbedding("c", key, it) } ?: "jsonb_typeof(${PostgresSql.value("c", key)}) = 'array'"
-        val members = Query(
-            "c.nid, ${PostgresSql.keyText("c", ValueLayout.escape(idProperty))} AS id, c.props", Table(graph.nodes, "c"),
-            listOfNotNull(PostgresSql.hasLabels("c", rootLabels()), embedded, PostgresSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids))),
-        )
-        val nearest = if (dimensions == null) {
-            val distance = "${PostgresSql.embedding("o", key)} ${PostgresSql.distance(similarity)} ${PostgresSql.embedding("s", key)}"
-            Query(
-                "o.nid, o.id, ${PostgresSql.score(similarity, distance)} AS score", Table(MEMBERS, "o"),
-                listOf("o.nid <> s.nid", "jsonb_array_length(${PostgresSql.value("o", key)}) = jsonb_array_length(${PostgresSql.value("s", key)})"),
-                listOf("ORDER BY score DESC, o.nid", "LIMIT ${scope.bound(topK)}"),
-            )
-        } else {
-            val distance = "${PostgresSql.embedding("x", key, dimensions)} ${PostgresSql.distance(similarity)} ${PostgresSql.embedding("s", key, dimensions)}"
-            val indexed = Query(
-                "x.nid, $distance AS distance", Table(graph.nodes, "x"),
-                listOf(PostgresSql.hasLabel("x", label), PostgresSql.holdsEmbedding("x", key, dimensions)),
-                listOf("ORDER BY distance", "LIMIT ${scope.bound(searchK)}"),
-            )
-            Query(
-                "o.nid, o.id, ${PostgresSql.score(similarity, "k.distance")} AS score", OnceReached(indexed.text(), "k", MEMBERS, "o"),
-                listOf("o.nid <> s.nid"), listOf("ORDER BY score DESC, o.nid", "LIMIT ${scope.bound(topK)}"),
-            )
-        }
-        val near = Query(
-            PostgresSql.arrayOf(PostgresSql.jsonObject(listOf("id" to "r.id", "score" to "r.score")), "r.score DESC, r.nid"),
-            Derived(nearest.text(), "r"), listOfNotNull(threshold?.let { "r.score >= ${scope.bound(it)}" }),
-        )
-        val result = PostgresSql.jsonObject(listOf("seed" to "s.id", "near" to "COALESCE(${near.nested()}, $EMPTY_ARRAY)"))
-        return GraphStatement("WITH $MEMBERS AS ${members.nested()}\n" + Query("$result AS result", Table(MEMBERS, "s")).text(), bindings())
-    }
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int): GraphStatement =
+        GraphStatement(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions)), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the
@@ -584,9 +556,6 @@ internal class PostgresSelect(
     companion object {
         /** As much of a field's name as a row is called by: Postgres allows 63, and a count and an underscore follow. */
         private const val MAX_NAME = 55
-
-        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
-        private const val MEMBERS = "members"
 
         /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
         private const val ORDER_NODE = "order_node"

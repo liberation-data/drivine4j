@@ -542,12 +542,17 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   On Oracle, Postgres and SQLite each id is read as `load` reads an id's text, as the `@NodeId` field's type, and found
   through the index over the id; a key or a value is the text the id was given as, though the store holds other
   text of it, as `2030-01-01T10:00:00` for a `LocalDateTime` given as `2030-01-01T10:00`.
+  On Neo4j, Memgraph and FalkorDB the ids reach the search as text, so only a `String`, `UUID` or enum `@NodeId`
+  is searched; any other is refused with `UnsupportedOperationException`.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
   fails, as their index search refuses a vector of another size.
 - **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
-  Those below `threshold` are dropped.
+  Two that score exactly alike come in the order their ids were given, except on FalkorDB, where the
+  index's own order decides. Those below `threshold` are dropped.
+  By cosine, on Oracle, Postgres and SQLite, an embedding all of zeros, which has no direction, is left
+  out, as a key and as a value, as Neo4j's index leaves it out.
 - It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
@@ -557,7 +562,10 @@ an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once 
 made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
 first), and the "among the set", self, root label and `threshold` filters apply to those. An id whose nearest
 mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
-indexed nodes — needs a larger `searchK`. Where the store measures every node instead (SQLite, and
+indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
+`org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
+Postgres and Oracle), not WARN, as the default `searchK` goes through the index on every call. Where the
+store measures every node instead (SQLite, and
 Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
 `searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
 the number of ids.

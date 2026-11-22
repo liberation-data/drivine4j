@@ -8,6 +8,11 @@ import org.drivine.cypher.api.SearchIndex
 import org.drivine.cypher.api.SearchPlan
 import org.drivine.cypher.api.SearchRequest
 import org.drivine.cypher.api.SearchStore
+import org.drivine.cypher.api.VectorAmong
+import org.drivine.cypher.api.VectorIndex
+import org.drivine.cypher.api.VectorPlan
+import org.drivine.cypher.api.VectorRequest
+import org.drivine.cypher.api.VectorSearch
 import org.drivine.backend.GraphStatement
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
@@ -60,8 +65,9 @@ internal object VectorSearchPlanner {
     const val ROW_LIMIT_PARAM = "_vectorRowLimit"
     const val INDEX_NAME_PARAM = "_vectorIndexName"
     const val LABEL_PARAM = "_vectorLabel"
-    const val AMONG_IDS_PARAM = "_amongIds"
-    const val AMONG_TOP_K_PARAM = "_amongTopK"
+
+    /** Logs, at DEBUG, what the shared module warns of a search among ids. */
+    private val logger = LoggerFactory.getLogger(VectorSearchPlanner::class.java)
 
     /** Unfiltered vector search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
     fun plan(
@@ -152,12 +158,9 @@ internal object VectorSearchPlanner {
 
     /**
      * The search, for each of [ids] whose node holds the embedding, for its [topK] nearest among the
-     * others: see [NearestAmongBuilder]. A view searches its root fragment, as [plan] does; its
+     * others, as the shared module writes it (`VectorSearch`, with an among): one statement on every
+     * graph engine, as on the SQL stores. A view searches its root fragment, as [plan] does; its
      * relationships play no part, as the set is named by id. The index is asked for [searchK] for each.
-     *
-     * The score is always measured afresh where the grammar can (Neo4j), as an over-fetched [plan]'s
-     * is: the set is a filter after the index, so this search always trims what the index found, and
-     * the index's own score does not order quite as the exact one does.
      */
     fun planAmong(
         graphClass: Class<*>,
@@ -170,16 +173,44 @@ internal object VectorSearchPlanner {
     ): GraphStatement {
         requireSupport(grammar)
         val fragment = rootFragment(graphClass)
-        val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM, rowLimitParam = AMONG_TOP_K_PARAM)
-        val cypher = NearestAmongBuilder(FragmentModel.from(fragment), grammar)
-            .build(resolved, AMONG_IDS_PARAM, AMONG_TOP_K_PARAM, thresholdParam(threshold))
-        val bindings = buildMap<String, Any?> {
-            put(TOP_K_PARAM, searchK)
-            put(AMONG_IDS_PARAM, ids)
-            put(AMONG_TOP_K_PARAM, topK)
-            if (threshold != null) put(THRESHOLD_PARAM, threshold)
+        val model = FragmentModel.from(fragment)
+        require(model.labels.isNotEmpty()) { "No labels defined for fragment ${model.className}. @NodeFragment must specify at least one label." }
+        val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM)
+        val store = requireNotNull(grammar.searchStore) { "loadNearestAmong is not written for ${grammar::class.simpleName}" }
+        val idProperty = requireNotNull(model.nodeIdProperty) { "${model.className} has no @NodeId field to find a node by." }
+        requireTextId(model, store)
+        // The shared module writes the whole statement (VectorSearch, liberation-data/drivine-cypher-spec#100), as for the SQL
+        // stores, so every library searches among ids alike.
+        val request = VectorRequest(
+            labels = model.labels, property = resolved.property,
+            similarity = resolved.similarity, topK = topK, searchK = searchK, index = VectorIndex(name = resolved.indexName),
+            among = VectorAmong(ids, idProperty, threshold),
+        )
+        return when (val planned = VectorSearch.plan(store, GRAPH_ENGINE, request)) {
+            is VectorPlan -> {
+                // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): the default searchK, topK + 1,
+                // goes through the index, so at WARN every call would log it.
+                planned.warnings.forEach { logger.debug(it) }
+                GraphStatement(requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters)
+            }
+            is Refusal -> throw IllegalArgumentException(planned.message)
         }
-        return GraphStatement(cypher, bindings)
+    }
+
+    /**
+     * Refuses a search among ids on a graph engine whose @NodeId it holds as other than text: the ids reach the search as
+     * their text, so a root with a number, a temporal or a truth value for its id is never found, and a node whose id is
+     * the text of a given id is found in its place (liberation-data/drivine-cypher-spec#422). Refused, not left to answer
+     * wrongly; a SQL store finds every kind of id, through the index over it.
+     */
+    private fun requireTextId(model: FragmentModel, store: SearchStore) {
+        val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type ?: return
+        if (!GraphIdText.isText(type)) {
+            throw UnsupportedOperationException(
+                "loadNearestAmong on ${store.id} finds roots by a text @NodeId only; ${model.className}'s is a ${type.kotlin.javaObjectType.simpleName} " +
+                    "(liberation-data/drivine-cypher-spec#422)."
+            )
+        }
     }
 
     /** The fragment whose embedding a search of [graphClass] measures: the class itself, or a view's root. */
@@ -462,21 +493,21 @@ internal object FullTextSearchPlanner {
         }
     }
 
-    /** The graph a graph engine's search is over: its head names no table, so the module reads nothing of it. */
-    private val GRAPH_ENGINE = GraphOptions("")
-
     /** Logs what the shared module warns of, as the SQL stores' search does (`SqlViewSelect.ranked`). */
     private val logger = LoggerFactory.getLogger(FullTextSearchPlanner::class.java)
-
-    /** The store the shared module writes [CypherGrammar]'s search head for; null for a grammar it doesn't know. */
-    private val CypherGrammar.searchStore: SearchStore?
-        get() = when (this) {
-            is Neo4j5Grammar -> SearchStore.NEO4J
-            is MemgraphGrammar -> SearchStore.MEMGRAPH
-            is FalkorDbCypherGrammar -> SearchStore.FALKORDB
-            else -> null
-        }
 }
+
+/** The graph a graph engine's search is over: its head names no table, so the module reads nothing of it. */
+private val GRAPH_ENGINE = GraphOptions("")
+
+/** The store the shared module writes [CypherGrammar]'s search for; null for a grammar it doesn't know. */
+private val CypherGrammar.searchStore: SearchStore?
+    get() = when (this) {
+        is Neo4j5Grammar -> SearchStore.NEO4J
+        is MemgraphGrammar -> SearchStore.MEMGRAPH
+        is FalkorDbCypherGrammar -> SearchStore.FALKORDB
+        else -> null
+    }
 
 /**
  * Writes the head of a full-text search: the index's `CALL`, the hits that have every one of `labels`, cut to the index

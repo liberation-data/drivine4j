@@ -268,7 +268,9 @@ interface GraphObjectOperations {
      *   for `topK + 1`, the one more being the id itself, which an index finds first. See
      *   `docs/0.0.79-vector-search-k.md`
      * @return for each id with an embedding, its neighbours' ids, scored, most similar first
-     * @throws UnsupportedOperationException if the backend has no native vector index
+     * @throws UnsupportedOperationException if the backend has no native vector index, or, on Neo4j, Memgraph or FalkorDB, if
+     *   the `@NodeId` is not a `String`, `UUID` or enum: those engines are given the ids as text, so a root with a number, a
+     *   temporal or a truth value for its id would never be found (liberation-data/drivine-cypher-spec#422)
      */
     fun <T : Any> loadNearestAmong(
         graphClass: Class<T>,

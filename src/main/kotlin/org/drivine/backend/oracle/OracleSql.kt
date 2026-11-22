@@ -47,15 +47,6 @@ internal object OracleSql {
         "${Shared.indexClass("$alias.props", key)} = ${Shared.valueClass(json)} AND ${Shared.indexKey("$alias.props", key)} = ${Shared.valueKey(json)}"
 
     /**
-     * Whether the property [key] of the node [alias] is one of the ids bound as [parameter], a JSON array of each id's JSON
-     * text, as [hasId] compares one: the index answers it for each. Each is read `EXTENDED`, as the store's JSON of an id
-     * holds a float as extended JSON's double ([NodeIds]).
-     */
-    fun hasIdIn(alias: String, key: String, parameter: String): String =
-        "(${Shared.indexClass("$alias.props", key)}, ${Shared.indexKey("$alias.props", key)}) IN " +
-            "(SELECT ${Shared.valueClass("JSON(i.v EXTENDED)")}, ${Shared.valueKey("JSON(i.v EXTENDED)")} FROM (${values(parameter, SqlKind.TEXT)}) i)"
-
-    /**
      * The id held under [key] of the node [alias] as its text: a temporal value's tag read as its text `v`, anything else as
      * `JSON_VALUE` reads it, as SQLite's select does ([org.drivine.backend.sqlite.SqliteSql.keyText]). A write plan keys a
      * target by the module's [org.drivine.cypher.store.IdSql.planKey], not by this text.
