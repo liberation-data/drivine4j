@@ -546,7 +546,8 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   is searched; any other is refused with `UnsupportedOperationException`.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
-  fails, as their index search refuses a vector of another size.
+  fails, as their index search refuses a vector of another size. For each pair once with no `searchK` (below), which asks
+  no index, it is measured against none of another size on Neo4j too; FalkorDB refuses a pair of two sizes there as well.
 - **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
   Two that score exactly alike come in the `@NodeId` type's own order (a text by its code points, a number by its

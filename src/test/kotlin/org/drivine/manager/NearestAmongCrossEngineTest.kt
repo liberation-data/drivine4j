@@ -127,6 +127,12 @@ abstract class NearestAmongContract {
      */
     protected open val refusesMisSized = false
 
+    /**
+     * Whether the store refuses a pair of two sizes where every pair is measured through no index (for each pair once with no
+     * searchK), as FalkorDB's function of two embeddings refuses it, rather than measuring the pair not at all.
+     */
+    protected open val refusesMisSizedPair = false
+
     /** Whether the store searches a label with no vector index by measuring its nodes, as the SQL stores do, rather than refusing. */
     protected open val searchesWithoutIndex = true
 
@@ -219,6 +225,26 @@ abstract class NearestAmongContract {
 
         assertEquals(listOf("B"), ids(found["A"]))
         assertEquals(listOf("A"), ids(found["B"]))
+        assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
+    }
+
+    /**
+     * For each pair once with no searchK, every pair is measured through no index (drivine4j#868), so an embedding of another
+     * size is measured against none of the others there too, on Neo4j as well, whose index refuses it; FalkorDB's own function
+     * of two embeddings refuses a pair of two sizes.
+     */
+    @Test
+    fun `for each pair once with no searchK an embedding of another size is measured against none of the others, or refused`() {
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+        val search = { gom.loadNearestAmong(DocNode::class.java, listOf("A", "B", "W"), topK = 10, neighbours = AmongNeighbours.AFTER) }
+        if (refusesMisSizedPair) {
+            assertTrue(runCatching(search).isFailure, "a pair of two sizes is measured")
+            return
+        }
+        val found = search()
+
+        assertEquals(listOf("B"), ids(found["A"]))
+        assertEquals(emptyList<String>(), ids(found["B"]))
         assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
     }
 
@@ -395,6 +421,7 @@ class NearestAmongFalkorDbTest : NearestAmongContract() {
     override val exact = false
 
     override val refusesMisSized = true
+    override val refusesMisSizedPair = true
     override val searchesWithoutIndex = false
     override fun addMisSized() = true.also { seedMisSized(pm) { "vecf32($it)" } }
 

@@ -236,7 +236,9 @@ interface GraphObjectOperations {
      * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
      * An embedding of another size than the index's is measured against none of a different size: on
      * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search
-     * fails, as their index search refuses a vector of another size, and Memgraph does not store one.
+     * fails, as their index search refuses a vector of another size, and Memgraph does not store one. For
+     * [AmongNeighbours.AFTER] with no [searchK], which asks no index, Neo4j measures it against none of another size too,
+     * and FalkorDB refuses a pair of two sizes.
      *
      * Works on a `@NodeFragment` and on a `@GraphView`, whose **root fragment**'s embedding is searched;
      * the vector index is resolved from `@VectorIndex` as [loadNearest] resolves it. A view's
