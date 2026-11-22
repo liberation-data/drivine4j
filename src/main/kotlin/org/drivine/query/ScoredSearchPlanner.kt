@@ -1,5 +1,7 @@
 package org.drivine.query
 
+import org.drivine.manager.module
+import org.drivine.manager.AmongNeighbours
 import org.drivine.annotation.GraphView
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
@@ -170,6 +172,7 @@ internal object VectorSearchPlanner {
         threshold: Double?,
         searchK: Int,
         grammar: CypherGrammar,
+        neighbours: AmongNeighbours = AmongNeighbours.ALL,
     ): GraphStatement {
         requireSupport(grammar)
         val fragment = rootFragment(graphClass)
@@ -184,7 +187,7 @@ internal object VectorSearchPlanner {
         val request = VectorRequest(
             labels = model.labels, property = resolved.property,
             similarity = resolved.similarity, topK = topK, searchK = searchK, index = VectorIndex(name = resolved.indexName),
-            among = VectorAmong(ids, idProperty, threshold),
+            among = VectorAmong(ids, idProperty, threshold, neighbours.module),
         )
         return when (val planned = VectorSearch.plan(store, GRAPH_ENGINE, request)) {
             is VectorPlan -> {

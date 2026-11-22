@@ -1,5 +1,6 @@
 package org.drivine.backend
 
+import org.drivine.manager.AmongNeighbours
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
@@ -176,8 +177,8 @@ internal class CypherBackend(
             VectorSearchPlanner.planFiltered(graphClass, query, vector, topK, threshold, grammar, searchK, partitionLabel)
         }
 
-    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement =
-        VectorSearchPlanner.planAmong(graphClass, property, ids, topK, threshold, searchK, grammar)
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours): GraphStatement =
+        VectorSearchPlanner.planAmong(graphClass, property, ids, topK, threshold, searchK, grammar, neighbours)
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan =
         if (query == null) {

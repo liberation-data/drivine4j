@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.cypher.api.VectorIndex
 import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
@@ -583,8 +584,8 @@ internal class OracleSelect(
      * root with another is left out, as the Postgres select leaves it out. Either way each root's
      * neighbours are numbered best first, and the first [topK] kept.
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int): GraphStatement =
-        GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions)), bindings())
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int, neighbours: AmongNeighbours): GraphStatement =
+        GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns, its document made as the graph's

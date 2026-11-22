@@ -558,7 +558,7 @@ class OracleSelectTest {
         logger.addAppender(appender)
         try {
             val select = select(Shelf::class.java)
-            select.nearestAmong(VectorIndexResolver.resolve(select.rootFragment, null, "_", "_"), listOf("\"a\"", "\"b\""), 2, null, 2, 3)
+            select.nearestAmong(VectorIndexResolver.resolve(select.rootFragment, null, "_", "_"), listOf("\"a\"", "\"b\""), 2, null, 2, 3, org.drivine.manager.AmongNeighbours.ALL)
         } finally {
             logger.detachAppender(appender)
             logger.level = level

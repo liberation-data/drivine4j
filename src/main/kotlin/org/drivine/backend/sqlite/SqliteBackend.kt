@@ -1,5 +1,6 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.backend.sql.storedProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
@@ -57,10 +58,10 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     }
 
     /** Each root measures the others, as there is no index to ask: exact, and [searchK] has nothing to widen. */
-    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        return select.nearestAmong(index, idsJson(select, ids), topK, threshold, searchK)
+        return select.nearestAmong(index, idsJson(select, ids), topK, threshold, searchK, neighbours)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

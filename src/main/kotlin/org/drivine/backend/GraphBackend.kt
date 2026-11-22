@@ -1,5 +1,6 @@
 package org.drivine.backend
 
+import org.drivine.manager.AmongNeighbours
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.annotation.Direction
 import org.drivine.manager.CascadeType
@@ -153,7 +154,7 @@ internal interface GraphBackend {
      * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
      * node, only the set is measured, and the answer is exact.
      */
-    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement
+    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours = AmongNeighbours.ALL): GraphStatement
 
     /**
      * How [nearestAmong]'s ids of [graphClass] are told apart: each given or found id's text as the id the store finds a root

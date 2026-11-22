@@ -282,6 +282,30 @@ interface GraphObjectOperations {
     ): Map<String, List<Scored<String>>>
 
     /**
+     * [loadNearestAmong] keeping, for each id, only the [neighbours] it names: with [AmongNeighbours.AFTER] each pair once,
+     * under the id that comes first in the `@NodeId` type's own order, its direction kept before each id's [topK] are cut
+     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself.
+     *
+     * ```kotlin
+     * val pairs = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
+     * ```
+     *
+     * @throws UnsupportedOperationException for [AmongNeighbours.AFTER] where the operations don't search for each pair once
+     */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        neighbours: AmongNeighbours,
+        threshold: Double? = null,
+        property: String? = null,
+        searchK: Int? = null,
+    ): Map<String, List<Scored<String>>> = when (neighbours) {
+        AmongNeighbours.ALL -> loadNearestAmong(graphClass, ids, topK, threshold, property, searchK)
+        AmongNeighbours.AFTER -> throw UnsupportedOperationException("${this::class.simpleName} doesn't search among ids for each pair once.")
+    }
+
+    /**
      * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
      * similarity plus arbitrary property predicates in one statement. Works on a `@GraphView`
      * (predicates filter the *projected* values) and on a bare `@NodeFragment` (predicates filter the
@@ -605,6 +629,19 @@ interface GraphObjectOperations {
         threshold: Double?,
         property: String?,
     ): Map<String, List<Scored<String>>> = loadNearestAmong(graphClass, ids, topK, threshold, property, null)
+
+    /** [loadNearestAmong] keeping the [neighbours] it names, with nothing after them, for Java. */
+    fun <T : Any> loadNearestAmong(graphClass: Class<T>, ids: Collection<String>, topK: Int, neighbours: AmongNeighbours): Map<String, List<Scored<String>>> =
+        loadNearestAmong(graphClass, ids, topK, neighbours, null, null, null)
+
+    /** [loadNearestAmong] keeping the [neighbours] it names, with a [threshold] and nothing after it, for Java. */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        neighbours: AmongNeighbours,
+        threshold: Double?,
+    ): Map<String, List<Scored<String>>> = loadNearestAmong(graphClass, ids, topK, neighbours, threshold, null, null)
 
     /** [loadMatching] with every optional argument left out, for Java. */
     fun <T : Any> loadMatching(graphClass: Class<T>, query: String, topK: Int): List<Scored<T>> =

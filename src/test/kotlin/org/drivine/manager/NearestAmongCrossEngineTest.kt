@@ -159,6 +159,21 @@ abstract class NearestAmongContract {
         assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("B"), "D" to listOf("C")), found.mapValues { ids(it.value) })
     }
 
+    /**
+     * For each pair once, an id keeps only the ids after it, before its topK are cut (drivine4j#868). With topK 1, C's nearest
+     * of all is B, before it: taking each id's nearest first and dropping a pair already seen would lose C–D, which AFTER keeps.
+     * The order the ids are given in changes nothing, and they come back in it.
+     */
+    @Test
+    fun `for each pair once each id keeps the ids after it, its direction kept before its topK are cut`() {
+        val found = gom.loadNearestAmong(DocNode::class.java, SET.reversed(), topK = 1, neighbours = AmongNeighbours.AFTER, searchK = WIDE)
+
+        assertEquals(listOf("D", "C", "B", "A"), found.keys.toList())
+        assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("D"), "D" to emptyList()), found.mapValues { ids(it.value) })
+        val everyNeighbour = gom.loadNearestAmong(DocNode::class.java, SET, topK = 1, searchK = WIDE)
+        assertEquals(listOf("B"), ids(everyNeighbour["C"]), "C's nearest of all is B, before it")
+    }
+
     @Test
     fun `a threshold drops the neighbours that score under it, and an id left with none maps to an empty list`() {
         val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 10, threshold = score(0.7), searchK = WIDE)
