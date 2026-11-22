@@ -549,10 +549,20 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   fails, as their index search refuses a vector of another size.
 - **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
-  Two that score exactly alike come in the order their ids were given, except on FalkorDB, where the
-  index's own order decides. Those below `threshold` are dropped.
+  Two that score exactly alike come in the `@NodeId` type's own order (a text by its code points, a number by its
+  value, a temporal by its time, a `UUID` or an enum by its text), whatever order the ids were given in, except on
+  FalkorDB, where the index's own order decides. Those below `threshold` are dropped.
   By cosine, on Oracle, Postgres and SQLite, an embedding all of zeros, which has no direction, is left
   out, as a key and as a value, as Neo4j's index leaves it out.
+- **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
+  `@NodeId` type's own order, as above, so a pair comes back once, under the id that comes first, and the last id maps
+  to an empty list. The direction is kept before each id's `topK` are cut, so no pair is lost where an id's nearest all
+  come before it, as it would be by dropping, after the search, each pair already seen. The default,
+  `AmongNeighbours.ALL`, keeps every other id, so a pair can come back under each of its ids.
+
+  ```kotlin
+  graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
+  ```
 - It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
