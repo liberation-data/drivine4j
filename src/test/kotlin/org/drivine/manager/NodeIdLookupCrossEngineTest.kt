@@ -61,6 +61,10 @@ data class LookupNear(@NodeId val id: LocalDate, val name: String, @VectorIndex 
 @NodeFragment(labels = ["LookupNearMoment"])
 data class LookupNearMoment(@NodeId val id: LocalDateTime, val name: String, @VectorIndex val embedding: List<Float>? = null)
 
+/** A root with an embedding and a `Long` id, whose ids order by value, not as text: 2 before 10. */
+@NodeFragment(labels = ["LookupNearCount"])
+data class LookupNearCount(@NodeId val id: Long, val name: String, @VectorIndex val embedding: List<Float>? = null)
+
 @NodeFragment(labels = ["LookupTarget"])
 data class LookupTarget(@NodeId val id: String, val name: String)
 
@@ -307,6 +311,24 @@ abstract class NodeIdLookupContract {
         val related = backend.related(NodeRef(type, text), "POINTS_TO", Direction.OUTGOING, LookupTarget::class.java)
         val relatedPlan = plan(related.statement, related.bindings)
         assertTrue(readsIndex(relatedPlan, label), "loadRelated:\n$relatedPlan")
+    }
+
+    /**
+     * For each pair once, an id keeps only the ids after it in the `@NodeId` type's own order (drivine4j#868): a `Long` by its
+     * value, so 2 comes before 10, though `"10"` comes before `"2"` as text, and the order they're given in changes nothing.
+     */
+    @Test
+    fun `loadNearestAmong for each pair once orders a Long id by its value, not its text`() {
+        manager.save(LookupNearCount(1, "a", listOf(1.0f, 0.0f)))
+        manager.save(LookupNearCount(2, "b", listOf(0.8f, 0.6f)))
+        manager.save(LookupNearCount(10, "c", listOf(0.0f, 1.0f)))
+
+        val found = manager.loadNearestAmong(LookupNearCount::class.java, listOf("10", "2", "1"), 2, AmongNeighbours.AFTER)
+
+        assertEquals(
+            mapOf("10" to emptyList(), "2" to listOf("10"), "1" to listOf("2", "10")),
+            found.mapValues { (_, near) -> near.map { it.value } },
+        )
     }
 
     /**

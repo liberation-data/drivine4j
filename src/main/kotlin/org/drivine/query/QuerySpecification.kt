@@ -15,6 +15,14 @@ class QuerySpecification<T> private constructor(
     var originalSpec: QuerySpecification<*>? = null
 ) {
 
+    /**
+     * How long, in milliseconds, the store may take to run the statement, where the library asks for longer than the store's
+     * own default allows: FalkorDB runs it under this as `GRAPH.QUERY`'s `TIMEOUT`; the other stores ignore it. Set by the
+     * library from the shared module's plan (a search among ids that measures every pair, drivine4j#868), not by a caller.
+     */
+    internal var timeoutMillis: Long? = null
+
+
     companion object {
 
         /*
@@ -174,6 +182,7 @@ class QuerySpecification<T> private constructor(
             _limit = this._limit,
             originalSpec = this
         )
+        newSpec.timeoutMillis = this.timeoutMillis
         newSpec.postProcessors.add(MapPostProcessor<Any, Any> { input ->
             mapper(input as T) as Any
         })
@@ -215,6 +224,7 @@ class QuerySpecification<T> private constructor(
             _limit = this._limit,
             originalSpec = this
         )
+        newSpec.timeoutMillis = this.timeoutMillis
         // First transform to Map, then apply the RowMapper
         newSpec.postProcessors.add(TransformPostProcessor<Any, Any>(Map::class.java as Class<Any>))
         newSpec.postProcessors.add(MapPostProcessor<Any, Any> { input ->
@@ -236,6 +246,7 @@ class QuerySpecification<T> private constructor(
             _limit = this._limit,
             originalSpec = this
         )
+        newSpec.timeoutMillis = this.timeoutMillis
         newSpec.postProcessors.add(TransformPostProcessor<Any, Any>(type as Class<Any>))
         return newSpec
     }
@@ -271,6 +282,7 @@ class QuerySpecification<T> private constructor(
             _limit = this._limit,
             originalSpec = this
         )
+        newSpec.timeoutMillis = this.timeoutMillis
         // Filter to only instances of the target type
         newSpec.postProcessors.add(FilterPostProcessor<Any> { input ->
             type.isInstance(input)
@@ -322,7 +334,7 @@ class QuerySpecification<T> private constructor(
             _skip = this._skip,
             _limit = this._limit,
             originalSpec = this.originalSpec
-        )
+        ).also { it.timeoutMillis = timeoutMillis }
     }
 
     /**
@@ -339,7 +351,7 @@ class QuerySpecification<T> private constructor(
             _skip = this._skip,
             _limit = this._limit,
             originalSpec = this.originalSpec
-        )
+        ).also { it.timeoutMillis = timeoutMillis }
     }
 
     override fun toString(): String {

@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.cypher.api.VectorIndex
 import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
@@ -576,15 +577,15 @@ internal class OracleSelect(
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and every pair of roots whose embeddings are
-     * of one size is measured: the answer is exact. With them, each root asks the index over its side table
+     * of one size is measured: the answer is exact, as it is with no [searchK]. With them and a [searchK], each root asks the index over its side table
      * for its [searchK] nearest, as [nearestThrough] does, and keeps those among the roots:
      * approximate, as the index is. Only the roots the table holds are searched from: it holds only
      * embeddings of the index's size, and Oracle refuses to measure two sizes against each other, so a
      * root with another is left out, as the Postgres select leaves it out. Either way each root's
      * neighbours are numbered best first, and the first [topK] kept.
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int): GraphStatement =
-        GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions)), bindings())
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
+        GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns, its document made as the graph's

@@ -1,5 +1,7 @@
 package org.drivine.query
 
+import org.drivine.manager.module
+import org.drivine.manager.AmongNeighbours
 import org.drivine.annotation.GraphView
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
@@ -160,7 +162,8 @@ internal object VectorSearchPlanner {
      * The search, for each of [ids] whose node holds the embedding, for its [topK] nearest among the
      * others, as the shared module writes it (`VectorSearch`, with an among): one statement on every
      * graph engine, as on the SQL stores. A view searches its root fragment, as [plan] does; its
-     * relationships play no part, as the set is named by id. The index is asked for [searchK] for each.
+     * relationships play no part, as the set is named by id. The index is asked for [searchK] for each; with no [searchK],
+     * every pair of the set is measured through no index, exactly, and on FalkorDB under the plan's own timeout.
      */
     fun planAmong(
         graphClass: Class<*>,
@@ -168,8 +171,9 @@ internal object VectorSearchPlanner {
         ids: List<String>,
         topK: Int,
         threshold: Double?,
-        searchK: Int,
+        searchK: Int?,
         grammar: CypherGrammar,
+        neighbours: AmongNeighbours = AmongNeighbours.ALL,
     ): GraphStatement {
         requireSupport(grammar)
         val fragment = rootFragment(graphClass)
@@ -184,14 +188,17 @@ internal object VectorSearchPlanner {
         val request = VectorRequest(
             labels = model.labels, property = resolved.property,
             similarity = resolved.similarity, topK = topK, searchK = searchK, index = VectorIndex(name = resolved.indexName),
-            among = VectorAmong(ids, idProperty, threshold),
+            among = VectorAmong(ids, idProperty, threshold, neighbours.module),
         )
         return when (val planned = VectorSearch.plan(store, GRAPH_ENGINE, request)) {
             is VectorPlan -> {
                 // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): the default searchK, topK + 1,
                 // goes through the index, so at WARN every call would log it.
                 planned.warnings.forEach { logger.debug(it) }
-                GraphStatement(requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters)
+                GraphStatement(
+                    requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters,
+                    timeoutMillis = planned.timeoutMillis,
+                )
             }
             is Refusal -> throw IllegalArgumentException(planned.message)
         }

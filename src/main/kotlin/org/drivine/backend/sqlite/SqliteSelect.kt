@@ -1,5 +1,6 @@
 package org.drivine.backend.sqlite
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.cypher.api.VectorIndex
 import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
@@ -466,8 +467,8 @@ internal class SqliteSelect(
      * SQLite has no `LATERAL`, so each root's nearest are not a query of their own: every pair is
      * scored once, numbered within its root best first, and a root keeps the first [topK].
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement =
-        GraphStatement(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex()), bindings())
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
+        GraphStatement(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the

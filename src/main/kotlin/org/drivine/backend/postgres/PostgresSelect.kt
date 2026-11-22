@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.cypher.api.VectorIndex
 import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
@@ -471,12 +472,12 @@ internal class PostgresSelect(
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
-     * roots, whose embeddings are of its size: the answer is exact. With them, each root asks the
-     * index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
+     * roots, whose embeddings are of its size: the answer is exact, as it is with no [searchK]. With them and a [searchK],
+     * each root asks the index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
      * keeps those among the roots: approximate, as the index is.
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int): GraphStatement =
-        GraphStatement(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions)), bindings())
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
+        GraphStatement(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the

@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.manager.AmongNeighbours
 import org.drivine.backend.sql.storedProperty
 import org.drivine.backend.sql.NodeIds
 import org.drivine.backend.sql.SqlBackend
@@ -62,12 +63,12 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
 
-    /** Through the index for the label when one has been made, as [nearest] goes; else each root measures the others. */
-    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+    /** Through the index for the label when one has been made and a [searchK] given, as [nearest] goes; else each root measures the others. */
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
-        return select.nearestAmong(index, idsJson(select, ids), topK, threshold, dimensions, searchK)
+        return select.nearestAmong(index, idsJson(select, ids), topK, threshold, dimensions, searchK, neighbours)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {

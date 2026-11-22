@@ -1,5 +1,7 @@
 package org.drivine.backend.sql
 
+import org.drivine.manager.module
+import org.drivine.manager.AmongNeighbours
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.GraphView
 import org.drivine.cypher.api.FullTextSearch
@@ -260,12 +262,13 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
      * WARN every call would log it.
      */
     protected fun among(
-        store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, made: VectorIndex,
+        store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, made: VectorIndex,
+        neighbours: AmongNeighbours,
     ): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val request = VectorRequest(
             labels = rootLabels(), property = index.property, similarity = index.similarity, topK = topK, searchK = searchK, index = made,
-            among = VectorAmong(ids, idProperty, threshold),
+            among = VectorAmong(ids, idProperty, threshold, neighbours.module),
         )
         return when (val planned = VectorSearch.plan(store, GraphOptions(graph), request)) {
             is VectorPlan -> {

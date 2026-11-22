@@ -230,12 +230,15 @@ interface GraphObjectOperations {
      *
      * The result maps each id whose root node has the embedding to up to [topK] *other* ids from
      * [ids] (never itself), most similar first, each paired with the same normalized
-     * [score][Scored.score] [loadNearest] gives that pair on this store, so the two agree. Those
-     * below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
+     * [score][Scored.score] [loadNearest] gives that pair on this store, so the two agree; two that score
+     * exactly alike come in the `@NodeId` type's own order (see [AmongNeighbours.AFTER]), except on FalkorDB through its
+     * index, where the index's own order decides. Those below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
      * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
      * An embedding of another size than the index's is measured against none of a different size: on
      * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search
-     * fails, as their index search refuses a vector of another size, and Memgraph does not store one.
+     * fails, as their index search refuses a vector of another size, and Memgraph does not store one. For
+     * [AmongNeighbours.AFTER] with no [searchK], which asks no index, Neo4j measures it against none of another size too,
+     * and FalkorDB refuses a pair of two sizes.
      *
      * Works on a `@NodeFragment` and on a `@GraphView`, whose **root fragment**'s embedding is searched;
      * the vector index is resolved from `@VectorIndex` as [loadNearest] resolves it. A view's
@@ -280,6 +283,37 @@ interface GraphObjectOperations {
         property: String? = null,
         searchK: Int? = null,
     ): Map<String, List<Scored<String>>>
+
+    /**
+     * [loadNearestAmong] keeping, for each id, only the [neighbours] it names: with [AmongNeighbours.AFTER] each pair once,
+     * under the id that comes first in the `@NodeId` type's own order, its direction kept before each id's [topK] are cut
+     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself. For [AmongNeighbours.AFTER] with
+     * no [searchK], every pair of the set is measured, through no index, on every store: exact, its cost growing with the
+     * square of the number of [ids]. Given a [searchK], each id asks the vector index for that many, and a pair is found only
+     * where the index gives the later id among the earlier one's [searchK] nearest.
+     *
+     * ```kotlin
+     * val pairs = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
+     * ```
+     *
+     * From Java, give every argument: `loadNearestAmong(Doc.class, ids, 5, AmongNeighbours.AFTER, null, null, null)`. A shorter
+     * overload with [neighbours] would make a call that passes a literal `null` for the threshold, as
+     * `loadNearestAmong(Doc.class, ids, 5, null)`, ambiguous, and existing Java code would no longer compile.
+     *
+     * @throws UnsupportedOperationException for [AmongNeighbours.AFTER] where the operations don't search for each pair once
+     */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        neighbours: AmongNeighbours,
+        threshold: Double? = null,
+        property: String? = null,
+        searchK: Int? = null,
+    ): Map<String, List<Scored<String>>> = when (neighbours) {
+        AmongNeighbours.ALL -> loadNearestAmong(graphClass, ids, topK, threshold, property, searchK)
+        AmongNeighbours.AFTER -> throw UnsupportedOperationException("${this::class.simpleName} doesn't search among ids for each pair once.")
+    }
 
     /**
      * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
