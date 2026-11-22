@@ -71,7 +71,7 @@ internal class OracleBackend(
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
 
-    /** Through the index for the label when one has been made, as [nearest] goes; else each root measures the others. */
+    /** Through the index for the label when one has been made and a [searchK] given, as [nearest] goes; else each root measures the others. */
     override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")

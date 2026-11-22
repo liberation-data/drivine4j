@@ -154,7 +154,8 @@ internal interface GraphBackend {
      *
      * Where the store searches through an approximate index, the index is asked for [searchK] for each
      * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
-     * node, only the set is measured, and the answer is exact.
+     * node, only the set is measured, and the answer is exact. With no [searchK], every store measures every
+     * pair of the set through no index, exactly (drivine4j#868).
      */
     fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours = AmongNeighbours.ALL): GraphStatement
 

@@ -162,7 +162,8 @@ internal object VectorSearchPlanner {
      * The search, for each of [ids] whose node holds the embedding, for its [topK] nearest among the
      * others, as the shared module writes it (`VectorSearch`, with an among): one statement on every
      * graph engine, as on the SQL stores. A view searches its root fragment, as [plan] does; its
-     * relationships play no part, as the set is named by id. The index is asked for [searchK] for each.
+     * relationships play no part, as the set is named by id. The index is asked for [searchK] for each; with no [searchK],
+     * every pair of the set is measured through no index, exactly, and on FalkorDB under the plan's own timeout.
      */
     fun planAmong(
         graphClass: Class<*>,

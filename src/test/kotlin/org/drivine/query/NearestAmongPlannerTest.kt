@@ -15,6 +15,7 @@ import org.drivine.cypher.api.VectorPlan
 import org.drivine.cypher.api.VectorRequest
 import org.drivine.cypher.api.VectorSearch
 import org.drivine.schema.SimilarityFunction
+import org.drivine.query.grammar.FalkorDbCypherGrammar
 import org.drivine.query.grammar.MemgraphGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.NeptuneCypherGrammar
@@ -85,6 +86,36 @@ class NearestAmongPlannerTest {
         assertEquals(module.parameters, plan.bindings)
         val all = VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, grammar)
         assertFalse(all.statement == plan.statement && all.bindings == plan.bindings, "AFTER plans as ALL:\n${plan.statement}")
+    }
+
+    /**
+     * With no searchK every pair is measured through no index, and on FalkorDB the plan's own timeout reaches the statement
+     * and every specification it makes, as FalkorDB's image ends a query after a second (drivine4j#868). Through the index,
+     * with a searchK, and on the other engines, there is none.
+     */
+    @Test
+    fun `with no searchK FalkorDB's statement carries the module's timeout, and through the index none`() {
+        val falkor = FalkorDbCypherGrammar(CallSubqueryEmitter())
+        val after = org.drivine.manager.AmongNeighbours.AFTER
+        val exact = VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, null, falkor, after)
+        val module = VectorSearch.plan(
+            SearchStore.FALKORDB, GraphOptions(""),
+            VectorRequest(
+                labels = listOf("Doc"), property = "embedding", similarity = SimilarityFunction.COSINE, topK = 2, searchK = null,
+                index = org.drivine.cypher.api.VectorIndex(name = "Doc_embedding_vector"),
+                among = VectorAmong(listOf("A", "B"), "id", null, org.drivine.cypher.api.AmongNeighbours.After),
+            ),
+        ) as VectorPlan
+        val timeout = requireNotNull(module.timeoutMillis) { "The module gives FalkorDB's exact search no timeout." }
+        assertEquals(timeout, exact.timeoutMillis)
+        assertEquals(timeout, exact.spec(mapOf("x" to 1)).timeoutMillis)
+        assertEquals(timeout, exact.bindingId { it }.spec().timeoutMillis)
+        assertFalse(exact.statement.contains("queryNodes"), exact.statement)
+
+        assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, falkor, after).timeoutMillis)
+        assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, falkor).timeoutMillis)
+        assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, null, Neo4j5Grammar(ApocSortMapsEmitter()), after).timeoutMillis)
+        assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, null, MemgraphGrammar(CallSubqueryEmitter()), after).timeoutMillis)
     }
 
     @Test

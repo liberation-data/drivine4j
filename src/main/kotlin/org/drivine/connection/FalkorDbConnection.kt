@@ -98,6 +98,7 @@ class FalkorDbConnection(
             // TIMEOUT: FalkorDB's image sets the legacy one to 1 s, which would end it (drivine4j#868).
             val timeout = finalizedSpec.timeoutMillis
             val resultSet = when {
+                timeout != null && params.isEmpty() -> graph.query(statement, timeout)
                 timeout != null -> graph.query(statement, asClientParameters(params), timeout)
                 params.isEmpty() -> graph.query(statement)
                 else -> graph.query(statement, asClientParameters(params))

@@ -472,8 +472,8 @@ internal class PostgresSelect(
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
-     * roots, whose embeddings are of its size: the answer is exact. With them, each root asks the
-     * index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
+     * roots, whose embeddings are of its size: the answer is exact, as it is with no [searchK]. With them and a [searchK],
+     * each root asks the index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
      * keeps those among the roots: approximate, as the index is.
      */
     fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =

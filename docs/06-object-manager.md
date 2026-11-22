@@ -578,7 +578,7 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 **`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
 an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
 made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
+first; for each pair once, no `searchK` measures every pair instead, as above), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
 mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
 indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
 `org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
