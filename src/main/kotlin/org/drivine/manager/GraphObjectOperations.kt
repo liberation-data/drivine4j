@@ -231,8 +231,8 @@ interface GraphObjectOperations {
      * The result maps each id whose root node has the embedding to up to [topK] *other* ids from
      * [ids] (never itself), most similar first, each paired with the same normalized
      * [score][Scored.score] [loadNearest] gives that pair on this store, so the two agree; two that score
-     * exactly alike come in the `@NodeId` type's own order (see [AmongNeighbours.AFTER]), except on FalkorDB, where
-     * the index's own order decides. Those below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
+     * exactly alike come in the `@NodeId` type's own order (see [AmongNeighbours.AFTER]), except on FalkorDB through its
+     * index, where the index's own order decides. Those below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
      * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
      * An embedding of another size than the index's is measured against none of a different size: on
      * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search

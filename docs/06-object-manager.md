@@ -551,7 +551,8 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
   Two that score exactly alike come in the `@NodeId` type's own order (a text by its code points, a number by its
   value, a temporal by its time, a `UUID` or an enum by its text), whatever order the ids were given in, except on
-  FalkorDB, where the index's own order decides. Those below `threshold` are dropped.
+  FalkorDB through its index, where the index's own order decides (for each pair once with no `searchK`, below, no index
+  is asked, so the type's order holds there too). Those below `threshold` are dropped.
   By cosine, on Oracle, Postgres and SQLite, an embedding all of zeros, which has no direction, is left
   out, as a key and as a value, as Neo4j's index leaves it out.
 - **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
