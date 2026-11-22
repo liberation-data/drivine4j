@@ -557,7 +557,9 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 - **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
   `@NodeId` type's own order, as above, so a pair comes back once, under the id that comes first, and the last id maps
   to an empty list. The direction is kept before each id's `topK` are cut, so no pair is lost where an id's nearest all
-  come before it, as it would be by dropping, after the search, each pair already seen. The default,
+  come before it, as it would be by dropping, after the search, each pair already seen. Through an approximate index
+  (see `searchK` below) a pair is found only where the index gives the later id among the earlier one's `searchK`
+  nearest, so where an id's nearest come before it, a larger `searchK` is needed to keep the pairs after it. The default,
   `AmongNeighbours.ALL`, keeps every other id, so a pair can come back under each of its ids.
 
   ```kotlin
@@ -573,7 +575,7 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 **`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
 an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
 made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first), and the "among the set", self, root label and `threshold` filters apply to those. An id whose nearest
+first), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
 mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
 indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
 `org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on

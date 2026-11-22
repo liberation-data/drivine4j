@@ -6,6 +6,10 @@ import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.Root
+import org.drivine.connection.DatabaseType
+import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.SubtypeRegistry
+import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -13,6 +17,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZonedDateTime
 import java.util.UUID
+import sample.vector.DocNode
 
 /** The ids of a search among ids in the `@NodeId` type's own order, as the module reads their places (drivine4j#868, #412). */
 class AmongOrderTest {
@@ -101,5 +106,25 @@ class AmongOrderTest {
     @Test
     fun `a fragment with no @NodeId keeps its ids, for the search to refuse it`() {
         assertEquals(listOf("b", "a"), AmongOrder.of(Unkeyed::class.java, listOf("b", "a"), mapper))
+    }
+
+    /**
+     * The manager hands the store the ids in the `@NodeId` type's own order, whichever neighbours it keeps, as a tie of two
+     * scores is broken by it for all of them too, and gives the map back in the caller's order. The stateless manager, which
+     * delegates its searches, keeps the neighbours rather than refusing them.
+     */
+    @Test
+    fun `the store is given the ids in their order, whichever neighbours are kept, and the map comes back in the caller's`() {
+        AmongNeighbours.entries.forEach { neighbours ->
+            val store = RecordingStore(DatabaseType.NEO4J) { _ ->
+                listOf(mapOf("seed" to "a", "near" to emptyList<Any>()), mapOf("seed" to "c", "near" to emptyList<Any>()))
+            }
+            val manager = StatelessGraphObjectManager(store, Neo4jObjectMapper.instance, SubtypeRegistry())
+
+            val found = manager.loadNearestAmong(DocNode::class.java, listOf("c", "b", "a", "c"), 2, neighbours, null, null, 5)
+
+            assertTrue(listOf("a", "b", "c") in store.queried.single().parameters.values, "$neighbours: ${store.queried.single().parameters}")
+            assertEquals(listOf("c", "a"), found.keys.toList(), "$neighbours")
+        }
     }
 }

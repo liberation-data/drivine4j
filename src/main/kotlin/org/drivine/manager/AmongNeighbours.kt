@@ -11,6 +11,8 @@ enum class AmongNeighbours {
      * Only the ids after it, in the `@NodeId` type's own order (a text by its code points, a number by its value, a temporal
      * by its time, a `UUID` or an enum by its text): each pair comes back once, under the id that comes first. The direction is
      * kept before each id's `topK` are cut, so no pair is lost to the cut where an id's nearest all come before it.
+     * Through an approximate index a pair is found only where the index gives the later id among the earlier one's `searchK`
+     * nearest.
      */
     AFTER,
 }

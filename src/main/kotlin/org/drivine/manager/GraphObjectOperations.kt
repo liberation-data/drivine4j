@@ -285,7 +285,9 @@ interface GraphObjectOperations {
     /**
      * [loadNearestAmong] keeping, for each id, only the [neighbours] it names: with [AmongNeighbours.AFTER] each pair once,
      * under the id that comes first in the `@NodeId` type's own order, its direction kept before each id's [topK] are cut
-     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself.
+     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself. Through an approximate index a
+     * pair is found only where the index gives the later id among the earlier one's [searchK] nearest, so where an id's
+     * nearest come before it, a larger [searchK] keeps the pairs after it.
      *
      * ```kotlin
      * val pairs = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
