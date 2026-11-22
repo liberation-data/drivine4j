@@ -1,10 +1,10 @@
 package org.drivine.backend.sql
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.backend.GivenIds
 import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.Store
 import org.drivine.mapper.HeldTemporals
-import org.drivine.mapper.toPropertyValue
 import org.drivine.model.FragmentModel
 import org.drivine.query.StampWrite
 
@@ -25,23 +25,10 @@ import org.drivine.query.StampWrite
 internal class NodeIds(private val objectMapper: ObjectMapper, private val store: Store) {
 
     /**
-     * [given] as a node of [model] holds its id: a value of the `@NodeId` field's type, as a save writes the field. A text
-     * given for an id of another type is read as that type; a value of the type, or any value for a `String` id, is
-     * written as it is, except a text a load read from a temporal tag, given for an id declared `Any`: that is the tag
-     * ([held]). Null where [given] is no value of the type, or where the class has no `@NodeId` field: no node is found by
-     * it.
+     * [given] as a node of [model] holds its id, as a save writes the `@NodeId` field ([GivenIds.valueOf]), except a text a
+     * load read from a temporal tag, given for an id declared `Any`: that is the tag ([held]), which only a SQL store holds.
      */
-    fun of(model: FragmentModel, given: Any?): Any? {
-        if (given == null) return null
-        heldTag(model, given)?.let { return it }
-        val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type?.kotlin?.javaObjectType ?: return given
-        val typed = if (type == String::class.java || type.isInstance(given)) given else try {
-            objectMapper.convertValue(given, type)
-        } catch (e: IllegalArgumentException) {
-            return null
-        } ?: return null
-        return objectMapper.toPropertyValue(typed)
-    }
+    fun of(model: FragmentModel, given: Any?): Any? = given?.let { heldTag(model, it) } ?: GivenIds.valueOf(objectMapper, model, given)
 
     /** [given] as the JSON text a node of [model] holds its id as ([of], then [json]); null where it finds no node. */
     fun json(model: FragmentModel, given: Any?): String? = of(model, given)?.let(::json)

@@ -281,9 +281,9 @@ fun getPerson(uuid: String): PersonCareer? {
 }
 ```
 
-On Oracle, Postgres and SQLite the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id finds its node the same way. The graph engines compare the text as it is given.
+On every store the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id, a patch and a `NodeRef` find their node the same way.
 
-On the same stores, a node whose id another writer stored as a temporal value (`date('2026-01-05')`, say) is found only by
+On Oracle, Postgres and SQLite, a node whose id another writer stored as a temporal value (`date('2026-01-05')`, say) is found only by
 that value, kind and text, so the class that loads it must declare an id that a save writes back the same. A load refuses
 it, by name, where the class doesn't, rather than give an object whose save would make a second node
 ([#860](https://github.com/liberation-data/drivine4j/issues/860), [#861](https://github.com/liberation-data/drivine4j/issues/861)):

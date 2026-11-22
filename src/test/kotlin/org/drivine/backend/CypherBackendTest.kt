@@ -356,6 +356,27 @@ class CypherBackendTest {
         assertContains(patch.statement, "SET claim.note = \$_v0)")
     }
 
+    /** A patch finds its node by the id as a save wrote it, a view's by its root's (liberation-data/drivine4j#806). */
+    @Test
+    fun `a patch binds the id's text as the id's type, of a fragment and of a view's root, and text that is none as null`() {
+        fun id(graphClass: Class<*>, given: Any) = backend().patch(graphClass, given, mapOf("name" to "n"), emptyList()).bindings["id"]
+
+        assertEquals(5L, id(org.drivine.manager.GraphIdLong::class.java, "5"))
+        assertEquals(java.time.LocalDate.of(2024, 3, 4), id(org.drivine.manager.GraphIdDate::class.java, "2024-03-04"))
+        assertEquals(java.time.LocalDate.of(2024, 3, 4), id(org.drivine.manager.GraphIdDateTree::class.java, "2024-03-04"))
+        assertNull(id(org.drivine.manager.GraphIdLong::class.java, "abc"))
+    }
+
+    /** A ref already given a value of the id's type, or a number of another width, binds as a save writes the id. */
+    @Test
+    fun `a ref's id is bound as the id's type, whether given as text, as the type or as another number`() {
+        val target = NodeRef(Claim::class.java, "c1")
+        for (given in listOf<Any>("5", 5L, 5)) {
+            val relate = backend().relate(NodeRef(org.drivine.manager.GraphIdLong::class.java, given), target, "POINTS_TO", emptyMap(), org.drivine.manager.RelateMode.CREATE)
+            assertEquals(listOf<Any?>(5L, "c1"), listOf(relate.bindings["_fromId"], relate.bindings["_toId"]), "given $given")
+        }
+    }
+
     @Test
     fun `the rows of a patch are sent in the order given, each under its own index and offered a stamp of its own`() {
         val rows = listOf("c", "a", "b").mapIndexed { index, id -> PatchRow(index, id, mapOf("note" to "n$index")) }
