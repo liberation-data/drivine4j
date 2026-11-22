@@ -66,7 +66,7 @@ internal object VectorSearchPlanner {
     const val INDEX_NAME_PARAM = "_vectorIndexName"
     const val LABEL_PARAM = "_vectorLabel"
 
-    /** Logs what the shared module warns of a search among ids. */
+    /** Logs, at DEBUG, what the shared module warns of a search among ids. */
     private val logger = LoggerFactory.getLogger(VectorSearchPlanner::class.java)
 
     /** Unfiltered vector search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
@@ -177,7 +177,7 @@ internal object VectorSearchPlanner {
         require(model.labels.isNotEmpty()) { "No labels defined for fragment ${model.className}. @NodeFragment must specify at least one label." }
         val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM)
         val store = requireNotNull(grammar.searchStore) { "loadNearestAmong is not written for ${grammar::class.simpleName}" }
-        val idProperty = requireNotNull(model.nodeIdProperty) { "${model.className} has no @NodeId field" }
+        val idProperty = requireNotNull(model.nodeIdProperty) { "${model.className} has no @NodeId field to find a node by." }
         requireTextId(model, store)
         // The shared module writes the whole statement (VectorSearch, liberation-data/drivine-cypher-spec#100), as for the SQL
         // stores, so every library searches among ids alike.
@@ -188,7 +188,9 @@ internal object VectorSearchPlanner {
         )
         return when (val planned = VectorSearch.plan(store, GRAPH_ENGINE, request)) {
             is VectorPlan -> {
-                planned.warnings.forEach { logger.warn(it) }
+                // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): the default searchK, topK + 1,
+                // goes through the index, so at WARN every call would log it.
+                planned.warnings.forEach { logger.debug(it) }
                 GraphStatement(requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters)
             }
             is Refusal -> throw IllegalArgumentException(planned.message)

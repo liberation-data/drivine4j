@@ -255,8 +255,9 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     /**
      * A search among [ids], each the JSON text of a root's id as the node holds it, as the shared module's `VectorSearch`
      * writes it for [store] over the graph [graph]: the whole statement, one row a root, `result`, `{seed, near}`. [index] is the
-     * embedding searched, and [made] what the catalog records of its vector index. What the module warns of is logged, as
-     * [ranked] logs it.
+     * embedding searched, and [made] what the catalog records of its vector index. What the module warns of is logged at
+     * DEBUG, as `VectorSearchPlanner.planAmong` logs it: the default searchK, `topK + 1`, goes through an index made, so at
+     * WARN every call would log it.
      */
     protected fun among(
         store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, made: VectorIndex,
@@ -268,7 +269,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         )
         return when (val planned = VectorSearch.plan(store, GraphOptions(graph), request)) {
             is VectorPlan -> {
-                planned.warnings.forEach { logger.warn(it) }
+                planned.warnings.forEach { logger.debug(it) }
                 scope.boundAs(planned.parameters)
                 requireNotNull(planned.sql) { "The search among ids on ${store.id} gave no SQL." }
             }

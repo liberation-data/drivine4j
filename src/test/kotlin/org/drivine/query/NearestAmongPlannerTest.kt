@@ -106,17 +106,20 @@ class NearestAmongPlannerTest {
     }
 
     @Test
-    fun `what the shared module warns of is logged`() {
+    fun `what the shared module warns of is logged at DEBUG, as the default searchK warns on every call`() {
         val logger = LoggerFactory.getLogger(VectorSearchPlanner::class.java) as Logger
         val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
         logger.addAppender(appender)
         try {
             VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, Neo4j5Grammar(ApocSortMapsEmitter()))
         } finally {
             logger.detachAppender(appender)
+            logger.level = level
         }
-        val warnings = appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
-        assertTrue(warnings.any { "goes through the vector index, as searchK is given" in it }, "$warnings")
+        val logged = appender.list.filter { "goes through the vector index, as searchK is given" in it.formattedMessage }
+        assertTrue(logged.isNotEmpty() && logged.all { it.level == Level.DEBUG }, "${appender.list.map { "${it.level} ${it.formattedMessage}" }}")
     }
 
     @Test
