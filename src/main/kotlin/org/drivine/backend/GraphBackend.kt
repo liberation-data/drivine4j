@@ -150,7 +150,8 @@ internal interface GraphBackend {
      * one the fragment declares), for its nearest among the other [ids]: one row for each such root,
      * `{seed, near}`, `near` up to [topK] of `{id, score}`, best first, none of them the seed, none
      * scoring under [threshold]. A root with no neighbour left still has its row, with `near` empty. The
-     * score is the one [nearest] gives for the same pair.
+     * score is the one [nearest] gives for the same pair. The [ids] come in the `@NodeId` type's own order
+     * (`AmongOrder`), which breaks a tie of two scores; with [AmongNeighbours.AFTER] a root keeps only the ids after it there.
      *
      * Where the store searches through an approximate index, the index is asked for [searchK] for each
      * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
