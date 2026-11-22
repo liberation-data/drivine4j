@@ -27,7 +27,8 @@ import org.drivine.query.grammar.CypherGrammar
  *
  * @param id what the statement binds the id an object manager gives it as [GraphBackend.ID_PARAM] as, where the store
  *   holds an id otherwise than it is given: a SQL store finds a node by the JSON it holds its id as (see
- *   `org.drivine.backend.sql.NodeIds`). Null to bind the id as it is given, as a graph engine's statement does.
+ *   `org.drivine.backend.sql.NodeIds`), and a graph engine by the value a save wrote for the `@NodeId` field
+ *   ([GivenIds]). Null to bind the id as it is given.
  */
 internal class GraphStatement(
     val statement: String,

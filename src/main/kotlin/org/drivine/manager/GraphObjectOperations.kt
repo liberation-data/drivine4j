@@ -145,10 +145,9 @@ interface GraphObjectOperations {
      * [GraphObjectManager] adds the loaded object to its session for dirty tracking;
      * [StatelessGraphObjectManager] remembers nothing.
      *
-     * On Oracle, Postgres and SQLite the id's text is first read as the `@NodeId` field's type, as Jackson reads that
-     * field, and found as a save writes it: `"5"` finds a `Long` id of 5, and `"2024-01-02"` a `LocalDate` one. Text that
-     * is no value of the type, `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. The graph
-     * engines compare the text as it is given.
+     * On every store the id's text is first read as the `@NodeId` field's type, as Jackson reads that field, and found
+     * as a save writes it: `"5"` finds a `Long` id of 5, and `"2024-01-02"` a `LocalDate` one. Text that is no value of
+     * the type, `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given.
      *
      * @param id The ID value to search for
      * @param graphClass The graph object class to load
