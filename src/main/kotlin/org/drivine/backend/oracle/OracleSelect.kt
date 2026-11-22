@@ -568,15 +568,16 @@ internal class OracleSelect(
     }
 
     /**
-     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
-     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * For each root among [ids] that holds the embedding [index] searches, its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`, as the shared module writes it ([among]): see
+     * [org.drivine.backend.GraphBackend.nearestAmong].
      * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
      * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
-     * With no [embeddings], no vector index has been made, and every pair of roots whose embeddings are
-     * of one size is measured: the answer is exact. With the table the index is over, each root asks
-     * the index for its [searchK] nearest, as [nearestThrough] does, and keeps those among the roots:
+     * With no [dimensions], no vector index has been made, and every pair of roots whose embeddings are
+     * of one size is measured: the answer is exact. With them, each root asks the index over its side table
+     * for its [searchK] nearest, as [nearestThrough] does, and keeps those among the roots:
      * approximate, as the index is. Only the roots the table holds are searched from: it holds only
      * embeddings of the index's size, and Oracle refuses to measure two sizes against each other, so a
      * root with another is left out, as the Postgres select leaves it out. Either way each root's
@@ -673,9 +674,6 @@ internal class OracleSelect(
         /** The parameter of [meeting] for the `nid` of the node it counts: no value is bound to it, the block gives its own. */
         const val NID = "_nid"
 
-        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
-        private const val MEMBERS = "members"
-
         /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
         private const val REPRESENTATIVE = "r"
 
@@ -688,8 +686,5 @@ internal class OracleSelect(
 
         /** The keyword a statement [hinted] begins with, after any blank: the hints follow it. */
         private val LEADING_KEYWORD = Regex("^\\s*(SELECT|DELETE)\\b", RegexOption.IGNORE_CASE)
-
-        /** What [nearestAmong] calls each root's neighbours, scored and numbered best first. */
-        private const val RANKED = "ranked"
     }
 }

@@ -463,15 +463,16 @@ internal class PostgresSelect(
     }
 
     /**
-     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
-     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * For each root among [ids] that holds the embedding [index] searches, its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`, as the shared module writes it ([among]): see
+     * [org.drivine.backend.GraphBackend.nearestAmong].
      * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
      * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
      * With no [dimensions], no vector index has been made, and each root measures only the other
      * roots, whose embeddings are of its size: the answer is exact. With them, each root asks the
-     * index over the embeddings of [label] for its [searchK] nearest, as [nearestThrough] does, and
+     * index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
      * keeps those among the roots: approximate, as the index is.
      */
     fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int): GraphStatement =
@@ -555,9 +556,6 @@ internal class PostgresSelect(
     companion object {
         /** As much of a field's name as a row is called by: Postgres allows 63, and a count and an underscore follow. */
         private const val MAX_NAME = 55
-
-        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
-        private const val MEMBERS = "members"
 
         /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
         private const val ORDER_NODE = "order_node"

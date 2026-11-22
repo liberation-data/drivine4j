@@ -174,6 +174,7 @@ internal object VectorSearchPlanner {
         requireSupport(grammar)
         val fragment = rootFragment(graphClass)
         val model = FragmentModel.from(fragment)
+        require(model.labels.isNotEmpty()) { "No labels defined for fragment ${model.className}. @NodeFragment must specify at least one label." }
         val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM)
         val store = requireNotNull(grammar.searchStore) { "loadNearestAmong is not written for ${grammar::class.simpleName}" }
         val idProperty = requireNotNull(model.nodeIdProperty) { "${model.className} has no @NodeId field" }
@@ -181,7 +182,7 @@ internal object VectorSearchPlanner {
         // The shared module writes the whole statement (VectorSearch, liberation-data/drivine-cypher-spec#100), as for the SQL
         // stores, so every library searches among ids alike.
         val request = VectorRequest(
-            labels = FragmentModel.labelsFor(fragment).ifEmpty { listOf(resolved.label) }, property = resolved.property,
+            labels = model.labels, property = resolved.property,
             similarity = resolved.similarity, topK = topK, searchK = searchK, index = VectorIndex(name = resolved.indexName),
             among = VectorAmong(ids, idProperty, threshold),
         )

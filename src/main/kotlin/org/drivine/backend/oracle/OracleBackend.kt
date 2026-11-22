@@ -95,10 +95,6 @@ internal class OracleBackend(
         return persistenceManager.query(QuerySpecification.withStatement(lookup.sql).bind(lookup.parameters).transform(String::class.java)).firstOrNull()
     }
 
-    /**
-     * The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not
-     * been made, or, given [dimensions], when it is a vector index made for embeddings of another size.
-     */
     /** The size of embeddings a recorded index of [kind] on [label]'s [properties] was made for; null when it has not been made. */
     private fun madeDimensions(kind: SchemaItemKind, label: String, properties: List<String>): Int? = persistenceManager.query(
         QuerySpecification
@@ -110,6 +106,10 @@ internal class OracleBackend(
             .transform(Number::class.java)
     ).firstOrNull()?.toInt()
 
+    /**
+     * The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not
+     * been made, or, given [dimensions], when it is a vector index made for embeddings of another size.
+     */
     private fun made(kind: SchemaItemKind, label: String, properties: List<String>, dimensions: Int? = null): String? = persistenceManager.query(
         QuerySpecification
             .withStatement(

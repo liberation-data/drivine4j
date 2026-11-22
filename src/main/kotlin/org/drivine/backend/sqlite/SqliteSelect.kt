@@ -18,7 +18,6 @@ import org.drivine.backend.sqlite.SqliteSql.property
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.OnceReached
-import org.drivine.backend.sql.Paired
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
@@ -455,8 +454,9 @@ internal class SqliteSelect(
     }
 
     /**
-     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
-     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * For each root among [ids] that holds the embedding [index] searches, its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`, as the shared module writes it ([among]): see
+     * [org.drivine.backend.GraphBackend.nearestAmong].
      * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
      * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored by [SqliteSql.score], as [nearestTo] scores a node against a vector, and only
@@ -549,16 +549,10 @@ internal class SqliteSelect(
         /** The parameter the query [meeting] writes is given the `nid` of the node it asks about as. */
         private const val NID = "_nid"
 
-        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
-        private const val MEMBERS = "members"
-
         /** The column of a path's ways that holds a way's node of the hop the path is ordered by. */
         private const val ORDER_NODE = "order_node"
 
         /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
         private const val REPRESENTATIVE = "r"
-
-        /** What [nearestAmong] calls every pair of its roots, scored and numbered within the first of the pair. */
-        private const val RANKED = "ranked"
     }
 }

@@ -1,6 +1,12 @@
 package org.drivine.query
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.annotation.VectorIndex
 import org.drivine.cypher.api.GraphOptions
 import org.drivine.cypher.api.SearchStore
@@ -19,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.slf4j.LoggerFactory
 import sample.vector.DocNode
 import sample.vector.DocView
 
@@ -34,6 +41,18 @@ class NearestAmongPlannerTest {
         val title: String,
         @VectorIndex val embedding: List<Float>?,
     )
+
+    /** A fragment of two labels, so a node the index on the first yields is checked for the second. */
+    @NodeFragment(labels = ["Doc", "Draft"])
+    data class DraftNode(@NodeId val id: String, @VectorIndex val embedding: List<Float>?)
+
+    /** A fragment whose id is stored under another name, and whose index is named in full. */
+    @NodeFragment(labels = ["Note"])
+    data class NamedNode(@NodeId @GraphProperty("note_id") val id: String, @VectorIndex(name = "notes_by_meaning") val embedding: List<Float>?)
+
+    /** A fragment with no label, so no node can be matched as one of it. */
+    @NodeFragment
+    data class UnlabelledNode(@NodeId val id: String, @VectorIndex val embedding: List<Float>?)
 
     @Test
     fun `the shared module writes the statement from the fragment's index, labels and id`() {
@@ -58,6 +77,46 @@ class NearestAmongPlannerTest {
         assertTrue(plan.statement.contains("MATCH (seed:Doc)"), plan.statement)
         assertFalse(plan.statement.contains("m.score >="), plan.statement)
         assertTrue(plan.bindings.values.none { it is Double }, "${plan.bindings}")
+    }
+
+    @Test
+    fun `a root of two labels is matched by both, and a neighbour the index yields is checked for both`() {
+        val plan = VectorSearchPlanner.planAmong(DraftNode::class.java, null, listOf("A", "B"), 2, null, 3, Neo4j5Grammar(ApocSortMapsEmitter()))
+
+        assertTrue(plan.statement.contains("MATCH (seed:Doc:Draft)"), plan.statement)
+        assertTrue(plan.statement.contains("CALL db.index.vector.queryNodes('Doc_embedding_vector', "), plan.statement)
+        assertTrue(plan.statement.contains("WHERE n:`Doc`:`Draft`"), plan.statement)
+    }
+
+    @Test
+    fun `a renamed id is matched by its stored name, and an index named in full is searched by that name`() {
+        val plan = VectorSearchPlanner.planAmong(NamedNode::class.java, null, listOf("A", "B"), 2, null, 3, Neo4j5Grammar(ApocSortMapsEmitter()))
+
+        assertTrue(plan.statement.contains("WHERE seed.note_id = _seedId"), plan.statement)
+        assertTrue(plan.statement.contains("collect({id: n.note_id, "), plan.statement)
+        assertTrue(plan.statement.contains("CALL db.index.vector.queryNodes('notes_by_meaning', "), plan.statement)
+    }
+
+    @Test
+    fun `a fragment with no label is refused, as no node can be matched as one of it`() {
+        val failure = assertThrows<IllegalArgumentException> {
+            VectorSearchPlanner.planAmong(UnlabelledNode::class.java, null, listOf("A"), 2, null, 3, Neo4j5Grammar(ApocSortMapsEmitter()))
+        }
+        assertTrue(failure.message!!.contains("No labels defined for fragment"), failure.message)
+    }
+
+    @Test
+    fun `what the shared module warns of is logged`() {
+        val logger = LoggerFactory.getLogger(VectorSearchPlanner::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        logger.addAppender(appender)
+        try {
+            VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, Neo4j5Grammar(ApocSortMapsEmitter()))
+        } finally {
+            logger.detachAppender(appender)
+        }
+        val warnings = appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+        assertTrue(warnings.any { "goes through the vector index, as searchK is given" in it }, "$warnings")
     }
 
     @Test
