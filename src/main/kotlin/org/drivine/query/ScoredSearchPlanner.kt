@@ -177,6 +177,7 @@ internal object VectorSearchPlanner {
         val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM)
         val store = requireNotNull(grammar.searchStore) { "loadNearestAmong is not written for ${grammar::class.simpleName}" }
         val idProperty = requireNotNull(model.nodeIdProperty) { "${model.className} has no @NodeId field" }
+        requireTextId(model, store)
         // The shared module writes the whole statement (VectorSearch, liberation-data/drivine-cypher-spec#100), as for the SQL
         // stores, so every library searches among ids alike.
         val request = VectorRequest(
@@ -190,6 +191,22 @@ internal object VectorSearchPlanner {
                 GraphStatement(requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters)
             }
             is Refusal -> throw IllegalArgumentException(planned.message)
+        }
+    }
+
+    /**
+     * Refuses a search among ids on a graph engine whose @NodeId it holds as other than text: the ids reach the search as
+     * their text, so a root with a number, a temporal or a truth value for its id is never found, and a node whose id is
+     * the text of a given id is found in its place (liberation-data/drivine-cypher-spec#422). Refused, not left to answer
+     * wrongly; a SQL store finds every kind of id, through the index over it.
+     */
+    private fun requireTextId(model: FragmentModel, store: SearchStore) {
+        val type = model.fields.firstOrNull { it.name == model.nodeIdField }?.type ?: return
+        if (!GraphIdText.isText(type)) {
+            throw UnsupportedOperationException(
+                "loadNearestAmong on ${store.id} finds roots by a text @NodeId only; ${model.className}'s is a ${type.kotlin.javaObjectType.simpleName} " +
+                    "(liberation-data/drivine-cypher-spec#422)."
+            )
         }
     }
 
