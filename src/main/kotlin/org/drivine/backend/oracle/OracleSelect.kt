@@ -584,7 +584,7 @@ internal class OracleSelect(
      * root with another is left out, as the Postgres select leaves it out. Either way each root's
      * neighbours are numbered best first, and the first [topK] kept.
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int, neighbours: AmongNeighbours): GraphStatement =
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
         GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**

@@ -467,7 +467,7 @@ internal class SqliteSelect(
      * SQLite has no `LATERAL`, so each root's nearest are not a query of their own: every pair is
      * scored once, numbered within its root best first, and a root keeps the first [topK].
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours): GraphStatement =
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
         GraphStatement(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(), neighbours), bindings())
 
     /**

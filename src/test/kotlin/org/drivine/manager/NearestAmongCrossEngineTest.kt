@@ -174,6 +174,18 @@ abstract class NearestAmongContract {
         assertEquals(listOf("B"), ids(everyNeighbour["C"]), "C's nearest of all is B, before it")
     }
 
+    /**
+     * The case drivine4j#868 was filed for, with no searchK, on every store, an index made or not. With topK 1, C's nearest of
+     * all is B, before it: asking the index for topK + 1, as a search for every neighbour does, gives C itself and B, and
+     * nothing after C. For each pair once, with no searchK, every pair of the set is measured, so C keeps D.
+     */
+    @Test
+    fun `for each pair once with no searchK every pair is measured, so an id whose nearest come before it keeps the ids after it`() {
+        val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 1, neighbours = AmongNeighbours.AFTER)
+
+        assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("D"), "D" to emptyList()), found.mapValues { ids(it.value) })
+    }
+
     @Test
     fun `a threshold drops the neighbours that score under it, and an id left with none maps to an empty list`() {
         val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 10, threshold = score(0.7), searchK = WIDE)

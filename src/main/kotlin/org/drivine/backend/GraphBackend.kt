@@ -33,15 +33,17 @@ internal class GraphStatement(
     val statement: String,
     val bindings: Map<String, Any?> = emptyMap(),
     private val id: ((Any?) -> Any?)? = null,
+    /** How long the store may take to run it, where the shared module's plan asks for longer: see [QuerySpecification.timeoutMillis]. */
+    val timeoutMillis: Long? = null,
 ) {
     /** The specification that runs the statement, with [more] bound beside its own values: an id, where the statement names one. */
     fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> {
         val given = if (id != null && GraphBackend.ID_PARAM in more) more + (GraphBackend.ID_PARAM to id.invoke(more[GraphBackend.ID_PARAM])) else more
-        return QuerySpecification.withStatement(statement).bind(bindings + given)
+        return QuerySpecification.withStatement(statement).bind(bindings + given).also { it.timeoutMillis = timeoutMillis }
     }
 
     /** This statement, binding the id it is given as [id] says: see the class. */
-    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id)
+    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id, timeoutMillis)
 }
 
 /**
@@ -154,7 +156,7 @@ internal interface GraphBackend {
      * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
      * node, only the set is measured, and the answer is exact.
      */
-    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours = AmongNeighbours.ALL): GraphStatement
+    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours = AmongNeighbours.ALL): GraphStatement
 
     /**
      * How [nearestAmong]'s ids of [graphClass] are told apart: each given or found id's text as the id the store finds a root

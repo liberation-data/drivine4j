@@ -94,10 +94,13 @@ class FalkorDbConnection(
             // Failures are reported once, by the StatementLogger in the outer catch. A second
             // report here would duplicate the line and, because it prints the raw parameter map,
             // would dump unbounded values that QuerySpecification.toString() deliberately bounds.
-            val resultSet = if (params.isEmpty()) {
-                graph.query(statement)
-            } else {
-                graph.query(statement, asClientParameters(params))
+            // A statement the library asks more time for (a search among ids that measures every pair) runs under its own
+            // TIMEOUT: FalkorDB's image sets the legacy one to 1 s, which would end it (drivine4j#868).
+            val timeout = finalizedSpec.timeoutMillis
+            val resultSet = when {
+                timeout != null -> graph.query(statement, asClientParameters(params), timeout)
+                params.isEmpty() -> graph.query(statement)
+                else -> graph.query(statement, asClientParameters(params))
             }
 
             // Write-only queries (no RETURN) have an empty header

@@ -170,7 +170,7 @@ internal object VectorSearchPlanner {
         ids: List<String>,
         topK: Int,
         threshold: Double?,
-        searchK: Int,
+        searchK: Int?,
         grammar: CypherGrammar,
         neighbours: AmongNeighbours = AmongNeighbours.ALL,
     ): GraphStatement {
@@ -194,7 +194,10 @@ internal object VectorSearchPlanner {
                 // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): the default searchK, topK + 1,
                 // goes through the index, so at WARN every call would log it.
                 planned.warnings.forEach { logger.debug(it) }
-                GraphStatement(requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters)
+                GraphStatement(
+                    requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters,
+                    timeoutMillis = planned.timeoutMillis,
+                )
             }
             is Refusal -> throw IllegalArgumentException(planned.message)
         }

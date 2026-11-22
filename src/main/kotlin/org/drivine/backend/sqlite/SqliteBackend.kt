@@ -58,7 +58,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
     }
 
     /** Each root measures the others, as there is no index to ask: exact, and [searchK] has nothing to widen. */
-    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, neighbours: AmongNeighbours): GraphStatement {
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement {
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
         return select.nearestAmong(index, idsJson(select, ids), topK, threshold, searchK, neighbours)

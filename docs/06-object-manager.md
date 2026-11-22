@@ -557,9 +557,12 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 - **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
   `@NodeId` type's own order, as above, so a pair comes back once, under the id that comes first, and the last id maps
   to an empty list. The direction is kept before each id's `topK` are cut, so no pair is lost where an id's nearest all
-  come before it, as it would be by dropping, after the search, each pair already seen. Through an approximate index
-  (see `searchK` below) a pair is found only where the index gives the later id among the earlier one's `searchK`
-  nearest, so where an id's nearest come before it, a larger `searchK` is needed to keep the pairs after it. The default,
+  come before it, as it would be by dropping, after the search, each pair already seen. With no `searchK`, every pair of
+  the set is measured, through no index, on every store, so the answer is exact and its cost grows with the square of
+  the number of ids. Given a `searchK`, each id asks the index for that many where one is made, and a pair is found only
+  where the index gives the later id among the earlier one's `searchK` nearest, so pairs can be missed, and the shared
+  module says so in the log at DEBUG. On FalkorDB the exact search runs under a timeout of its own, as FalkorDB's image
+  ends any query after a second (drivine4j#868). The default,
   `AmongNeighbours.ALL`, keeps every other id, so a pair can come back under each of its ids.
 
   ```kotlin

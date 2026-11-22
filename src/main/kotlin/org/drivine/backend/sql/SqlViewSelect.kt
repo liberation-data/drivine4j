@@ -262,7 +262,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
      * WARN every call would log it.
      */
     protected fun among(
-        store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int, made: VectorIndex,
+        store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, made: VectorIndex,
         neighbours: AmongNeighbours,
     ): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }

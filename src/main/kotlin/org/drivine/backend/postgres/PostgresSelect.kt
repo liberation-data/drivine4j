@@ -476,7 +476,7 @@ internal class PostgresSelect(
      * index over the embeddings of [index]'s label for its [searchK] nearest, as [nearestThrough] does, and
      * keeps those among the roots: approximate, as the index is.
      */
-    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int, neighbours: AmongNeighbours): GraphStatement =
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
         GraphStatement(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
