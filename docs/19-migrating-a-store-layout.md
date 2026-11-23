@@ -26,13 +26,18 @@ The shared compiler decides every step, so all three libraries migrate a graph a
    - **Postgres:** `pg_dump -t '<graph>_*'`.
    - **Oracle:** Data Pump (`expdp`) of the graph's tables.
    - **SQLite:** a copy of the file, taken while nothing has it open, or `sqlite3 <file> ".backup <copy>"`.
-3. **Run it outside any transaction of your application's.** It runs on connections of its own, and is refused on a connection of a Spring or JTA transaction, which would hold all its writes until the transaction ended. It takes two connections at once (one holds the lock), so a pool needs room for two.
+3. **Run it outside any transaction of your application's.** It runs on connections of its own, and is refused on a connection of a Spring or JTA transaction, which would hold all its writes until the transaction ended. On Postgres and Oracle it takes two connections at once (one holds the lock), so a pool needs room for two.
 
 ### 1. Declare what layout 1 can't tell
 
 Layout 1 can't tell which texts are dates or moments, which whole numbers are floats, and which lists of numbers or texts are bytes. Tell the migration, label by label and property by property:
 
 ```kotlin
+import org.drivine.migration.Declaration
+import org.drivine.migration.Kind
+import org.drivine.migration.MigrationReport.Status
+import org.drivine.migration.StoreLayoutMigration
+
 val declarations = StoreLayoutMigration.declarationsOf(Person::class.java) +
     StoreLayoutMigration.declarationsOf("KNOWS", Knows::class.java) +
     listOf(Declaration("Event", "at", Kind.DATE_TIME))
