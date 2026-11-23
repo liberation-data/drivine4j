@@ -249,8 +249,7 @@ import it with this one, or migrate it in place (below). A graph a later Drivine
 
 **Migrating a graph from layout 1 to layout 2.** `org.drivine.migration.StoreLayoutMigration` moves a graph on Oracle,
 Postgres or SQLite from layout 1 to layout 2 in place, by the shared compiler's migrator, which every Drivine runs alike.
-It is experimental, opted in to with `@OptIn(ExperimentalStoreLayoutMigration::class)`, and its `Declaration`, `Kind`
-and `MigrationReport` (in `org.drivine.migration`) may change in any release until it is proven. Run it
+[Migrating a graph from store layout 1 to layout 2](19-migrating-a-store-layout.md) gives the steps. Run it
 while nothing else uses the graph, outside any transaction of the application's, with a backup taken first. Layout 1 can't tell which texts are
 dates or moments, which whole numbers are floats and which texts are bytes, so it is told by declarations, a label's
 property and its kind each; `StoreLayoutMigration.declarationsOf(Person::class.java)` derives them from a node

@@ -36,7 +36,6 @@ import kotlin.test.assertTrue
  * index stopping the run as `collisions` (layout 1's index dropped before the writes, so the rewrite isn't refused by it),
  * resumed once corrected with plain SQL, and read by this version as layout 2 after.
  */
-@OptIn(ExperimentalStoreLayoutMigration::class)
 class StoreLayoutMigrationSqliteTest {
 
     @TempDir

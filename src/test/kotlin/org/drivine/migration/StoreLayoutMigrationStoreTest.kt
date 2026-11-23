@@ -39,7 +39,6 @@ import kotlin.test.fail
  * - A run stopped by a failed batch, or by its session killed while it writes, is resumed to the end, each row
  *   rewritten once.
  */
-@OptIn(ExperimentalStoreLayoutMigration::class)
 abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
 
     /** The store's connections, as the test JVM's pool gives them. */

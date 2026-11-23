@@ -9,7 +9,6 @@ import org.drivine.cypher.store.migrate.MigrationReport as ModuleReport
  * texts are dates or moments, which whole numbers are floats, and which texts (base64) or lists of numbers are bytes. A
  * list's declaration is its items' kind, but for bytes, which a list of numbers is. [word] is the kind's name, as the report and the command line write it.
  */
-@ExperimentalStoreLayoutMigration
 enum class Kind(val word: String) {
     DATE("date"),
     LOCAL_TIME("localtime"),
@@ -36,7 +35,6 @@ enum class Kind(val word: String) {
  * That the values of [property] of the nodes of [label] (or of the relationships of that type) are of [kind]: what a store
  * layout migration is told of what layout 1 can't tell (see [StoreLayoutMigration]).
  */
-@ExperimentalStoreLayoutMigration
 data class Declaration(val label: String, val property: String, val kind: Kind) {
     /** The shared module's declaration of the same parts: drivine4j's alone, unseen from Java too. */
     @JvmSynthetic
@@ -62,7 +60,6 @@ data class Declaration(val label: String, val property: String, val kind: Kind) 
  * - [notes]: what a migration leaves to others: the indexes, which the application's schema plan makes at its next start,
  *   and the count store, left unseeded.
  */
-@ExperimentalStoreLayoutMigration
 data class MigrationReport(
     val status: Status?,
     val message: String?,
