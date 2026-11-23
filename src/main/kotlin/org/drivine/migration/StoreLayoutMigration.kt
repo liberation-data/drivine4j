@@ -27,15 +27,11 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Marks the store layout migration as not yet proven on every store: its statements are the shared module's, pinned by
- * the spec, but their runs on Postgres, Oracle and SQLite are still to be made (liberation-data/drivine4j#832). A call
- * does not compile without the opt-in, `@OptIn(ExperimentalStoreLayoutMigration::class)`, and its [Declaration], [Kind]
- * and [MigrationReport] may change in any release until it is proven.
+ * Marked the store layout migration as not yet proven on every store, until 0.8.x proved it on Postgres, Oracle and
+ * SQLite (liberation-data/drivine4j#832): it is no longer required, and an `@OptIn` of it is left over. Kept so that code
+ * that opted in still compiles.
  */
-@RequiresOptIn(
-    level = RequiresOptIn.Level.ERROR,
-    message = "The store layout migration is not yet proven on every store (drivine4j#832): back the graph up first, and opt in to run it.",
-)
+@Deprecated("The store layout migration needs no opt-in now that it is proven on Postgres, Oracle and SQLite: remove the @OptIn.")
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR, AnnotationTarget.PROPERTY, AnnotationTarget.TYPEALIAS)
 annotation class ExperimentalStoreLayoutMigration
@@ -65,7 +61,6 @@ annotation class ExperimentalStoreLayoutMigration
  *
  * @param provider the store and graph to migrate
  */
-@ExperimentalStoreLayoutMigration
 class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
     private val graph = provider.sqlGraph

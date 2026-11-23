@@ -15,7 +15,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /** The declarations a migration is told, from a fragment's fields' types (liberation-data/drivine4j#832): no store. */
-@OptIn(ExperimentalStoreLayoutMigration::class)
 class StoreLayoutMigrationDeclarationsTest {
 
     @NodeFragment(labels = ["Person", "Author"])

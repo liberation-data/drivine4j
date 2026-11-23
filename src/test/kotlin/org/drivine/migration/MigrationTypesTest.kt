@@ -13,10 +13,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * drivine4j's own types for a store layout migration (liberation-data/drivine4j#832): an application opts in to
- * [ExperimentalStoreLayoutMigration] alone, so no public signature names one of the shared module's, which are internal.
+ * drivine4j's own types for a store layout migration (liberation-data/drivine4j#832): an application uses them with no
+ * opt-in, as this test does, and no public signature names one of the shared module's, which are internal.
  */
-@OptIn(ExperimentalStoreLayoutMigration::class)
 class MigrationTypesTest {
 
     @Test
