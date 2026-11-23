@@ -164,6 +164,8 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
     fun `a run stopped by a failed batch is reported failed, its committed batches kept, and resumed to the end`() {
         val graph = graph("failed")
         writeLayout1(graph)
+        val ada = propertyIs("name", "Ada")
+        val adaBefore = props(graph, ada)
         val robotBefore = props(graph, robot)
         val later = laterEvent(graph)
         stopAtRobot(graph, sleep = false)
@@ -171,6 +173,8 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
         assertEquals(Status.FAILED, failed.status, failed.message)
         assertTrue(failed.message.orEmpty().contains("stopped by the test"), failed.message)
         assertEquals(robotBefore, props(graph, robot), "the failed batch is rolled back")
+        // Ada's row, written before the Robot's, is in a batch committed before the failed one.
+        assertTrue(props(graph, ada) != adaBefore, "a committed batch is kept: ${props(graph, ada)}")
         assertFailsWith<StoreLayoutException> { provider(graph).connect() }
         unstop(graph)
 
