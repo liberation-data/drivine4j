@@ -8,6 +8,7 @@ import org.drivine.annotation.RangeIndex
 import org.drivine.annotation.Unique
 import org.drivine.annotation.VectorIndex
 
+/** The fragment [DeclarationCases] declares for the case "fragment" of `declarations.yaml`. */
 @NodeFragment(labels = ["Article"])
 data class DeclArticle(
     @NodeId val id: String,
@@ -17,17 +18,20 @@ data class DeclArticle(
     @FullTextIndex val body: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragment id served by a constraint" of `declarations.yaml`. */
 @NodeFragment(labels = ["Account"])
 data class DeclAccount(
     @NodeId @Unique val id: String,
     val name: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragment without its id's index" of `declarations.yaml`. */
 @NodeFragment(labels = ["Ticket"], nodeIdIndex = false)
 data class DeclTicket(
     @NodeId val id: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragment class items" of `declarations.yaml`. */
 @NodeFragment(labels = ["Message"])
 @Unique(properties = ["sessionId", "sequence"])
 @FullTextIndex(properties = ["subject", "body"], analyzer = "english")
@@ -39,18 +43,21 @@ data class DeclMessage(
     val body: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragments merged" of `declarations.yaml`. */
 @NodeFragment(labels = ["Customer"])
 data class DeclCustomer(
     @NodeId val id: String,
     @RangeIndex val email: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragments merged" of `declarations.yaml`. */
 @NodeFragment(labels = ["Customer"])
 data class DeclCustomerView(
     @NodeId val id: String,
     @RangeIndex val email: String,
 )
 
+/** The fragment [DeclarationCases] declares for the case "fragment ignoring case" of `declarations.yaml`. */
 @NodeFragment(labels = ["Member"])
 data class DeclMember(
     @NodeId val id: String,
@@ -72,7 +79,12 @@ internal object DeclarationCases {
     val dims = VectorDimensionProvider { _, _ -> 384 }
 
     private val long = "AVeryLongLabelNameThatGoesOnAndOnForTheSakeOfAnIdentifierLimit"
-val all: List<Triple<String, List<SchemaCatalog>, List<SchemaItemSpec>>> = listOf(
+
+    /**
+     * Each case, by the name `declarations.yaml` gives it: its startup catalogs, in the order given, and the items its
+     * owner [RUNTIME_OWNER] ensures at runtime, in that order (none for a case that ensures nothing).
+     */
+    val all: List<Triple<String, List<SchemaCatalog>, List<SchemaItemSpec>>> = listOf(
         Triple("range", listOf(SchemaCatalog.of(RangeIndexSpec("Person", "name"))), emptyList()),
         Triple("range named", listOf(SchemaCatalog.of(RangeIndexSpec("Person", "name", name = "person_name_idx"))), emptyList()),
         Triple("range composite", listOf(SchemaCatalog.of(RangeIndexSpec("Person", listOf("last", "first")))), emptyList()),

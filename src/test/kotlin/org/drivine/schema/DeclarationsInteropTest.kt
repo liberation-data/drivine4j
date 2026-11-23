@@ -99,8 +99,12 @@ class DeclarationsInteropTest {
         return failure
     }
 
-    /** Runs [run] with each schema statement recorded in [statements], and gives its failure, or null. */
+    /**
+     * Runs [run] with each schema statement recorded in [statements], and gives its failure, or null. What an attempt
+     * before recorded is cleared first, so a case retried at the listener reports the statements of its last attempt only.
+     */
     private fun traced(statements: MutableList<Map<String, Any?>>, run: () -> Unit): String? {
+        synchronized(statements) { statements.clear() }
         SchemaStatementTrace.observer = object : SchemaStatementTrace.Observer {
             override fun ran(
                 source: Any, path: SchemaStatementTrace.Path, kind: SchemaStatementTrace.Kind, statement: String,

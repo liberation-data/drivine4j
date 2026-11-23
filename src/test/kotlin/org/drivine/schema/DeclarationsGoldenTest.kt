@@ -44,6 +44,8 @@ class DeclarationsGoldenTest {
         val cases = DeclarationCases.all
         val declared = cases.associateBy { it.first }
         val names = pinned["cases"].map { it["case"].textValue() }
+        // A name declared twice would be passed over by associateBy, its first declaration never checked.
+        kotlin.test.assertEquals(emptyList(), cases.groupBy { it.first }.filterValues { it.size > 1 }.keys.toList(), "cases declared here twice")
         kotlin.test.assertEquals(emptyList(), names.filter { it !in declared }, "declarations.yaml cases with no declaration here")
         kotlin.test.assertEquals(emptyList(), declared.keys.filter { it !in names }, "declarations here no case of declarations.yaml pins")
         for (case in pinned["cases"]) {
