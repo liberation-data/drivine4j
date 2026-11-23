@@ -54,7 +54,7 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
     /** Lists the graph's own tables, one name a row. */
     protected abstract fun tables(graph: String): String
 
-    /** Lists the indexes on the graph's tables, one a row: its name and what it indexes, with the graph's name as `<g>`. */
+    /** Lists the indexes on the graph's tables, one a row: its name and what it indexes, as the store writes them. */
     protected abstract fun indexes(graph: String): String
 
     /** Makes the write of the Robot's row in [graph]'s nodes fail with `stopped by the test`, or, with [sleep], wait. */
@@ -310,7 +310,10 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
     }
 
     private companion object {
-        /** The statements of src/migrationFixture070's Fixture.kt, but the second spelling of the Event's moment. */
+        /**
+         * The statements of src/migrationFixture070's Fixture.kt, but the second spelling of the Event's moment, and the
+         * first written as the datetime its declaration makes of 0.7.0's text.
+         */
         val FIXTURE = listOf(
             "CREATE (:Person {name: 'Ada', born: date('1815-12-10'), height: 1.65, visits: 3})",
             "CREATE (:Person {name: 'Charles', born: date('1791-12-26'), height: 2.0})",
