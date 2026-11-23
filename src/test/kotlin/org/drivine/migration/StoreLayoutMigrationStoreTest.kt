@@ -240,9 +240,9 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
      */
     private fun assertSameAsWritten(graph: String) {
         val native = graph("native")
-        val written = manager(native)
-        FIXTURE.forEach { written.execute(QuerySpecification.withStatement(CypherStatement(it))) }
-        val identities = listOf(written, manager(graph)).map { pm ->
+        val writer = manager(native)
+        FIXTURE.forEach { writer.execute(QuerySpecification.withStatement(CypherStatement(it))) }
+        val identities = listOf(writer, manager(graph)).map { pm ->
             pm.constraints.ensureUnique("Person", "name")
             pm.constraints.ensureUnique("Event", "at")
             // The store's identity, which a graph this version writes is given when first asked: the migrated graph's
@@ -255,11 +255,9 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
         assertTrue(tablesOf.contains("<g>_schema") && tablesOf.any { it.startsWith("  ") }, "the marker is compared: $tablesOf")
         assertEquals(others(native), tablesOf, "and its other tables: the marker, the lock")
         assertTrue(texts(indexes(graph)).size >= 2, "the indexes are compared: ${texts(indexes(graph))}")
-        assertEquals(
-            texts(indexes(native)).map { it.replace(native, "<g>", ignoreCase = true) }.sorted(),
-            texts(indexes(graph)).map { it.replace(graph, "<g>", ignoreCase = true) }.sorted(),
-            "and its indexes",
-        )
+        val written = texts(indexes(native)).map { it.replace(native, "<g>", ignoreCase = true) }.toSet()
+        val migrated = texts(indexes(graph)).map { it.replace(graph, "<g>", ignoreCase = true) }.toSet()
+        assertEquals(written, migrated, "and its indexes: this version's alone ${written - migrated}, the migrated graph's alone ${migrated - written}")
     }
 
     /**
