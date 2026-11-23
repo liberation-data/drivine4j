@@ -63,8 +63,11 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
     /** Removes what [stopAtRobot] made. */
     protected abstract fun unstop(graph: String)
 
-    /** Kills the session waiting in [stopAtRobot]'s sleep, once there is one: true when it found one to kill. */
-    protected abstract fun killSleeper(): Boolean
+    /**
+     * Kills the session waiting in [stopAtRobot]'s sleep in [graph], once there is one: true when it found one to kill.
+     * Only that one: the store may be a local instance others use, and Oracle's schema DDL sleeps too while it waits.
+     */
+    protected abstract fun killSleeper(graph: String): Boolean
 
     /** Where the property [property] of the row `n` of a node table is the text [text]. */
     protected abstract fun propertyIs(property: String, text: String): String
@@ -87,11 +90,15 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
     private fun writeLayout1(graph: String) {
         val lib = File(checkNotNull(System.getProperty("drivine.migration.fixture070")) { "Run by Gradle, which installs the fixture." })
         val java = File(System.getProperty("java.home"), "bin/java").path
+        // Its output goes to a file, not a pipe read to its end, which would wait on a writer that hangs past the timeout.
+        val output = File.createTempFile("fixture070-", ".log").apply { deleteOnExit() }
         val process = ProcessBuilder(java, "-cp", "${lib.path}/*", "FixtureKt", store, url, user, password, graph)
-            .redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
-        assertTrue(process.waitFor(5, TimeUnit.MINUTES), "0.7.0's writer finished")
-        assertEquals(0, process.exitValue(), "0.7.0's writer: $output")
+            .redirectErrorStream(true).redirectOutput(output).start()
+        if (!process.waitFor(5, TimeUnit.MINUTES)) {
+            process.destroyForcibly()
+            fail("0.7.0's writer didn't finish in 5 minutes: ${output.readText()}")
+        }
+        assertEquals(0, process.exitValue(), "0.7.0's writer: ${output.readText()}")
     }
 
     private fun provider(graph: String) = JdbcConnectionProvider(graph, type, dataSource, graphName = graph)
@@ -184,7 +191,7 @@ abstract class StoreLayoutMigrationStoreTest(private val type: DatabaseType) {
         stopAtRobot(graph, sleep = true)
         val run = CompletableFuture.supplyAsync { runCatching { StoreLayoutMigration(provider(graph)).migrate(declarations, batchSize = 2) } }
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
-        while (!killSleeper()) {
+        while (!killSleeper(graph)) {
             if (System.nanoTime() > deadline) fail("The migration never reached the Robot's row: ${run.getNow(null)}")
             Thread.sleep(200)
         }

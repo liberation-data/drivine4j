@@ -39,9 +39,13 @@ class StoreLayoutMigrationPostgresTest : StoreLayoutMigrationStoreTest(DatabaseT
         execute("DROP FUNCTION IF EXISTS ${graph}_test_stop()")
     }
 
-    override fun killSleeper(): Boolean = dataSource.connection.use { c ->
+    // The sleeping session's statement is the migration's update of the graph's nodes, which names the graph.
+    override fun killSleeper(graph: String): Boolean = dataSource.connection.use { c ->
         c.createStatement().use { s ->
-            s.executeQuery("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND pid <> pg_backend_pid()")
+            s.executeQuery(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
+                    "WHERE wait_event = 'PgSleep' AND pid <> pg_backend_pid() AND query LIKE '%${graph}%'",
+            )
                 .use { rs -> generateSequence { if (rs.next()) rs.getBoolean(1) else null }.toList().any { it } }
         }
     }

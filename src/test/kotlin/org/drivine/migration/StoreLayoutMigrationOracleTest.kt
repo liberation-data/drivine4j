@@ -28,7 +28,8 @@ class StoreLayoutMigrationOracleTest : StoreLayoutMigrationStoreTest(DatabaseTyp
             "WHERE table_name LIKE UPPER('${graph}\\_%') ESCAPE '\\' AND index_name NOT LIKE 'SYS\\_%' ESCAPE '\\'"
 
     override fun stopAtRobot(graph: String, sleep: Boolean) {
-        val stop = if (sleep) "DBMS_SESSION.SLEEP(600);" else "RAISE_APPLICATION_ERROR(-20001, 'stopped by the test');"
+        // The sleeper names its graph as its action, for killSleeper to kill it alone.
+        val stop = if (sleep) "DBMS_APPLICATION_INFO.SET_ACTION('$graph'); DBMS_SESSION.SLEEP(600);" else "RAISE_APPLICATION_ERROR(-20001, 'stopped by the test');"
         execute(
             """
             CREATE OR REPLACE TRIGGER ${graph}_test_stop BEFORE UPDATE ON ${graph}_node FOR EACH ROW
@@ -47,10 +48,10 @@ class StoreLayoutMigrationOracleTest : StoreLayoutMigrationStoreTest(DatabaseTyp
     }
 
     // As system, as the test user may not see or kill another session.
-    override fun killSleeper(): Boolean =
+    override fun killSleeper(graph: String): Boolean =
         DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), "system", OracleTestContainer.PASSWORD).use { admin ->
             val sessions = admin.createStatement().use { s ->
-                s.executeQuery("SELECT sid || ',' || serial# FROM v\$session WHERE username = UPPER('$user') AND event = 'PL/SQL lock timer'")
+                s.executeQuery("SELECT sid || ',' || serial# FROM v\$session WHERE username = UPPER('$user') AND event = 'PL/SQL lock timer' AND action = '$graph'")
                     .use { rs -> generateSequence { if (rs.next()) rs.getString(1) else null }.toList() }
             }
             sessions.forEach { session ->
