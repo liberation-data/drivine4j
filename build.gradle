@@ -374,6 +374,18 @@ nmcp {
 	}
 }
 
+// drivine4j 0.7.0, the last release of store layout 1, in a build of its own (src/migrationFixture070): it writes the
+// layout-1 graphs the store layout migration is tested on (StoreLayoutMigrationStoreTest) into the test's own Postgres or
+// Oracle, and wrote the SQLite file in src/test/resources/migration. Installed before the tests, which run it.
+tasks.register('migrationFixture070', GradleBuild) {
+	dir = file('src/migrationFixture070')
+	tasks = ['installDist']
+}
+tasks.named('test') {
+	dependsOn 'migrationFixture070'
+	systemProperty 'drivine.migration.fixture070', file('src/migrationFixture070/build/install/fixture070/lib').absolutePath
+}
+
 // The openCypher TCK, run against each store through Drivine: a source set, a configuration and a task of their
 // own, so `test`, `check` and `build` run none of it: `check` compiles the harness and runs its own tests only. See TCK.md.
 //   ./gradlew tck -Ptck.store=postgres [-Ptck.features=Match1,Match2] [-Ptck.timeout=30]
