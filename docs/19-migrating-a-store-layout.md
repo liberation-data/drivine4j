@@ -15,9 +15,9 @@ Neo4j, Memgraph and FalkorDB hold values natively and have no store layout: noth
 
 ### Which graphs it migrates
 
-It migrates graphs on Postgres, Oracle and SQLite written by drivine4j 0.7.0, Drivine for TypeScript 5.0.0 or drivine-python 0.8.0, the last releases of layout 1. These are tested: each is written by that release and then migrated, on each store. A graph an earlier release wrote is in the same layout and is migrated the same way, but those releases aren't tested.
+It migrates graphs on Postgres, Oracle and SQLite written by drivine4j 0.7.0, Drivine for TypeScript 5.0.0 or drivine-python 0.8.0, the last releases of layout 1. Each library's tests write a graph with its own last layout-1 release and migrate it, on each store. A graph an earlier release wrote is in the same layout and is migrated the same way, but those releases aren't tested.
 
-The shared compiler decides every step, so all three libraries migrate a graph alike. A graph migrated by one is read by the other two.
+The shared compiler decides every step, so all three libraries migrate a graph alike, into the layout 2 each of them reads.
 
 ### Before you start
 
