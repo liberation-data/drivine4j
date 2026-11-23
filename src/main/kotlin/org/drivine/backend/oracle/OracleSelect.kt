@@ -1,5 +1,8 @@
 package org.drivine.backend.oracle
 
+import org.drivine.manager.AmongNeighbours
+import org.drivine.cypher.api.VectorIndex
+import org.drivine.query.grammar.VectorQuerySpec
 import org.drivine.cypher.store.ValueLayout
 import org.drivine.query.dsl.HavingCondition
 import org.drivine.query.dsl.GroupColumn
@@ -566,54 +569,23 @@ internal class OracleSelect(
     }
 
     /**
-     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
-     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * For each root among [ids] that holds the embedding [index] searches, its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`, as the shared module writes it ([among]): see
+     * [org.drivine.backend.GraphBackend.nearestAmong].
      * The [ids] are each the JSON text a root holds its id as ([org.drivine.backend.sql.NodeIds]), found through the
      * index over the id, as a load finds one, and each root is given by its id's text, a temporal one's by its tag's.
      * Each pair is scored as [nearestTo] and [nearestThrough] score it.
      *
-     * With no [embeddings], no vector index has been made, and every pair of roots whose embeddings are
-     * of one size is measured: the answer is exact. With the table the index is over, each root asks
-     * the index for its [searchK] nearest, as [nearestThrough] does, and keeps those among the roots:
+     * With no [dimensions], no vector index has been made, and every pair of roots whose embeddings are
+     * of one size is measured: the answer is exact, as it is with no [searchK]. With them and a [searchK], each root asks the index over its side table
+     * for its [searchK] nearest, as [nearestThrough] does, and keeps those among the roots:
      * approximate, as the index is. Only the roots the table holds are searched from: it holds only
      * embeddings of the index's size, and Oracle refuses to measure two sizes against each other, so a
      * root with another is left out, as the Postgres select leaves it out. Either way each root's
      * neighbours are numbered best first, and the first [topK] kept.
      */
-    fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?, embeddings: String?, searchK: Int): GraphStatement {
-        val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        val members = Query(
-            "c.nid, ${OracleSql.keyText("c", ValueLayout.escape(idProperty))} AS id, ${OracleSql.embedding("c", key)} AS embedding", Table(graph.nodes, "c"),
-            listOfNotNull(
-                hasLabels("c", rootLabels()), OracleSql.hasProperty("c", key), OracleSql.hasIdIn("c", ValueLayout.escape(idProperty), scope.bound(ids)),
-                embeddings?.let { "c.nid IN (SELECT e.nid FROM $it e)" },
-            ),
-        )
-        val metric = OracleSql.metric(similarity)
-        val pairs = if (embeddings == null) {
-            "SELECT s.nid AS seed, o.nid, o.id, ${OracleSql.score(similarity, "VECTOR_DISTANCE(o.embedding, s.embedding, $metric)")} AS score\n" +
-                "FROM $MEMBERS s\nJOIN $MEMBERS o ON o.nid <> s.nid AND VECTOR_DIMENSION_COUNT(o.embedding) = VECTOR_DIMENSION_COUNT(s.embedding)"
-        } else {
-            "SELECT s.nid AS seed, o.nid, o.id, ${OracleSql.score(similarity, "k.distance")} AS score\n" +
-                "FROM $MEMBERS s\nCROSS APPLY (\n" +
-                "    SELECT e.nid, VECTOR_DISTANCE(e.embedding, s.embedding, $metric) AS distance FROM $embeddings e\n" +
-                "    ORDER BY distance FETCH APPROX FIRST ${scope.bound(searchK)} ROWS ONLY) k\n" +
-                "JOIN $MEMBERS o ON o.nid = k.nid AND o.nid <> s.nid"
-        }
-        val ranked = Query(
-            "p.seed, p.nid, p.id, p.score, ROW_NUMBER() OVER (PARTITION BY p.seed ORDER BY p.score DESC, p.nid) AS place", Derived(pairs, "p"),
-        )
-        val near = Query(
-            arrayOf(jsonObject(listOf("id" to "r.id", "score" to "r.score")), "r.score DESC, r.nid"),
-            Table(RANKED, "r"),
-            listOfNotNull("r.seed = s.nid", "r.place <= ${scope.bound(topK)}", threshold?.let { "r.score >= ${scope.bound(it)}" }),
-        )
-        val result = jsonObject(listOf("seed" to "s.id", "near" to "COALESCE(${near.nested()}, $EMPTY_ARRAY)"))
-        return GraphStatement(
-            "WITH $MEMBERS AS ${members.nested()},\n$RANKED AS ${ranked.nested()}\n" + Query("$result AS result", Table(MEMBERS, "s")).text(),
-            bindings(),
-        )
-    }
+    fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
+        GraphStatement(among(SearchStore.ORACLE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns, its document made as the graph's
@@ -703,9 +675,6 @@ internal class OracleSelect(
         /** The parameter of [meeting] for the `nid` of the node it counts: no value is bound to it, the block gives its own. */
         const val NID = "_nid"
 
-        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
-        private const val MEMBERS = "members"
-
         /** What follows a grouped column's name for the id of a node of the group that has its value: see [groups]. */
         private const val REPRESENTATIVE = "r"
 
@@ -718,8 +687,5 @@ internal class OracleSelect(
 
         /** The keyword a statement [hinted] begins with, after any blank: the hints follow it. */
         private val LEADING_KEYWORD = Regex("^\\s*(SELECT|DELETE)\\b", RegexOption.IGNORE_CASE)
-
-        /** What [nearestAmong] calls each root's neighbours, scored and numbered best first. */
-        private const val RANKED = "ranked"
     }
 }

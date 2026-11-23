@@ -1,5 +1,6 @@
 package org.drivine.backend
 
+import org.drivine.manager.AmongNeighbours
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.annotation.Direction
 import org.drivine.manager.CascadeType
@@ -26,21 +27,24 @@ import org.drivine.query.grammar.CypherGrammar
  *
  * @param id what the statement binds the id an object manager gives it as [GraphBackend.ID_PARAM] as, where the store
  *   holds an id otherwise than it is given: a SQL store finds a node by the JSON it holds its id as (see
- *   `org.drivine.backend.sql.NodeIds`). Null to bind the id as it is given, as a graph engine's statement does.
+ *   `org.drivine.backend.sql.NodeIds`), and a graph engine by the value a save wrote for the `@NodeId` field
+ *   ([GivenIds]). Null to bind the id as it is given.
  */
 internal class GraphStatement(
     val statement: String,
     val bindings: Map<String, Any?> = emptyMap(),
     private val id: ((Any?) -> Any?)? = null,
+    /** How long the store may take to run it, where the shared module's plan asks for longer: see [QuerySpecification.timeoutMillis]. */
+    val timeoutMillis: Long? = null,
 ) {
     /** The specification that runs the statement, with [more] bound beside its own values: an id, where the statement names one. */
     fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> {
         val given = if (id != null && GraphBackend.ID_PARAM in more) more + (GraphBackend.ID_PARAM to id.invoke(more[GraphBackend.ID_PARAM])) else more
-        return QuerySpecification.withStatement(statement).bind(bindings + given)
+        return QuerySpecification.withStatement(statement).bind(bindings + given).also { it.timeoutMillis = timeoutMillis }
     }
 
     /** This statement, binding the id it is given as [id] says: see the class. */
-    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id)
+    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id, timeoutMillis)
 }
 
 /**
@@ -147,13 +151,15 @@ internal interface GraphBackend {
      * one the fragment declares), for its nearest among the other [ids]: one row for each such root,
      * `{seed, near}`, `near` up to [topK] of `{id, score}`, best first, none of them the seed, none
      * scoring under [threshold]. A root with no neighbour left still has its row, with `near` empty. The
-     * score is the one [nearest] gives for the same pair.
+     * score is the one [nearest] gives for the same pair. The [ids] come in the `@NodeId` type's own order
+     * (`AmongOrder`), which breaks a tie of two scores; with [AmongNeighbours.AFTER] a root keeps only the ids after it there.
      *
      * Where the store searches through an approximate index, the index is asked for [searchK] for each
      * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
-     * node, only the set is measured, and the answer is exact.
+     * node, only the set is measured, and the answer is exact. With no [searchK], every store measures every
+     * pair of the set through no index, exactly (drivine4j#868).
      */
-    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement
+    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours = AmongNeighbours.ALL): GraphStatement
 
     /**
      * How [nearestAmong]'s ids of [graphClass] are told apart: each given or found id's text as the id the store finds a root

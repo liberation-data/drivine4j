@@ -1,5 +1,7 @@
 package org.drivine.backend.sql
 
+import org.drivine.manager.module
+import org.drivine.manager.AmongNeighbours
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.GraphView
 import org.drivine.cypher.api.FullTextSearch
@@ -9,6 +11,11 @@ import org.drivine.cypher.api.SearchIndex
 import org.drivine.cypher.api.SearchPlan
 import org.drivine.cypher.api.SearchRequest
 import org.drivine.cypher.api.SearchStore
+import org.drivine.cypher.api.VectorAmong
+import org.drivine.cypher.api.VectorIndex
+import org.drivine.cypher.api.VectorPlan
+import org.drivine.cypher.api.VectorRequest
+import org.drivine.cypher.api.VectorSearch
 import org.drivine.model.AggregateFieldModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
@@ -16,6 +23,7 @@ import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
 import org.drivine.query.RelationshipDepth
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.grammar.VectorQuerySpec
 import org.slf4j.LoggerFactory
 
 /**
@@ -245,6 +253,32 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
             }
             is Refusal -> throw IllegalArgumentException(planned.message)
         }
+
+    /**
+     * A search among [ids], each the JSON text of a root's id as the node holds it, as the shared module's `VectorSearch`
+     * writes it for [store] over the graph [graph]: the whole statement, one row a root, `result`, `{seed, near}`. [index] is the
+     * embedding searched, and [made] what the catalog records of its vector index. What the module warns of is logged at
+     * DEBUG, as `VectorSearchPlanner.planAmong` logs it: the default searchK, `topK + 1`, goes through an index made, so at
+     * WARN every call would log it.
+     */
+    protected fun among(
+        store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, made: VectorIndex,
+        neighbours: AmongNeighbours,
+    ): String {
+        val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
+        val request = VectorRequest(
+            labels = rootLabels(), property = index.property, similarity = index.similarity, topK = topK, searchK = searchK, index = made,
+            among = VectorAmong(ids, idProperty, threshold, neighbours.module),
+        )
+        return when (val planned = VectorSearch.plan(store, GraphOptions(graph), request)) {
+            is VectorPlan -> {
+                planned.warnings.forEach { logger.debug(it) }
+                scope.boundAs(planned.parameters)
+                requireNotNull(planned.sql) { "The search among ids on ${store.id} gave no SQL." }
+            }
+            is Refusal -> throw IllegalArgumentException(planned.message)
+        }
+    }
 
     companion object {
         private val logger = LoggerFactory.getLogger(SqlViewSelect::class.java)

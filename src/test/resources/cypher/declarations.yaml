@@ -7,7 +7,8 @@
 #
 # - `declare`: what to declare, in words, to each library's own API.
 # - `catalogs`: the startup catalogs, in the order given, each with its `owner` (null for the owner with no name), its
-#   `version`, and its `items` in the order the library gives them to the planner, each as a spec's JSON.
+#   `version`, and its `items` in the order the library gives them to the planner, each as a spec's JSON: an item given
+#   no name has `name: null`, and a fragment's uniqueness constraint has the fragment's node id as its `nodeIdProperty`.
 # - `runtime`: the items ensured at runtime, a catalog for each owner, for an enforce after them.
 
 cases:

@@ -127,6 +127,12 @@ abstract class NearestAmongContract {
      */
     protected open val refusesMisSized = false
 
+    /**
+     * Whether the store refuses a pair of two sizes where every pair is measured through no index (for each pair once with no
+     * searchK), as FalkorDB's function of two embeddings refuses it, rather than measuring the pair not at all.
+     */
+    protected open val refusesMisSizedPair = false
+
     /** Whether the store searches a label with no vector index by measuring its nodes, as the SQL stores do, rather than refusing. */
     protected open val searchesWithoutIndex = true
 
@@ -157,6 +163,33 @@ abstract class NearestAmongContract {
         val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 1, searchK = WIDE)
 
         assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("B"), "D" to listOf("C")), found.mapValues { ids(it.value) })
+    }
+
+    /**
+     * For each pair once, an id keeps only the ids after it, before its topK are cut (drivine4j#868). With topK 1, C's nearest
+     * of all is B, before it: taking each id's nearest first and dropping a pair already seen would lose C–D, which AFTER keeps.
+     * The order the ids are given in changes nothing, and they come back in it.
+     */
+    @Test
+    fun `for each pair once each id keeps the ids after it, its direction kept before its topK are cut`() {
+        val found = gom.loadNearestAmong(DocNode::class.java, SET.reversed(), topK = 1, neighbours = AmongNeighbours.AFTER, searchK = WIDE)
+
+        assertEquals(listOf("D", "C", "B", "A"), found.keys.toList())
+        assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("D"), "D" to emptyList()), found.mapValues { ids(it.value) })
+        val everyNeighbour = gom.loadNearestAmong(DocNode::class.java, SET, topK = 1, searchK = WIDE)
+        assertEquals(listOf("B"), ids(everyNeighbour["C"]), "C's nearest of all is B, before it")
+    }
+
+    /**
+     * The case drivine4j#868 was filed for, with no searchK, on every store, an index made or not. With topK 1, C's nearest of
+     * all is B, before it: asking the index for topK + 1, as a search for every neighbour does, gives C itself and B, and
+     * nothing after C. For each pair once, with no searchK, every pair of the set is measured, so C keeps D.
+     */
+    @Test
+    fun `for each pair once with no searchK every pair is measured, so an id whose nearest come before it keeps the ids after it`() {
+        val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 1, neighbours = AmongNeighbours.AFTER)
+
+        assertEquals(mapOf("A" to listOf("B"), "B" to listOf("C"), "C" to listOf("D"), "D" to emptyList()), found.mapValues { ids(it.value) })
     }
 
     @Test
@@ -192,6 +225,26 @@ abstract class NearestAmongContract {
 
         assertEquals(listOf("B"), ids(found["A"]))
         assertEquals(listOf("A"), ids(found["B"]))
+        assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
+    }
+
+    /**
+     * For each pair once with no searchK, every pair is measured through no index (drivine4j#868), so an embedding of another
+     * size is measured against none of the others there too, on Neo4j as well, whose index refuses it; FalkorDB's own function
+     * of two embeddings refuses a pair of two sizes.
+     */
+    @Test
+    fun `for each pair once with no searchK an embedding of another size is measured against none of the others, or refused`() {
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+        val search = { gom.loadNearestAmong(DocNode::class.java, listOf("A", "B", "W"), topK = 10, neighbours = AmongNeighbours.AFTER) }
+        if (refusesMisSizedPair) {
+            assertTrue(runCatching(search).isFailure, "a pair of two sizes is measured")
+            return
+        }
+        val found = search()
+
+        assertEquals(listOf("B"), ids(found["A"]))
+        assertEquals(emptyList<String>(), ids(found["B"]))
         assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
     }
 
@@ -368,6 +421,7 @@ class NearestAmongFalkorDbTest : NearestAmongContract() {
     override val exact = false
 
     override val refusesMisSized = true
+    override val refusesMisSizedPair = true
     override val searchesWithoutIndex = false
     override fun addMisSized() = true.also { seedMisSized(pm) { "vecf32($it)" } }
 

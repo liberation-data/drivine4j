@@ -321,13 +321,27 @@ class GraphObjectManager internal constructor(
         threshold: Double?,
         property: String?,
         searchK: Int?,
+    ): Map<String, List<Scored<String>>> = loadNearestAmong(graphClass, ids, topK, AmongNeighbours.ALL, threshold, property, searchK)
+
+    override fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        neighbours: AmongNeighbours,
+        threshold: Double?,
+        property: String?,
+        searchK: Int?,
     ): Map<String, List<Scored<String>>> {
         requireValidSearchK(topK, searchK)
         val set = ids.distinct()
-        // The index finds the seed itself first, so asking for one more than is kept is the least that
-        // can fill topK even when every other hit is in the set. Written even for no ids, so that a class,
-        // a property or a store the search refuses is refused alike.
-        val statement = backend.nearestAmong(graphClass, property, set, topK, threshold, searchK ?: (topK + 1))
+        // The module reads each id's place among them: for each pair once, and to break a tie of two scores (#868, #412).
+        val ordered = AmongOrder.of(graphClass, set, objectMapper)
+        // For every neighbour, the index is asked for one more than is kept where no searchK is given, as before: it finds the
+        // seed itself first. For each pair once, no searchK measures every pair of the set, exactly: through an index, an id
+        // whose nearest all come before it would find none after it (drivine4j#868). Written even for no ids, so that a
+        // class, a property or a store the search refuses is refused alike.
+        val asked = if (neighbours == AmongNeighbours.AFTER) searchK else searchK ?: (topK + 1)
+        val statement = backend.nearestAmong(graphClass, property, ordered, topK, threshold, asked, neighbours)
         if (set.isEmpty()) return emptyMap()
         // The store gives each id as the text it holds, which can be other text of the id than the caller's
         // (`2030-01-01T10:00:00` for `2030-01-01T10:00`), so each is given back as the caller's text of it.

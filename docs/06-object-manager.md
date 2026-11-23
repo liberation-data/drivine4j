@@ -281,9 +281,9 @@ fun getPerson(uuid: String): PersonCareer? {
 }
 ```
 
-On Oracle, Postgres and SQLite the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id finds its node the same way. The graph engines compare the text as it is given.
+On every store the id's text is read as the `@NodeId` field's type first, and found as a save writes it: `load<Order>("5")` finds an `Order` whose `Long` id is 5, and `"2024-01-02"` finds a `LocalDate` id. Text that is no value of the type, such as `"abc"` for a `Long` id, finds nothing, and a `String` id is the text given. A delete by id, a patch and a `NodeRef` find their node the same way.
 
-On the same stores, a node whose id another writer stored as a temporal value (`date('2026-01-05')`, say) is found only by
+On Oracle, Postgres and SQLite, a node whose id another writer stored as a temporal value (`date('2026-01-05')`, say) is found only by
 that value, kind and text, so the class that loads it must declare an id that a save writes back the same. A load refuses
 it, by name, where the class doesn't, rather than give an object whose save would make a second node
 ([#860](https://github.com/liberation-data/drivine4j/issues/860), [#861](https://github.com/liberation-data/drivine4j/issues/861)):
@@ -542,12 +542,37 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   On Oracle, Postgres and SQLite each id is read as `load` reads an id's text, as the `@NodeId` field's type, and found
   through the index over the id; a key or a value is the text the id was given as, though the store holds other
   text of it, as `2030-01-01T10:00:00` for a `LocalDateTime` given as `2030-01-01T10:00`.
+  On Neo4j, Memgraph and FalkorDB the ids reach the search as text, so only a `String`, `UUID` or enum `@NodeId`
+  is searched; any other is refused with `UnsupportedOperationException`.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
-  fails, as their index search refuses a vector of another size.
+  fails, as their index search refuses a vector of another size. For each pair once with no `searchK` (below), which asks
+  no index, it is measured against none of another size on Neo4j too; FalkorDB refuses a pair of two sizes there as well.
 - **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
-  Those below `threshold` are dropped.
+  Two that score exactly alike come in the `@NodeId` type's own order (a text by its code points, a number by its
+  value, a temporal by its time, a `UUID` or an enum by its text), whatever order the ids were given in, except on
+  FalkorDB through its index, where the index's own order decides (for each pair once with no `searchK`, below, no index
+  is asked, so the type's order holds there too). Those below `threshold` are dropped.
+  By cosine, on Oracle, Postgres and SQLite, an embedding all of zeros, which has no direction, is left
+  out, as a key and as a value, as Neo4j's index leaves it out.
+- **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
+  `@NodeId` type's own order, as above, so a pair comes back once, under the id that comes first, and the last id maps
+  to an empty list. The direction is kept before each id's `topK` are cut, so no pair is lost where an id's nearest all
+  come before it, as it would be by dropping, after the search, each pair already seen. With no `searchK`, every pair of
+  the set is measured, through no index, on every store, so the answer is exact and its cost grows with the square of
+  the number of ids. Given a `searchK`, each id asks the index for that many where one is made, and a pair is found only
+  where the index gives the later id among the earlier one's `searchK` nearest, so pairs can be missed, and the shared
+  module says so in the log at DEBUG. On FalkorDB the exact search runs under a timeout of its own, as FalkorDB's image
+  ends any query after a second (drivine4j#868). The default,
+  `AmongNeighbours.ALL`, keeps every other id, so a pair can come back under each of its ids.
+
+  ```kotlin
+  graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)
+  ```
+
+  From Java, give every argument: `loadNearestAmong(PropositionNode.class, batchIds, 5, AmongNeighbours.AFTER, null, null, null)`.
+  There is no shorter form taking the neighbours, as one would make a call such as `loadNearestAmong(cls, ids, 5, null)` ambiguous.
 - It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
@@ -555,9 +580,12 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 **`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
 an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
 made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first), and the "among the set", self, root label and `threshold` filters apply to those. An id whose nearest
+first; for each pair once, no `searchK` measures every pair instead, as above), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
 mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
-indexed nodes — needs a larger `searchK`. Where the store measures every node instead (SQLite, and
+indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
+`org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
+Postgres and Oracle), not WARN, as the default `searchK` goes through the index on every call. Where the
+store measures every node instead (SQLite, and
 Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
 `searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
 the number of ids.

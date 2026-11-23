@@ -1,6 +1,11 @@
 package org.drivine.backend.oracle
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.drivine.annotation.Direction
+import org.drivine.backend.sql.SqlViewSelect
 import org.drivine.connection.CypherCompile
 import org.drivine.cypher.api.FullTextSearch
 import org.drivine.cypher.api.GraphOptions
@@ -11,9 +16,11 @@ import org.drivine.cypher.api.SearchStore
 import org.drivine.cypher.sql.FragmentVariable
 import org.drivine.query.ActorDirectorsByReleaseYear
 import org.drivine.query.JavaActorDirectorsLatestFirst
+import org.drivine.query.VectorIndexResolver
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.schema.SimilarityFunction
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import sample.flatexpand.SeqWindow2View
 import sample.mapped.view.DeletableSessionShelf
 import sample.mapped.view.DeletableSessionTree
@@ -540,6 +547,24 @@ class OracleSelectTest {
         assertTrue(sql.contains("(2 - k.distance) / 2 AS score"), sql)
         assertTrue(sql.contains("JSON_TRANSFORM(c.props, SET '$.labels' = c.labels, SET '$.\"__drivine.stamp\"' = c.stamp) AS doc"), sql)
         assertEquals(mapOf<String, Any?>("_p0" to listOf(0.5f), "_p1" to 4), select.bindings())
+    }
+
+    @Test
+    fun `a search among ids through an index made logs what the shared module warns of at DEBUG, as the default searchK warns on every call`() {
+        val logger = LoggerFactory.getLogger(SqlViewSelect::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().also { it.start() }
+        val level = logger.level
+        logger.level = Level.DEBUG
+        logger.addAppender(appender)
+        try {
+            val select = select(Shelf::class.java)
+            select.nearestAmong(VectorIndexResolver.resolve(select.rootFragment, null, "_", "_"), listOf("\"a\"", "\"b\""), 2, null, 2, 3, org.drivine.manager.AmongNeighbours.ALL)
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        val logged = appender.list.filter { "goes through the vector index, as searchK is given" in it.formattedMessage }
+        assertTrue(logged.isNotEmpty() && logged.all { it.level == Level.DEBUG }, "${appender.list.map { "${it.level} ${it.formattedMessage}" }}")
     }
 
     /** The search the shared module plans for Shelf's [keys] on Oracle, which [OracleSelect.matching] ranks the roots by. */

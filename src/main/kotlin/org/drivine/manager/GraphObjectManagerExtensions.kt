@@ -384,6 +384,21 @@ inline fun <reified T : Any> GraphObjectOperations.loadNearestAmong(
 }
 
 /**
+ * Nearest neighbours of each of [ids] among the same [ids], keeping the [neighbours] it names, with a reified type parameter:
+ * `graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)`.
+ */
+inline fun <reified T : Any> GraphObjectOperations.loadNearestAmong(
+    ids: Collection<String>,
+    topK: Int,
+    neighbours: AmongNeighbours,
+    threshold: Double? = null,
+    property: String? = null,
+    searchK: Int? = null,
+): Map<String, List<Scored<String>>> {
+    return loadNearestAmong(T::class.java, ids, topK, neighbours, threshold, property, searchK)
+}
+
+/**
  * Filtered vector search (a `where { }` predicate AND-ed into the post-projection filter), with a
  * reified type parameter.
  *
