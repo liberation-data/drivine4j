@@ -27,11 +27,16 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Marked the store layout migration as not yet proven on every store, until 0.8.x proved it on Postgres, Oracle and
- * SQLite (liberation-data/drivine4j#832): it is no longer required, and an `@OptIn` of it is left over. Kept so that code
- * that opted in still compiles.
+ * Marked the store layout migration as not yet proven on every store, until 0.8.0 proved it on Postgres, Oracle and
+ * SQLite (liberation-data/drivine4j#832): nothing is marked with it now, so nothing needs the opt-in, and an `@OptIn` of
+ * it, or a `-opt-in` compiler option naming it, is left over. Kept, still a marker, so that code that opted in compiles
+ * with one warning, this deprecation, rather than a second that it opts in to no marker.
  */
-@Deprecated("The store layout migration needs no opt-in now that it is proven on Postgres, Oracle and SQLite: remove the @OptIn.")
+@Deprecated("The store layout migration needs no opt-in now that it is proven on Postgres, Oracle and SQLite: remove the @OptIn, or the -opt-in compiler option.")
+@RequiresOptIn(
+    level = RequiresOptIn.Level.ERROR,
+    message = "Nothing is marked with ExperimentalStoreLayoutMigration now: the store layout migration needs no opt-in.",
+)
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR, AnnotationTarget.PROPERTY, AnnotationTarget.TYPEALIAS)
 annotation class ExperimentalStoreLayoutMigration
