@@ -183,6 +183,27 @@ class BulkImportPostgresTest {
     }
 
     @Test
+    fun `the calls of one label or one type add up in the report, and a later call refuses a key an earlier one made`() {
+        val report = BulkImport(provider).run {
+            nodes("Team", key = "code", rows = sequenceOf(mapOf("code" to "t1")))
+            nodes("Team", key = "code", rows = sequenceOf(mapOf("code" to "t2"), mapOf("code" to "t3")))
+            relationships("NEXT", BulkImport.End("Team", "code"), BulkImport.End("Team", "code"), sequenceOf(BulkImport.Pair("t1", "t2")))
+            relationships("NEXT", BulkImport.End("Team", "code"), BulkImport.End("Team", "code"), sequenceOf(BulkImport.Pair("t2", "t3")))
+        }
+        assertEquals(mapOf("Team" to 3L), report.nodes)
+        assertEquals(mapOf("NEXT" to 2L), report.relationships)
+        assertEquals(3L to 2L, nodes(graph) to edges(graph))
+        val again = assertThrows<DrivineException> {
+            BulkImport(provider).run {
+                nodes("Crew", key = "code", rows = sequenceOf(mapOf("code" to "c1")))
+                nodes("Crew", key = "code", rows = sequenceOf(mapOf("code" to "c1")))
+            }
+        }
+        assertTrue("c1" in again.message!!, again.message)
+        assertEquals(3L to 2L, nodes(graph) to edges(graph))
+    }
+
+    @Test
     fun `an import is refused on a connection of the application's transaction, which would hold all of it`() {
         val native = PostgresTestDatabase.provider.nativeDriver
         val joining = JdbcConnectionProvider(graph, DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(native), graphName = graph)
