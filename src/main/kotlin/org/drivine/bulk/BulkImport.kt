@@ -50,7 +50,8 @@ import java.util.function.Consumer
  *   the same however large the graph is;
  * - at the end they are made again as the store's layout made them, which checks every relationship.
  *
- * An import given a connection of the application's transaction, a Spring or JTA one, is refused before it writes.
+ * An import given a connection of the application's transaction, a Spring or JTA one, is refused before it writes; a
+ * provider not of Postgres, or whose graph name cannot name tables, as the import is made.
  *
  * @param provider the Postgres store and graph to import into
  */
@@ -60,6 +61,8 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         if (provider.type != DatabaseType.POSTGRES) {
             throw DrivineException("A bulk import runs on Postgres for now, not on ${provider.type}: save the nodes with saveAll.")
         }
+        // A graph whose name cannot name tables has none to import into, and the store's DDL below would throw on its name.
+        provider.schemaRefusal?.let { throw DrivineException("A bulk import needs the graph's tables: $it") }
     }
 
     private val graph = (provider.sqlGraph ?: throw DrivineException("A bulk import needs a graph in tables, as Postgres keeps one.")).store as PostgresDdl

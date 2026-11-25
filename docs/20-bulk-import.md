@@ -4,7 +4,7 @@
 
 It suits loading a large graph from an export, a generated dataset or another store. Use `saveAll` for the writes an application makes as it runs.
 
-Postgres has it so far. On Oracle and SQLite, `BulkImport` refuses the provider with a `DrivineException`.
+Postgres has it so far. On Oracle and SQLite, `BulkImport` refuses the provider with a `DrivineException`, as it does a graph name that cannot name tables.
 
 ### An import
 

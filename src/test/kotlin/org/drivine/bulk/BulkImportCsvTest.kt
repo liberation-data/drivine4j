@@ -1,14 +1,27 @@
 package org.drivine.bulk
 
+import org.drivine.DrivineException
+import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnection
+import org.drivine.connection.JdbcConnectionProvider
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.springframework.jdbc.datasource.DriverManagerDataSource
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * What a bulk import (liberation-data/drivine4j#684) hands Postgres's `COPY`, with no store: each line of CSV, and the
- * reader the driver reads the lines through.
+ * reader the driver reads the lines through; and a graph it refuses before it connects.
  */
 class BulkImportCsvTest {
+
+    @Test
+    fun `a graph whose name cannot name tables is refused as the import is made, before it connects`() {
+        val provider = JdbcConnectionProvider("bulk", DatabaseType.POSTGRES, DriverManagerDataSource("jdbc:drivine-none:"), graphName = "no-tables")
+        val refused = assertThrows<DrivineException> { BulkImport(provider) }
+        assertTrue("'no-tables' cannot name a graph" in refused.message!!, refused.message)
+    }
 
     @Test
     fun `each field is quoted, a quote in it doubled, so a comma, a line end and a backslash are its own`() {
