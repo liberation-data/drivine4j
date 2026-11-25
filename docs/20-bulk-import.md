@@ -39,7 +39,7 @@ A key no node holds, or that two of the graph's nodes hold, refuses the import.
 
 ### What it holds, and for how long
 
-An import is one transaction, on a connection of its own. A refusal or any failure rolls all of it back, and the graph is left as it was.
+An import is one transaction, on a connection of its own. A refusal or any failure rolls all of it back, and the graph is left as it was. A refusal caught inside the import's own lambda does too: every later call, and the import, fail with it.
 
 While it runs:
 - **Other writers wait** for it to commit.

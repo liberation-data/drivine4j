@@ -204,6 +204,22 @@ class BulkImportPostgresTest {
     }
 
     @Test
+    fun `a refusal caught in the import's own lambda still fails the import, which commits none of the other calls`() {
+        var later: Throwable? = null
+        val refused = assertThrows<DrivineException> {
+            BulkImport(provider).run {
+                nodes("Team", key = "code", rows = sequenceOf(mapOf("code" to "t1")))
+                runCatching { nodes("Crew", key = "code", rows = sequenceOf(mapOf("code" to "c1"), mapOf("code" to "c1"))) }
+                // The refused call's rows, still staged, are made by no later call: it is refused too.
+                later = runCatching { nodes("Crew", key = "code", rows = sequenceOf(mapOf("code" to "c2"))) }.exceptionOrNull()
+            }
+        }
+        assertTrue("earlier call" in refused.message!! && "c1" in refused.cause!!.message!!, refused.message)
+        assertTrue(later is DrivineException && "earlier call" in later!!.message!!, later.toString())
+        assertEquals(0L to 0L, nodes(graph) to edges(graph))
+    }
+
+    @Test
     fun `an import is refused on a connection of the application's transaction, which would hold all of it`() {
         val native = PostgresTestDatabase.provider.nativeDriver
         val joining = JdbcConnectionProvider(graph, DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(native), graphName = graph)

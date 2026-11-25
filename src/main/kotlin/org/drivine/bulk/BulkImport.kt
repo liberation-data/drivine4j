@@ -44,7 +44,8 @@ import java.util.function.Consumer
  * to be stale.
  *
  * **All or nothing, and alone.** The import is one transaction, on a connection of its own, which a refusal or any failure
- * rolls back. While it runs:
+ * rolls back, a refusal caught in the import's own lambda too: every later call, and the import, fail with it. While it
+ * runs:
  * - other writers to the graph wait for it, and reads go on until the first call of relationships;
  * - from then on reads wait too: the edge table's foreign keys and its two indexes are dropped, so each relationship costs
  *   the same however large the graph is;
@@ -123,6 +124,24 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         internal val nodeCounts = linkedMapOf<String, Long>()
         internal val edgeCounts = linkedMapOf<String, Long>()
         private var deferred = false
+
+        /**
+         * The first failure of a call of [nodes] or [relationships]. A refusal leaves the transaction able to commit, and its
+         * call's rows staged, so one caught in [run]'s own lambda still fails every later call and the import: else the
+         * import would commit what the other calls wrote, and the next call would make the refused call's rows.
+         */
+        private var failed: Throwable? = null
+
+        private inline fun <T> call(block: () -> T): T {
+            failed?.let { throw DrivineException("A bulk import into '${graph.name}' is refused: an earlier call of nodes or relationships failed. Nothing was written.", it) }
+            return try {
+                block()
+            } catch (e: Throwable) {
+                failed = e
+                throw e
+            }
+        }
+
         private val mark = Stamps.fresh()
 
         internal fun begin() {
@@ -138,7 +157,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
          * [relationships], and where a node holds no [key], or a key the graph or the import holds already.
          */
         @JvmOverloads
-        fun nodes(label: String, key: String, rows: Sequence<Map<String, Any?>>, otherLabels: Collection<String> = emptyList(), lowercased: Collection<String> = emptyList()) {
+        fun nodes(label: String, key: String, rows: Sequence<Map<String, Any?>>, otherLabels: Collection<String> = emptyList(), lowercased: Collection<String> = emptyList()): Unit = call {
             if (deferred) throw IllegalStateException("A bulk import gives its nodes before any relationship: '$label' came after one.")
             val labels = CypherCompile.storeText((otherLabels + label).distinct().sorted(), Store.POSTGRES)
             val written = connection.copyIn(statements.copyNodes, rows.map { row ->
@@ -163,7 +182,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
          * Makes [pairs], relationships of [type] from [from]'s nodes to [to]'s, each found by its key: a node the import
          * made, or one the graph holds. Refused where a key names no node, or two of the graph's.
          */
-        fun relationships(type: String, from: End, to: End, pairs: Sequence<Pair>) {
+        fun relationships(type: String, from: End, to: End, pairs: Sequence<Pair>): Unit = call {
             if (!deferred) {
                 statements.defer.forEach(::execute)
                 deferred = true
@@ -190,7 +209,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         /** [relationships] for Java: [pairs] an [Iterable]. */
         fun relationships(type: String, from: End, to: End, pairs: Iterable<Pair>) = relationships(type, from, to, pairs.asSequence())
 
-        internal fun finish(maintenanceMegabytes: Int) {
+        internal fun finish(maintenanceMegabytes: Int): Unit = call {
             (if (deferred) statements.rebuild(maintenanceMegabytes) else statements.analyze).forEach(::execute)
         }
 
