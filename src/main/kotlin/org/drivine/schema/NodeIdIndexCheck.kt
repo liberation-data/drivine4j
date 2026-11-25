@@ -17,7 +17,7 @@ import kotlin.concurrent.schedule
  * the catalogs, outside any caller's transaction, and kept current by each ensure after it ([ensured]). A fragment used before an enforce is checked when it runs, and one
  * first used after it against what it listed, each only on the databases where it belongs ([catalogued], #848). Where no [SchemaManager] with a catalog has been built, nothing applies one;
  * as one may yet be, as Spring builds its beans, a fragment is warned of only if none has been [UNMANAGED_DELAY_MILLIS] after
- * its first use.
+ * its first use, and no index or constraint ensured by hand by then serves its id ([ensured], #886).
  *
  * As [VectorAnnotationCheck], classes are held weakly, so a classloader dropped by a restart is not kept alive.
  */
@@ -41,6 +41,12 @@ internal object NodeIdIndexCheck {
 
     /** What serves an id on each database an enforce listed: its range indexes and uniqueness constraints over one property, as (label, property). */
     private val served = mutableMapOf<String, Set<Pair<String, String>>>()
+
+    /**
+     * What serves an id that was ensured on a database no enforce has listed, as (label, property): with no [SchemaManager],
+     * the index the warning names, ensured by hand, serves the fragment, which [unmanaged] then doesn't warn of (#886).
+     */
+    private val ensuredUnlisted = mutableMapOf<String, Set<Pair<String, String>>>()
 
     /** The fragments warned of, by database (null for none: no [SchemaManager]), each once. */
     private val warned = mutableMapOf<String?, WeakHashMap<Class<*>, Unit>>()
@@ -130,8 +136,9 @@ internal object NodeIdIndexCheck {
     fun listedOn(database: String): Boolean = synchronized(this) { database in served }
 
     /**
-     * [spec] was ensured or recreated on [database] with [result], outside a [SchemaManager]: where an enforce listed the database, an id
-     * it serves is served from then on, so a fragment first used after it isn't warned of. Nothing is read of the store.
+     * [spec] was ensured or recreated on [database] with [result], outside a [SchemaManager]: an id it serves is served from
+     * then on, so a fragment first used after it isn't warned of, on a database an enforce listed or, with no enforce, by
+     * [unmanaged] (#886). Nothing is read of the store.
      */
     fun ensured(database: String?, spec: SchemaItemSpec, result: EnsureResult) {
         if (result !is EnsureResult.Created && result !is EnsureResult.AlreadyMatching && result !is EnsureResult.Recreated) return
@@ -143,7 +150,15 @@ internal object NodeIdIndexCheck {
         }
         if (!serves || database == null) return
         guarded {
-            synchronized(this) { served[database]?.let { served[database] = it + (spec.label to property) } }
+            synchronized(this) {
+                val item = spec.label to property
+                val listing = served[database]
+                if (listing != null) {
+                    served[database] = listing + item
+                } else {
+                    ensuredUnlisted[database] = ensuredUnlisted[database].orEmpty() + item
+                }
+            }
         }
     }
 
@@ -153,11 +168,18 @@ internal object NodeIdIndexCheck {
         timer.schedule(UNMANAGED_DELAY_MILLIS) { unmanaged(held.get() ?: return@schedule, admittedUnder) }
     }
 
-    /** Warns of [clazz], admitted under [admittedUnder], where no [SchemaManager] has been built since. */
+    /**
+     * Warns of [clazz], admitted under [admittedUnder], where no [SchemaManager] has been built since, unless an index or a
+     * constraint ensured by hand on some database serves its id: what the warning would advise.
+     */
     internal fun unmanaged(clazz: Class<*>, admittedUnder: Int = generation.get()) {
         guarded {
             synchronized(this) {
-                if (!managed && admittedUnder == generation.get()) warn(null, FragmentModel.from(clazz))
+                if (managed || admittedUnder != generation.get()) return@synchronized
+                val model = FragmentModel.from(clazz)
+                val property = model.nodeIdProperty ?: return@synchronized
+                val servedByHand = ensuredUnlisted.values.any { items -> model.labels.any { it to property in items } }
+                if (!servedByHand) warn(null, model)
             }
         }
     }
@@ -202,6 +224,7 @@ internal object NodeIdIndexCheck {
             generation.incrementAndGet()
             admitted.clear()
             served.clear()
+            ensuredUnlisted.clear()
             warned.clear()
             catalogued = emptyMap()
             managed = false
