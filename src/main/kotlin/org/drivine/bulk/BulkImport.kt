@@ -79,7 +79,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
      * indexes and foreign keys again with, and commits it. Throws a [DrivineException] where it refuses the import, and
      * rolls everything back; so does any other failure.
      */
-    @JvmOverloads
+    @JvmSynthetic // Java has the overload below: with both in its sight, a lambda with no type given fits either.
     fun run(maintenanceMegabytes: Int = 1024, writes: Writer.() -> Unit): Report {
         require(maintenanceMegabytes > 0) { "maintenanceMegabytes is $maintenanceMegabytes: more than 0." }
         val start = System.nanoTime()
@@ -110,7 +110,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         }
     }
 
-    /** [run] for Java: [writes] given the [Writer]. */
+    /** [run] for Java, whose lambda need return nothing: `importer.run(writer -> writer.nodes("Team", "code", teams))`. */
     @JvmOverloads
     fun run(maintenanceMegabytes: Int = 1024, writes: Consumer<Writer>): Report = run(maintenanceMegabytes) { writes.accept(this) }
 

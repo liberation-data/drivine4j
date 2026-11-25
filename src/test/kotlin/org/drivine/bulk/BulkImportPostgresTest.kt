@@ -10,6 +10,7 @@ import org.drivine.model.Stamps
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
+import org.drivine.query.cypherStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -125,8 +126,10 @@ class BulkImportPostgresTest {
     }
 
     @Test
-    fun `an import is refused and leaves the graph as it was where a key is taken, an end is missing, or nodes come after relationships`() {
+    fun `an import is refused and leaves the graph as it was where a key is taken, an end is missing or two nodes, or nodes come after relationships`() {
         manager.save(CiAccount("old", "old@example.org"))
+        // Two of the graph's nodes that hold one key, which names no one node.
+        PostgresTestDatabase.fixtures(pm).execute(QuerySpecification.withStatement(cypherStatement("CREATE (:Team {code: 'dup'}), (:Team {code: 'dup'})")))
         val before = nodes(graph) to edges(graph)
         val objects = edgeObjects(graph)
         val taken = assertThrows<DrivineException> {
@@ -140,6 +143,12 @@ class BulkImportPostgresTest {
             }
         }
         assertTrue("nobody" in missing.message!!, missing.message)
+        val ambiguous = assertThrows<DrivineException> {
+            BulkImport(provider).run {
+                relationships("MEMBER_OF", BulkImport.End("CiAccount", "id"), BulkImport.End("Team", "code"), sequenceOf(BulkImport.Pair("old", "dup")))
+            }
+        }
+        assertTrue("two of its nodes hold" in ambiguous.message!! && "dup" in ambiguous.message!!, ambiguous.message)
         assertThrows<IllegalStateException> {
             BulkImport(provider).run {
                 relationships("MEMBER_OF", BulkImport.End("CiAccount", "id"), BulkImport.End("CiAccount", "id"), emptySequence())
