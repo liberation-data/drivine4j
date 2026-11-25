@@ -258,8 +258,8 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
      * A search among [ids], each the JSON text of a root's id as the node holds it, as the shared module's `VectorSearch`
      * writes it for [store] over the graph [graph]: the whole statement, one row a root, `result`, `{seed, near}`. [index] is the
      * embedding searched, and [made] what the catalog records of its vector index. What the module warns of is logged at
-     * DEBUG, as `VectorSearchPlanner.planAmong` logs it: the default searchK, `topK + 1`, goes through an index made, so at
-     * WARN every call would log it.
+     * DEBUG, as `VectorSearchPlanner.planAmong` logs it and as a short vector search is logged: only a searchK the caller
+     * gives goes through the index, and it is the caller's choice of an approximate answer.
      */
     protected fun among(
         store: SearchStore, graph: String, index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, made: VectorIndex,

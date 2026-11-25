@@ -266,9 +266,10 @@ interface GraphObjectOperations {
      * @param topK the most neighbours kept for each id
      * @param threshold optional minimum similarity (higher = closer); neighbours below it are dropped
      * @param property the `@VectorIndex` embedding property to search, when the fragment has several
-     * @param searchK how many candidates the index is asked for per id, before the filter; null asks
-     *   for `topK + 1`, the one more being the id itself, which an index finds first. See
-     *   `docs/0.0.79-vector-search-k.md`
+     * @param searchK how many candidates the vector index is asked for per id, before the filter: approximate, so an id
+     *   whose nearest lie outside the set can get fewer than [topK]. Null, the default, measures every pair of the set
+     *   through no index, on every store: exact, its cost growing with the square of the number of [ids]
+     *   (liberation-data/drivine4j#868). See `docs/0.0.79-vector-search-k.md`
      * @return for each id with an embedding, its neighbours' ids, scored, most similar first
      * @throws UnsupportedOperationException if the backend has no native vector index, or, on Neo4j, Memgraph or FalkorDB, if
      *   the `@NodeId` is not a `String`, `UUID` or enum: those engines are given the ids as text, so a root with a number, a
@@ -286,10 +287,10 @@ interface GraphObjectOperations {
     /**
      * [loadNearestAmong] keeping, for each id, only the [neighbours] it names: with [AmongNeighbours.AFTER] each pair once,
      * under the id that comes first in the `@NodeId` type's own order, its direction kept before each id's [topK] are cut
-     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself. For [AmongNeighbours.AFTER] with
-     * no [searchK], every pair of the set is measured, through no index, on every store: exact, its cost growing with the
-     * square of the number of [ids]. Given a [searchK], each id asks the vector index for that many, and a pair is found only
-     * where the index gives the later id among the earlier one's [searchK] nearest.
+     * (liberation-data/drivine4j#868). [AmongNeighbours.ALL] is [loadNearestAmong] itself. With no [searchK], for either,
+     * every pair of the set is measured, through no index, on every store: exact, its cost growing with the square of the
+     * number of [ids]. Given a [searchK], each id asks the vector index for that many, and a pair is found only where the
+     * index gives the other id among the first one's [searchK] nearest.
      *
      * ```kotlin
      * val pairs = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, neighbours = AmongNeighbours.AFTER)

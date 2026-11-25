@@ -192,8 +192,8 @@ internal object VectorSearchPlanner {
         )
         return when (val planned = VectorSearch.plan(store, GRAPH_ENGINE, request)) {
             is VectorPlan -> {
-                // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): the default searchK, topK + 1,
-                // goes through the index, so at WARN every call would log it.
+                // At DEBUG, as a short vector search is logged (docs/0.0.79-vector-search-k.md): only a searchK the caller
+                // gives goes through the index, and it is the caller's choice of an approximate answer.
                 planned.warnings.forEach { logger.debug(it) }
                 GraphStatement(
                     requireNotNull(planned.cypher) { "The search among ids on ${store.id} gave no Cypher." }, planned.parameters,

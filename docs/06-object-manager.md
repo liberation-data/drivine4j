@@ -577,18 +577,19 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
 
-**`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
-an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
-made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first; for each pair once, no `searchK` measures every pair instead, as above), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
-mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
-indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
+**With no `searchK`, the answer is exact on every store.** Every pair of the set is measured, through
+no index, so the cost grows with the square of the number of ids, and the answer does not depend on
+the store or on whether a vector index has been made.
+
+**A `searchK` asks the index instead.** Where the store searches through an approximate index — Neo4j,
+FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made — the index is asked for
+`searchK` candidates per id, and the "among the set", self, root label, `threshold` and, for each pair
+once, "after it" filters apply to those. An id whose nearest mostly lie outside the set can get fewer
+than `topK` back, so a selective set — a few ids among many indexed nodes — needs a larger `searchK`.
+That such an answer is the index's, approximate, is logged at DEBUG (under
 `org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
-Postgres and Oracle), not WARN, as the default `searchK` goes through the index on every call. Where the
-store measures every node instead (SQLite, and
-Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
-`searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
-the number of ids.
+Postgres and Oracle). Where the store measures every node instead (SQLite, and Postgres or Oracle with
+no vector index made) only the set is measured and `searchK` changes nothing.
 
 | Store | How it is answered |
 |---|---|
