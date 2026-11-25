@@ -498,6 +498,34 @@ class JdbcConnection(
         }
     }
 
+    /**
+     * Copies [rows], each a line of CSV with its own line end, into the table the Postgres statement [copy] (`COPY … FROM
+     * STDIN`) names, through the driver's own copy, in this connection's transaction: a bulk import's staging tables
+     * (`org.drivine.bulk.BulkImport`). The lines are read as the copy asks for them, so none is held. Gives the rows copied.
+     */
+    internal fun copyIn(copy: String, rows: Sequence<String>): Long =
+        connection.unwrap(org.postgresql.PGConnection::class.java).copyAPI.copyIn(copy, LinesReader(rows.iterator()))
+
+    /** The text of [lines], one after another, read as a [java.io.Reader] asks for it. */
+    private class LinesReader(private val lines: Iterator<String>) : java.io.Reader() {
+        private var line = ""
+        private var at = 0
+
+        override fun read(buffer: CharArray, offset: Int, length: Int): Int {
+            while (at == line.length) {
+                if (!lines.hasNext()) return -1
+                line = lines.next()
+                at = 0
+            }
+            val n = minOf(length, line.length - at)
+            line.toCharArray(buffer, offset, at, at + n)
+            at += n
+            return n
+        }
+
+        override fun close() {}
+    }
+
     private fun setParallelWorkers(value: String, local: Boolean) {
         connection.prepareStatement("SELECT set_config('$PARALLEL_WORKERS', ?, $local)").use { st ->
             st.setString(1, value)
