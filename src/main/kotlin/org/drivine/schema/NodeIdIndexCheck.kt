@@ -1,10 +1,15 @@
 package org.drivine.schema
 
+import org.drivine.annotation.GraphView
+import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
+import org.drivine.model.GraphViewModel
 import org.slf4j.LoggerFactory
 import java.util.Timer
 import java.util.WeakHashMap
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.schedule
 
 /**
@@ -15,7 +20,8 @@ import kotlin.concurrent.schedule
  * Nothing here reads the store while a fragment is used, nor throws: a check that fails is passed over, and the save or
  * load goes on. What serves an id is what [SchemaManager]'s enforce listed of each database ([listed]), after it applied
  * the catalogs, outside any caller's transaction, and kept current by each ensure after it ([ensured]). A fragment used before an enforce is checked when it runs, and one
- * first used after it against what it listed, each only on the databases where it belongs ([catalogued], #848). Where no [SchemaManager] with a catalog has been built, nothing applies one;
+ * first used after it against what it listed, each only on the databases where it belongs: those it is [used] on (#858),
+ * and those whose catalogs name its labels ([catalogued], #848). Where no [SchemaManager] with a catalog has been built, nothing applies one;
  * as one may yet be, as Spring builds its beans, a fragment is warned of only if none has been [UNMANAGED_DELAY_MILLIS] after
  * its first use, and no index or constraint ensured by hand by then serves its id ([ensured], #886).
  *
@@ -50,6 +56,21 @@ internal object NodeIdIndexCheck {
 
     /** The fragments warned of, by database (null for none: no [SchemaManager]), each once. */
     private val warned = mutableMapOf<String?, WeakHashMap<Class<*>, Unit>>()
+
+    /**
+     * The databases a class was [used] on under a generation, the lock-free check each use makes: a set safe to read
+     * while another thread adds to it.
+     */
+    private class Uses(val generation: Int) {
+        val databases: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    }
+
+    private val usesOf = object : ClassValue<AtomicReference<Uses>>() {
+        override fun computeValue(type: Class<*>) = AtomicReference(Uses(-1))
+    }
+
+    /** The fragments used on each database, by [used], which belong there whatever the catalogs name; guarded by the object's lock. */
+    private val usedOn = mutableMapOf<String, WeakHashMap<Class<*>, Unit>>()
 
     /** Whether a [SchemaManager] has been built, which applies catalogs and lists what serves an id. */
     @Volatile
@@ -126,8 +147,59 @@ internal object NodeIdIndexCheck {
         guarded { synchronized(this) { catalogued = catalogued + (database to catalogued[database].orEmpty() + labels) } }
     }
 
-    /** Whether [model] is checked on [database]: no catalog names its labels, or one on [database] does. */
+    /**
+     * [type], a fragment or a view, is saved, loaded, counted, searched, deleted, related or grouped through a manager on [database], the name it is registered
+     * under: each fragment it reads or writes belongs on [database] (#858), and is checked there now if an enforce has
+     * listed it, or when one does. After the first use on a database, a use costs a lookup in a set, without a lock.
+     */
+    fun used(database: String, type: Class<*>) {
+        val now = generation.get()
+        val held = usesOf.get(type)
+        var uses = held.get()
+        if (uses.generation == now && database in uses.databases) return
+        if (uses.generation != now) {
+            held.compareAndSet(uses, Uses(now))
+            uses = held.get()
+        }
+        guarded {
+            val models = fragmentsOf(type).map(FragmentModel::from).filter { it.nodeIdProperty != null }
+            synchronized(this) {
+                models.forEach { model ->
+                    usedOn.getOrPut(database) { WeakHashMap() }[model.clazz] = Unit
+                    served[database]?.let { check(database, model, it) }
+                }
+            }
+        }
+        // Once, even where the check failed: a use never pays for it again.
+        uses.databases.add(database)
+    }
+
+    /** The fragments [type] reads and writes: itself if a fragment; a view's root and the fragments of its relationships, views nested in it too. */
+    private fun fragmentsOf(type: Class<*>): Set<Class<*>> {
+        val found = linkedSetOf<Class<*>>()
+        val views = mutableSetOf<Class<*>>()
+        fun visit(clazz: Class<*>?) {
+            when {
+                clazz == null -> return
+                clazz.isAnnotationPresent(NodeFragment::class.java) -> found += clazz
+                clazz.isAnnotationPresent(GraphView::class.java) && views.add(clazz) -> {
+                    val view = GraphViewModel.from(clazz)
+                    visit(view.rootFragment.fragmentType)
+                    view.relationships.forEach { visit(if (it.isRelationshipFragment) it.targetNodeType else it.elementType) }
+                }
+            }
+        }
+        visit(type)
+        return found
+    }
+
+    /**
+     * Whether [model] is checked on [database]: it was [used] there, or no catalog names its labels, or one on [database]
+     * does. The union keeps each warning the catalogs give, and adds the databases a fragment is used on, where its saves
+     * scan the label all the same.
+     */
     private fun belongs(database: String, model: FragmentModel): Boolean {
+        if (usedOn[database]?.containsKey(model.clazz) == true) return true
         if (model.labels.none { label -> catalogued.values.any { label in it } }) return true
         return model.labels.any { it in catalogued[database].orEmpty() }
     }
@@ -225,6 +297,7 @@ internal object NodeIdIndexCheck {
             admitted.clear()
             served.clear()
             ensuredUnlisted.clear()
+            usedOn.clear()
             warned.clear()
             catalogued = emptyMap()
             managed = false

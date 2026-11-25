@@ -47,7 +47,10 @@ class EdgeOperations internal constructor(
         type: String,
         properties: Map<String, Any?> = emptyMap(),
         mode: RelateMode = RelateMode.MERGE,
-    ): Boolean = count(backend.relate(from, to, type, properties, mode)) > 0
+    ): Boolean {
+        used(from, to)
+        return count(backend.relate(from, to, type, properties, mode)) > 0
+    }
 
     /**
      * Removes every [type] relationship from [from] to [to].
@@ -57,7 +60,10 @@ class EdgeOperations internal constructor(
      *
      * @return how many relationships were removed: 0 when there was none, or either node is absent
      */
-    fun unrelate(from: NodeRef, to: NodeRef, type: String): Int = count(backend.unrelate(from, to, type))
+    fun unrelate(from: NodeRef, to: NodeRef, type: String): Int {
+        used(from, to)
+        return count(backend.unrelate(from, to, type))
+    }
 
     /**
      * Removes every [type] relationship that [from] has in [direction].
@@ -68,8 +74,13 @@ class EdgeOperations internal constructor(
      * @return how many relationships were removed
      */
     @JvmOverloads
-    fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int =
-        count(backend.unrelateAll(from, type, direction))
+    fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int {
+        used(from)
+        return count(backend.unrelateAll(from, type, direction))
+    }
+
+    /** Each node named is matched by its `@NodeId`: its fragment is used on this database, as a load by id is (#858). */
+    private fun used(vararg refs: NodeRef) = refs.forEach { manager.used(it.fragmentClass) }
 
     /**
      * Runs [statement], which writes relationships, and gives the number it returns: those it made
@@ -88,6 +99,8 @@ class EdgeOperations internal constructor(
         require(targetClass.isAnnotationPresent(NodeFragment::class.java)) {
             "loadRelated loads a @NodeFragment; ${targetClass.simpleName} is not one."
         }
+        used(from)
+        manager.used(targetClass)
         manager.autoRegisterSubtypesIfNeeded(targetClass)
         val results = persistenceManager.query(backend.related(from, type, direction, targetClass).spec().transform(targetClass))
         manager.snapshotResults(targetClass, results)
