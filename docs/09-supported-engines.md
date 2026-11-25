@@ -270,6 +270,10 @@ finished meanwhile), or `failed` (the store's error, or a finished graph not jud
 resumed by running it again with the same declarations. It makes no index or constraint, which the application's schema
 plan makes at its next start, and leaves the count store unseeded.
 
+**Importing a graph in bulk.** On Postgres, `org.drivine.bulk.BulkImport` writes many nodes and relationships at once,
+in one transaction, through `COPY`, with the rows a save writes. [Importing a graph in bulk](20-bulk-import.md) gives
+the steps. Oracle and SQLite have none yet.
+
 **Hand-written SQL and the indexes.** In layout 2, the index Drivine makes for a range index or a uniqueness
 constraint holds a property as layout 2 holds it, not as its text:
 

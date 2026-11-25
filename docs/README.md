@@ -22,6 +22,7 @@ The full documentation, one file per topic, also published at [drivine.org](http
 - [License](17-license.md)
 - [Links](18-links.md)
 - [Migrating a graph from store layout 1 to layout 2](19-migrating-a-store-layout.md)
+- [Importing a graph in bulk](20-bulk-import.md)
 
 The other files in this folder are design notes and release records (`0.1.0-stateless-object-manager.md` and the like),
 some linked from the pages above. drivine.org reads only `00-introduction.md` and the numbered pages.
