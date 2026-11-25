@@ -89,9 +89,9 @@ class NearestAmongPlannerTest {
     }
 
     /**
-     * With no searchK every pair is measured through no index, and on FalkorDB the plan's own timeout reaches the statement
-     * and every specification it makes, as FalkorDB's image ends a query after a second (drivine4j#868). Through the index,
-     * with a searchK, and on the other engines, there is none.
+     * With no searchK every pair is measured through no index, for every neighbour as for each pair once, and on FalkorDB the
+     * plan's own timeout reaches the statement and every specification it makes, as FalkorDB's image ends a query after a
+     * second (drivine4j#868). Through the index, with a searchK, and on the other engines, there is none.
      */
     @Test
     fun `with no searchK FalkorDB's statement carries the module's timeout, and through the index none`() {
@@ -111,6 +111,9 @@ class NearestAmongPlannerTest {
         assertEquals(timeout, exact.spec(mapOf("x" to 1)).timeoutMillis)
         assertEquals(timeout, exact.bindingId { it }.spec().timeoutMillis)
         assertFalse(exact.statement.contains("queryNodes"), exact.statement)
+        val every = VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, null, falkor)
+        assertEquals(timeout, every.timeoutMillis, "every neighbour with no searchK is measured exactly, under the timeout too")
+        assertFalse(every.statement.contains("queryNodes"), every.statement)
 
         assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, falkor, after).timeoutMillis)
         assertEquals(null, VectorSearchPlanner.planAmong(DocNode::class.java, null, listOf("A", "B"), 2, null, 3, falkor).timeoutMillis)
@@ -154,7 +157,7 @@ class NearestAmongPlannerTest {
     }
 
     @Test
-    fun `what the shared module warns of is logged at DEBUG, as the default searchK warns on every call`() {
+    fun `what the shared module warns of is logged at DEBUG, as a short vector search is`() {
         val logger = LoggerFactory.getLogger(VectorSearchPlanner::class.java) as Logger
         val appender = ListAppender<ILoggingEvent>().also { it.start() }
         val level = logger.level

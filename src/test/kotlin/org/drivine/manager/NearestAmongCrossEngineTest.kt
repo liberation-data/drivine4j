@@ -108,7 +108,7 @@ private const val PARTITION = "Corpus_sized"
 /**
  * The contract each store's subclass runs. It also holds `loadNearest`'s case of an embedding of
  * another size, as W gives it to both searches. [exact] for a store that measures every node rather than
- * asking an approximate index, where the default searchK changes nothing.
+ * asking an approximate index, where a searchK changes nothing.
  */
 abstract class NearestAmongContract {
 
@@ -128,8 +128,8 @@ abstract class NearestAmongContract {
     protected open val refusesMisSized = false
 
     /**
-     * Whether the store refuses a pair of two sizes where every pair is measured through no index (for each pair once with no
-     * searchK), as FalkorDB's function of two embeddings refuses it, rather than measuring the pair not at all.
+     * Whether the store refuses a pair of two sizes where every pair is measured through no index (with no searchK), as
+     * FalkorDB's function of two embeddings refuses it, rather than measuring the pair not at all.
      */
     protected open val refusesMisSizedPair = false
 
@@ -182,8 +182,8 @@ abstract class NearestAmongContract {
 
     /**
      * The case drivine4j#868 was filed for, with no searchK, on every store, an index made or not. With topK 1, C's nearest of
-     * all is B, before it: asking the index for topK + 1, as a search for every neighbour does, gives C itself and B, and
-     * nothing after C. For each pair once, with no searchK, every pair of the set is measured, so C keeps D.
+     * all is B, before it: asking an index for topK + 1 would give C itself and B, and nothing after C. For each pair once,
+     * with no searchK, every pair of the set is measured, so C keeps D.
      */
     @Test
     fun `for each pair once with no searchK every pair is measured, so an id whose nearest come before it keeps the ids after it`() {
@@ -219,6 +219,26 @@ abstract class NearestAmongContract {
         val search = { gom.loadNearestAmong(DocNode::class.java, listOf("A", "B", "W"), topK = 10, searchK = WIDE) }
         if (refusesMisSized) {
             assertTrue(runCatching(search).isFailure, "a vector of another size is searched from")
+            return
+        }
+        val found = search()
+
+        assertEquals(listOf("B"), ids(found["A"]))
+        assertEquals(listOf("A"), ids(found["B"]))
+        assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
+    }
+
+    /**
+     * With no searchK, every pair is measured through no index, for every neighbour as for each pair once (drivine4j#868), so
+     * an embedding of another size is measured against none of the others, on Neo4j as well, whose index refuses it; FalkorDB's
+     * own function of two embeddings refuses a pair of two sizes.
+     */
+    @Test
+    fun `with no searchK an embedding of another size is measured against none of the others, or refused`() {
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+        val search = { gom.loadNearestAmong(DocNode::class.java, listOf("A", "B", "W"), topK = 10) }
+        if (refusesMisSizedPair) {
+            assertTrue(runCatching(search).isFailure, "a pair of two sizes is measured")
             return
         }
         val found = search()
@@ -326,10 +346,19 @@ abstract class NearestAmongContract {
     }
 
     @Test
-    fun `the default searchK asks an approximate index for one more than topK, before the set filters`() {
-        // A's nearest overall are A itself, then X, then B. Asked for topK + 1 = 3, an index finds those
-        // three, and of them only B is in the set; a store that measures every node finds B and C.
+    fun `with no searchK every pair of the set is measured, so an id whose nearest lie outside the set still gets topK`() {
+        // A's nearest overall are A itself, then X, then B. An index asked for topK + 1 = 3 would find those three, and of
+        // them only B is in the set; with no searchK every pair of the set is measured, on every store, and A keeps B and C.
         val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 2)
+
+        assertEquals(listOf("B", "C"), ids(found["A"]))
+    }
+
+    @Test
+    fun `a searchK asks an approximate index for that many, before the set filters`() {
+        // Asked for 3, an index finds A itself, X and B, and of them only B is in the set; a store that measures every node
+        // finds B and C.
+        val found = gom.loadNearestAmong(DocNode::class.java, SET, topK = 2, searchK = 3)
 
         assertEquals(if (exact) listOf("B", "C") else listOf("B"), ids(found["A"]))
     }
@@ -469,7 +498,7 @@ class NearestAmongMemgraphTest : NearestAmongContract() {
     override fun addMisSized() = false
 }
 
-/** Searched through the vector index made for the label, so approximate, as on the graph engines. */
+/** Given a searchK, searched through the vector index made for the label, so approximate, as on the graph engines. */
 @OracleTests
 class NearestAmongOracleTest : NearestAmongContract() {
     private val registry = SubtypeRegistry()
@@ -487,7 +516,7 @@ class NearestAmongOracleTest : NearestAmongContract() {
     }
 }
 
-/** Searched through the vector index made for the label, so approximate, as on the graph engines. */
+/** Given a searchK, searched through the vector index made for the label, so approximate, as on the graph engines. */
 @PostgresTests
 class NearestAmongPostgresTest : NearestAmongContract() {
     private val registry = SubtypeRegistry()

@@ -546,14 +546,14 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   is searched; any other is refused with `UnsupportedOperationException`.
   An embedding of another size than the index's is measured against none of a different size: on
   Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
-  fails, as their index search refuses a vector of another size. For each pair once with no `searchK` (below), which asks
+  fails, as their index search refuses a vector of another size, given a `searchK`. With no `searchK` (below), which asks
   no index, it is measured against none of another size on Neo4j too; FalkorDB refuses a pair of two sizes there as well.
 - **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
   with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
   Two that score exactly alike come in the `@NodeId` type's own order (a text by its code points, a number by its
   value, a temporal by its time, a `UUID` or an enum by its text), whatever order the ids were given in, except on
-  FalkorDB through its index, where the index's own order decides (for each pair once with no `searchK`, below, no index
-  is asked, so the type's order holds there too). Those below `threshold` are dropped.
+  FalkorDB through its index, where the index's own order decides (with no `searchK`, below, no index is asked, so the
+  type's order holds there too). Those below `threshold` are dropped.
   By cosine, on Oracle, Postgres and SQLite, an embedding all of zeros, which has no direction, is left
   out, as a key and as a value, as Neo4j's index leaves it out.
 - **For each pair once**, pass `neighbours = AmongNeighbours.AFTER`: each id keeps only the ids after it in the
@@ -563,8 +563,7 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   the set is measured, through no index, on every store, so the answer is exact and its cost grows with the square of
   the number of ids. Given a `searchK`, each id asks the index for that many where one is made, and a pair is found only
   where the index gives the later id among the earlier one's `searchK` nearest, so pairs can be missed, and the shared
-  module says so in the log at DEBUG. On FalkorDB the exact search runs under a timeout of its own, as FalkorDB's image
-  ends any query after a second (drivine4j#868). The default,
+  module says so in the log at DEBUG. The default,
   `AmongNeighbours.ALL`, keeps every other id, so a pair can come back under each of its ids.
 
   ```kotlin
@@ -577,20 +576,22 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
   resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
   several. A view's relationships play no part: the set is named by id.
 
-**`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
-an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
-made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first; for each pair once, no `searchK` measures every pair instead, as above), and the "among the set", self, root label, `threshold` and, for each pair once, "after it" filters apply to those. An id whose nearest
-mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
-indexed nodes — needs a larger `searchK`. That such an answer is the index's, approximate, is logged at DEBUG (under
-`org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
-Postgres and Oracle), not WARN, as the default `searchK` goes through the index on every call. Where the
-store measures every node instead (SQLite, and
-Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
-`searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
-the number of ids.
+**With no `searchK`, the answer is exact on every store.** Every pair of the set is measured, through
+no index, so the cost grows with the square of the number of ids, and the answer does not depend on
+the store or on whether a vector index has been made. On FalkorDB this search runs under a timeout of its own, as
+FalkorDB's image ends any query after a second (drivine4j#868).
 
-| Store | How it is answered |
+**A `searchK` asks the index instead.** Where the store searches through an approximate index — Neo4j,
+FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made — the index is asked for
+`searchK` candidates per id, and the "among the set", self, root label, `threshold` and, for each pair
+once, "after it" filters apply to those. An id whose nearest mostly lie outside the set can get fewer
+than `topK` back, so a selective set — a few ids among many indexed nodes — needs a larger `searchK`.
+That such an answer is the index's, approximate, is logged at DEBUG (under
+`org.drivine.query.VectorSearchPlanner` on the graph engines, `org.drivine.backend.sql.SqlViewSelect` on
+Postgres and Oracle). Where the store measures every node instead (SQLite, and Postgres or Oracle with
+no vector index made) only the set is measured and `searchK` changes nothing.
+
+| Store | How it is answered, given a `searchK` |
 |---|---|
 | Neo4j | `UNWIND` the ids, `db.index.vector.queryNodes` from each seed's embedding, rescored exactly with `vector.similarity.*` |
 | FalkorDB | `UNWIND` the ids, `db.idx.vector.queryNodes` from each seed's embedding |
