@@ -13,7 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
-/** Which statements [SqlCypherFixtures] sends to a SQL store as Cypher, which as they are, and what a clear is. */
+/** That [SqlCypherFixtures] sends a statement to a SQL store as it is, and what a clear is. */
 class SqlCypherFixturesTest {
 
     /** Each statement that reached the store, in its language, in order. */
@@ -46,39 +46,21 @@ class SqlCypherFixturesTest {
     private fun statement(text: String) = QuerySpecification.withStatement(text)
 
     @Test
-    fun `a statement of no language that is Cypher goes to the store as Cypher, however it is run`() {
+    fun `a statement goes to the store as it is, however it is run`() {
         fixtures.execute(statement("CREATE (:Human {id: 'ada'})"))
         fixtures.query(statement("MATCH (h:Human) RETURN h.id"))
-        fixtures.getOne(statement("  // the one\n  OPTIONAL MATCH (h:Human) RETURN h"))
-        fixtures.maybeGetOne(statement("merge (h:Human {id: 'bob'}) RETURN h"))
+        fixtures.getOne(statement("OPTIONAL MATCH (h:Human) RETURN h"))
+        fixtures.maybeGetOne(statement("MERGE (h:Human {id: 'bob'}) RETURN h"))
         fixtures.optionalGetOne(statement("UNWIND [1, 2] AS x RETURN x"))
         fixtures.executeBatch(listOf(statement("RETURN 1")))
         fixtures.queryBatch(listOf(statement("MATCH (h) RETURN h")))
         fixtures.queryResult(statement("MATCH (h:Human) RETURN h"))
         fixtures.explain(statement("MATCH (h:Human) RETURN h"))
         fixtures.plan(statement("MATCH (h:Human) RETURN h"))
-        // SQL has no `//` comment, so one that opens with it is Cypher, whatever follows.
-        fixtures.query(statement("// the names\nWITH ['ada'] AS names UNWIND names AS n RETURN n"))
-        // A pattern named as a path opens with its name: no SQL statement opens so.
-        fixtures.query(statement("MATCH p = (h:Human)-->() RETURN p"))
-        fixtures.execute(statement("CREATE p=(:Human)-[:KNOWS]->(:Human)"))
+        fixtures.query(QuerySpecification.withStatement(sqlStatement("SELECT COUNT(*) FROM g_node")))
 
-        assertEquals(List(13) { QueryLanguage.CYPHER }, sent.map { it.first })
-    }
-
-    @Test
-    fun `a statement in the store's own language goes as it is, and one given a language keeps it`() {
-        val sql = listOf(
-            "SELECT COUNT(*) FROM g_node",
-            "CREATE INDEX g_ix ON g_node (nid)",
-            "WITH roots AS (SELECT nid FROM g_node) SELECT COUNT(*) FROM roots",
-            "BEGIN NULL; END;",
-            "MERGE INTO g_node t USING (SELECT 1 nid FROM dual) s ON (t.nid = s.nid) WHEN MATCHED THEN UPDATE SET t.stamp = NULL",
-        )
-        sql.forEach { fixtures.execute(statement(it)) }
-        fixtures.query(QuerySpecification.withStatement(sqlStatement("MATCH (h) RETURN h")))
-
-        assertEquals(sql.map { QueryLanguage.PLATFORM_DEFAULT to it } + (QueryLanguage.SQL to "MATCH (h) RETURN h"), sent)
+        // A statement of no language is Cypher on every store: the connection resolves it, so it goes unchanged.
+        assertEquals(List(10) { QueryLanguage.PLATFORM_DEFAULT } + QueryLanguage.SQL, sent.map { it.first })
     }
 
     @Test
@@ -107,10 +89,10 @@ class SqlCypherFixturesTest {
     }
 
     @Test
-    fun `a store that speaks SQL is given its Cypher statements as Cypher`() {
-        SqlCypherFixtures.forStore(store).query(statement("MATCH (h) RETURN h"))
+    fun `a store that speaks SQL has its clear run on its tables`() {
+        SqlCypherFixtures.forStore(store).execute(statement("MATCH (n) DETACH DELETE n"))
 
-        assertEquals(listOf(QueryLanguage.CYPHER to "MATCH (h) RETURN h"), sent)
+        assertEquals(listOf(QueryLanguage.SQL to "DELETE FROM g_edge", QueryLanguage.SQL to "DELETE FROM g_node"), sent)
     }
 
     @Test

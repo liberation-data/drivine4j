@@ -25,6 +25,7 @@ import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 import org.drivine.store.StoreIdentity
+import org.drivine.query.Statement
 import org.slf4j.LoggerFactory
 
 /**
@@ -439,7 +440,7 @@ class GraphObjectManager internal constructor(
         autoRegisterSubtypesIfNeeded(graphClass)
 
         val rows = persistenceManager.query(
-            QuerySpecification.withStatement(plan.cypher).bind(plan.bindings).transform(Map::class.java)
+            QuerySpecification.withStatement(Statement(plan.cypher, plan.language)).bind(plan.bindings).transform(Map::class.java)
         )
 
         val transform = TransformPostProcessor<Any, T>(graphClass, subtypeRegistry)

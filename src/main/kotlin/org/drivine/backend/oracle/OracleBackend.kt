@@ -20,6 +20,7 @@ import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
 import org.drivine.query.VectorIndexResolver
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.sqlStatement
 import org.drivine.schema.SchemaItemKind
 import java.sql.SQLException
 import java.util.concurrent.Executor
@@ -68,7 +69,7 @@ internal class OracleBackend(
             select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
-        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK, statement.language)
     }
 
     /** Through the index for the label when one has been made and a [searchK] given, as [nearest] goes; else each root measures the others. */
@@ -84,7 +85,7 @@ internal class OracleBackend(
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val candidates = select.matching(index.properties, text, texts = fullTextTable(index.label, index.properties))
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
-        return ScoredSearchPlan(statement.statement, statement.bindings)
+        return ScoredSearchPlan(statement.statement, statement.bindings, language = statement.language)
     }
 
     /**
@@ -93,15 +94,17 @@ internal class OracleBackend(
      */
     private fun fullTextTable(label: String, properties: List<String>): String? {
         val lookup = requireNotNull(FullTextSearch.lookup(SearchStore.ORACLE, GraphOptions(graph.name), label, properties))
-        return persistenceManager.query(QuerySpecification.withStatement(lookup.sql).bind(lookup.parameters).transform(String::class.java)).firstOrNull()
+        return persistenceManager.query(QuerySpecification.withStatement(sqlStatement(lookup.sql)).bind(lookup.parameters).transform(String::class.java)).firstOrNull()
     }
 
     /** The size of embeddings a recorded index of [kind] on [label]'s [properties] was made for; null when it has not been made. */
     private fun madeDimensions(kind: SchemaItemKind, label: String, properties: List<String>): Int? = persistenceManager.query(
         QuerySpecification
             .withStatement(
-                "SELECT JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) FROM ${graph.catalog} " +
-                    "WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL"
+                sqlStatement(
+                    "SELECT JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) FROM ${graph.catalog} " +
+                        "WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL"
+                )
             )
             .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)))
             .transform(Number::class.java)
@@ -114,8 +117,10 @@ internal class OracleBackend(
     private fun made(kind: SchemaItemKind, label: String, properties: List<String>, dimensions: Int? = null): String? = persistenceManager.query(
         QuerySpecification
             .withStatement(
-                "SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
-                    dimensions?.let { " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions" }.orEmpty()
+                sqlStatement(
+                    "SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
+                        dimensions?.let { " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions" }.orEmpty()
+                )
             )
             .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)) + listOfNotNull(dimensions?.let { "dimensions" to it }))
             .transform(String::class.java)
@@ -128,7 +133,7 @@ internal class OracleBackend(
      * requires, as the Cypher delete does. A node's relationships go with it: the relationship table cascades.
      */
     override fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
-        GraphStatement(
+        GraphStatement.sql(
             OracleSql.counted(select.hinted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}")),
             select.bindings(),
         )
@@ -191,7 +196,7 @@ internal class OracleBackend(
                 "v_count := v_ids.COUNT;",
             )
         }.joinToString("\n")
-        return GraphStatement(OracleSql.counting(body, "TYPE t_ids IS TABLE OF NUMBER;\nv_ids t_ids;"), select.bindings())
+        return GraphStatement.sql(OracleSql.counting(body, "TYPE t_ids IS TABLE OF NUMBER;\nv_ids t_ids;"), select.bindings())
     }
 
     /** The query a `patch` step asks has parameters of its own, bound beside the plan. */
@@ -203,7 +208,7 @@ internal class OracleBackend(
      * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
      * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
      */
-    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
+    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement.sql(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull(OracleSql.hasId("n", ValueLayout.escape(root.idProperty), "JSON(\$id EXTENDED)"), OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to ids.rootJson(root)),

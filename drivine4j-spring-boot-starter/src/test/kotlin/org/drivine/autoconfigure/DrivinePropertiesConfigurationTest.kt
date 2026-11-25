@@ -3,6 +3,7 @@ package org.drivine.autoconfigure
 import org.assertj.core.api.Assertions.assertThat
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
+import org.drivine.query.QueryLanguage
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
@@ -153,6 +154,30 @@ class DrivinePropertiesConfigurationTest {
                 assertThat(context).hasFailed()
                 assertThat(rootMessage(context.startupFailure))
                     .startsWith("Drivine datasource 'neo' has no type: set database.datasources.neo.type ")
+            }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("paths")
+    fun `a datasource's default language is bound from its properties`(path: String, runner: ApplicationContextRunner) {
+        runner.withPropertyValues(*neo, "database.datasources.graph.type=FALKORDB", "database.datasources.graph.host=localhost",
+            "database.datasources.graph.default-language=CYPHER")
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val dataSources = context.getBean(DataSourceMap::class.java).dataSources
+                assertThat(dataSources.getValue("graph").defaultLanguage).isEqualTo(QueryLanguage.CYPHER)
+                assertThat(dataSources.getValue("neo").defaultLanguage).isNull()
+            }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("paths")
+    fun `SQL as the default language of a graph engine fails startup and says why`(path: String, runner: ApplicationContextRunner) {
+        runner.withPropertyValues(*neo, "database.datasources.neo.default-language=SQL")
+            .run { context ->
+                assertThat(context).hasFailed()
+                assertThat(rootMessage(context.startupFailure))
+                    .startsWith("Datasource 'neo' is NEO4J, which runs Cypher and no SQL, so its defaultLanguage cannot be SQL.")
             }
     }
 

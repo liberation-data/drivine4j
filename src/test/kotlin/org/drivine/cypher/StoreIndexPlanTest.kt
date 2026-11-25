@@ -15,6 +15,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.IndexSpec
 import org.drivine.schema.RangeIndexSpec
@@ -145,7 +146,7 @@ class PostgresStoreIndexPlanTest : StoreIndexPlanContract() {
     override fun plan(compiled: CompiledCypher): String {
         val connection = PostgresTestDatabase.provider.connect()
         return try {
-            connection.query(QuerySpecification.withStatement("EXPLAIN ${compiled.sql}").bind(compiled.parameters)).joinToString("\n")
+            connection.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN ${compiled.sql}")).bind(compiled.parameters)).joinToString("\n")
         } finally {
             connection.release()
         }

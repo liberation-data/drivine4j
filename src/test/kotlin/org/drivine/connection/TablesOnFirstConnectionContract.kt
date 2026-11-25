@@ -9,6 +9,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.springframework.jdbc.core.JdbcTemplate
@@ -213,11 +214,11 @@ abstract class TablesOnFirstConnectionContract {
     fun `a graph name that cannot name tables leaves plain SQL working, and Cypher is refused, naming the graph and why`() {
         val pm = manager(open("my-graph"))
 
-        assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT 1 AS one")).size)
+        assertEquals(1, pm.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 AS one"))).size)
         val refused = assertFailsWith<DrivineException> { names(pm) }
         assertContains(refused.message.orEmpty(), "'my-graph' cannot name a graph on")
         assertContains(refused.message.orEmpty(), "it names tables")
-        assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT 1 AS one")).size)
+        assertEquals(1, pm.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 AS one"))).size)
     }
 
     /** The tables are made committing each statement, whatever the pool's connections do of themselves (#365). */
@@ -245,12 +246,12 @@ abstract class TablesOnFirstConnectionContract {
     fun `on a pool whose connections commit nothing of themselves, Cypher and SQL run outside a transaction are committed, and another session sees them`() {
         val pm = manager(notCommitting().also { made += it })
         pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
-        pm.execute(QuerySpecification.withStatement("CREATE TABLE written (n INTEGER)"))
-        pm.execute(QuerySpecification.withStatement("INSERT INTO written (n) VALUES (1)"))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("CREATE TABLE written (n INTEGER)")))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("INSERT INTO written (n) VALUES (1)")))
 
         val other = manager(open())
         assertEquals(listOf("Ada"), names(other))
-        assertEquals(1, other.query(QuerySpecification.withStatement("SELECT n FROM written")).size)
+        assertEquals(1, other.query(QuerySpecification.withStatement(sqlStatement("SELECT n FROM written"))).size)
     }
 
     @Test
@@ -286,12 +287,12 @@ abstract class TablesOnFirstConnectionContract {
         TransactionTemplate(DataSourceTransactionManager(pool)).executeWithoutResult { status ->
             JdbcTemplate(pool).update("INSERT INTO app_rows (n) VALUES (1)")
             // The provider's first connection, and a statement on it, in the application's transaction.
-            assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT n FROM app_rows")).size)
+            assertEquals(1, pm.query(QuerySpecification.withStatement(sqlStatement("SELECT n FROM app_rows"))).size)
             status.setRollbackOnly()
         }
 
         val other = manager(open())
-        assertEquals(0, other.query(QuerySpecification.withStatement("SELECT n FROM app_rows")).size)
+        assertEquals(0, other.query(QuerySpecification.withStatement(sqlStatement("SELECT n FROM app_rows"))).size)
         // Outside the application's transaction, the next connection makes the tables, and commits each statement.
         pm.execute(cypher("CREATE (:Person {name: 'Ada'})"))
         assertEquals(listOf("Ada"), names(other))

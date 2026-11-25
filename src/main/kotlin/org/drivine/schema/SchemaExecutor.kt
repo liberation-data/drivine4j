@@ -7,6 +7,7 @@ import org.drivine.connection.JdbcConnection
 import org.drivine.connection.NativeSchemaCommandExecutor
 import org.drivine.connection.PinnedConnections
 import org.drivine.query.QuerySpecification
+import org.drivine.connection.statementOf
 
 /**
  * Executes schema DDL and introspection queries in auto-commit mode.
@@ -28,7 +29,7 @@ class SchemaExecutor internal constructor(
     /** Runs [statement] with [parameters] bound, and returns its raw rows. */
     fun query(statement: String, parameters: Map<String, Any?>): List<Any?> =
         traced(statement, parameters) {
-            PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(statement).bind(parameters)) }
+            PinnedConnections.on(connectionProvider) { it.query(QuerySpecification.withStatement(connectionProvider.type.statementOf(statement)).bind(parameters)) }
         }
 
     /** Executes a single DDL statement. */
@@ -38,7 +39,7 @@ class SchemaExecutor internal constructor(
                 // A build in parallel leaves its session holding shared memory: see JdbcConnection.buildingIndex.
                 traced(statement.statement, emptyMap()) {
                     PinnedConnections.on(connectionProvider) { connection ->
-                        val build = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
+                        val build = { connection.query(QuerySpecification.withStatement(connectionProvider.type.statementOf(statement.statement)).bind(emptyMap())) }
                         (connection as? JdbcConnection)?.buildingIndex(build) ?: build()
                     }
                 }
@@ -46,7 +47,7 @@ class SchemaExecutor internal constructor(
                 // Refused in a transaction (`25001`), it would end it: see JdbcConnection.withinSavepoint.
                 traced(statement.statement, emptyMap()) {
                     PinnedConnections.on(connectionProvider) { connection ->
-                        val drop = { connection.query(QuerySpecification.withStatement(statement.statement).bind(emptyMap())) }
+                        val drop = { connection.query(QuerySpecification.withStatement(connectionProvider.type.statementOf(statement.statement)).bind(emptyMap())) }
                         (connection as? JdbcConnection)?.withinSavepoint(drop) ?: drop()
                     }
                 }

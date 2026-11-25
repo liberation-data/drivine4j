@@ -16,6 +16,7 @@ import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.SaveTraversal
 import org.drivine.query.StampWrite
+import org.drivine.query.QueryLanguage
 
 /**
  * Plans a whole save for a SQL store: the root, the relationships it drops, each related node and the
@@ -81,6 +82,7 @@ internal class SqlSavePlan(
             }
             return SaveStatement(
                 plan.text(WriteReturns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), rootMode,
+                QueryLanguage.SQL,
             )
         }
 

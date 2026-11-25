@@ -3,6 +3,7 @@ package org.drivine.sqlite
 import org.drivine.DrivineException
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -36,6 +37,6 @@ class SqlitePlanTest {
 
     @Test
     fun `SQL as it is is refused`() {
-        assertFailsWith<DrivineException> { pm.plan(QuerySpecification.withStatement("SELECT 1")) }
+        assertFailsWith<DrivineException> { pm.plan(QuerySpecification.withStatement(sqlStatement("SELECT 1"))) }
     }
 }

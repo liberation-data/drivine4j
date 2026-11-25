@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import org.drivine.DrivineException
 import org.drivine.mapper.JdbcResultMapper
+import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
 import org.drivine.query.sqlStatement
@@ -190,15 +191,35 @@ class JdbcConnectionTest {
     }
 
     @Test
-    fun `a statement that is Cypher is compiled to SQL, and one of no language is taken as SQL`() {
+    fun `a statement that is Cypher is compiled to SQL, as is one of no language, and one that is SQL runs as it is`() {
         connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        connection.query(QuerySpecification.withStatement("MATCH (m) RETURN m"))
         val prepared = ArgumentCaptor.forClass(String::class.java)
-        verify(jdbc).prepareStatement(prepared.capture())
+        verify(jdbc, Mockito.times(2)).prepareStatement(prepared.capture())
         // What reaches the database is the compiled SQL over the graph's tables, not the Cypher.
-        assertTrue(prepared.value.startsWith("SELECT ") && "_node" in prepared.value, prepared.value)
+        prepared.allValues.forEach { assertTrue(it.startsWith("SELECT ") && "_node" in it, it) }
 
-        connection.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        connection.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual")))
         verify(jdbc).prepareStatement("SELECT 1 FROM dual")
+    }
+
+    @Test
+    fun `on a connection that defaults to SQL a statement of no language runs as it is, and one that is Cypher is compiled`() {
+        val sql = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES, defaultLanguage = QueryLanguage.SQL)
+
+        sql.query(QuerySpecification.withStatement("SELECT 1 AS one"))
+        verify(jdbc).prepareStatement("SELECT 1 AS one")
+
+        sql.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc, Mockito.times(2)).prepareStatement(prepared.capture())
+        assertTrue(prepared.allValues.last().startsWith("SELECT ") && "_node" in prepared.allValues.last(), prepared.allValues.last())
+    }
+
+    @Test
+    fun `a connection's default language is Cypher or SQL, not none`() {
+        val refused = assertFailsWith<IllegalArgumentException> { JdbcConnection(jdbc, JdbcResultMapper(), defaultLanguage = QueryLanguage.PLATFORM_DEFAULT) }
+        assertEquals("A connection's default language is CYPHER or SQL.", refused.message)
     }
 
     @Test
@@ -209,7 +230,7 @@ class JdbcConnectionTest {
 
         Mockito.reset(statement)
         answers(emptyList())
-        connection.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        connection.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual")))
         JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES).query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
         verify(statement, never()).isPoolable = Mockito.anyBoolean()
     }
@@ -236,7 +257,7 @@ class JdbcConnectionTest {
 
             val refused = assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
             assertTrue(refused.message.orEmpty().startsWith("'my-graph' cannot name a graph on $engine: it names tables"), refused.message)
-            connection.query(QuerySpecification.withStatement("SELECT 1 AS one"))
+            connection.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 AS one")))
         }
         // Only the plain SQL reached the database.
         verify(jdbc, Mockito.times(3)).prepareStatement(anyString())

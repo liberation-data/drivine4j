@@ -6,6 +6,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.SqlCypherFixtures
 import org.drivine.test.TestCleanup
 import org.junit.jupiter.api.BeforeEach
@@ -26,7 +27,8 @@ class PostgresGraphIntegrationTest {
         JdbcConnectionProvider(graph, DatabaseType.POSTGRES, PostgresTestDatabase.provider.nativeDriver, graphName = graph), graph, DatabaseType.POSTGRES, SubtypeRegistry(),
     )
 
-    private fun spec(sql: String) = QuerySpecification.withStatement(sql.trimIndent())
+    private fun spec(sql: String) = QuerySpecification.withStatement(sqlStatement(sql.trimIndent()))
+    private fun cypher(statement: String) = QuerySpecification.withStatement(statement)
 
     private fun tables(): List<String> = PostgresTestDatabase.pm.query(
         spec("SELECT table_name FROM information_schema.tables WHERE table_name LIKE '${graph}\\_%' ORDER BY table_name").transform(String::class.java)
@@ -123,9 +125,9 @@ class PostgresGraphIntegrationTest {
         assertEquals(listOf(true), manager.query(spec("SELECT to_regprocedure('made_list_key(jsonb)') IS NOT NULL").transform(Boolean::class.java)))
 
         val fixtures = SqlCypherFixtures.over(manager)
-        fixtures.execute(spec("CREATE (:Box {id: 'a', l: [10]}), (:Box {id: 'b', l: [2, 1]}), (:Box {id: 'c', l: [1]}), (:Box {id: 'd', l: [1, 5]})"))
-        assertEquals(listOf("c", "d", "b", "a"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l").transform(String::class.java)))
-        assertEquals(listOf("a", "b", "d", "c"), fixtures.query(spec("MATCH (n:Box) RETURN n.id ORDER BY n.l DESC").transform(String::class.java)))
+        fixtures.execute(cypher("CREATE (:Box {id: 'a', l: [10]}), (:Box {id: 'b', l: [2, 1]}), (:Box {id: 'c', l: [1]}), (:Box {id: 'd', l: [1, 5]})"))
+        assertEquals(listOf("c", "d", "b", "a"), fixtures.query(cypher("MATCH (n:Box) RETURN n.id ORDER BY n.l").transform(String::class.java)))
+        assertEquals(listOf("a", "b", "d", "c"), fixtures.query(cypher("MATCH (n:Box) RETURN n.id ORDER BY n.l DESC").transform(String::class.java)))
     }
 
     @Test
@@ -153,14 +155,14 @@ class PostgresGraphIntegrationTest {
     fun `the fixtures write nodes and relationships, and read them back in Cypher`() {
         PostgresGraph(graph).ensure(manager)
         val fixtures = SqlCypherFixtures.over(manager)
-        fixtures.execute(spec("CREATE (a:Person {id: 'ada', name: 'Ada'})-[:KNOWS {since: 2020}]->(b:Person {id: 'bob'})"))
-        fixtures.execute(spec("MATCH (p:Person {id: 'bob'}) SET p.name = 'Bob'"))
+        fixtures.execute(cypher("CREATE (a:Person {id: 'ada', name: 'Ada'})-[:KNOWS {since: 2020}]->(b:Person {id: 'bob'})"))
+        fixtures.execute(cypher("MATCH (p:Person {id: 'bob'}) SET p.name = 'Bob'"))
 
-        assertEquals(listOf("Ada", "Bob"), fixtures.query(spec("MATCH (p:Person) RETURN p.name ORDER BY p.name").transform(String::class.java)))
-        assertEquals(listOf<Any>(2020L), fixtures.query(spec("MATCH (:Person {id: 'ada'})-[k:KNOWS]->(:Person {id: 'bob'}) RETURN k.since")))
+        assertEquals(listOf("Ada", "Bob"), fixtures.query(cypher("MATCH (p:Person) RETURN p.name ORDER BY p.name").transform(String::class.java)))
+        assertEquals(listOf<Any>(2020L), fixtures.query(cypher("MATCH (:Person {id: 'ada'})-[k:KNOWS]->(:Person {id: 'bob'}) RETURN k.since")))
         assertEquals(listOf<Any>(listOf("KNOWS", mapOf("since" to 2020L))), manager.query(spec("SELECT type, props FROM made_edge")))
 
-        fixtures.execute(spec("MATCH (n) DETACH DELETE n"))
+        fixtures.execute(cypher("MATCH (n) DETACH DELETE n"))
         assertEquals(listOf<Any>(0L), manager.query(spec("SELECT COUNT(*) FROM made_node")))
     }
 

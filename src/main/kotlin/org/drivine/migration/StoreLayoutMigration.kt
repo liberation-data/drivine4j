@@ -21,6 +21,7 @@ import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.slf4j.LoggerFactory
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.time.Instant
@@ -111,7 +112,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
                                     val held = provider.connectUnjudged()
                                     lock = held
                                     held.startTransaction()
-                                    held.query(QuerySpecification.withStatement(action.statement))
+                                    held.query(QuerySpecification.withStatement(sqlStatement(action.statement)))
                                 }
                                 MigrationOutcome.Ran
                             }
@@ -152,7 +153,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
             MigrationOutcome.Ran
         }
         // The store's tables made as a first connection makes them, without the verdict it asks first, which refuses the graph.
-        MigrationAction.Prepare -> { graph.ensure { work.query(QuerySpecification.withStatement(it)) }; MigrationOutcome.Ran }
+        MigrationAction.Prepare -> { graph.ensure { work.query(QuerySpecification.withStatement(sqlStatement(it))) }; MigrationOutcome.Ran }
         MigrationAction.AssignStamp -> {
             rows(work, stamps.assignIfAbsent, StoreStamp.assignParameters(UUID.randomUUID().toString(), Instant.now().toString(), StoreStamp.engine(store)))
             MigrationOutcome.Ran
@@ -162,7 +163,7 @@ class StoreLayoutMigration(private val provider: JdbcConnectionProvider) {
 
     /** The rows [statement], one of the module's, gives on [work], bound [parameters]: each a map where its row is a JSON object. */
     private fun rows(work: JdbcConnection, statement: String, parameters: Map<String, Any?>): List<Any?> =
-        work.query(QuerySpecification.withStatement(statement).bind(parameters)).map { row ->
+        work.query(QuerySpecification.withStatement(sqlStatement(statement)).bind(parameters)).map { row ->
             (row as? Map<*, *>)?.entries?.associate { (k, v) -> k.toString() to v } ?: row
         }
 

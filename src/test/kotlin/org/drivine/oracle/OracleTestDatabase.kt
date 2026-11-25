@@ -11,6 +11,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.drivine.query.sqlStatement
 import org.drivine.test.SqlCypherFixtures
 import org.drivine.test.OracleTestContainer
 import java.sql.DriverManager
@@ -42,8 +43,8 @@ object OracleTestDatabase {
         NonTransactionalPersistenceManager(provider, "oracle", DatabaseType.ORACLE, SubtypeRegistry())
     }
 
-    /** Runs each statement on its own, committed as it runs. */
-    fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(it.trimIndent())) }
+    /** Runs each SQL statement on its own, committed as it runs. */
+    fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(sqlStatement(it.trimIndent()))) }
 
     /**
      * The plan Oracle makes for [sql] on [pm], its [parameters] written in as literals so that the plan is the one for them,
@@ -61,7 +62,7 @@ object OracleTestDatabase {
                 DBMS_SQL.RETURN_RESULT(v_plan);
             END;
         """.trimIndent()
-        return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
+        return pm.query(QuerySpecification.withStatement(sqlStatement(block)).transform(String::class.java)).joinToString("\n")
     }
 
     /**
@@ -100,20 +101,9 @@ object OracleTestDatabase {
     /** [pm] as the cross-engine tests use a manager: see [SqlCypherFixtures.over]. */
     fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = SqlCypherFixtures.over(pm)
 
-    /**
-     * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own:
-     * a statement of no language that is Cypher is sent as Cypher, as [SqlCypherFixtures.over] sends it.
-     */
-    fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider {
-        val provider = JdbcConnectionProvider(pm.database, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
-        return object : ConnectionProvider by provider {
-            override fun connect(): Connection = provider.connect().let { connection ->
-                object : Connection by connection {
-                    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = connection.query(SqlCypherFixtures.asCypher(spec))
-                }
-            }
-        }
-    }
+    /** The provider of [pm]'s connections, for a test that runs a statement on a connection of its own. */
+    fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider =
+        JdbcConnectionProvider(pm.database, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
 
     /** Drops what [names] name, when it is there: `TABLE x`, `PROPERTY GRAPH g`. A graph goes before its tables. */
     fun drop(vararg names: String) = names.forEach {

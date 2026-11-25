@@ -8,6 +8,7 @@ import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.model.LowerCopies
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
@@ -43,8 +44,8 @@ class OracleSchemaManagementIntegrationTest {
 
     /** The plan Oracle makes for [sql], as text. */
     private fun plan(sql: String): String {
-        manager.execute(QuerySpecification.withStatement("EXPLAIN PLAN FOR $sql"))
-        return manager.query(QuerySpecification.withStatement("SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY())").transform(String::class.java))
+        manager.execute(QuerySpecification.withStatement(sqlStatement("EXPLAIN PLAN FOR $sql")))
+        return manager.query(QuerySpecification.withStatement(sqlStatement("SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY())")).transform(String::class.java))
             .joinToString("\n")
     }
 
@@ -205,7 +206,7 @@ class OracleSchemaManagementIntegrationTest {
     /** Each index of the graph's node table whose name starts with [name], as Oracle keeps it, and whether it is unique. */
     private fun indexesNamed(name: String): Map<String, Boolean> =
         manager.query(QuerySpecification.withStatement(
-            "SELECT index_name || ' ' || uniqueness FROM user_indexes WHERE table_name = 'SCHEMA_NODE' AND index_name LIKE '${name.uppercase()}%'"
+            sqlStatement("SELECT index_name || ' ' || uniqueness FROM user_indexes WHERE table_name = 'SCHEMA_NODE' AND index_name LIKE '${name.uppercase()}%'")
         ).transform(String::class.java)).associate { it.substringBefore(' ') to (it.substringAfter(' ') == "UNIQUE") }
 
     /**
@@ -348,7 +349,7 @@ class OracleSchemaManagementIntegrationTest {
         assertEquals(8, manager.indexes.recreate(VectorIndexSpec("Chunk", "embedding", 8)).current.dimensions)
     }
 
-    private fun count(sql: String): Long = manager.getOne(QuerySpecification.withStatement(sql).transform(Long::class.java))
+    private fun count(sql: String): Long = manager.getOne(QuerySpecification.withStatement(sqlStatement(sql)).transform(Long::class.java))
 
     @Test
     fun `vector index - a table of embeddings is kept in step with the nodes, whatever writes them`() {
@@ -487,7 +488,7 @@ class OracleSchemaManagementIntegrationTest {
             OracleTestDatabase.clear(pm)
             // What an earlier run against the same database left: constraints first, for each comes with an index.
             pm.constraints.list().forEach { runCatching { pm.constraints.drop(UniquenessConstraintSpec(it.label, it.properties)) } }
-            pm.indexes.list().forEach { runCatching { pm.execute(QuerySpecification.withStatement(pm.indexes.grammar.dropIndex(it).single().let { s -> (s as org.drivine.schema.SchemaStatement.Cypher).statement })) } }
+            pm.indexes.list().forEach { runCatching { pm.execute(QuerySpecification.withStatement(sqlStatement(pm.indexes.grammar.dropIndex(it).single().let { s -> (s as org.drivine.schema.SchemaStatement.Cypher).statement }))) } }
         }
     }
 }

@@ -8,6 +8,7 @@ import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.SchemaVersionStore
 import org.drivine.store.StoreIdentityResolver
 import org.drivine.test.OracleTestContainer
@@ -44,7 +45,7 @@ class OracleFreshGraphTest {
         // The provider makes the graph's tables, and its function, before its first connection: that one
         // is had first, so the graph is dropped after it, and what is asked here finds no tables, as it
         // would through a provider of the application's own.
-        manager.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        manager.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual")))
         OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${graph}_nulls_equal", "FUNCTION ${graph}_era", "FUNCTION ${graph}_era_date")
     }
 
@@ -82,7 +83,7 @@ class OracleFreshGraphTest {
         OracleGraph(graph).ensure(manager)
         val f = OracleGraph(graph).nullsEqual
         val compared = "NVL(TO_CHAR($f(JSON('[null]'), JSON('[1]'))), 'null') || ',' || TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) || ',' || TO_CHAR($f(JSON('{\"x\": [1]}'), JSON('{\"x\": [1]}')))"
-        assertEquals(listOf("null,0,1"), manager.query(QuerySpecification.withStatement("SELECT $compared AS r FROM DUAL")))
+        assertEquals(listOf("null,0,1"), manager.query(QuerySpecification.withStatement(sqlStatement("SELECT $compared AS r FROM DUAL"))))
     }
 
     @Test
@@ -95,7 +96,7 @@ class OracleFreshGraphTest {
         val written = listOf("'-0001-03-15'", "'-0045-03-15T12:00:00'", "'0999-12-31'", "'2024-03-15'", "NULL").joinToString(" || ',' || ") { "NVL($eraDate($it), 'null')" }
         assertEquals(
             listOf("-0001-03-15,-0045-03-15T12:00:00,0999-12-31,2024-03-15,null", "0000-03-15,-0044-03-15T12:00:00,0999-12-31,2024-03-15,null"),
-            manager.query(QuerySpecification.withStatement("SELECT $read AS r FROM DUAL UNION ALL SELECT $written FROM DUAL")),
+            manager.query(QuerySpecification.withStatement(sqlStatement("SELECT $read AS r FROM DUAL UNION ALL SELECT $written FROM DUAL"))),
         )
     }
 
@@ -178,7 +179,7 @@ class OracleFreshGraphTest {
         val f = OracleGraph(graph).nullsEqual
         OracleTestDatabase.run("BEGIN EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION $f RETURN NUMBER IS BEGIN RETURN nope; END;'; EXCEPTION WHEN OTHERS THEN NULL; END;")
         OracleGraph(graph).ensure(manager)
-        assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL")))
+        assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement(sqlStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL"))))
     }
 
     @Test
@@ -306,7 +307,7 @@ class OracleFreshGraphTest {
                 start.countDown()
                 threads.forEach(Thread::join)
                 assertTrue(errors.isEmpty(), errors.joinToString())
-                assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL")))
+                assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement(sqlStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL"))))
             }
         } finally {
             connections.forEach { runCatching { it.close() } }

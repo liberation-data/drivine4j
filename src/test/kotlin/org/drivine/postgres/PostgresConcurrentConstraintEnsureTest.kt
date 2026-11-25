@@ -59,7 +59,7 @@ class PostgresConcurrentConstraintEnsureTest {
     }
 
     /** Runs each statement on its own, committed as it runs, on the class's own pool. */
-    private fun run(vararg statements: String) = statements.forEach { own.execute(QuerySpecification.withStatement(it)) }
+    private fun run(vararg statements: String) = statements.forEach { own.execute(QuerySpecification.withStatement(sqlStatement(it))) }
 
     /** A manager for the graph [graph], with its tables made, as [PostgresTestDatabase.graphManager] makes one, over the class's own pool. */
     private fun manager(graph: String): NonTransactionalPersistenceManager = SubtypeRegistry().let { registry ->

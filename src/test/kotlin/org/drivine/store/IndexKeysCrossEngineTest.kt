@@ -19,6 +19,7 @@ import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
@@ -79,19 +80,19 @@ abstract class IndexKeysContract {
             val text = mapper.writeValueAsString(value)
             for (key in table["keys"]) {
                 val stored = key["stored"]?.asText() ?: key["key"].asText()
-                pm.execute(QuerySpecification.withStatement("DELETE FROM $nodes"))
+                pm.execute(QuerySpecification.withStatement(sqlStatement("DELETE FROM $nodes")))
                 val props = mapper.createObjectNode().set<JsonNode>(stored, atRest(value))
-                pm.execute(QuerySpecification.withStatement("INSERT INTO $nodes (labels, props) VALUES (${json("\$labels")}, ${json("\$props")})")
+                pm.execute(QuerySpecification.withStatement(sqlStatement("INSERT INTO $nodes (labels, props) VALUES (${json("\$labels")}, ${json("\$props")})"))
                     .bind(mapOf("labels" to "[\"K\"]", "props" to mapper.writeValueAsString(props))))
                 val columns = IndexKey.column(store, "n", stored)
                 if (store == Store.POSTGRES) {
                     // The value as a statement binds it, a tag with its sort key, compared with the index's JSON as a lookup does.
-                    val equal = pm.query(QuerySpecification.withStatement("SELECT CASE WHEN ${columns.single()} = CAST(\$v AS jsonb) THEN 1 ELSE 0 END AS e FROM $nodes n")
+                    val equal = pm.query(QuerySpecification.withStatement(sqlStatement("SELECT CASE WHEN ${columns.single()} = CAST(\$v AS jsonb) THEN 1 ELSE 0 END AS e FROM $nodes n"))
                         .bind(mapOf("v" to mapper.writeValueAsString(atRest(value))))).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
                     if (equal.toString() != "1") wrong += "${text.take(60)} under $stored: the index's JSON is not the bound value's"
                 } else {
                     val (kind, held) = columns
-                    val got = columns(pm.query(QuerySpecification.withStatement("SELECT $kind AS c, $held AS k FROM $nodes n")).single())
+                    val got = columns(pm.query(QuerySpecification.withStatement(sqlStatement("SELECT $kind AS c, $held AS k FROM $nodes n"))).single())
                     val want = listOf(pinned[0].asText(), pinned[1].asText())
                     if (got != want) wrong += "${text.take(60)} under $stored: index holds ${got.map { it?.take(40) }}, pinned ${want.map { it.take(40) }}"
                 }
@@ -124,7 +125,7 @@ class OracleIndexKeysTest : IndexKeysContract() {
     override fun json(marker: String) = "JSON($marker)"
     override fun extra(pm: NonTransactionalPersistenceManager, text: String): List<String?> {
         return columns(pm.query(QuerySpecification.withStatement(
-            "SELECT ${OracleSql.valueClass("JSON(\$v)")} AS c, ${OracleSql.valueKey("JSON(\$v)")} AS k FROM dual",
+            sqlStatement("SELECT ${OracleSql.valueClass("JSON(\$v)")} AS c, ${OracleSql.valueKey("JSON(\$v)")} AS k FROM dual",)
         ).bind(mapOf("v" to text))).single())
     }
 }

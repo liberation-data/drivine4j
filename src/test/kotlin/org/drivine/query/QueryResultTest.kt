@@ -12,6 +12,7 @@ import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.PersistenceManagerType
 import org.drivine.mapper.JdbcTypedValues
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SqlCypherFixtures
 import org.drivine.transaction.TransactionContextHolder
@@ -95,10 +96,10 @@ class QueryResultTest {
         val mapped = QuerySpecification.withStatement(CypherStatement("RETURN 1 AS n")).transform(String::class.java)
         val failure = assertThrows<DrivineException> { pm.queryResult(mapped) }
         assertContains(failure.message!!, "use query for mapped results")
-        assertEquals(QueryResult(listOf("a", "b"), listOf(listOf(1L, "x"))), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a, 'x' AS b")))
-        assertEquals(QueryResult(listOf("a"), emptyList()), pm.queryResult(QuerySpecification.withStatement("SELECT 1 AS a WHERE 1 = 0")))
+        assertEquals(QueryResult(listOf("a", "b"), listOf(listOf(1L, "x"))), pm.queryResult(QuerySpecification.withStatement(sqlStatement("SELECT 1 AS a, 'x' AS b"))))
+        assertEquals(QueryResult(listOf("a"), emptyList()), pm.queryResult(QuerySpecification.withStatement(sqlStatement("SELECT 1 AS a WHERE 1 = 0"))))
         // One that gives no result set names no columns.
-        assertEquals(QueryResult(emptyList(), emptyList()), pm.queryResult(QuerySpecification.withStatement("DROP TABLE IF EXISTS result_none")))
+        assertEquals(QueryResult(emptyList(), emptyList()), pm.queryResult(QuerySpecification.withStatement(sqlStatement("DROP TABLE IF EXISTS result_none"))))
     }
 
     @Test
@@ -174,7 +175,7 @@ class QueryResultTest {
         val sql = pm.explain(cypher)
         assertContains(sql, "${graph}_node")
         assertEquals(QueryResult(listOf("c"), listOf(listOf(0L))), pm.queryResult(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN count(n) AS c"))))
-        assertContains(assertThrows<DrivineException> { pm.explain(QuerySpecification.withStatement("SELECT 1")) }.message!!, "SQL already")
+        assertContains(assertThrows<DrivineException> { pm.explain(QuerySpecification.withStatement(sqlStatement("SELECT 1"))) }.message!!, "SQL already")
         val registry = DatabaseRegistry(DataSourceMap()).also {
             it.register(JdbcConnectionProvider(graph, DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, SubtypeRegistry(), graphName = graph))
         }

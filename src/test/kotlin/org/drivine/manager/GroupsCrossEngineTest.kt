@@ -10,6 +10,7 @@ import org.drivine.annotation.Hop
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.JdbcConnectionProvider
+import org.drivine.query.sqlStatement
 import org.drivine.test.OracleTestContainer
 import javax.sql.DataSource
 import org.drivine.connection.Neo4jConnectionProvider
@@ -1116,7 +1117,7 @@ class GroupsOracleTest : GroupsContract() {
         val folded = NonTransactionalPersistenceManager(provider, "contracts", DatabaseType.ORACLE, SubtypeRegistry())
         assertEquals(
             listOf<Any?>("BINARY_CI"),
-            folded.query(QuerySpecification.withStatement("SELECT value FROM nls_session_parameters WHERE parameter = 'NLS_SORT'").transform(String::class.java)),
+            folded.query(QuerySpecification.withStatement(sqlStatement("SELECT value FROM nls_session_parameters WHERE parameter = 'NLS_SORT'")).transform(String::class.java)),
         )
         val stateless = StatelessGraphObjectManager(folded, Neo4jObjectMapper.instance, SubtypeRegistry())
         stateless.saveAll(listOf(Feedback("c1", "a", section = "a"), Feedback("c2", "B", section = "B"), Feedback("c3", "B", section = "a")))

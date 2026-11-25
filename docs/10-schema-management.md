@@ -168,7 +168,7 @@ Ensuring an item again with the same kind, label and properties replaces it: of 
 
 ### Neo4j schema DDL on the SQL stores
 
-Postgres, Oracle and SQLite run Neo4j's schema DDL, given as Cypher (a `CypherStatement`) to a `PersistenceManager`, so that a schema file written for Neo4j, such as an APOC export's, replays as it is. Drivine reads each statement and applies it through the schema machinery, as the schema API applies a spec: the item it makes has the name, the expressions and the inventory entry the API gives the same spec, so a later `enforce` of an application that declares it finds it matching, not drifted or orphaned. The statement gives no rows. Neo4j, Memgraph and FalkorDB are sent the statement as it is, as before.
+Postgres, Oracle and SQLite run Neo4j's schema DDL, given as Cypher (a `CypherStatement`, or a statement of no language on a datasource that does not default to SQL) to a `PersistenceManager`, so that a schema file written for Neo4j, such as an APOC export's, replays as it is. Drivine reads each statement and applies it through the schema machinery, as the schema API applies a spec: the item it makes has the name, the expressions and the inventory entry the API gives the same spec, so a later `enforce` of an application that declares it finds it matching, not drifted or orphaned. The statement gives no rows. Neo4j, Memgraph and FalkorDB are sent the statement as it is, as before.
 
 | DDL | Applied as |
 |---|---|

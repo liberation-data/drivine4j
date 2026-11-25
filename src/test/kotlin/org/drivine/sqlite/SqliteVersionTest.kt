@@ -16,6 +16,7 @@ import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
@@ -107,10 +108,10 @@ class SqliteVersionTest {
             assertEquals(refused("3.46.1"), refusal.message, it)
         }
         // The connection is handed out, its graph's tables made, and plain SQL runs over them.
-        assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement("SELECT count(*) FROM oldsqlite_node")))
-        assertEquals(listOf(3L), pm.query(QuerySpecification.withStatement("SELECT json_extract('[1,2,3]', '\$[#-1]')")))
+        assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT count(*) FROM oldsqlite_node"))))
+        assertEquals(listOf(3L), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT json_extract('[1,2,3]', '\$[#-1]')"))))
         // Nothing of the refused write was run.
-        assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement("SELECT count(*) FROM oldsqlite_node")))
+        assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT count(*) FROM oldsqlite_node"))))
         // The version is read once for the provider, not on each connection or statement.
         assertEquals(1, source.reads.get())
     }
@@ -157,7 +158,7 @@ class SqliteVersionTest {
             try {
                 val refusal = assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(CypherStatement("RETURN 1 AS one"))) }
                 assertEquals(refused("3.49.1"), refusal.message)
-                assertEquals(listOf(1L), connection.query(QuerySpecification.withStatement("SELECT 1")))
+                assertEquals(listOf(1L), connection.query(QuerySpecification.withStatement(sqlStatement("SELECT 1"))))
             } finally {
                 connection.release()
             }
@@ -177,7 +178,7 @@ class SqliteVersionTest {
 
     @Test
     fun `on the SQLite the tests run, 3_53_2 or later, compiled Cypher runs as before, last() and a negative index with it`() {
-        val version = SqliteTestDatabase.pm.query(QuerySpecification.withStatement("SELECT sqlite_version()").transform(String::class.java)).single()
+        val version = SqliteTestDatabase.pm.query(QuerySpecification.withStatement(sqlStatement("SELECT sqlite_version()")).transform(String::class.java)).single()
         val (major, minor, patch) = version.split('.').map(String::toInt)
         assertTrue(major > 3 || (major == 3 && (minor > 53 || (minor == 53 && patch >= 2))), version)
         assertNull(SqliteVersion.refusal(version))

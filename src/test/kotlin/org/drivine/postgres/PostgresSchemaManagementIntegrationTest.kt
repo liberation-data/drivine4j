@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.model.LowerCopies
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
@@ -45,9 +46,9 @@ class PostgresSchemaManagementIntegrationTest {
         val connection = PostgresTestDatabase.provider.connect()
         try {
             connection.startTransaction()
-            without.forEach { connection.query(QuerySpecification.withStatement("DROP INDEX $it")) }
-            connection.query(QuerySpecification.withStatement("SET LOCAL enable_seqscan = off"))
-            return connection.query(QuerySpecification.withStatement("EXPLAIN $sql")).joinToString("\n")
+            without.forEach { connection.query(QuerySpecification.withStatement(sqlStatement("DROP INDEX $it"))) }
+            connection.query(QuerySpecification.withStatement(sqlStatement("SET LOCAL enable_seqscan = off")))
+            return connection.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN $sql"))).joinToString("\n")
         } finally {
             connection.release()
         }
@@ -164,8 +165,8 @@ class PostgresSchemaManagementIntegrationTest {
     /** Each index of the graph's node table whose name starts with [name], as Postgres keeps it, and whether it is unique. */
     private fun indexesNamed(name: String): Map<String, Boolean> =
         manager.query(QuerySpecification.withStatement(
-            "SELECT c.relname || ' ' || i.indisunique::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid " +
-                "WHERE i.indrelid = 'schema_node'::regclass AND c.relname LIKE '${name.lowercase()}%'"
+            sqlStatement("SELECT c.relname || ' ' || i.indisunique::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid " +
+                "WHERE i.indrelid = 'schema_node'::regclass AND c.relname LIKE '${name.lowercase()}%'")
         ).transform(String::class.java)).associate { it.substringBefore(' ') to it.substringAfter(' ').toBoolean() }
 
     /** A recreate that the data allows swaps the index built beside the old into its name, and leaves nothing beside it (plans.yaml case 31). */
@@ -213,7 +214,7 @@ class PostgresSchemaManagementIntegrationTest {
             assertEquals(mapOf("serial" to "b-1"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
             assertEquals(mapOf(name.lowercase() to false), indexesNamed(name), "the old index is kept, and the leftover dropped")
             assertEquals(1L, manager.getOne(QuerySpecification.withStatement(
-                "SELECT count(*) FROM schema_schema WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Badge'"
+                sqlStatement("SELECT count(*) FROM schema_schema WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Badge'")
             ).transform(Long::class.java)), "the record is kept")
         } finally {
             runCatching { manager.constraints.drop(spec) }
@@ -272,9 +273,9 @@ class PostgresSchemaManagementIntegrationTest {
 
         // Essays enough that the label alone is no way to find one, and the planner told so.
         manager.execute(QuerySpecification.withStatement(
-            "INSERT INTO schema_node (labels, props) SELECT '[\"Essay\"]', jsonb_build_object('title', 'essay ' || i, 'body', 'soup ' || i) FROM generate_series(1, 500) i"
+            sqlStatement("INSERT INTO schema_node (labels, props) SELECT '[\"Essay\"]', jsonb_build_object('title', 'essay ' || i, 'body', 'soup ' || i) FROM generate_series(1, 500) i")
         ))
-        manager.execute(QuerySpecification.withStatement("ANALYZE schema_node"))
+        manager.execute(QuerySpecification.withStatement(sqlStatement("ANALYZE schema_node")))
         val text = "lower(COALESCE((c.props ->> 'title'), '') || ' ' || COALESCE((c.props ->> 'body'), ''))"
         // Over a few hundred nodes the planner reads the label's through the index over labels; without it, the trigrams answer.
         val plan = plan("SELECT c.nid FROM schema_node c WHERE c.labels @> '[\"Essay\"]' AND ($text LIKE '%graph%')", without = listOf("schema_node_labels"))
@@ -345,7 +346,7 @@ class PostgresSchemaManagementIntegrationTest {
             PostgresTestDatabase.clear(pm)
             // What an earlier run against the same database left.
             pm.constraints.list().forEach { runCatching { pm.constraints.drop(UniquenessConstraintSpec(it.label, it.properties)) } }
-            pm.indexes.list().forEach { runCatching { pm.execute(QuerySpecification.withStatement(pm.indexes.grammar.dropIndex(it).single().let { s -> (s as SchemaStatement.Cypher).statement })) } }
+            pm.indexes.list().forEach { runCatching { pm.execute(QuerySpecification.withStatement(sqlStatement(pm.indexes.grammar.dropIndex(it).single().let { s -> (s as SchemaStatement.Cypher).statement }))) } }
         }
     }
 }

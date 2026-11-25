@@ -20,6 +20,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
@@ -768,7 +769,7 @@ class CypherWriteOracleTest : CypherWriteContract() {
         try {
             val sessions = connections.map { connection ->
                 assertEquals<List<Any?>>(rows, connection.query(walk))
-                connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")).single()
+                connection.query(QuerySpecification.withStatement(sqlStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL"))).single()
             }
             assertTrue(sessions[0] != sessions[1], "$sessions")
         } finally {

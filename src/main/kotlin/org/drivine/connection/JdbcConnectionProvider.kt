@@ -17,6 +17,7 @@ import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.UnsupportedSchemaGrammar
+import org.drivine.query.QueryLanguage
 import org.slf4j.LoggerFactory
 import java.util.Collections
 import java.util.WeakHashMap
@@ -81,7 +82,16 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * statements as it opens a session either way.
      */
     private val setsNoAdaptivePlans: Boolean = true,
+    /**
+     * The language of a statement that names none, on each connection this provider hands out: Cypher, compiled to the
+     * store's SQL, unless SQL is asked for (see [ConnectionProperties.defaultLanguage]). [QueryLanguage.PLATFORM_DEFAULT]
+     * is taken as Cypher. A statement that names its language, `sqlStatement(...)` or `cypherStatement(...)`, runs as it says.
+     */
+    defaultLanguage: QueryLanguage = QueryLanguage.CYPHER,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
+
+    /** See the constructor's `defaultLanguage`. */
+    val defaultLanguage: QueryLanguage = if (defaultLanguage == QueryLanguage.PLATFORM_DEFAULT) QueryLanguage.CYPHER else defaultLanguage
 
     /** The graph Oracle, Postgres and SQLite keep in tables; null for another JDBC store, which keeps none. */
     private val graph: SqlGraph? by lazy {
@@ -194,7 +204,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             runCatching { session.close() }.exceptionOrNull()?.let(e::addSuppressed)
             throw e
         }
-        return JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
+        return JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal, defaultLanguage = defaultLanguage)
             .also {
                 it.restoresAutoCommit = turned
                 // Still committing nothing of itself: a Spring or JTA transaction's, which a Drivine transaction joins (#724).
@@ -343,7 +353,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     private fun makeTables(graph: SqlGraph): Boolean {
         val session = withoutAdaptivePlans(dataSource.connection)
         if (type == DatabaseType.ORACLE) checkVersion(session)
-        val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
+        val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName, defaultLanguage = defaultLanguage)
         tablesHeldBack = false
         val failure = try {
             val committing = session.autoCommit
@@ -520,6 +530,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             idleTimeoutMillis: Int? = null,
             subtypeRegistry: SubtypeRegistry? = null,
             graphName: String = DEFAULT_GRAPH,
+            defaultLanguage: QueryLanguage = QueryLanguage.CYPHER,
         ): JdbcConnectionProvider {
             val config = HikariConfig().apply {
                 this.jdbcUrl = jdbcUrl
@@ -537,7 +548,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
                 // A string is sent with no type, as a literal is, so the statement says what it is: `jsonb`, a number, a date.
                 if (type == DatabaseType.POSTGRES) addDataSourceProperty("stringtype", "unspecified")
             }
-            return JdbcConnectionProvider(name, type, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName)
+            return JdbcConnectionProvider(name, type, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName, defaultLanguage = defaultLanguage)
         }
 
         /**
@@ -561,6 +572,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             busyTimeoutMillis: Int? = null,
             subtypeRegistry: SubtypeRegistry? = null,
             graphName: String = DEFAULT_GRAPH,
+            defaultLanguage: QueryLanguage = QueryLanguage.CYPHER,
         ): JdbcConnectionProvider {
             require(path.isNotBlank() && ":memory:" !in path && "mode=memory" !in path) {
                 "SQLite's path '$path' names no file: each pooled connection would open a database of its own. Give the path of a file."
@@ -570,7 +582,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
                 poolName = "drivine-$name"
                 poolMax?.let { maximumPoolSize = it }
             }
-            return JdbcConnectionProvider(name, DatabaseType.SQLITE, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName)
+            return JdbcConnectionProvider(name, DatabaseType.SQLITE, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName, defaultLanguage = defaultLanguage)
         }
 
         /** The thin-driver URL of an Oracle service. */

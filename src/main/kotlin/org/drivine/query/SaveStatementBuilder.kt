@@ -41,6 +41,8 @@ internal class SaveStatement(
     val offered: List<String> = emptyList(),
     /** Whether the root is made when it is not there, and written when it is. Where it is not, the statement gives no row. */
     val rootMode: RootMode = RootMode.EITHER,
+    /** The language [statement] is in: SQL from a backend over a SQL store, none for a graph engine's Cypher. */
+    val language: QueryLanguage = QueryLanguage.PLATFORM_DEFAULT,
 ) {
     /** The node the root is saved to. */
     val rootKey: NodeKey get() = NodeKey(root.labelNames.toSet(), root.id)
