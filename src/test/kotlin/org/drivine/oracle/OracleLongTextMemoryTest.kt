@@ -4,6 +4,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.Nightly
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.Test
@@ -43,7 +44,7 @@ class OracleLongTextMemoryTest {
             val t = "aB".repeat(20_000)
             query("MATCH (n:LongText) DETACH DELETE n")
             query("CREATE (n:LongText {t: \$t})", mapOf("t" to t))
-            val sid = (connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') AS sid FROM dual")).single()).toString().toLong()
+            val sid = (connection.query(QuerySpecification.withStatement(sqlStatement("SELECT SYS_CONTEXT('USERENV', 'SID') AS sid FROM dual"))).single()).toString().toLong()
             val before = sessionMemory(sid)
             val parts = mapOf("a" to t.substring(0, 20_000), "b" to t.substring(20_000))
             for (i in 1..30) {

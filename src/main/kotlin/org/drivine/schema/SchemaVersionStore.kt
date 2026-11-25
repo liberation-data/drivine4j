@@ -8,6 +8,7 @@ import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SqlStatement
 import org.drivine.query.transform
+import org.drivine.connection.statementOf
 
 /**
  * Persists what a schema-catalog owner last applied to a database, in a reserved marker node.
@@ -71,7 +72,7 @@ class SchemaVersionStore(
      */
     fun storedVersion(): String? {
         val spec = QuerySpecification
-            .withStatement(statements.read(SchemaMarker.VERSION))
+            .withStatement(manager.type.statementOf(statements.read(SchemaMarker.VERSION)))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
         return SchemaStatementTrace.traced(manager, spec) { manager.maybeGetOne(spec) }
@@ -91,7 +92,7 @@ class SchemaVersionStore(
      */
     internal fun storedRecord(): MarkerInventory? {
         val spec = QuerySpecification
-            .withStatement(statements.read(SchemaMarker.ITEMS))
+            .withStatement(manager.type.statementOf(statements.read(SchemaMarker.ITEMS)))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
         val raw = SchemaStatementTrace.traced(manager, spec) { manager.maybeGetOne(spec) } ?: return null
@@ -145,7 +146,7 @@ class SchemaVersionStore(
     fun ensureSingleton() {
         execute(
             QuerySpecification
-                .withStatement(statements.deleteAllButNewest)
+                .withStatement(manager.type.statementOf(statements.deleteAllButNewest))
                 .bind(mapOf("scope" to scope))
         )
         // Neo4j refuses to create a constraint while an equivalent plain index exists — e.g. a
@@ -155,14 +156,14 @@ class SchemaVersionStore(
     }
 
     private fun merge(version: String?, items: String) {
-        execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
+        execute(QuerySpecification.withStatement(manager.type.statementOf(statements.merge)).bind(statements.mergeBindings(scope, version, items)))
     }
 
     /** Removes this scope's marker (e.g. to force the next enforce to treat the schema as un-versioned). */
     fun clear() {
         execute(
             QuerySpecification
-                .withStatement(statements.delete)
+                .withStatement(manager.type.statementOf(statements.delete))
                 .bind(mapOf("scope" to scope))
         )
     }

@@ -10,6 +10,7 @@ import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 import org.drivine.store.StoreIdentityResolver
+import org.drivine.connection.statementOf
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
@@ -181,7 +182,7 @@ internal class LowerCopyCatalog(
         properties.filter { again || label to it !in stored }.forEach { property ->
             var filled = 0L
             do {
-                val fill = QuerySpecification.withStatement(statements.fill(label, property)).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
+                val fill = QuerySpecification.withStatement(owner.type.statementOf(statements.fill(label, property))).bind(mapOf("batch" to BATCH)).transform(Number::class.java)
                 val written = SchemaStatementTrace.traced(owner, fill) { owner.getOne(fill) }.toLong()
                 filled += written
             } while (written >= BATCH)
@@ -191,7 +192,7 @@ internal class LowerCopyCatalog(
             // Memgraph turns away the second of two processes recording at once rather than wait for the
             // node's lock; recording again is harmless, so it is run again, as a contended save is.
             recording.whenNotContended {
-                val record = QuerySpecification.withStatement(statements.record)
+                val record = QuerySpecification.withStatement(owner.type.statementOf(statements.record))
                     .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
                 SchemaStatementTrace.traced(owner, record) { owner.execute(record) }
             }

@@ -182,12 +182,15 @@ internal class SchemaCommands(
 
         /**
          * The schema DDL [spec] is, run on a store of [type]: null where it is none, or where the store runs
-         * Cypher itself and is sent the statement as it is, or where the statement is not Cypher.
+         * Cypher itself and is sent the statement as it is, or where the statement is not Cypher. A statement of no
+         * language is in [defaultLanguage], the connection's: Cypher unless it is registered to default to SQL.
          */
-        fun ddlOf(type: DatabaseType, spec: QuerySpecification<*>): SchemaDdlResult? {
+        @JvmOverloads
+        fun ddlOf(type: DatabaseType, spec: QuerySpecification<*>, defaultLanguage: QueryLanguage = QueryLanguage.CYPHER): SchemaDdlResult? {
             if (type !in STORES) return null
             val statement = spec.statement ?: return null
-            if (statement.language != QueryLanguage.CYPHER) return null
+            val language = if (statement.language == QueryLanguage.PLATFORM_DEFAULT) defaultLanguage else statement.language
+            if (language != QueryLanguage.CYPHER) return null
             return SchemaDdl.translate(statement.text).takeUnless { it is SchemaDdlResult.NotDdl }
         }
 
@@ -196,7 +199,12 @@ internal class SchemaCommands(
          * nothing there; throws for any other schema DDL, which Drivine runs on connections of its own and the
          * transaction's rollback would not undo. False for a statement that is no DDL.
          */
-        fun refusedInTransaction(type: DatabaseType, spec: QuerySpecification<*>): Boolean = when (val ddl = ddlOf(type, spec)) {
+        @JvmOverloads
+        fun refusedInTransaction(
+            type: DatabaseType,
+            spec: QuerySpecification<*>,
+            defaultLanguage: QueryLanguage = QueryLanguage.CYPHER,
+        ): Boolean = when (val ddl = ddlOf(type, spec, defaultLanguage)) {
             null -> false
             is SchemaDdlResult.AwaitIndexes -> true
             is SchemaDdlResult.Refused -> throw DrivineException(ddl.message, spec = spec)

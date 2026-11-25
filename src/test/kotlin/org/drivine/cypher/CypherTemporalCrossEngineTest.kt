@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
@@ -569,7 +570,7 @@ class CypherTemporalOracleWithoutEraTest : CypherTemporalContract() {
 
     private val manager = OracleTestDatabase.graphManager(graph).also { manager ->
         // Its provider makes the graph's functions before its first connection: they are dropped after it.
-        manager.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        manager.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual")))
         OracleTestDatabase.drop("FUNCTION ${OracleGraph(graph).era}", "FUNCTION ${OracleGraph(graph).eraDate}")
     }
 

@@ -1,5 +1,6 @@
 package org.drivine.connection
 
+import org.drivine.query.QueryLanguage
 import org.drivine.query.grammar.CypherDialect
 
 /**
@@ -23,10 +24,17 @@ data class ConnectionProperties(
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
     val region: String? = null,
     val neptuneAuth: NeptuneAuthMode? = null,
+    /**
+     * The language of a statement that names none, `withStatement("…")`: Cypher where this is null, on every store. On a
+     * store that speaks SQL, Oracle, Postgres or SQLite, Cypher is compiled to the store's SQL; [QueryLanguage.SQL] runs
+     * such a statement as SQL instead. A store that speaks only Cypher ([DatabaseType.speaksCypher]) refuses SQL here as
+     * its provider is built. A statement marked `sqlStatement(...)` or `cypherStatement(...)` runs as it says either way.
+     */
+    val defaultLanguage: QueryLanguage? = null,
 ) {
     override fun toString(): String =
         "ConnectionProperties(type=$type, host=$host, port=$port, userName=$userName, password=${password?.let { "***" }}, " +
             "idleTimeout=$idleTimeout, connectionTimeout=$connectionTimeout, poolMax=$poolMax, databaseName=$databaseName, " +
             "defaultGraphPath=$defaultGraphPath, protocol=$protocol, cypherDialect=$cypherDialect, " +
-            "falkorDbTransactionMode=$falkorDbTransactionMode, region=$region, neptuneAuth=$neptuneAuth)"
+            "falkorDbTransactionMode=$falkorDbTransactionMode, region=$region, neptuneAuth=$neptuneAuth, defaultLanguage=$defaultLanguage)"
 }

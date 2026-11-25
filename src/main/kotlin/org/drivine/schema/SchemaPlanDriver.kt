@@ -26,6 +26,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.SqlStatement
 import org.drivine.query.Statement
 import org.drivine.query.transform
+import org.drivine.connection.statementOf
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -271,7 +272,7 @@ internal class SchemaPlanDriver(
                     action.compiled -> CypherStatement(action.statement)
                     // The scopes are read in the store's SQL where the marker gives it (SQLite, or a grammar's own), and as Cypher elsewhere.
                     action.purpose == Purpose.SCOPES -> if (markers.scopes != null) SqlStatement(action.statement) else CypherStatement(action.statement)
-                    else -> Statement(action.statement)
+                    else -> requireManager().type.statementOf(action.statement)
                 }
                 val manager = requireManager()
                 val spec = QuerySpecification.withStatement(statement).bind(action.parameters).transform(String::class.java)
@@ -298,7 +299,7 @@ internal class SchemaPlanDriver(
 
         private fun markerExecute(statement: String, parameters: Map<String, Any?>) {
             val manager = requireManager()
-            val spec = QuerySpecification.withStatement(statement).bind(parameters)
+            val spec = QuerySpecification.withStatement(manager.type.statementOf(statement)).bind(parameters)
             SchemaStatementTrace.traced(manager, spec) { manager.execute(spec) }
         }
 

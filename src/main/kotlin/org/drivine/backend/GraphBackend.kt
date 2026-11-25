@@ -10,11 +10,13 @@ import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.model.RelationshipModel
 import org.drivine.query.PatchRow
+import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
+import org.drivine.query.Statement
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.GroupQuerySpec
@@ -36,15 +38,30 @@ internal class GraphStatement(
     private val id: ((Any?) -> Any?)? = null,
     /** How long the store may take to run it, where the shared module's plan asks for longer: see [QuerySpecification.timeoutMillis]. */
     val timeoutMillis: Long? = null,
+    /**
+     * The language [statement] is in: SQL for a backend over a SQL store, which marks it so ([sql]), since a statement of no
+     * language is Cypher on every store; none for a graph engine's, which runs it as the Cypher it is.
+     */
+    val language: QueryLanguage = QueryLanguage.PLATFORM_DEFAULT,
 ) {
     /** The specification that runs the statement, with [more] bound beside its own values: an id, where the statement names one. */
     fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> {
         val given = if (id != null && GraphBackend.ID_PARAM in more) more + (GraphBackend.ID_PARAM to id.invoke(more[GraphBackend.ID_PARAM])) else more
-        return QuerySpecification.withStatement(statement).bind(bindings + given).also { it.timeoutMillis = timeoutMillis }
+        return QuerySpecification.withStatement(Statement(statement, language)).bind(bindings + given).also { it.timeoutMillis = timeoutMillis }
     }
 
     /** This statement, binding the id it is given as [id] says: see the class. */
-    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id, timeoutMillis)
+    fun bindingId(id: (Any?) -> Any?): GraphStatement = GraphStatement(statement, bindings, id, timeoutMillis, language)
+
+    companion object {
+        /** A statement in SQL, as a backend over a SQL store writes one. */
+        fun sql(
+            statement: String,
+            bindings: Map<String, Any?> = emptyMap(),
+            id: ((Any?) -> Any?)? = null,
+            timeoutMillis: Long? = null,
+        ): GraphStatement = GraphStatement(statement, bindings, id, timeoutMillis, QueryLanguage.SQL)
+    }
 }
 
 /**

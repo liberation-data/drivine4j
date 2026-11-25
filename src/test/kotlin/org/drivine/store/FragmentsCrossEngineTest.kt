@@ -20,6 +20,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Test
 import java.time.LocalDate
@@ -96,7 +97,7 @@ abstract class FragmentsContract {
             val sql = StringBuilder("SELECT $hints$id AS id FROM ${graph(name).store.nodes} $row WHERE ${labelled.sql}")
             if (condition != null) sql.append(" AND (${fragment.sql}) ORDER BY $id") else sql.append(" ORDER BY ${(fragment.terms + id).joinToString()}")
             val got = runCatching {
-                pm.query(QuerySpecification.withStatement(sql.toString()).bind(labelled.parameters + fragment.parameters)).map { (it as? Map<*, *>)?.values?.single() ?: it }.map { it.toString() }
+                pm.query(QuerySpecification.withStatement(sqlStatement(sql.toString())).bind(labelled.parameters + fragment.parameters)).map { (it as? Map<*, *>)?.values?.single() ?: it }.map { it.toString() }
             }.fold({ it }, { listOf("ERROR ${it.message?.take(300)}") })
             if (got != expected) wrong += "$label: expected $expected, got $got\n    $sql"
             checked++

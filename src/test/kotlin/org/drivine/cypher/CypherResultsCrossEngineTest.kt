@@ -17,6 +17,7 @@ import org.drivine.query.GraphPath
 import org.drivine.query.GraphRelationship
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
@@ -73,7 +74,7 @@ abstract class CypherResultsContract {
     fun `plain SQL gives the driver's column names`() {
         assumeTrue(!pm.type.speaksCypher, "A graph engine is given Cypher.")
         val oracle = pm.type == DatabaseType.ORACLE
-        val result = pm.queryResult(QuerySpecification.withStatement(if (oracle) "SELECT 1 AS a FROM dual" else "SELECT 1 AS a"))
+        val result = pm.queryResult(QuerySpecification.withStatement(sqlStatement(if (oracle) "SELECT 1 AS a FROM dual" else "SELECT 1 AS a")))
         assertEquals(listOf(if (oracle) "A" else "a"), result.columns)
         assertEquals(1, (result.rows.single().single() as Number).toInt())
     }

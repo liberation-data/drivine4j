@@ -53,6 +53,8 @@ internal data class ScoredSearchPlan(
     val bindings: Map<String, Any?>,
     val requestedRows: Int? = null,
     val indexK: Int? = null,
+    /** The language [cypher] is in: SQL from a backend over a SQL store, none for a graph engine's Cypher. */
+    val language: QueryLanguage = QueryLanguage.PLATFORM_DEFAULT,
 )
 
 /**

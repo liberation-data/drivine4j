@@ -88,12 +88,12 @@ internal class PostgresSelect(
             skip?.let { "OFFSET ${scope.bound(it)} ROWS" },
             limit?.let { "FETCH NEXT ${scope.bound(it)} ROWS ONLY" },
         )
-        return GraphStatement(Query(result, roots(), selected(predicates), page).text(), bindings())
+        return GraphStatement.sql(Query(result, roots(), selected(predicates), page).text(), bindings())
     }
 
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     override fun count(predicates: List<String>): GraphStatement =
-        GraphStatement(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
+        GraphStatement.sql(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
 
     /**
      * The grouped read [query] asks of the roots: one `jsonb` document for each group, a key under `k0…`
@@ -173,7 +173,7 @@ internal class PostgresSelect(
             spec.aggregates.map { it.column to "$groups.${it.column}" }
         val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" } +
             holders.entries.joinToString("") { (column, holder) -> "\nLEFT JOIN ${graph.nodes} $holder ON $holder.nid = $groups.${column.column}$REPRESENTATIVE" }
-        return GraphStatement(
+        return GraphStatement.sql(
             buildString {
                 append("SELECT ").append(PostgresSql.jsonObject(entries)).append(" AS result")
                 append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
@@ -425,7 +425,7 @@ internal class PostgresSelect(
         val result = "${PostgresSql.jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
         val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
         val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "LIMIT ${scope.bound(it)}" })
-        return GraphStatement(Query(result, Derived(candidates, root), filters, best).text(), bindings())
+        return GraphStatement.sql(Query(result, Derived(candidates, root), filters, best).text(), bindings())
     }
 
     /**
@@ -477,7 +477,7 @@ internal class PostgresSelect(
      * keeps those among the roots: approximate, as the index is.
      */
     fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, dimensions: Int?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
-        GraphStatement(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
+        GraphStatement.sql(among(SearchStore.POSTGRES, graph.name, index, ids, topK, threshold, searchK, VectorIndex(dimensions = dimensions), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the

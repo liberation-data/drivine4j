@@ -5,6 +5,7 @@ import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.UniquenessConstraintSpec
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
@@ -28,7 +29,7 @@ class OracleManagerBenchmarkTest {
     private val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
     private val size = System.getenv("DRIVINE_BENCHMARK_CLAIMS")?.toInt() ?: 20_000
 
-    private fun run(sql: String, vararg bound: Pair<String, Any?>) = pm.execute(QuerySpecification.withStatement(sql.trimIndent()).bind(mapOf(*bound)))
+    private fun run(sql: String, vararg bound: Pair<String, Any?>) = pm.execute(QuerySpecification.withStatement(sqlStatement(sql.trimIndent())).bind(mapOf(*bound)))
 
     private fun fresh() = "new-" + UUID.randomUUID()
     private fun existing() = "c" + ThreadLocalRandom.current().nextInt(size)

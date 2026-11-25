@@ -10,6 +10,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.quotedIdentifier
+import org.drivine.connection.statementOf
 
 /**
  * Test cleanup utility that adapts to the database backend.
@@ -39,7 +40,7 @@ object TestCleanup {
             DatabaseType.SQLITE -> sqlite(persistenceManager, markerField, markerValue)
             else -> "MATCH (n) WHERE n.$markerField = '$markerValue' DETACH DELETE n"
         }
-        persistenceManager.execute(QuerySpecification.withStatement(statement))
+        persistenceManager.execute(QuerySpecification.withStatement(persistenceManager.type.statementOf(statement)))
     }
 
     /**

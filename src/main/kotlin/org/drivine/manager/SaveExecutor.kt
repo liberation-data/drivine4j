@@ -12,6 +12,7 @@ import org.drivine.query.ReturnedStamps
 import org.drivine.query.RootMode
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
+import org.drivine.query.Statement
 import kotlin.random.Random
 
 /** Runs the statements of a save. */
@@ -82,7 +83,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
      * with it, on an engine that has transactions.
      */
     fun spec(statement: SaveStatement, inBatch: Boolean = false): QuerySpecification<String> {
-        val spec = QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(String::class.java)
+        val spec = QuerySpecification.withStatement(Statement(statement.statement, statement.language)).bind(statement.bindings).transform(String::class.java)
         if (!inBatch || statement.root.expected == null) return spec
         return spec.addPostProcessors(object : ResultPostProcessor<Any, Any> {
             override fun apply(results: List<Any>): List<Any> = results.ifEmpty { throw RefusedInBatch(statement.root) }

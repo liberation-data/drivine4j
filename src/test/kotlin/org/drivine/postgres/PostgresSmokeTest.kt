@@ -17,6 +17,7 @@ import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.query.ORDERED_SEED
 import org.drivine.query.assertMixedOrderedPaths
 import org.drivine.query.assertOrderedPaths
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import sample.stateless.Citation
@@ -79,7 +80,7 @@ class PostgresSmokeTest {
         fun matching(pattern: String): Set<String> {
             val query = GraphQuerySpec(Any()).apply { conditions += PropertyCondition("n.text", ComparisonOperator.MATCHES, pattern) }
             val statement = backend.loadAll(Claim::class.java, query).statement
-            return pm.query(QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(Map::class.java)).map { it["id"] as String }.toSet()
+            return pm.query(QuerySpecification.withStatement(sqlStatement(statement.statement)).bind(statement.bindings).transform(Map::class.java)).map { it["id"] as String }.toSet()
         }
         assertEquals(emptySet(), matching("Bob|Ada"), "an alternation is of the whole value, not of its start or its end")
         // A backreference names the group the expression numbers it by, as Cypher's `=~` reads it.
@@ -140,7 +141,7 @@ class PostgresSmokeTest {
         assertEquals(listOf("c2"), manager.loadAll(ClaimView::class.java).map { it.claim.id })
         assertEquals(2, manager.deleteAll(Human::class.java))
         assertEquals(emptyList(), manager.load("c2", ClaimView::class.java)!!.people)
-        assertEquals(listOf<Any>(0L), pm.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM smoke_edge WHERE type = 'MENTIONS'")))
+        assertEquals(listOf<Any>(0L), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT COUNT(*) FROM smoke_edge WHERE type = 'MENTIONS'"))))
     }
 
     @Test

@@ -35,6 +35,7 @@ import org.drivine.query.dsl.hasItem
 import org.drivine.query.dsl.none
 import org.drivine.query.dsl.notIn
 import org.drivine.query.dsl.query
+import org.drivine.query.sqlStatement
 import org.drivine.transaction.TransactionContextHolder
 import org.drivine.transaction.Transactions
 import org.junit.jupiter.api.BeforeEach
@@ -87,7 +88,7 @@ class SqliteObjectManagerTest {
     private val seed = SqliteSeed(pm)
 
     private fun <T : Any> one(sql: String, vararg values: Pair<String, Any?>, type: Class<T>): T? =
-        pm.query(QuerySpecification.withStatement(sql).bind(values.toMap()).transform(type)).singleOrNull()
+        pm.query(QuerySpecification.withStatement(sqlStatement(sql)).bind(values.toMap()).transform(type)).singleOrNull()
 
     /** The stamp the node with [id] carries; null when it has none. */
     private fun stamp(id: String): String? = one("SELECT stamp FROM ogm_node WHERE props ->> '$.id' = \$id", "id" to id, type = String::class.java)
@@ -98,7 +99,7 @@ class SqliteObjectManagerTest {
     /** The relationships of [type] from the node with id [from], as the ids of the nodes they lead to. */
     private fun related(from: String, type: String): Set<String> = pm.query(
         QuerySpecification.withStatement(
-            "SELECT b.props ->> '$.id' FROM ogm_edge e JOIN ogm_node a ON a.nid = e.src JOIN ogm_node b ON b.nid = e.dst WHERE a.props ->> '$.id' = \$from AND e.type = \$type"
+            sqlStatement("SELECT b.props ->> '$.id' FROM ogm_edge e JOIN ogm_node a ON a.nid = e.src JOIN ogm_node b ON b.nid = e.dst WHERE a.props ->> '$.id' = \$from AND e.type = \$type")
         ).bind(mapOf("from" to from, "type" to type)).transform(String::class.java)
     ).toSet()
 
@@ -138,7 +139,7 @@ class SqliteObjectManagerTest {
     fun `a save is refused when another writer changed the node, and nothing is written`() {
         val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
         val elsewhere = Stamps.fresh()
-        pm.execute(QuerySpecification.withStatement("UPDATE ogm_node SET props = json_set(props, '$.text', 'Bob founded Acme'), stamp = \$stamp").bind(mapOf("stamp" to elsewhere)))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("UPDATE ogm_node SET props = json_set(props, '$.text', 'Bob founded Acme'), stamp = \$stamp")).bind(mapOf("stamp" to elsewhere)))
 
         val stale = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(note = "checked")) }
 
@@ -152,7 +153,7 @@ class SqliteObjectManagerTest {
     @Test
     fun `a save is refused when another writer deleted the node, and the node is not brought back`() {
         val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
-        pm.execute(QuerySpecification.withStatement("DELETE FROM ogm_node"))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("DELETE FROM ogm_node")))
 
         val stale = assertFailsWith<StaleObjectException> { stateless.save(loaded) }
 
@@ -163,7 +164,7 @@ class SqliteObjectManagerTest {
     @Test
     fun `an object with no stamp is saved unchecked, and a type with no stamp field is still stamped`() {
         stateless.save(Claim("c1", "Ada founded Acme"))
-        pm.execute(QuerySpecification.withStatement("UPDATE ogm_node SET props = json_set(props, '$.text', 'changed elsewhere')"))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("UPDATE ogm_node SET props = json_set(props, '$.text', 'changed elsewhere')")))
         stateless.save(Claim("c1", "built from scratch"))
         assertEquals("built from scratch", stateless.load("c1", Claim::class.java)?.text)
 
@@ -174,7 +175,7 @@ class SqliteObjectManagerTest {
     @Test
     fun `a property no save writes keeps the text it was stored with`() {
         seed.node("Claim", properties = mapOf("id" to "c1", "text" to "one"))
-        pm.execute(QuerySpecification.withStatement("UPDATE ogm_node SET props = json_set(props, '$.score', json('1.50'))"))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("UPDATE ogm_node SET props = json_set(props, '$.score', json('1.50'))")))
 
         stateless.save(Claim("c1", "two"))
 
@@ -245,11 +246,11 @@ class SqliteObjectManagerTest {
     @Test
     fun `labels a field holds are written as labels, and a save that clears removes only those the field wrote`() {
         fun labels(id: String): Set<String> = pm.query(
-            QuerySpecification.withStatement("SELECT l.value FROM ogm_node n, json_each(n.labels) l WHERE n.props ->> '$.id' = \$id")
+            QuerySpecification.withStatement(sqlStatement("SELECT l.value FROM ogm_node n, json_each(n.labels) l WHERE n.props ->> '$.id' = \$id"))
                 .bind(mapOf("id" to id)).transform(String::class.java)
         ).toSet()
         fun audit(id: String) = pm.execute(
-            QuerySpecification.withStatement("UPDATE ogm_node SET labels = (SELECT json_group_array(value) FROM (SELECT value FROM json_each(labels) UNION SELECT 'Audited' ORDER BY 1)) WHERE props ->> '$.id' = \$id")
+            QuerySpecification.withStatement(sqlStatement("UPDATE ogm_node SET labels = (SELECT json_group_array(value) FROM (SELECT value FROM json_each(labels) UNION SELECT 'Audited' ORDER BY 1)) WHERE props ->> '$.id' = \$id"))
                 .bind(mapOf("id" to id))
         )
 
@@ -350,7 +351,7 @@ class SqliteObjectManagerTest {
         extra.forEach { (from, type, to) -> edge(from, type, to) }
     }
 
-    private fun ids(): Set<String> = pm.query(QuerySpecification.withStatement("SELECT props ->> '$.id' FROM ogm_node").transform(String::class.java)).toSet()
+    private fun ids(): Set<String> = pm.query(QuerySpecification.withStatement(sqlStatement("SELECT props ->> '$.id' FROM ogm_node")).transform(String::class.java)).toSet()
 
     @Test
     fun `a recursive cascade deeper than its maxDepth is refused before anything is deleted, and a ring is deleted once`() {
@@ -823,7 +824,7 @@ class SqliteObjectManagerTest {
         val close = stateless.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, near, 5, 0.9, null, null) {}
         assertEquals(listOf("p1", "p2"), close.map { it.value.proposition.id })
         // A partition label narrows what is measured to the nodes that carry it too.
-        pm.execute(QuerySpecification.withStatement("UPDATE ogm_node SET labels = json_insert(labels, '$[#]', 'Pinned') WHERE props ->> '$.id' IN ('p2', 'p3')"))
+        pm.execute(QuerySpecification.withStatement(sqlStatement("UPDATE ogm_node SET labels = json_insert(labels, '$[#]', 'Pinned') WHERE props ->> '$.id' IN ('p2', 'p3')")))
         val pinned = stateless.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, near, 5, null, null, "Pinned") {}
         assertEquals(listOf("p2", "p3"), pinned.map { it.value.proposition.id })
     }

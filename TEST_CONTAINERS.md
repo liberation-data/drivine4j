@@ -100,7 +100,7 @@ The benchmark, `OracleManagerBenchmarkTest`, wants `DRIVINE_BENCHMARK=true` as w
 - **A local instance** (`USE_LOCAL_ORACLE=true`) must open the service `FREEPDB1` and hold that user with that password: `OracleTestContainer` lets only its host and port be changed, with `ORACLE_LOCAL_HOST` and `ORACLE_LOCAL_PORT` or `-Dtest.oracle.local.host` and `-Dtest.oracle.local.port` (`localhost` and 1521 unless given). A Spring Boot test through `@EnableDrivineTestConfig` takes a local instance's host, port, service and user from its own datasource properties instead.
 - **The tests share one database and a few named graphs in it**: `contracts` for the cross-engine contracts, and `smoke`, `schema`, `identity`, `readpath` and `bench` for the rest. A graph is a set of tables under that name, made before a provider for it first connects. The tests of plain SQL (`OracleConnectionIntegrationTest`) and the spikes keep tables of their own beside them.
 - **`OracleTablesOnFirstConnectionTest` makes a user of its own for each test**, a schema with no graph in it, and drops it after. It does so as `system`, with the password `drivine` the container gives its administrators, which a local instance must give it too.
-- **The cross-engine contracts seed and read back in Cypher.** On Oracle (and Postgres) those statements are worked out by `org.drivine.test.SqlCypherFixtures`, a small interpreter for the Cypher such fixtures use; a statement outside what it reads is refused, and is a reason to extend it or to write that fixture in SQL.
+- **The cross-engine contracts seed and read back in Cypher.** On Oracle (and Postgres) a statement of no language is Cypher, compiled to the store's SQL, as on the graph engines; `org.drivine.test.SqlCypherFixtures` adds the clear. A fixture in SQL is marked with `sqlStatement(...)`.
 
 ## Postgres
 
@@ -121,4 +121,4 @@ POSTGRES_TESTS=false ./gradlew test
 - **A local instance** (`USE_LOCAL_POSTGRES=true`) must hold that database and that user with that password, as the container does: only its host and port can be changed, with `POSTGRES_LOCAL_HOST` and `POSTGRES_LOCAL_PORT` or `-Dtest.postgres.local.host` and `-Dtest.postgres.local.port` (`localhost` and 5432 unless given).
 - **The tests share one database and a few named graphs in it**, as on Oracle: `contracts` for the cross-engine contracts, and `smoke`, `schema`, `readpath` and others for the rest. The tests of plain SQL (`PostgresConnectionIntegrationTest`) keep tables of their own beside them.
 - **`PostgresTablesOnFirstConnectionTest` makes a database and a role of its own for each test**, and drops them after, so the user `drivine` may make databases and roles, as the container's does.
-- **The cross-engine contracts seed and read back in Cypher**, worked out by `org.drivine.test.SqlCypherFixtures`, as on Oracle.
+- **The cross-engine contracts seed and read back in Cypher**, compiled to the store's SQL, as on Oracle.

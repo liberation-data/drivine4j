@@ -3,6 +3,7 @@ package org.drivine.sqlite
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 
 /**
  * Writes a test's graph to a SQLite store as rows, without Cypher, as a Cypher `CREATE` fixture would:
@@ -17,7 +18,7 @@ class SqliteSeed(private val pm: PersistenceManager) {
     /** A node with [labels] and [properties], its labels in the order Drivine writes them. */
     fun node(vararg labels: String, properties: Map<String, Any?>) {
         pm.execute(
-            QuerySpecification.withStatement("INSERT INTO ${graph}_node (labels, props) VALUES (\$labels, \$props)")
+            QuerySpecification.withStatement(sqlStatement("INSERT INTO ${graph}_node (labels, props) VALUES (\$labels, \$props)"))
                 .bind(mapOf("labels" to json(labels.sorted()), "props" to json(properties)))
         )
     }
@@ -26,11 +27,11 @@ class SqliteSeed(private val pm: PersistenceManager) {
     fun edge(from: String, type: String, to: String, properties: Map<String, Any?> = emptyMap()) {
         pm.execute(
             QuerySpecification.withStatement(
-                """
+                sqlStatement("""
                 INSERT INTO ${graph}_edge (src, dst, type, props)
                 SELECT a.nid, b.nid, ${'$'}type, ${'$'}props FROM ${graph}_node a, ${graph}_node b
                 WHERE a.props ->> '$.id' = ${'$'}from AND b.props ->> '$.id' = ${'$'}to
-                """.trimIndent()
+                """.trimIndent())
             ).bind(mapOf("type" to type, "props" to json(properties), "from" to from, "to" to to))
         )
     }

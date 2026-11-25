@@ -10,6 +10,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
+import org.drivine.query.sqlStatement
 import org.drivine.test.PostgresTestContainer
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -45,7 +46,7 @@ class PostgresConnectionIntegrationTest {
         }
     }
 
-    private fun spec(sql: String, vararg parameters: Pair<String, Any?>) = QuerySpecification.withStatement(sql.trimIndent()).bind(mapOf(*parameters))
+    private fun spec(sql: String, vararg parameters: Pair<String, Any?>) = QuerySpecification.withStatement(sqlStatement(sql.trimIndent())).bind(mapOf(*parameters))
 
     private fun names(): List<String> = pm.query(spec("SELECT name FROM pm_person ORDER BY name").transform(String::class.java))
 

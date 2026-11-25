@@ -310,8 +310,10 @@ of the label. Graph Bench's hand-written 1-hop walk, at 100,000 people, went fro
   `NLSSORT(name, 'NLS_SORT = BINARY_CI')` does. It is set as the statement above is, and `setsNoAdaptivePlans = false`
   leaves it unset too: then set both in each session yourself, or give HikariCP's `connectionInitSql`
   `JdbcConnectionProvider.ORACLE_SESSION_INIT`, the block that runs both, and Drivine sets no session of that pool.
-- A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
-  bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
+- A statement written by hand is Cypher, compiled as below, unless it is marked SQL with `sqlStatement(...)`, or the
+  datasource is registered with `defaultLanguage: SQL` (see
+  [Cypher on a relational database](05-cypher-on-a-relational-database.md#a-write-and-a-read)). In SQL, parameters are
+  named `$name` as in Cypher. A collection is bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
 - A `CypherStatement` is compiled to SQL over the graph's tables (see
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database)) and gives the rows a graph engine
@@ -667,21 +669,21 @@ val provider = JdbcConnectionProvider.pooled(
 ```
 
 A test written for the graph engines usually seeds its graph and reads it back in Cypher, in
-statements of no language, which Oracle takes for SQL. `SqlCypherFixtures` sends such a statement as
-Cypher, which is compiled as any `CypherStatement` is, so the test's fixtures stay as they are (it was
-`OracleCypherFixtures`, which still works, before Postgres kept a graph the same way):
+statements of no language. Those are Cypher on Oracle too, compiled as any `CypherStatement` is, so the test's fixtures
+stay as they are. `SqlCypherFixtures` adds the clear, and a run of one Cypher statement (it was `OracleCypherFixtures`,
+which still works, before Postgres kept a graph the same way):
 
 ```kotlin
-val fixtures = SqlCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to the store
+val fixtures = SqlCypherFixtures.over(persistenceManager)   // MATCH (n) DETACH DELETE n empties the tables, the rest as it is
 fixtures.execute(QuerySpecification.withStatement("CREATE (:Person {id: 'ada'})-[:KNOWS]->(:Person {id: 'bob'})"))
 
 SqlCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY p.id")   // ["ada", "bob"]
 SqlCypherFixtures.clear(persistenceManager)                                               // every node and relationship
 ```
 
-- A statement is taken for Cypher when it opens with `MATCH (`, `OPTIONAL MATCH (`, `CREATE (`,
-  `MERGE (` (or one of them naming a path, as `MATCH p = (`), `UNWIND`, `RETURN` or a `//` comment; any
-  other, one that opens with `WITH` included, goes to the store as SQL.
+- Before 0.9.0 a statement of no language was SQL on Oracle, Postgres and SQLite, and `SqlCypherFixtures.over` told
+  Cypher from SQL by what a statement opened with. It sends each statement as it is now: a fixture in SQL is marked
+  with `sqlStatement(...)`.
 - The manager must name its graph (`graphName`), as one over a `JdbcConnectionProvider` does.
 - `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
   in SQL on Oracle, as it does in Cypher elsewhere.
@@ -752,7 +754,8 @@ is the `stamp` column, returned by a load as `__drivine.stamp`. Deleting a node'
 relationships with it.
 
 **Notes:**
-- A statement written by hand is SQL. Parameters are named `$name`; a collection is bound as JSON, for
+- A statement written by hand is Cypher, compiled as below, unless it is marked SQL with `sqlStatement(...)` or the
+  datasource defaults to SQL, as on Oracle. In SQL, parameters are named `$name`; a collection is bound as JSON, for
   `CAST($list AS jsonb)` to read. A `json` or `jsonb` column comes back as a map, so
   `SELECT jsonb_build_object(…)` hydrates with `.transform(MyView::class.java)`. A function body in
   dollar quotes, `$fn$ … $fn$`, is left as it is.
@@ -1004,7 +1007,8 @@ The SQLite graph 'drivine' in /data/app.db was made by an earlier Drivine, whose
 There is no migration, as SQLite cannot change a table's key in place.
 
 **Notes:**
-- A statement written by hand is SQL. SQLite has no JSON type, so JSON a statement of your own returns is
+- A statement written by hand is Cypher, compiled as below, unless it is marked SQL with `sqlStatement(...)` or the
+  datasource defaults to SQL, as on Oracle. SQLite has no JSON type, so JSON a SQL statement of your own returns is
   text; one that opens with `/* drivine:json */` has each of its text values read as the JSON it is.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle and Postgres (see
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database)), and gives the rows a graph engine gives. A read is a query; a write is a procedure of steps, as on the other stores,

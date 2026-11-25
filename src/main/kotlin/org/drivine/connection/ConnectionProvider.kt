@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QueryLanguage
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
@@ -88,3 +89,10 @@ interface ConnectionProvider {
     /** Closes what the provider holds open. A provider over a `DataSource` the application made leaves it open. */
     fun end()
 }
+
+/**
+ * The language a statement of no language runs in on this provider's connections: the one a [JdbcConnectionProvider] was
+ * registered with (see [ConnectionProperties.defaultLanguage]), and Cypher on any other.
+ */
+internal val ConnectionProvider.unmarkedLanguage: QueryLanguage
+    get() = (this as? JdbcConnectionProvider)?.defaultLanguage ?: QueryLanguage.CYPHER

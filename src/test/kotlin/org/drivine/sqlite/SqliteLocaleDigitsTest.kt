@@ -2,6 +2,7 @@ package org.drivine.sqlite
 
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
 import java.util.Locale
 import kotlin.test.assertEquals
@@ -29,11 +30,11 @@ class SqliteLocaleDigitsTest {
             )
             assertEquals(
                 "2024-03-15T10:30:05",
-                pm.query(QuerySpecification.withStatement("SELECT drivine_to_char('2024-03-15T10:30:05.000000', 'YYYY-MM-DD\"T\"HH24:MI:SS')")).single(),
+                pm.query(QuerySpecification.withStatement(sqlStatement("SELECT drivine_to_char('2024-03-15T10:30:05.000000', 'YYYY-MM-DD\"T\"HH24:MI:SS')"))).single(),
             )
             assertEquals(
                 "2024-11-075",
-                pm.query(QuerySpecification.withStatement("SELECT drivine_to_char('2024-03-15T10:30:05.000000', 'IYYY-IW-DDD')")).single(),
+                pm.query(QuerySpecification.withStatement(sqlStatement("SELECT drivine_to_char('2024-03-15T10:30:05.000000', 'IYYY-IW-DDD')"))).single(),
             )
         } finally {
             Locale.setDefault(before)

@@ -1,5 +1,6 @@
 package org.drivine.connection
 
+import org.drivine.DrivineException
 import org.drivine.mapper.SubtypeRegistry
 
 /**
@@ -21,6 +22,9 @@ class DatabaseRegistry(
              * after construction. */
             if (value.type.buildableFromProperties) {
                 withProperties(value).register(key)
+            } else {
+                // Its provider is the application's, but the language its entry asks for is refused all the same.
+                ConnectionProviderBuilder.languageRefusal(key, value.type, value.defaultLanguage)?.let { throw DrivineException(it) }
             }
         }
     }

@@ -8,6 +8,7 @@ import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
@@ -33,7 +34,7 @@ class SqliteSchemaManagementTest {
     private val seed = SqliteSeed(pm)
 
     /** The plan SQLite makes for [sql]: it names an index where one answers. */
-    private fun plan(sql: String): String = manager.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN $sql")).joinToString("\n")
+    private fun plan(sql: String): String = manager.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN $sql"))).joinToString("\n")
 
     private fun property(alias: String, key: String) = org.drivine.backend.sqlite.SqliteSql.property(alias, key)
 
@@ -73,7 +74,7 @@ class SqliteSchemaManagementTest {
             Triple("MATCH (p:Verdict) WHERE p.settled = true RETURN p", emptyMap<String, Any?>(), rangeIndex("Verdict", "settled")),
         ).forEach { (cypher, parameters, index) ->
             val compiled = SqliteCypherCompiler("schema").compile(cypher, parameters)
-            val plan = manager.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters)).joinToString("\n")
+            val plan = manager.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN ${compiled.sql}")).bind(compiled.parameters)).joinToString("\n")
             assertTrue(searches(plan, index), "$cypher: $plan")
         }
     }
@@ -237,7 +238,7 @@ class SqliteSchemaManagementTest {
     /** Each index whose name starts with [name], as SQLite keeps it, and whether it is unique. */
     private fun indexesNamed(name: String): Map<String, Boolean> =
         manager.query(QuerySpecification.withStatement(
-            "SELECT name || ' ' || (sql LIKE 'CREATE UNIQUE INDEX%') FROM sqlite_master WHERE type = 'index' AND name LIKE '$name%'"
+            sqlStatement("SELECT name || ' ' || (sql LIKE 'CREATE UNIQUE INDEX%') FROM sqlite_master WHERE type = 'index' AND name LIKE '$name%'")
         ).transform(String::class.java)).associate { it.substringBefore(' ') to (it.substringAfter(' ') == "1") }
 
     /**
@@ -289,7 +290,7 @@ class SqliteSchemaManagementTest {
             assertEquals(mapOf("serial" to "b-1"), (result as EnsureResult.Violation).conflictingSample.single()["properties"])
             assertEquals(mapOf(name to false), indexesNamed(name), "the old index is kept, and the leftover dropped")
             assertEquals(1L, manager.getOne(QuerySpecification.withStatement(
-                "SELECT count(*) FROM schema_schema WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Badge'"
+                sqlStatement("SELECT count(*) FROM schema_schema WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Badge'")
             ).transform(Long::class.java)), "the record is kept")
         } finally {
             runCatching { manager.constraints.drop(spec) }
@@ -365,7 +366,7 @@ class SqliteSchemaManagementTest {
         store.ensureSingleton()
 
         val markers = "SELECT COUNT(*) FROM schema_node n WHERE ${label("n", SchemaVersionStore.LABEL)}"
-        assertEquals(1L, manager.getOne(QuerySpecification.withStatement(markers).transform(Long::class.java)))
+        assertEquals(1L, manager.getOne(QuerySpecification.withStatement(sqlStatement(markers)).transform(Long::class.java)))
         assertEquals("newer", store.storedVersion())
         assertNotNull(manager.constraints.find(UniquenessConstraintSpec(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY)))
     }

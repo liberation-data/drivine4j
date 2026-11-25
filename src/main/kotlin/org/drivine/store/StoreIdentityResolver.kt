@@ -15,6 +15,7 @@ import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.reservedNode
+import org.drivine.connection.statementOf
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.time.Instant
@@ -232,7 +233,7 @@ class StoreIdentityResolver internal constructor(
                 persistenceManager.execute(
                     // The module has no clock or random source, so the id and the moment are this process's. The engine is
                     // named by the manager's type, which names a store the module has no DDL of, as Neptune, too.
-                    QuerySpecification.withStatement(statements.assignIfAbsent).bind(
+                    QuerySpecification.withStatement(persistenceManager.type.statementOf(statements.assignIfAbsent)).bind(
                         StoreStamp.assignParameters(UUID.randomUUID().toString(), Instant.now().toString(), persistenceManager.type.value)
                     )
                 )
@@ -268,7 +269,7 @@ class StoreIdentityResolver internal constructor(
             SchemaGrammar.messagesOf(e).contains("conflicting transactions", ignoreCase = true)
 
     private fun readStamps(): List<Stamp> =
-        persistenceManager.query(QuerySpecification.withStatement(statements.readStamps).transform<Stamp>())
+        persistenceManager.query(QuerySpecification.withStatement(persistenceManager.type.statementOf(statements.readStamps)).transform<Stamp>())
 
     private fun identityFrom(stamps: List<Stamp>): StoreIdentity {
         if (stamps.size > 1) {

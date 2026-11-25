@@ -6,6 +6,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.TestCleanup
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -23,7 +24,7 @@ class SqliteGraphIntegrationTest {
         JdbcConnectionProvider(graph, DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, graphName = graph), graph, DatabaseType.SQLITE, SubtypeRegistry(),
     )
 
-    private fun spec(sql: String) = QuerySpecification.withStatement(sql.trimIndent())
+    private fun spec(sql: String) = QuerySpecification.withStatement(sqlStatement(sql.trimIndent()))
 
     private fun tables(): List<String> = manager.query(
         spec("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'made\\_%' ESCAPE '\\' ORDER BY name").transform(String::class.java)

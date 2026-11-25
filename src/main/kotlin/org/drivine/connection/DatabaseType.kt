@@ -1,5 +1,8 @@
 package org.drivine.connection
 
+import org.drivine.query.QueryLanguage
+import org.drivine.query.Statement
+
 /**
  * The engine a datasource speaks. Members name engines, not deployment
  * topologies: [buildableFromProperties] carries the one topology fact the
@@ -57,3 +60,11 @@ enum class DatabaseType(
         }
     }
 }
+
+/**
+ * [text], one of Drivine's own statements, in the language of this store: SQL on a store that speaks SQL, which a statement
+ * of no language is not, since that is Cypher on every store; of no language on a graph engine, which runs it as the
+ * Cypher it is.
+ */
+internal fun DatabaseType.statementOf(text: String): Statement =
+    Statement(text, if (speaksCypher) QueryLanguage.PLATFORM_DEFAULT else QueryLanguage.SQL)

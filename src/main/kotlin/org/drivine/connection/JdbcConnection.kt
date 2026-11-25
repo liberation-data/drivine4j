@@ -22,6 +22,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.SpecCompiler
 import org.drivine.query.SqlParameters
 import org.drivine.query.TemporalCoercer
+import org.drivine.query.sqlStatement
 import org.slf4j.LoggerFactory
 import java.io.StringReader
 import java.math.BigDecimal
@@ -67,7 +68,16 @@ class JdbcConnection(
     private val lockWarning: Duration = Duration.ofSeconds(5),
     /** Why the store runs no Cypher, an Oracle older than 23.9, as its provider found it; null where it runs Cypher. */
     private val cypherRefusal: String? = null,
+    /**
+     * The language of a statement that names none ([QueryLanguage.PLATFORM_DEFAULT]): Cypher, compiled to the store's SQL,
+     * unless the connection's registration says SQL (see [ConnectionProperties.defaultLanguage]).
+     */
+    private val defaultLanguage: QueryLanguage = QueryLanguage.CYPHER,
 ) : Connection {
+
+    init {
+        require(defaultLanguage != QueryLanguage.PLATFORM_DEFAULT) { "A connection's default language is CYPHER or SQL." }
+    }
 
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
     private var inTransaction = false
@@ -151,7 +161,7 @@ class JdbcConnection(
      * labelled indexes are read first where they aren't kept (see OracleIndexedProperties). SQL as it is is refused.
      */
     override fun explain(spec: QuerySpecification<*>): String {
-        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val given = spec.finalizedCopy(defaultLanguage)
         return cypherCompiled(given, typed = false)?.sql
             ?: throw DrivineException("explain gives the SQL a Cypher statement compiles to, and this is SQL already.", spec = spec)
     }
@@ -164,7 +174,7 @@ class JdbcConnection(
      * as [explain] refuses it.
      */
     override fun plan(spec: QuerySpecification<*>): org.drivine.query.QueryPlan {
-        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val given = spec.finalizedCopy(defaultLanguage)
         val cypher = cypherCompiled(given, typed = false)
             ?: throw DrivineException("plan gives the plan of the SQL a Cypher statement compiles to, and this is SQL already.", spec = spec)
         val finalizedSpec = given.withSql(cypher.sql, cypher.parameters)
@@ -236,7 +246,7 @@ class JdbcConnection(
 
     /** Runs [spec], a Cypher statement compiled to the store's SQL, [typed] for [queryResult], or SQL as it is. */
     private fun run(spec: QuerySpecification<*>, typed: Boolean): Ran {
-        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val given = spec.finalizedCopy(defaultLanguage)
         val compiledFromCypher = given.statement!!.language == QueryLanguage.CYPHER
         val cypher = cypherCompiled(given, typed)
         val finalizedSpec = cypher?.let { given.withSql(it.sql, it.parameters) } ?: given
@@ -315,7 +325,7 @@ class JdbcConnection(
                 eraStored = { OracleStoredFunctions.era(connection, graphName) },
                 temporalArithmeticStored = { OracleStoredFunctions.temporalArithmetic(connection, graphName) },
                 typed = typed,
-                indexedProperties = OracleIndexedProperties.leading(connection, graphName) { sql -> query(QuerySpecification.withStatement(sql)) },
+                indexedProperties = OracleIndexedProperties.leading(connection, graphName) { sql -> query(QuerySpecification.withStatement(sqlStatement(sql))) },
             )
             DatabaseType.SQLITE -> {
                 // So is a SQLite older than 3.53.2, which the application's sqlite-jdbc may be: plain SQL runs on it.
