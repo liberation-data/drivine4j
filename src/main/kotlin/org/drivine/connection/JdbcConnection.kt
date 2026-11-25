@@ -506,8 +506,12 @@ class JdbcConnection(
     internal fun copyIn(copy: String, rows: Sequence<String>): Long =
         connection.unwrap(org.postgresql.PGConnection::class.java).copyAPI.copyIn(copy, LinesReader(rows.iterator()))
 
-    /** The text of [lines], one after another, read as a [java.io.Reader] asks for it. */
-    private class LinesReader(private val lines: Iterator<String>) : java.io.Reader() {
+    /**
+     * The text of [lines], one after another, read as a [java.io.Reader] asks for it. A read never ends between the two
+     * halves of a surrogate pair where it can end before them: the driver's copy encodes each read on its own, and would
+     * write each half of a split pair as `?`.
+     */
+    internal class LinesReader(private val lines: Iterator<String>) : java.io.Reader() {
         private var line = ""
         private var at = 0
 
@@ -517,7 +521,8 @@ class JdbcConnection(
                 line = lines.next()
                 at = 0
             }
-            val n = minOf(length, line.length - at)
+            var n = minOf(length, line.length - at)
+            if (n > 1 && n < line.length - at && Character.isHighSurrogate(line[at + n - 1])) n--
             line.toCharArray(buffer, offset, at, at + n)
             at += n
             return n

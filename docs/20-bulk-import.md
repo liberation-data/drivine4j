@@ -23,7 +23,7 @@ From Java, `run` takes a `Consumer<BulkImport.Writer>`, and `nodes` and `relatio
 
 **Nodes come first.** Each call gives the nodes of one label as maps of their properties. `key` names the property the node's relationships will find it by.
 - **Values:** stored as a save stores them, a date or a moment as its tagged value, a list as a list. Nulls are left out.
-- **Stamp:** each node gets one of its own.
+- **Stamp:** each node gets one of its own, so a row that holds `__drivine.stamp` refuses the import.
 - **`lowercased`:** names the properties a fragment marks `@CaseInsensitive`. They get the lowercased copy that `eqIgnoreCase` reads.
 - **`otherLabels`:** gives a node labels beside `label`.
 

@@ -6,12 +6,16 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.model.Stamps
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.springframework.jdbc.datasource.ConnectionHolder
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import sample.caseinsensitive.CiAccount
 import java.time.LocalDate
 import kotlin.test.assertEquals
@@ -59,14 +63,17 @@ class BulkImportPostgresTest {
                 column("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = '${g}_edge' ORDER BY indexname")
             ).map { it?.replace("public.", "")?.replace(g, "<g>") }
 
+    /** A text with what CSV quotes, a backslash, and a character past the Basic Multilingual Plane, kept as it is. */
+    private val note = "say \"hi\", \\ then\nnext \uD83D\uDE00"
+
     private val account = mapOf<String, Any?>(
         "id" to "ada", "email" to "Ada@Example.org", "name" to "Ada", "nothing" to null,
-        "born" to LocalDate.of(1815, 12, 10), "scores" to listOf(1, 2.5), "\$code" to "A1",
+        "born" to LocalDate.of(1815, 12, 10), "scores" to listOf(1, 2.5), "\$code" to "A1", "note" to note,
     )
 
     @Test
     fun `an imported node's row is the row a save writes`() {
-        savedManager.save(CiAccount("ada", "Ada@Example.org", "Ada", mapOf("born" to LocalDate.of(1815, 12, 10), "scores" to listOf(1, 2.5), "\$code" to "A1")))
+        savedManager.save(CiAccount("ada", "Ada@Example.org", "Ada", mapOf("born" to LocalDate.of(1815, 12, 10), "scores" to listOf(1, 2.5), "\$code" to "A1", "note" to note)))
         val report = BulkImport(provider).run {
             nodes("CiAccount", key = "id", rows = sequenceOf(account), lowercased = listOf("email"))
         }
@@ -79,6 +86,7 @@ class BulkImportPostgresTest {
         val loaded = assertNotNull(manager.load("ada", CiAccount::class.java))
         assertEquals(savedManager.load("ada", CiAccount::class.java)!!.copy(stamp = null), loaded.copy(stamp = null))
         assertEquals(stamp, loaded.stamp)
+        assertEquals(note, loaded.extra["note"])
     }
 
     @Test
@@ -142,9 +150,38 @@ class BulkImportPostgresTest {
             BulkImport(provider).run { nodes("Team", key = "code", rows = sequenceOf(mapOf("name" to "no code"))) }
         }
         assertTrue("'code'" in keyless.message!!, keyless.message)
+        val stamped = assertThrows<DrivineException> {
+            BulkImport(provider).run { nodes("Team", key = "code", rows = sequenceOf(mapOf("code" to "t1", Stamps.PROPERTY to Stamps.fresh()))) }
+        }
+        assertTrue(Stamps.PROPERTY in stamped.message!!, stamped.message)
         assertEquals(before, nodes(graph) to edges(graph))
         assertEquals(objects, edgeObjects(graph))
         assertEquals(0L, count("SELECT count(*) FROM pg_class WHERE relname LIKE '${graph}_bulk%'"))
+    }
+
+    @Test
+    fun `an import is refused on a connection of the application's transaction, which would hold all of it`() {
+        val native = PostgresTestDatabase.provider.nativeDriver
+        val joining = JdbcConnectionProvider(graph, DatabaseType.POSTGRES, TransactionAwareDataSourceProxy(native), graphName = graph)
+        // The graph's tables made first, outside the transaction.
+        joining.connect().release()
+        val before = nodes(graph)
+        val held = native.connection.apply { autoCommit = false }
+        TransactionSynchronizationManager.initSynchronization()
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.bindResource(native, ConnectionHolder(held))
+        try {
+            val refused = assertThrows<DrivineException> { BulkImport(joining).run { nodes("Team", key = "code", rows = sequenceOf(mapOf("code" to "t1"))) } }
+            assertTrue("outside a transaction" in refused.message!!, refused.message)
+            assertTrue(!held.isClosed)
+        } finally {
+            TransactionSynchronizationManager.unbindResource(native)
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+            TransactionSynchronizationManager.clearSynchronization()
+            held.rollback()
+            held.close()
+        }
+        assertEquals(before, nodes(graph))
     }
 
     @Test

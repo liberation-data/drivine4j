@@ -31,7 +31,7 @@ import java.util.function.Consumer
  * - each value as Drivine stores it, a temporal value, a list, a number;
  * - nulls left out;
  * - a key beginning with `$` held with one more;
- * - a stamp of its own;
+ * - a stamp of its own, so a row that holds the stamp's property, `__drivine.stamp`, is refused;
  * - the lowercased copy of each of [Writer.nodes]' `lowercased` properties, which a fragment's `@CaseInsensitive`
  *   properties need for `eqIgnoreCase` to find them.
  *
@@ -105,7 +105,8 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
             failure = e
             throw e
         } finally {
-            connection.release(failure)
+            // As a store layout migration gives its connections back: a failure to give it back hides no failure of the import's.
+            runCatching { connection.release(failure) }.exceptionOrNull()?.let { failure?.addSuppressed(it) }
         }
     }
 
@@ -140,6 +141,8 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
             val written = connection.copyIn(statements.copyNodes, rows.map { row ->
                 val properties = row.filterValues { it != null }
                 val id = properties[key] ?: throw DrivineException("A node of '$label' in a bulk import holds no '$key', its key: $row")
+                // The stamp is the node's own, kept beside its props: one given here would be a property no save writes.
+                if (Stamps.PROPERTY in properties) throw DrivineException("A node of '$label' in a bulk import holds '${Stamps.PROPERTY}', the stamp the import gives it: leave it out. $row")
                 csv(CypherCompile.storeText(id, Store.POSTGRES), labels, CypherCompile.storeText(properties, Store.POSTGRES), Stamps.fresh())
             })
             refuse(statements.takenKeys(label, key), "nodes of '$label' whose '$key' the graph or the import holds already, or that give it twice")
@@ -201,7 +204,7 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         }
     }
 
-    private companion object {
+    internal companion object {
         /** One line of CSV: each field quoted, a quote in it doubled, and a line end. */
         fun csv(vararg fields: String): String = fields.joinToString(",", postfix = "\n") { "\"" + it.replace("\"", "\"\"") + "\"" }
     }
