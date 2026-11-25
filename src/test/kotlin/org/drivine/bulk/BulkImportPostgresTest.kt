@@ -18,6 +18,7 @@ import org.springframework.jdbc.datasource.ConnectionHolder
 import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import sample.caseinsensitive.CiAccount
+import sample.graphproperty.ChunkNode
 import java.time.LocalDate
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -88,6 +89,19 @@ class BulkImportPostgresTest {
         assertEquals(savedManager.load("ada", CiAccount::class.java)!!.copy(stamp = null), loaded.copy(stamp = null))
         assertEquals(stamp, loaded.stamp)
         assertEquals(note, loaded.extra["note"])
+    }
+
+    @Test
+    fun `an imported node of several labels holds them as a save of a fragment of those labels does`() {
+        savedManager.save(ChunkNode("c1", "text", sequenceNumber = 3L))
+        val report = BulkImport(provider).run {
+            // The call's label among the others too, which is no second label.
+            nodes("ContentElement", key = "id", rows = sequenceOf(mapOf("id" to "c1", "text" to "text", "sequence_number" to 3L)), otherLabels = listOf("Chunk", "ContentElement"))
+        }
+        assertEquals(mapOf("ContentElement" to 1L), report.nodes)
+        val row = { g: String -> column("SELECT labels::text || ' ' || props::text FROM ${g}_node WHERE labels @> '[\"Chunk\"]'").single() }
+        assertEquals(row(saved), row(graph))
+        assertEquals(ChunkNode("c1", "text", sequenceNumber = 3L), manager.load("c1", ChunkNode::class.java))
     }
 
     @Test
