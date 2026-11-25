@@ -10,6 +10,7 @@ import org.drivine.cypher.store.bulk.BulkImportStatements
 import org.drivine.cypher.store.ddl.PostgresDdl
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import java.util.function.Consumer
 
 /**
@@ -214,10 +215,10 @@ class BulkImport(private val provider: JdbcConnectionProvider) {
         }
 
         private fun execute(statement: String, parameters: Map<String, Any?> = emptyMap()) {
-            connection.query(QuerySpecification.withStatement(statement).bind(parameters))
+            connection.query(QuerySpecification.withStatement(sqlStatement(statement)).bind(parameters))
         }
 
-        private fun query(statement: String): List<Any?> = connection.query(QuerySpecification.withStatement(statement))
+        private fun query(statement: String): List<Any?> = connection.query(QuerySpecification.withStatement(sqlStatement(statement)))
 
         /** Refuses the import where [statement] gives any row: each is one of what it refuses, at most ten. */
         private fun refuse(statement: String, what: String) {

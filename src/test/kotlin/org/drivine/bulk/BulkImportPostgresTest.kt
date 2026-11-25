@@ -9,6 +9,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
 import org.drivine.query.cypherStatement
 import org.junit.jupiter.api.BeforeEach
@@ -242,6 +243,20 @@ class BulkImportPostgresTest {
             held.close()
         }
         assertEquals(before, nodes(graph))
+    }
+
+    @Test
+    fun `an import runs as it does on a datasource whose default language is SQL`() {
+        // The other tests' provider defaults to Cypher; the import marks its own SQL, so this one writes the same.
+        val sqlDefault = JdbcConnectionProvider(graph, DatabaseType.POSTGRES, PostgresTestDatabase.provider.nativeDriver, graphName = graph, defaultLanguage = QueryLanguage.SQL)
+        val report = BulkImport(sqlDefault).run(maintenanceMegabytes = 64) {
+            nodes("Team", key = "code", rows = listOf(mapOf("code" to "t1"), mapOf("code" to "t2")))
+            relationships("NEXT", BulkImport.End("Team", "code"), BulkImport.End("Team", "code"), listOf(BulkImport.Pair("t1", "t2")))
+        }
+        assertEquals(mapOf("Team" to 2L), report.nodes)
+        assertEquals(mapOf("NEXT" to 1L), report.relationships)
+        assertEquals(1L, edges(graph))
+        assertEquals(edgeObjects(saved), edgeObjects(graph))
     }
 
     @Test
