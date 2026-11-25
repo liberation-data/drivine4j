@@ -1,5 +1,5 @@
 # Signs the drivine CLI native binary with a Developer ID Application certificate and notarizes it with Apple's
-# notarytool, so macOS Gatekeeper trusts it. The caller passes the eight values below from repo secrets through the
+# notarytool, so macOS Gatekeeper trusts it. The caller passes the eight values below from environment secrets via the
 # job's env; nothing secret is read from inputs, printed, or written anywhere the log can see it. Runs on a macOS
 # runner only: it uses /usr/bin/security, codesign, ditto and xcrun notarytool, which ship with Xcode's command line
 # tools on the GitHub macOS images.
@@ -12,7 +12,7 @@
 name: Sign and notarize the macOS drivine binary
 description: >-
   Signs a built drivine Mach-O binary with a Developer ID Application certificate (hardened runtime, secure timestamp)
-  and notarizes it with notarytool. Reads its secrets from env; the caller maps those from repo secrets.
+  and notarizes it with notarytool. Reads its secrets from env; the caller maps those from environment secrets.
 
 inputs:
   binary-path:
