@@ -137,10 +137,15 @@ private fun verify(gom: StatelessGraphObjectManager) {
         }.map { it.value.id },
     )
 
-    // Among a set, a neighbour must have every root label too, though its id is one of the set's.
+    // Among a set, a neighbour must have every root label too, though its id is one of the set's: measured exactly with no
+    // searchK, and through the index, which yields the draft, given one (drivine4j#868).
     assertEquals(
         mapOf("published" to emptyList()),
         gom.loadNearestAmong(PublishedClip::class.java, listOf("published", "draft"), topK = 5),
+    )
+    assertEquals(
+        mapOf("published" to emptyList()),
+        gom.loadNearestAmong(PublishedClip::class.java, listOf("published", "draft"), topK = 5, searchK = 5),
     )
 }
 
