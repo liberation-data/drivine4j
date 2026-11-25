@@ -235,23 +235,23 @@ interface GraphObjectOperations {
      * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
      * An embedding of another size than the index's is measured against none of a different size: on
      * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search
-     * fails, as their index search refuses a vector of another size, and Memgraph does not store one. For
-     * [AmongNeighbours.AFTER] with no [searchK], which asks no index, Neo4j measures it against none of another size too,
-     * and FalkorDB refuses a pair of two sizes.
+     * fails, as their index search refuses a vector of another size, given a [searchK], and Memgraph does not store one.
+     * With no [searchK], which asks no index, Neo4j measures it against none of another size too, and FalkorDB refuses a
+     * pair of two sizes.
      *
      * Works on a `@NodeFragment` and on a `@GraphView`, whose **root fragment**'s embedding is searched;
      * the vector index is resolved from `@VectorIndex` as [loadNearest] resolves it. A view's
      * relationships play no part: the set is named by id.
      *
-     * **Result count semantics:** on a store that searches through an approximate index (Neo4j,
-     * FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made), the index is asked
-     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion, the root's
+     * **Result count semantics:** with no [searchK], every pair of the set is measured through no index, on every store, so
+     * the answer is exact and its cost grows with the square of the number of [ids]. Given a [searchK], on a store that
+     * searches through an approximate index (Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
+     * made), the index is asked for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion, the root's
      * labels beyond the first (the one the index is on) and the [threshold] then apply to those, so
      * **fewer than [topK] may come back** for an id whose nearest mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
      * [searchK], exactly as a filtered [loadNearest] does. Where the store measures every node instead
      * (SQLite, and Postgres or Oracle with no vector index made) only the set is measured, the answer
-     * is exact, and [searchK] changes nothing; it measures every pair of the set, so its cost grows
-     * with the square of the number of [ids].
+     * is exact, and [searchK] changes nothing.
      *
      * ```kotlin
      * val neighbours = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, threshold = 0.8)
