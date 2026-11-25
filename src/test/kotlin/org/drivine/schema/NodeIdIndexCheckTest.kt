@@ -6,6 +6,11 @@ import ch.qos.logback.core.read.ListAppender
 import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.connection.Connection
+import org.drivine.connection.ConnectionProvider
+import org.drivine.connection.DatabaseType
+import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -182,6 +187,92 @@ class NodeIdIndexCheckTest {
         NodeIdIndexCheck.ensured("other", RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
         FragmentModel.from(OrderFixture::class.java)
         assertEquals(listOf(orderWarning), warnings(), "one that ignores case, over more properties, not made, or on a database no enforce listed")
+    }
+
+    /**
+     * A manager asked for `default` is of the first registered database, which [SchemaManager] lists by its registered
+     * name: an index ensured through it serves a fragment there (#886).
+     */
+    @Test
+    fun `an index ensured through the default manager serves a fragment on the database it is registered as`() {
+        val provider = object : ConnectionProvider {
+            override val name = "neo"
+            override val type = DatabaseType.NEO4J
+            override val subtypeRegistry = null
+            override fun connect(): Connection = throw UnsupportedOperationException()
+            override fun end() = Unit
+        }
+        val manager = NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J, SubtypeRegistry())
+        assertEquals("neo", manager.indexes.database)
+        assertEquals(null, IndexManager(SchemaExecutor(provider), provider.schemaGrammar).database, "a manager with no owner is of no database")
+
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.listed("neo", emptyList())
+        NodeIdIndexCheck.ensured(manager.indexes.database, RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        assertEquals(emptyList(), warnings())
+    }
+
+    /**
+     * With no [SchemaManager], the index or constraint the warning names, ensured by hand, serves the fragment, on whichever
+     * database: the warning 30 s after its first use isn't given (#886). One that doesn't serve it leaves the warning.
+     */
+    @Test
+    fun `with no schema manager an index or a constraint ensured by hand that serves the id silences the later warning`() {
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.unmanaged(OrderFixture::class.java)
+        // Ensured after the fragment's first use, before the warning is due: the order an application's startup gives.
+        FragmentModel.from(InvoiceFixture::class.java)
+        NodeIdIndexCheck.ensured("neo", UniquenessConstraintSpec("Invoice", listOf("invoice_no")), EnsureResult.AlreadyMatching(unique("Invoice", "invoice_no")))
+        NodeIdIndexCheck.unmanaged(InvoiceFixture::class.java)
+        assertEquals(emptyList(), warnings())
+
+        // Under another of the fragment's labels serves it too: a save matches every label.
+        NodeIdIndexCheck.reset()
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Purchase", listOf("id")), EnsureResult.Created(range("Purchase", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.unmanaged(OrderFixture::class.java)
+        assertEquals(emptyList(), warnings(), "an index under another of its labels")
+
+        NodeIdIndexCheck.reset()
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id"), ignoreCase = true), EnsureResult.Created(range("Order", "id")))
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id", "placedAt")), EnsureResult.Created(range("Order", "id", "placedAt")))
+        NodeIdIndexCheck.ensured("neo", UniquenessConstraintSpec("Order", listOf("id")), EnsureResult.Drift(unique("Order", "id", "line"), UniquenessConstraintSpec("Order", listOf("id"))))
+        NodeIdIndexCheck.ensured(null, RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.unmanaged(OrderFixture::class.java)
+        assertEquals(listOf(orderWarning), warnings(), "one that ignores case, over more properties, not made, or of no database")
+
+        // Forgotten by a reset, as everything else is.
+        NodeIdIndexCheck.reset()
+        appender.list.clear()
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        NodeIdIndexCheck.reset()
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.unmanaged(OrderFixture::class.java)
+        assertEquals(listOf(orderWarning), warnings(), "after a reset")
+    }
+
+    /**
+     * What was ensured by hand before any enforce is not taken into what an enforce lists of the database later: that
+     * listing, read of the store, is what serves an id there from then on (#886).
+     */
+    @Test
+    fun `an index ensured by hand before an enforce gives way to what the enforce lists`() {
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.listed("neo", emptyList())
+        assertEquals(listOf(orderWarning), warnings(), "the store, as listed, has no index serving it")
+
+        NodeIdIndexCheck.reset()
+        appender.list.clear()
+        NodeIdIndexCheck.ensured("neo", RangeIndexSpec("Order", listOf("id")), EnsureResult.Created(range("Order", "id")))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.listed("neo", listOf(range("Order", "id")))
+        assertEquals(emptyList(), warnings(), "listed by the enforce")
     }
 
     @Test

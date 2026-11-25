@@ -36,10 +36,12 @@ class IndexManager internal constructor(
     val grammar: SchemaGrammar,
     /** The auto-commit manager this one is of, which an item that ignores case fills its copies in through; null for none. */
     private val owner: PersistenceManager? = null,
+    /** The name [owner]'s connection is registered under, which `default` resolves to; null where it isn't known. */
+    private val registeredAs: String? = null,
 ) {
 
     internal constructor(connectionProvider: ConnectionProvider, owner: PersistenceManager? = null) :
-        this(SchemaExecutor(connectionProvider), connectionProvider.schemaGrammar, owner = owner)
+        this(SchemaExecutor(connectionProvider), connectionProvider.schemaGrammar, owner = owner, registeredAs = connectionProvider.name)
 
     /**
      * Which lowercased copies every node of a label has, which an index or a constraint that ignores
@@ -75,8 +77,12 @@ class IndexManager internal constructor(
     fun ensure(spec: IndexSpec): EnsureResult =
         checkNotNull(driver.item(ItemCall.ENSURE, spec).result).also { NodeIdIndexCheck.ensured(database, spec, it) }
 
-    /** The database this manager is of, for [NodeIdIndexCheck]; null for a manager with no [owner]. */
-    internal val database: String? get() = owner?.database
+    /**
+     * The database this manager is of, for [NodeIdIndexCheck], by the name its connection is registered under, as
+     * [SchemaManager] lists it: a manager asked for `default` is of the first registered database (#886). Null for a
+     * manager with no [owner].
+     */
+    internal val database: String? get() = owner?.let { registeredAs ?: it.database }
 
     /** Convenience for [ensure] with a [VectorIndexSpec]. */
     @JvmOverloads
