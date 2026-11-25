@@ -550,7 +550,7 @@ class OracleSelectTest {
     }
 
     @Test
-    fun `a search among ids through an index made logs what the shared module warns of at DEBUG, as the default searchK warns on every call`() {
+    fun `a search among ids through an index made logs what the shared module warns of at DEBUG, as a short vector search is`() {
         val logger = LoggerFactory.getLogger(SqlViewSelect::class.java) as Logger
         val appender = ListAppender<ILoggingEvent>().also { it.start() }
         val level = logger.level
