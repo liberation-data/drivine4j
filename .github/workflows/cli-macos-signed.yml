@@ -6,8 +6,9 @@
 # and Intel Macs are effectively end-of-life, so the CLI is built and shipped for Apple silicon only. If an Intel
 # build is ever needed it would take a separate toolchain (GraalVM 24.0.2 or Liberica NIK) on macos-15-intel.
 #
-# This workflow needs eight secrets from the `apple-signing` environment (listed under the signing step's env). Until
-# they are set it will fail at the signing step; that is expected while the signing material is being provisioned.
+# This workflow needs eight secrets from the `apple-signing` environment (listed under the signing step's env). A
+# workflow that calls it must pass `secrets: inherit`, or the job sees the environment but every secret reads empty
+# (#885). If any is missing, the first step fails in seconds and names it.
 #
 # Kept apart from cli-native.yml on purpose: that workflow is permissions: contents: read with no secrets, so fork
 # pull requests can run it safely. Signing needs secrets, so it runs only on triggers under this repo's control
@@ -50,6 +51,29 @@ jobs:
       group: cli-macos-signed-${{ inputs.tag || github.event.release.tag_name || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
+      # Fail in seconds, not after the half-hour native build, when the job can't see the secrets: unset in the
+      # environment, or a caller that didn't pass them on (#885). Names only; no value is printed.
+      - name: Check the signing secrets are present
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          missing=()
+          for name in APPLE_DEVELOPER_ID_P12_BASE64 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID \
+            APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER_ID KEYCHAIN_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::The signing job can't see ${missing[*]}. Set them in the apple-signing environment; a workflow calling this one must pass secrets: inherit."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       # The same toolchain as cli-native.yml: JDK 21 (temurin) compiles the module as the toolchain asks, named in
@@ -96,7 +120,7 @@ jobs:
       # Sign with Developer ID + hardened runtime + timestamp, then notarize with notarytool --wait. The binary is
       # built in this job, so it keeps its exec bit and is signed in place — no artifact round-trip. The eight secrets
       # are passed through env; the action reads them from env and never from inputs, so none is interpolated into a
-      # shell command line. The run fails here until the secrets are set.
+      # shell command line.
       - name: Sign and notarize
         uses: ./.github/actions/sign-notarize-macos
         with:

@@ -375,6 +375,9 @@ jobs:
   # trigger never sees these. Its signing job reads the Apple secrets from the `apple-signing` environment, which
   # allows main and v* tags: the refs a release runs on. A failure here leaves the release published without the macOS
   # zip; re-run this job to attach it.
+  #
+  # `secrets: inherit` is needed even though the secrets are the environment's: without it the called job gets the
+  # environment (its deployment is recorded) but every secret reads empty, and its first step fails (#885).
   macos-cli:
     needs: [check, github-release]
     if: ${{ !cancelled() && needs.github-release.result == 'success' }}
@@ -383,3 +386,4 @@ jobs:
     uses: ./.github/workflows/cli-macos-signed.yml
     with:
       tag: ${{ needs.check.outputs.tag }}
+    secrets: inherit
