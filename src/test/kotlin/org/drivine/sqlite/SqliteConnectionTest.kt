@@ -12,6 +12,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.SchemaGrammar
 import org.junit.jupiter.api.Test
 import org.drivine.schema.UniquenessConstraintSpec
@@ -37,7 +38,7 @@ class SqliteConnectionTest {
     private val pm = SqliteTestDatabase.pm
 
     private fun row(sql: String, parameters: Map<String, Any?> = emptyMap()): Any? =
-        pm.query(QuerySpecification.withStatement(sql).bind(parameters)).single()
+        pm.query(QuerySpecification.withStatement(sqlStatement(sql)).bind(parameters)).single()
 
     @Test
     fun `each connection writes ahead to a log, enforces foreign keys and waits for a locked file, as long as it is told`() {
@@ -184,7 +185,7 @@ class SqliteConnectionTest {
             } as java.sql.Connection
             return JdbcConnection(recording, JdbcResultMapper(), DatabaseType.SQLITE)
         }
-        fun insert(connection: JdbcConnection, v: String) = connection.query(QuerySpecification.withStatement("INSERT INTO tx_end (v) VALUES (\$v)").bind(mapOf("v" to v)))
+        fun insert(connection: JdbcConnection, v: String) = connection.query(QuerySpecification.withStatement(sqlStatement("INSERT INTO tx_end (v) VALUES (\$v)")).bind(mapOf("v" to v)))
 
         connection().let { connection ->
             connection.startTransaction()
@@ -196,7 +197,7 @@ class SqliteConnectionTest {
             connection.release(null)
         }
         assertTrue("commit" !in called && "rollback" !in called, "neither the driver's commit nor its rollback: $called")
-        assertEquals(listOf("committed"), pm.query(QuerySpecification.withStatement("SELECT v FROM tx_end").transform(String::class.java)))
+        assertEquals(listOf("committed"), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT v FROM tx_end")).transform(String::class.java)))
 
         // Once ended, the connection holds no lock: another takes the file's write lock without waiting.
         SqliteTestDatabase.provider.nativeDriver.connection.use { other ->
@@ -211,7 +212,7 @@ class SqliteConnectionTest {
             connection.release(null)
         }
         assertTrue("rollback" !in called, "not the driver's rollback: $called")
-        assertEquals(listOf("committed"), pm.query(QuerySpecification.withStatement("SELECT v FROM tx_end").transform(String::class.java)))
+        assertEquals(listOf("committed"), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT v FROM tx_end")).transform(String::class.java)))
     }
 
     @Test
@@ -219,7 +220,7 @@ class SqliteConnectionTest {
         val path = Files.createTempDirectory("drivine-sqlite-refused").resolve("refused.db").toString()
         val provider = JdbcConnectionProvider.sqlite("refused", path, poolMax = 1)
         try {
-            fun run(connection: org.drivine.connection.Connection, sql: String) = connection.query(QuerySpecification.withStatement(sql))
+            fun run(connection: org.drivine.connection.Connection, sql: String) = connection.query(QuerySpecification.withStatement(sqlStatement(sql)))
             fun count(): Any? = provider.connect().let { connection ->
                 try { run(connection, "SELECT count(*) AS n FROM child").single() } finally { connection.release() }
             }
@@ -260,7 +261,7 @@ class SqliteConnectionTest {
         val path = Files.createTempDirectory("drivine-sqlite-aborted").resolve("aborted.db").toString()
         val provider = JdbcConnectionProvider.sqlite("aborted", path, poolMax = 1)
         try {
-            fun run(connection: org.drivine.connection.Connection, sql: String) = connection.query(QuerySpecification.withStatement(sql))
+            fun run(connection: org.drivine.connection.Connection, sql: String) = connection.query(QuerySpecification.withStatement(sqlStatement(sql)))
             provider.connect().let { connection ->
                 run(connection, "CREATE TABLE t (v TEXT)")
                 // A statement that fails so, as one that fills the disk or is interrupted does, ends the whole transaction.

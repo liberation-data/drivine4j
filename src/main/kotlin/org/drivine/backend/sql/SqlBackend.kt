@@ -29,6 +29,7 @@ import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.SplitOrders
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.sqlStatement
 
 /**
  * The backend of a SQL store, Oracle or Postgres, which keep a graph in the same two tables (see
@@ -156,7 +157,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         val source = shapeOf(from)
         val select = select(targetClass)
         val statement = select.load(listOf(select.relatedTo(source.labels, source.key, FROM_PARAM, type, direction)))
-        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to ids.json(FragmentModel.from(from.fragmentClass), from.id)))
+        return GraphStatement.sql(statement.statement, statement.bindings + (FROM_PARAM to ids.json(FragmentModel.from(from.fragmentClass), from.id)))
     }
 
     /** A seek walks an order, which a count or a delete does not have: it would be ignored, and a delete would take every match. */
@@ -175,7 +176,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
         val select = select(graphClass)
         val checks = select.cascadeDepthChecks(byId(select, where))
-        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, byId(select, GraphStatement(sql, select.bindings()))) }
+        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, byId(select, GraphStatement.sql(sql, select.bindings()))) }
     }
 
     /** The predicates a delete by id selects its root by: the checks it runs first read the same root. */
@@ -220,7 +221,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>?): FragmentBatch = FragmentBatch(
         stamped = fragments.chunked(BATCH).map { chunk ->
             val (text, bindings) = saves.together(chunk, nullPolicy, writeFields)
-            QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
+            QuerySpecification.withStatement(sqlStatement(text)).bind(bindings).transform(String::class.java)
         },
     )
 
@@ -244,7 +245,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
                     lower = model.lowerCopied,
                 )
             }
-            QuerySpecification.withStatement(plan.text(WriteReturns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
+            QuerySpecification.withStatement(sqlStatement(plan.text(WriteReturns.EACH_STAMP))).bind(plan.bindings()).transform(String::class.java)
         }
     }
 
@@ -264,7 +265,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
             set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(), lower = model.lowerCopied,
         )
         val patchedIf = select.meeting(conditions)
-        return GraphStatement(plan.text(WriteReturns.EACH_STAMP, patchedIf), plan.bindings(patchedIf) + patchedIfBindings(select))
+        return GraphStatement.sql(plan.text(WriteReturns.EACH_STAMP, patchedIf), plan.bindings(patchedIf) + patchedIfBindings(select))
     }
 
     /** The values of the parameters of the query a `patch` step asks, which [select] wrote: none where the query is written whole. */
@@ -298,7 +299,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
     private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
         requireType(type)
         val plan = WritePlan(blocks).apply(steps)
-        return GraphStatement(plan.text(WriteReturns.COUNT), plan.bindings())
+        return GraphStatement.sql(plan.text(WriteReturns.COUNT), plan.bindings())
     }
 
     override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = counting(type) {

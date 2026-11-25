@@ -5,6 +5,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnection
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
@@ -56,7 +57,7 @@ class SqliteGraphTest {
         val graph = SqliteGraph("g")
         val connection = JdbcConnection(DriverManager.getConnection("jdbc:sqlite:${directory.resolve("g.db")}"), JdbcResultMapper(), DatabaseType.SQLITE, "g")
         val sent = mutableListOf<String>()
-        val run = { statement: String -> sent += statement; connection.query(QuerySpecification.withStatement(statement)) }
+        val run = { statement: String -> sent += statement; connection.query(QuerySpecification.withStatement(sqlStatement(statement))) }
         try {
             graph.ensure(run)
             assertEquals(listOf(graph.made) + graph.ddl, sent)
@@ -67,11 +68,11 @@ class SqliteGraphTest {
             assertEquals(listOf(graph.made), sent)
 
             // A store with an index missing, as one an earlier version made: made again, and the index is back.
-            connection.query(QuerySpecification.withStatement("DROP INDEX g_edge_dst"))
+            connection.query(QuerySpecification.withStatement(sqlStatement("DROP INDEX g_edge_dst")))
             sent.clear()
             graph.ensure(run)
             assertEquals(listOf(graph.made) + graph.ddl, sent)
-            assertEquals(listOf<Any?>(graph.ddl.size), connection.query(QuerySpecification.withStatement(graph.made)).map { (it as Number).toInt() })
+            assertEquals(listOf<Any?>(graph.ddl.size), connection.query(QuerySpecification.withStatement(sqlStatement(graph.made))).map { (it as Number).toInt() })
         } finally {
             connection.release()
         }

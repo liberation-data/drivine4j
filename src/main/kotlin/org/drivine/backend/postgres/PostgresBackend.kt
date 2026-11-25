@@ -16,6 +16,7 @@ import org.drivine.cypher.api.GraphOptions
 import org.drivine.cypher.api.SearchStore
 import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.VectorIndexResolver
+import org.drivine.query.sqlStatement
 import org.drivine.schema.SchemaItemKind
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ScoredSearchPlan
@@ -60,7 +61,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
             select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
-        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK, statement.language)
     }
 
     /** Through the index for the label when one has been made and a [searchK] given, as [nearest] goes; else each root measures the others. */
@@ -76,7 +77,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val candidates = select.matching(index.properties, text, indexed = fullTextMade(index.label, index.properties))
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
-        return ScoredSearchPlan(statement.statement, statement.bindings)
+        return ScoredSearchPlan(statement.statement, statement.bindings, language = statement.language)
     }
 
     /**
@@ -85,15 +86,17 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
      */
     private fun fullTextMade(label: String, properties: List<String>): Boolean {
         val lookup = requireNotNull(FullTextSearch.lookup(SearchStore.POSTGRES, GraphOptions(graph.name), label, properties))
-        return persistenceManager.query(QuerySpecification.withStatement(lookup.sql).bind(lookup.parameters).transform(Map::class.java)).firstOrNull() != null
+        return persistenceManager.query(QuerySpecification.withStatement(sqlStatement(lookup.sql)).bind(lookup.parameters).transform(Map::class.java)).firstOrNull() != null
     }
 
     /** The details of a recorded index of [kind] on [label]'s [properties] that is there; null when it has not been made. */
     private fun made(kind: SchemaItemKind, label: String, properties: List<String>): Map<*, *>? = persistenceManager.query(
         QuerySpecification
             .withStatement(
-                "SELECT details FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties " +
-                    "AND object_name IS NOT NULL AND to_regclass(object_name) IS NOT NULL"
+                sqlStatement(
+                    "SELECT details FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties " +
+                        "AND object_name IS NOT NULL AND to_regclass(object_name) IS NOT NULL"
+                )
             )
             .bind(mapOf("kind" to kind.name, "label" to label, "properties" to PostgresSchemaGrammar.json(properties)))
             .transform(Map::class.java)
@@ -105,7 +108,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
      * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
      * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
      */
-    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
+    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement.sql(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull(PostgresSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), PostgresSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to ids.rootJson(root)),
@@ -126,7 +129,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
      * relationship table cascades.
      */
     override fun deleting(select: PostgresSelect, predicates: List<String>): GraphStatement =
-        GraphStatement(
+        GraphStatement.sql(
             "WITH deleted AS (\n    DELETE FROM ${graph.nodes} ${select.root}\n    WHERE ${select.selecting(predicates).replace("\n", "\n    ")}\n    RETURNING 1)\nSELECT COUNT(*) FROM deleted",
             select.bindings(),
         )
@@ -183,7 +186,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
                 "SELECT COUNT(*) FROM deleted",
             )
         }.joinToString("\n")
-        return GraphStatement(text, select.bindings())
+        return GraphStatement.sql(text, select.bindings())
     }
 
     private companion object {

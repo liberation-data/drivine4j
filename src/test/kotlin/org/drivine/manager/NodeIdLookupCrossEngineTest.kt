@@ -30,6 +30,7 @@ import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SqlCypherFixtures
@@ -424,7 +425,7 @@ class NodeIdLookupPostgresTest : NodeIdLookupContract() {
     override fun analyze() = PostgresTestDatabase.run("ANALYZE ${GRAPH}_node", "ANALYZE ${GRAPH}_edge")
 
     override fun plan(sql: String, bindings: Map<String, Any?>): String =
-        store.query(QuerySpecification.withStatement("EXPLAIN $sql").bind(bindings).transform(String::class.java)).joinToString("\n")
+        store.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN $sql")).bind(bindings).transform(String::class.java)).joinToString("\n")
 
     override fun readsIndex(plan: String, label: String) =
         Regex("""Index (Only )?Scan using ${GRAPH}_uq2_${label.lowercase()}id_\w+ on ${GRAPH}_node[\s\S]*?Index Cond: \(\(props -> 'id'::text\) = """).containsMatchIn(plan) &&
@@ -442,12 +443,12 @@ class NodeIdLookupPostgresTest : NodeIdLookupContract() {
             val plan = try {
                 connection.startTransaction()
                 val id = idJson(type, text, Store.POSTGRES)
-                connection.query(QuerySpecification.withStatement("SELECT (${GRAPH}_find('[\"$label\"]'::jsonb, 'id', ${PostgresSql.literal(id)}::jsonb)).nid"))
+                connection.query(QuerySpecification.withStatement(sqlStatement("SELECT (${GRAPH}_find('[\"$label\"]'::jsonb, 'id', ${PostgresSql.literal(id)}::jsonb)).nid")))
                 val name = connection.query(
-                    QuerySpecification.withStatement("SELECT name FROM pg_prepared_statements WHERE name LIKE 'drivine_find_%' AND statement LIKE \$label")
+                    QuerySpecification.withStatement(sqlStatement("SELECT name FROM pg_prepared_statements WHERE name LIKE 'drivine_find_%' AND statement LIKE \$label"))
                         .bind(mapOf("label" to "%\"$label\"%")).transform(String::class.java),
                 ).single()
-                connection.query(QuerySpecification.withStatement("EXPLAIN EXECUTE $name(${PostgresSql.literal(id)}::jsonb)").transform(String::class.java)).joinToString("\n")
+                connection.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN EXECUTE $name(${PostgresSql.literal(id)}::jsonb)")).transform(String::class.java)).joinToString("\n")
             } finally {
                 connection.rollbackTransaction()
                 connection.release()
@@ -470,7 +471,7 @@ class NodeIdLookupPostgresTest : NodeIdLookupContract() {
         for (step in listOf("""{"op": "ref", "r": 0, "s": 0, "k": "t1"}""", """{"op": "patch", "s": 0, "k": "t1", "i": "0", "fresh": "f"}""")) {
             val refused = kotlin.runCatching {
                 store.query(QuerySpecification.withStatement(
-                    "SELECT ${GRAPH}_write(CAST('[$step]' AS jsonb), CAST('$shapes' AS jsonb), 'mark', 'COUNT', NULL)"
+                    sqlStatement("SELECT ${GRAPH}_write(CAST('[$step]' AS jsonb), CAST('$shapes' AS jsonb), 'mark', 'COUNT', NULL)")
                 ))
             }.exceptionOrNull()
             val message = generateSequence(refused) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
@@ -528,7 +529,7 @@ class NodeIdLookupSqliteTest : NodeIdLookupContract() {
     override fun analyze() = SqliteTestDatabase.run("ANALYZE")
 
     override fun plan(sql: String, bindings: Map<String, Any?>): String =
-        store.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN $sql").bind(bindings)).joinToString("\n") { row -> (row as List<*>).last().toString() }
+        store.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN $sql")).bind(bindings)).joinToString("\n") { row -> (row as List<*>).last().toString() }
 
     /**
      * The node searched for through the uniqueness constraint's index over the label's `id`, by both its columns, the id's

@@ -10,6 +10,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -328,7 +329,7 @@ class OracleKeyedLabelPlanTest {
     fun `a node read by its key is read so on every run of a new cursor, not planned again from what the first run found`() {
         val connection = OracleTestDatabase.connections(pm).connect()
         try {
-            val sid = connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL").transform(String::class.java)).single()
+            val sid = connection.query(QuerySpecification.withStatement(sqlStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")).transform(String::class.java)).single()
             val all = NODES.toLong()
             for ((statement, expected) in listOf(
                 "MATCH (a:Big) MATCH (b:Big) WHERE a = b RETURN count(*)" to all,

@@ -9,6 +9,7 @@ import org.drivine.cypher.store.marker.StoreStampStatements
 import org.drivine.cypher.store.ddl.SqlStoreDdl
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import java.time.Instant
 import java.util.UUID
 
@@ -81,9 +82,9 @@ internal abstract class SqlGraph(val name: String) {
         // A store's own refusals first (SQLite's of ids an earlier Drivine reused), as before there were layouts; then the
         // layout, judged before anything is made: this layout's tables, made first, would read as its own in a graph an
         // earlier Drivine wrote.
-        refuse { connection.query(QuerySpecification.withStatement(it)) }
+        refuse { connection.query(QuerySpecification.withStatement(sqlStatement(it))) }
         layout(connection, write = true)
-        ensure { connection.query(QuerySpecification.withStatement(it)) }
+        ensure { connection.query(QuerySpecification.withStatement(sqlStatement(it))) }
     }
 
     /**
@@ -95,13 +96,13 @@ internal abstract class SqlGraph(val name: String) {
 
     /** [refuse], on [connection]. */
     internal fun refuse(connection: Connection) {
-        refuse { connection.query(QuerySpecification.withStatement(it)) }
+        refuse { connection.query(QuerySpecification.withStatement(sqlStatement(it))) }
         layout(connection, write = false)
     }
 
     /** Whether the graph's table of nodes is there, which every layout makes first: asked of the store's catalog. */
     private fun tablesThere(connection: Connection): Boolean =
-        connection.query(QuerySpecification.withStatement(tablesMade)).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
+        connection.query(QuerySpecification.withStatement(sqlStatement(tablesMade))).single().let { (it as? Map<*, *>)?.values?.single() ?: it }
             .let { (it as Number).toLong() > 0 }
 
     /** A query of the store's catalog whose one value is how many of the graph's table of nodes it holds, none or one. */
@@ -119,7 +120,7 @@ internal abstract class SqlGraph(val name: String) {
     private fun layout(connection: Connection, write: Boolean) {
         val statements = StoreStampStatements.of(store)
         fun rows(statement: String, parameters: Map<String, Any?> = emptyMap()) =
-            connection.query(QuerySpecification.withStatement(statement).bind(parameters))
+            connection.query(QuerySpecification.withStatement(sqlStatement(statement)).bind(parameters))
         fun maps(statement: String?) = statement?.let { rows(it).map { row -> (row as Map<*, *>).entries.associate { (k, v) -> k.toString() to v } } }.orEmpty()
         for (asked in 1..2) {
             // A graph whose tables aren't there yet is new: nothing to judge, and nothing of another layout to find. Asked of

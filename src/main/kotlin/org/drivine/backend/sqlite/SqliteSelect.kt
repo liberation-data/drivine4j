@@ -89,7 +89,7 @@ internal class SqliteSelect(
             orders.takeIf { it.isNotEmpty() }?.let { "ORDER BY " + it.joinToString(", ", transform = this.predicates::orderTerms) },
             page(skip, limit),
         )
-        return GraphStatement("${SqliteSql.JSON_ROWS}\n" + Query(result, roots(), selected(predicates), page).text(), bindings())
+        return GraphStatement.sql("${SqliteSql.JSON_ROWS}\n" + Query(result, roots(), selected(predicates), page).text(), bindings())
     }
 
     /** SQLite's page, `LIMIT … OFFSET …`, with a limit of -1, none, where only a skip is given; null for neither. */
@@ -101,7 +101,7 @@ internal class SqliteSelect(
 
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     override fun count(predicates: List<String>): GraphStatement =
-        GraphStatement(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
+        GraphStatement.sql(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
 
     /**
      * The grouped read [query] asks of the roots: one JSON document for each group, a key under `k0…`
@@ -183,7 +183,7 @@ internal class SqliteSelect(
             }
         val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" } +
             holders.entries.joinToString("") { (column, holder) -> "\nLEFT JOIN ${graph.nodes} $holder ON $holder.nid = $groups.${column.column}$REPRESENTATIVE" }
-        return GraphStatement(
+        return GraphStatement.sql(
             buildString {
                 append(SqliteSql.JSON_ROWS).append("\nSELECT ").append(SqliteSql.plainObject(entries)).append(" AS result")
                 append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
@@ -437,7 +437,7 @@ internal class SqliteSelect(
         val result = "${SqliteSql.jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
         val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
         val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "LIMIT ${scope.bound(it)}" })
-        return GraphStatement("${SqliteSql.JSON_ROWS}\n" + Query(result, Derived(candidates, root), filters, best).text(), bindings())
+        return GraphStatement.sql("${SqliteSql.JSON_ROWS}\n" + Query(result, Derived(candidates, root), filters, best).text(), bindings())
     }
 
     /**
@@ -468,7 +468,7 @@ internal class SqliteSelect(
      * scored once, numbered within its root best first, and a root keeps the first [topK].
      */
     fun nearestAmong(index: VectorQuerySpec, ids: List<String>, topK: Int, threshold: Double?, searchK: Int?, neighbours: AmongNeighbours): GraphStatement =
-        GraphStatement(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(), neighbours), bindings())
+        GraphStatement.sql(among(SearchStore.SQLITE, graph.name, index, ids, topK, threshold, searchK, VectorIndex(), neighbours), bindings())
 
     /**
      * The nodes whose text under [keys] meets the user's [query], each with its columns and its `score`: the candidates the

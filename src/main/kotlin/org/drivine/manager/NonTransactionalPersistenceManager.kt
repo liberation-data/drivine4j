@@ -17,6 +17,7 @@ import org.drivine.store.StoreIdentity
 import org.drivine.store.StoreIdentityResolver
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
+import org.drivine.connection.unmarkedLanguage
 import org.slf4j.LoggerFactory
 
 class NonTransactionalPersistenceManager(
@@ -67,7 +68,7 @@ class NonTransactionalPersistenceManager(
      * no rows; see [SchemaCommands]. A graph engine is sent it as it is.
      */
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
-        SchemaCommands.ddlOf(type, spec)?.let { ddl ->
+        SchemaCommands.ddlOf(type, spec, connectionProvider.unmarkedLanguage)?.let { ddl ->
             commands.run(ddl)
             return emptyList()
         }
@@ -76,7 +77,7 @@ class NonTransactionalPersistenceManager(
 
     override fun queryResult(spec: QuerySpecification<*>): QueryResult {
         QueryResults.requireUnmapped(spec)
-        SchemaCommands.ddlOf(type, spec)?.let { ddl ->
+        SchemaCommands.ddlOf(type, spec, connectionProvider.unmarkedLanguage)?.let { ddl ->
             commands.run(ddl)
             return QueryResults.NONE
         }
@@ -124,7 +125,7 @@ class NonTransactionalPersistenceManager(
      */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
-        if (specs.any { SchemaCommands.ddlOf(type, it) != null }) {
+        if (specs.any { SchemaCommands.ddlOf(type, it, connectionProvider.unmarkedLanguage) != null }) {
             @Suppress("UNCHECKED_CAST")
             if (specs.size == 1) return listOf(query(specs.single() as QuerySpecification<Any>))
             throw DrivineException(

@@ -10,6 +10,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.postgres.PostgresGraph
@@ -59,7 +60,7 @@ abstract class StoreLayoutContract {
         pm.query(QuerySpecification.withStatement(CypherStatement(statement)))
 
     private fun stamps(pm: NonTransactionalPersistenceManager, graph: String): List<Any> =
-        pm.query(QuerySpecification.withStatement(StoreStampStatements.of(graph(graph).store).readStamps))
+        pm.query(QuerySpecification.withStatement(sqlStatement(StoreStampStatements.of(graph(graph).store).readStamps)))
 
     @Test
     fun `a graph cleared and loaded again is stamped again on the next first connection, and used`() {
@@ -126,7 +127,7 @@ abstract class StoreLayoutContract {
         cypher(first, "MATCH (n) DETACH DELETE n")
         cypher(first, "CREATE (:Person {name: 'Grace'})")
         // As an earlier Drivine leaves a graph: no lock table, which only this layout makes, and no stamp.
-        first.execute(QuerySpecification.withStatement("DROP TABLE ${graph(name).store.lock}"))
+        first.execute(QuerySpecification.withStatement(sqlStatement("DROP TABLE ${graph(name).store.lock}")))
         val refused = assertFailsWith<StoreLayoutException> { cypher(manager(name), "MATCH (p:Person) RETURN p.name") }
         assertEquals(name, refused.graph)
     }
@@ -137,7 +138,7 @@ class PostgresStoreLayoutTest : StoreLayoutContract() {
     override val store = "postgres"
     override fun run(statement: String) = PostgresTestDatabase.run(statement)
     override fun tableThere(table: String) =
-        PostgresTestDatabase.pm.query(QuerySpecification.withStatement("SELECT to_regclass('${table.lowercase()}')::text AS t")).single() != null
+        PostgresTestDatabase.pm.query(QuerySpecification.withStatement(sqlStatement("SELECT to_regclass('${table.lowercase()}')::text AS t"))).single() != null
     override fun manager(graph: String) = PostgresTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = PostgresGraph(name)
     override fun drop(graph: String) {
@@ -151,7 +152,7 @@ class OracleStoreLayoutTest : StoreLayoutContract() {
     override val store = "oracle"
     override fun run(statement: String) = OracleTestDatabase.run(statement)
     override fun tableThere(table: String) =
-        (OracleTestDatabase.pm.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER('$table')")).single() as Number).toInt() > 0
+        (OracleTestDatabase.pm.query(QuerySpecification.withStatement(sqlStatement("SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER('$table')"))).single() as Number).toInt() > 0
     override fun manager(graph: String) = OracleTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = OracleGraph(name)
     override fun drop(graph: String) {
@@ -202,7 +203,7 @@ class SqliteStoreLayoutTest : StoreLayoutContract() {
     override val store = "sqlite"
     override fun run(statement: String) = SqliteTestDatabase.run(statement)
     override fun tableThere(table: String) =
-        SqliteTestDatabase.pm.query(QuerySpecification.withStatement("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '$table'")).isNotEmpty()
+        SqliteTestDatabase.pm.query(QuerySpecification.withStatement(sqlStatement("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '$table'"))).isNotEmpty()
     override fun manager(graph: String) = SqliteTestDatabase.graphManager(graph)
     override fun graph(name: String): SqlGraph = SqliteGraph(name)
     override fun drop(graph: String) {

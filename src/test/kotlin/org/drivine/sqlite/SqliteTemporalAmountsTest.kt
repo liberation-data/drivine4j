@@ -9,6 +9,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -68,13 +69,13 @@ class SqliteTemporalAmountsTest {
 
     /** The JSON at [path] of the node [id]'s properties. */
     private fun at(id: String, path: String): String? = pm.query(
-        QuerySpecification.withStatement("SELECT json_extract(props, \$path) FROM amounts_node WHERE props ->> '$.id' = \$id")
+        QuerySpecification.withStatement(sqlStatement("SELECT json_extract(props, \$path) FROM amounts_node WHERE props ->> '$.id' = \$id"))
             .bind(mapOf("id" to id, "path" to path)).transform(String::class.java)
     ).singleOrNull()
 
     /** The `$t` of the value at [path] of the node [id]'s properties, or, where it is no tag, its JSON type. */
     private fun kind(id: String, path: String): String? = at(id, "$path.\"\$t\"") ?: pm.query(
-        QuerySpecification.withStatement("SELECT json_type(props, \$path) FROM amounts_node WHERE props ->> '$.id' = \$id")
+        QuerySpecification.withStatement(sqlStatement("SELECT json_type(props, \$path) FROM amounts_node WHERE props ->> '$.id' = \$id"))
             .bind(mapOf("id" to id, "path" to path)).transform(String::class.java)
     ).singleOrNull()
 

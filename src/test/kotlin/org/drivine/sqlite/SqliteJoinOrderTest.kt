@@ -4,6 +4,7 @@ import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertTimeout
@@ -28,7 +29,7 @@ class SqliteJoinOrderTest {
     private fun plan(cypher: String): List<String> {
         val compiled = compiled(cypher)
         val tables = Regex("""\b${GRAPH}_(node|edge) (\w+)""").findAll(compiled.sql).associate { it.groupValues[2] to it.groupValues[1] }
-        return manager.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters))
+        return manager.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN ${compiled.sql}")).bind(compiled.parameters))
             .map { row -> (row as List<*>).last() as String }
             .filter { it.startsWith("SCAN ") || it.startsWith("SEARCH ") }
             .map { line -> "${tables[line.split(" ")[1]] ?: "rows"}: $line" }
@@ -36,7 +37,7 @@ class SqliteJoinOrderTest {
 
     private fun count(cypher: String): Long {
         val compiled = compiled(cypher)
-        return manager.query(QuerySpecification.withStatement(compiled.sql).bind(compiled.parameters).transform(Long::class.java)).single()
+        return manager.query(QuerySpecification.withStatement(sqlStatement(compiled.sql)).bind(compiled.parameters).transform(Long::class.java)).single()
     }
 
     private fun readsNode(line: String) = line.startsWith("node: ")

@@ -73,8 +73,22 @@ names it fails.
 
 ### A write and a read
 
-Wrap the text in a `CypherStatement`. A plain string is Cypher to a graph engine but SQL to Postgres, Oracle and
-SQLite, so the `CypherStatement` is what lets one statement run on every store.
+A statement is Cypher on every store unless it says otherwise, so a plain string runs on Postgres, Oracle and SQLite
+as it runs on a graph engine: compiled to the store's SQL. A `CypherStatement`, as below, says so explicitly, and is
+Cypher whatever the connection's default. SQL of your own is marked with `sqlStatement(...)` (a `SqlStatement`), and
+runs as it is:
+
+```kotlin
+manager.query(QuerySpecification.withStatement("MATCH (p:Person) RETURN p.name"))               // Cypher, compiled
+manager.query(QuerySpecification.withStatement(sqlStatement("SELECT COUNT(*) FROM graph_node"))) // SQL, as it is
+```
+
+A datasource whose statements are mostly SQL can make SQL its default instead: `defaultLanguage = QueryLanguage.SQL` in
+its `ConnectionProperties`, `defaultLanguage(QueryLanguage.SQL)` on a `ConnectionProviderBuilder`, or
+`database.datasources.<name>.default-language: SQL` with the Spring Boot starter. A plain string is then SQL on it, and a
+`CypherStatement` is still compiled. A graph engine runs no SQL, so `SQL` as the default of a Neo4j, FalkorDB, Memgraph,
+Neptune or Embabel datasource is refused as its provider is built. Before 0.9.0 a plain string was SQL on Postgres,
+Oracle and SQLite, and Cypher on the graph engines: see [Cypher by default](0.9.0-cypher-by-default.md) to migrate.
 
 ```kotlin
 data class Person(val name: String, val city: String)

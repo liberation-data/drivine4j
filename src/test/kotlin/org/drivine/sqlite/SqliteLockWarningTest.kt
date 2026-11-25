@@ -9,6 +9,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -69,7 +70,7 @@ class SqliteLockWarningTest {
     fun `a transaction whose commit SQLite refuses is logged once, as it is rolled back`() {
         val raw = DriverManager.getConnection("jdbc:sqlite::memory:")
         val connection = JdbcConnection(raw, JdbcResultMapper(SubtypeRegistry()), DatabaseType.SQLITE, lockWarning = Duration.ZERO)
-        fun run(sql: String) = connection.query(QuerySpecification.withStatement(sql))
+        fun run(sql: String) = connection.query(QuerySpecification.withStatement(sqlStatement(sql)))
         run("PRAGMA foreign_keys = ON")
         run("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
         run("CREATE TABLE child (parent INTEGER REFERENCES parent (id) DEFERRABLE INITIALLY DEFERRED)")
@@ -105,8 +106,8 @@ class SqliteLockWarningTest {
         val path = Files.createTempDirectory("drivine-sqlite-lock").resolve("lock.db").toString()
         val provider = JdbcConnectionProvider.sqlite("lock", path, busyTimeoutMillis = 0)
         try {
-            fun count(connection: org.drivine.connection.Connection) = connection.query(QuerySpecification.withStatement("SELECT count(*) AS n FROM t")).single()
-            provider.connect().apply { query(QuerySpecification.withStatement("CREATE TABLE t (v TEXT)")); release(null) }
+            fun count(connection: org.drivine.connection.Connection) = connection.query(QuerySpecification.withStatement(sqlStatement("SELECT count(*) AS n FROM t"))).single()
+            provider.connect().apply { query(QuerySpecification.withStatement(sqlStatement("CREATE TABLE t (v TEXT)"))); release(null) }
             val holder = provider.connect().apply { startTransaction() }
             val other = provider.connect()
             try {

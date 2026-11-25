@@ -54,7 +54,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         val candidates = select.nearestTo(index.storedProperty, index.similarity, partitionLabel, vector, searchK ?: topK)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
-        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK, statement.language)
     }
 
     /** Each root measures the others, as there is no index to ask: exact, and [searchK] has nothing to widen. */
@@ -69,7 +69,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val candidates = select.matching(index.properties, text)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
-        return ScoredSearchPlan(statement.statement, statement.bindings)
+        return ScoredSearchPlan(statement.statement, statement.bindings, language = statement.language)
     }
 
     // ----- Writing -----
@@ -78,7 +78,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
      * A stamp that is null says the node is there and has none; no row, that the node is gone. The node is found by its
      * id's JSON, as it holds it ([NodeIds]), which a range index or a uniqueness constraint answers.
      */
-    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
+    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement.sql(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull(SqliteSql.hasId("n", ValueLayout.escape(root.idProperty), "\$id"), SqliteSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to ids.rootJson(root)),
@@ -107,7 +107,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
      * the roots are selected first and deleted by the function [SqliteDeleteFunction] registers.
      */
     override fun deleting(select: SqliteSelect, predicates: List<String>): GraphStatement =
-        GraphStatement(deleted(select.roots(predicates)), select.bindings())
+        GraphStatement.sql(deleted(select.roots(predicates)), select.bindings())
 
     /**
      * Deletes the roots [predicates] select, and of the nodes [cascaded] reaches from them either every
@@ -155,7 +155,7 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
         } else {
             listOf("WITH $roots,", "$everything", deleted("SELECT nid FROM cascade_all"))
         }.joinToString("\n")
-        return GraphStatement(text, select.bindings())
+        return GraphStatement.sql(text, select.bindings())
     }
 
     /** The statement that deletes the nodes whose ids [nids] selects, and counts them. */

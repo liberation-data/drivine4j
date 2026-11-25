@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QueryLanguage
 import org.drivine.query.grammar.CypherDialect
 import org.slf4j.LoggerFactory
 
@@ -36,6 +37,7 @@ class ConnectionProviderBuilder(
     private var falkorDbTransactionMode: FalkorDbTransactionMode? = null
     private var region: String? = null
     private var neptuneAuth: NeptuneAuthMode? = null
+    private var defaultLanguage: QueryLanguage? = null
 
     fun withType(type: DatabaseType): ConnectionProviderBuilder = apply { this.type = type }
     fun host(host: String): ConnectionProviderBuilder = apply { this.host = host }
@@ -47,6 +49,9 @@ class ConnectionProviderBuilder(
     fun databaseName(name: String): ConnectionProviderBuilder = apply { this.name = name }
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
     fun cypherDialect(dialect: CypherDialect): ConnectionProviderBuilder = apply { this.cypherDialect = dialect }
+
+    /** The language of a statement that names none: see [ConnectionProperties.defaultLanguage]. */
+    fun defaultLanguage(language: QueryLanguage): ConnectionProviderBuilder = apply { this.defaultLanguage = language }
 
     /** Takes everything [properties] sets. What it leaves null keeps this builder's own default: a pool of 40 and five seconds to connect. */
     fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
@@ -65,6 +70,7 @@ class ConnectionProviderBuilder(
         properties.falkorDbTransactionMode?.let { falkorDbTransactionMode = it }
         properties.region?.let { region = it }
         properties.neptuneAuth?.let { neptuneAuth = it }
+        properties.defaultLanguage?.let { defaultLanguage(it) }
         return this
     }
 
@@ -75,6 +81,7 @@ class ConnectionProviderBuilder(
      */
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
+        type?.let { languageRefusal(name, it, defaultLanguage) }?.let { throw DrivineException(it) }
 
         /* Checked ahead of the host requirement: an engine with no wire has no
          * host to be missing, so the caller needs directions, not a puzzle. */
@@ -101,6 +108,10 @@ class ConnectionProviderBuilder(
         registry.register(provider)
         return registry.connectionProvider(name)!!
     }
+
+    /** [defaultLanguage] as a JDBC provider takes it: Cypher where it is unset. */
+    private val jdbcLanguage: QueryLanguage
+        get() = defaultLanguage?.takeIf { it != QueryLanguage.PLATFORM_DEFAULT } ?: QueryLanguage.CYPHER
 
     private fun buildNeo4jProvider(name: String): ConnectionProvider {
         if (protocol == null) protocol = "bolt"
@@ -209,6 +220,7 @@ class ConnectionProviderBuilder(
             idleTimeoutMillis = idleTimeout,
             subtypeRegistry = subtypeRegistry,
             graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
+            defaultLanguage = jdbcLanguage,
         )
     }
 
@@ -235,6 +247,7 @@ class ConnectionProviderBuilder(
             idleTimeoutMillis = idleTimeout,
             subtypeRegistry = subtypeRegistry,
             graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
+            defaultLanguage = jdbcLanguage,
         )
     }
 
@@ -255,6 +268,7 @@ class ConnectionProviderBuilder(
             poolMax = poolMax,
             subtypeRegistry = subtypeRegistry,
             graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
+            defaultLanguage = jdbcLanguage,
         )
     }
 
@@ -277,5 +291,18 @@ class ConnectionProviderBuilder(
             subtypeRegistry = subtypeRegistry,
             cypherDialect = resolvedDialect,
         )
+    }
+
+    internal companion object {
+        /**
+         * Why [language] cannot be the default language of datasource [name], of [type]: SQL on a store that runs only
+         * Cypher ([DatabaseType.speaksCypher]). Null where it can be.
+         */
+        fun languageRefusal(name: String, type: DatabaseType, language: QueryLanguage?): String? {
+            if (language != QueryLanguage.SQL || !type.speaksCypher) return null
+            return "Datasource '$name' is ${type.value}, which runs Cypher and no SQL, so its defaultLanguage cannot be SQL. " +
+                "Leave defaultLanguage unset, or set it to CYPHER, and mark a statement that is SQL with sqlStatement(...) " +
+                "on a store that speaks SQL."
+        }
     }
 }

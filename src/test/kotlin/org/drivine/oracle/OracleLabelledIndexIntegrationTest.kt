@@ -14,6 +14,7 @@ import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
+import org.drivine.query.sqlStatement
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
@@ -95,11 +96,11 @@ class OracleLabelledIndexIntegrationTest {
 
     /** The ids [statement] loads. */
     private fun ids(statement: GraphStatement): Set<String> =
-        pm.query(QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(Map::class.java)).map { it["id"] as String }.toSet()
+        pm.query(QuerySpecification.withStatement(sqlStatement(statement.statement)).bind(statement.bindings).transform(Map::class.java)).map { it["id"] as String }.toSet()
 
     /** What [statement] counts. */
     private fun counted(statement: GraphStatement): Long =
-        pm.query(QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(Number::class.java)).single().toLong()
+        pm.query(QuerySpecification.withStatement(sqlStatement(statement.statement)).bind(statement.bindings).transform(Number::class.java)).single().toLong()
 
     /** The ids the statement written without labelled indexes loads, for [conditions]. */
     private fun unindexed(vararg conditions: WhereCondition): Set<String> {
@@ -123,7 +124,7 @@ class OracleLabelledIndexIntegrationTest {
                 DBMS_SQL.RETURN_RESULT(v_plan);
             END;
         """.trimIndent()
-        return pm.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
+        return pm.query(QuerySpecification.withStatement(sqlStatement(block)).transform(String::class.java)).joinToString("\n")
     }
 
     @Test
@@ -219,16 +220,16 @@ class OracleLabelledIndexIntegrationTest {
             val spec = query(*conditions.toTypedArray())
             val load = backend.loadAll(LabelledChunk::class.java, spec).statement
             assertFalse(overLabels in plan(load), plan(load))
-            assertEquals(1, pm.query(QuerySpecification.withStatement(load.statement).bind(load.bindings).transform(Map::class.java)).size, load.statement)
+            assertEquals(1, pm.query(QuerySpecification.withStatement(sqlStatement(load.statement)).bind(load.bindings).transform(Map::class.java)).size, load.statement)
             assertEquals(1, counted(backend.count(LabelledChunk::class.java, spec)))
             assertEquals(1, counted(backend.deleteAll(LabelledChunk::class.java, spec)))
-            val left = pm.query(QuerySpecification.withStatement("SELECT JSON_SERIALIZE(labels) FROM ${graph.nodes} WHERE JSON_EXISTS(labels, '$[*]?(@ == \"VecContent\" || @ == \"VecChunk\")')").transform(String::class.java))
+            val left = pm.query(QuerySpecification.withStatement(sqlStatement("SELECT JSON_SERIALIZE(labels) FROM ${graph.nodes} WHERE JSON_EXISTS(labels, '$[*]?(@ == \"VecContent\" || @ == \"VecChunk\")')")).transform(String::class.java))
             assertEquals(setOf("[\"VecChunk\"]", "[\"VecContent\"]"), left.toSet(), "the node of both labels alone is deleted")
         }
     }
 
     private fun indexed(name: String): Boolean =
-        pm.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM user_indexes WHERE index_name = '${name.uppercase()}'").transform(Number::class.java)).single().toInt() == 1
+        pm.query(QuerySpecification.withStatement(sqlStatement("SELECT COUNT(*) FROM user_indexes WHERE index_name = '${name.uppercase()}'")).transform(Number::class.java)).single().toInt() == 1
 
     private companion object {
         const val GRAPH = "labelled"

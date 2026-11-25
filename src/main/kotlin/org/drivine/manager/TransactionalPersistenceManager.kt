@@ -13,6 +13,8 @@ import org.drivine.schema.ddl.SchemaCommands
 import org.drivine.store.StoreIdentity
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
+import org.drivine.connection.unmarkedLanguage
+import org.drivine.query.QueryLanguage
 import org.slf4j.LoggerFactory
 
 
@@ -48,6 +50,10 @@ class TransactionalPersistenceManager(
             ?: schemaManagerSource?.atomicBatches
             ?: true
 
+    /** The language a statement of no language runs in on this database's connections. */
+    private val unmarkedLanguage: QueryLanguage
+        get() = contextHolder.databaseRegistry.connectionProvider(database)?.unmarkedLanguage ?: QueryLanguage.CYPHER
+
     /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
     override val supportsSchemaManagement: Boolean
         get() = schemaManagerSource?.supportsSchemaManagement ?: false
@@ -77,7 +83,7 @@ class TransactionalPersistenceManager(
      * `db.awaitIndexes`, which does nothing there.
      */
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
-        if (SchemaCommands.refusedInTransaction(type, spec)) return emptyList()
+        if (SchemaCommands.refusedInTransaction(type, spec, unmarkedLanguage)) return emptyList()
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         return try {
@@ -89,7 +95,7 @@ class TransactionalPersistenceManager(
 
     override fun queryResult(spec: QuerySpecification<*>): QueryResult {
         QueryResults.requireUnmapped(spec)
-        if (SchemaCommands.refusedInTransaction(type, spec)) return QueryResults.NONE
+        if (SchemaCommands.refusedInTransaction(type, spec, unmarkedLanguage)) return QueryResults.NONE
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         return try {
@@ -118,7 +124,7 @@ class TransactionalPersistenceManager(
     }
 
     override fun execute(spec: QuerySpecification<*>) {
-        if (SchemaCommands.refusedInTransaction(type, spec)) return
+        if (SchemaCommands.refusedInTransaction(type, spec, unmarkedLanguage)) return
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         try {
@@ -145,7 +151,7 @@ class TransactionalPersistenceManager(
         val connection = txObject.getOrCreateConnection(database, contextHolder)
         if (specs.size > 1 && !atomicBatches) nonAtomic.report(specs.size)
         return specs.map { spec ->
-            if (SchemaCommands.refusedInTransaction(type, spec)) return@map emptyList()
+            if (SchemaCommands.refusedInTransaction(type, spec, unmarkedLanguage)) return@map emptyList()
             try {
                 @Suppress("UNCHECKED_CAST")
                 connection.query(spec as QuerySpecification<Any>)

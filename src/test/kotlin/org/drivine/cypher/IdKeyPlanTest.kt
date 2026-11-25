@@ -12,6 +12,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.Nightly
 import org.junit.jupiter.api.BeforeAll
@@ -202,7 +203,7 @@ class SqliteIdKeyPlanTest : IdKeyPlanContract() {
     /** A line for each table or rows the plan reads, each led by the table it reads, as `SqliteJoinOrderTest` reads it. */
     override fun plan(compiled: CompiledCypher): String {
         val tables = Regex("""\b${GRAPH}_(node|edge) (\w+)""").findAll(compiled.sql).associate { it.groupValues[2] to it.groupValues[1] }
-        return pm.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters))
+        return pm.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN ${compiled.sql}")).bind(compiled.parameters))
             .map { row -> (row as List<*>).last() as String }
             .filter { it.startsWith("SCAN ") || it.startsWith("SEARCH ") }
             .joinToString("\n") { line -> "${tables[line.split(" ")[1]] ?: "rows"}: $line" }
@@ -231,9 +232,9 @@ class PostgresIdKeyPlanTest : IdKeyPlanContract() {
         val connection = PostgresTestDatabase.provider.connect()
         return try {
             connection.startTransaction()
-            connection.query(QuerySpecification.withStatement("SET LOCAL enable_hashjoin = off"))
-            connection.query(QuerySpecification.withStatement("SET LOCAL enable_mergejoin = off"))
-            connection.query(QuerySpecification.withStatement("EXPLAIN ${compiled.sql}").bind(compiled.parameters)).joinToString("\n")
+            connection.query(QuerySpecification.withStatement(sqlStatement("SET LOCAL enable_hashjoin = off")))
+            connection.query(QuerySpecification.withStatement(sqlStatement("SET LOCAL enable_mergejoin = off")))
+            connection.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN ${compiled.sql}")).bind(compiled.parameters)).joinToString("\n")
         } finally {
             connection.release()
         }

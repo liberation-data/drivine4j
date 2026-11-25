@@ -6,6 +6,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Test
@@ -97,7 +98,7 @@ class FullTextCostTest {
             "figures unlowered" to "SELECT count(*), avg(length(c.props->>'body')) FROM ftcost_node c",
         )
         for ((name, sql) in probes) {
-            val plan = PostgresTestDatabase.pm.query(QuerySpecification.withStatement("EXPLAIN (ANALYZE, BUFFERS) $sql"))
+            val plan = PostgresTestDatabase.pm.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN (ANALYZE, BUFFERS) $sql")))
             println("PROBE $name\n" + plan.joinToString("\n") { "  $it" })
         }
     }

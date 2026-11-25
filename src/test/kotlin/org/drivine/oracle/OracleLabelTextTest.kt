@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -36,7 +37,7 @@ class OracleLabelTextTest {
     private fun carrying(vararg labels: String): Set<String> {
         val found = listOf(false, true).map { scanned ->
             val where = OracleSql.hasLabels("n", labels.toList(), scanned)
-            pm.query(QuerySpecification.withStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE $where").transform(String::class.java)).toSet()
+            pm.query(QuerySpecification.withStatement(sqlStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE $where")).transform(String::class.java)).toSet()
         }
         assertEquals(found[0], found[1], "scanned or not, the labels are the same test")
         return found[0]
@@ -79,7 +80,7 @@ class OracleLabelTextTest {
 
     private fun seedEdges() {
         pm.execute(
-            QuerySpecification.withStatement("INSERT INTO $nodes (labels, props) VALUES (JSON(\$labels), JSON('{\"id\":\"edge\"}'))")
+            QuerySpecification.withStatement(sqlStatement("INSERT INTO $nodes (labels, props) VALUES (JSON(\$labels), JSON('{\"id\":\"edge\"}'))"))
                 .bind(mapOf("labels" to ObjectMapper().writeValueAsString(listOf("Edge") + edges))),
         )
         OracleTestDatabase.run(
@@ -105,14 +106,14 @@ class OracleLabelTextTest {
         assertEquals(setOf("single"), matching("Single"))
         assertEquals(emptySet(), carrying("Single", ""))
         assertEquals(emptySet(), carrying("Singl"))
-        assertEquals(setOf("single"), pm.query(QuerySpecification.withStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE ${OracleSql.carriesLabel("n", "Single")}").transform(String::class.java)).toSet())
-        assertEquals(emptySet(), pm.query(QuerySpecification.withStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE JSON_VALUE(n.props, '$.id') = 'none' AND ${OracleSql.carriesLabel("n", "")}").transform(String::class.java)).toSet())
+        assertEquals(setOf("single"), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE ${OracleSql.carriesLabel("n", "Single")}")).transform(String::class.java)).toSet())
+        assertEquals(emptySet(), pm.query(QuerySpecification.withStatement(sqlStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE JSON_VALUE(n.props, '$.id') = 'none' AND ${OracleSql.carriesLabel("n", "")}")).transform(String::class.java)).toSet())
     }
 
     @Test
     fun `a label is written as JSON_SERIALIZE writes it, for every character up to U+00FF and the others it escapes`() {
         val text = (1..0xFF).map { it.toChar() }.joinToString("") + "\u2027\u2028\u2029\u202A\uFEFF\uFFFD😀"
-        val written = pm.query(QuerySpecification.withStatement("SELECT JSON_SERIALIZE(JSON_ARRAY(\$text RETURNING JSON)) FROM dual").bind(mapOf("text" to text)).transform(String::class.java)).single()
+        val written = pm.query(QuerySpecification.withStatement(sqlStatement("SELECT JSON_SERIALIZE(JSON_ARRAY(\$text RETURNING JSON)) FROM dual")).bind(mapOf("text" to text)).transform(String::class.java)).single()
         assertEquals("[${OracleSql.serialized(text)}]", written)
     }
 }

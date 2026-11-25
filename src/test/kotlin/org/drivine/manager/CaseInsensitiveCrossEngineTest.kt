@@ -27,6 +27,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteLowerCopies
+import org.drivine.query.sqlStatement
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
@@ -684,7 +685,7 @@ class CaseInsensitiveMemgraphTest : CaseInsensitiveContract() {
     override val pm: NonTransactionalPersistenceManager get() = manager
 
     override fun assertIndexServes(statement: GraphStatement) {
-        val plan = pm.query(QuerySpecification.withStatement("EXPLAIN ${statement.statement}").bind(statement.bindings).transform(String::class.java))
+        val plan = pm.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN ${statement.statement}")).bind(statement.bindings).transform(String::class.java))
             .joinToString("\n")
         assertContains(plan, "ScanAllByLabelPropert")
     }
@@ -732,7 +733,7 @@ class CaseInsensitiveOracleTest : CaseInsensitiveContract() {
                 DBMS_SQL.RETURN_RESULT(v_plan);
             END;
         """.trimIndent()
-        val plan = inner.query(QuerySpecification.withStatement(block).transform(String::class.java)).joinToString("\n")
+        val plan = inner.query(QuerySpecification.withStatement(sqlStatement(block)).transform(String::class.java)).joinToString("\n")
         assertContains(plan, graph.objectName("lx", listOf("CiPlanned", LowerCopies.of("email"))).uppercase())
     }
 }
@@ -752,8 +753,8 @@ class CaseInsensitivePostgresTest : CaseInsensitiveContract() {
         val connection = PostgresTestDatabase.provider.connect()
         val plan = try {
             connection.startTransaction()
-            connection.query(QuerySpecification.withStatement("SET LOCAL enable_seqscan = off"))
-            connection.query(QuerySpecification.withStatement("EXPLAIN ${statement.statement}").bind(statement.bindings)).joinToString("\n")
+            connection.query(QuerySpecification.withStatement(sqlStatement("SET LOCAL enable_seqscan = off")))
+            connection.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN ${statement.statement}")).bind(statement.bindings)).joinToString("\n")
         } finally {
             connection.release()
         }
@@ -774,7 +775,7 @@ class CaseInsensitiveSqliteTest : CaseInsensitiveContract() {
 
     /** The plan SQLite makes for [statement]: it names the partial index over the copy where that answers. */
     override fun assertIndexServes(statement: GraphStatement) {
-        val plan = pm.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${statement.statement}").bind(statement.bindings)).joinToString("\n")
+        val plan = pm.query(QuerySpecification.withStatement(sqlStatement("EXPLAIN QUERY PLAN ${statement.statement}")).bind(statement.bindings)).joinToString("\n")
         assertContains(plan, "USING INDEX ${graph.objectName("ix", listOf("CiPlanned", LowerCopies.of("email")))}")
     }
 
@@ -787,7 +788,7 @@ class CaseInsensitiveSqliteTest : CaseInsensitiveContract() {
             "CREATE (:CiLate {id: 'l1', email: 'Ann@X.com'}), (:CiLate {id: 'l2', email: 'BOB@x.com'}), (:CiLate {id: 'l3', `${LowerCopies.of("email")}`: 'stale'})"
         ))
         val fill = SqliteLowerCopies(graph).fill("CiLate", "email")
-        fun filled(): Long = pm.getOne(QuerySpecification.withStatement(fill).bind(mapOf("batch" to 2)).transform(Number::class.java)).toLong()
+        fun filled(): Long = pm.getOne(QuerySpecification.withStatement(sqlStatement(fill)).bind(mapOf("batch" to 2)).transform(Number::class.java)).toLong()
 
         assertEquals(listOf(2L, 1L, 0L), listOf(filled(), filled(), filled()))
         assertEquals("ann@x.com", copyOf("CiLate", "l1"))

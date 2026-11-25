@@ -5,6 +5,7 @@ import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.Nightly
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.Test
@@ -41,7 +42,7 @@ class OracleEraParseTest {
         assertTrue(compiler.callsStoredEra, compiled.sql)
         val connection = JdbcConnectionProvider(graph, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = graph).connect()
         try {
-            val sid = connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') AS sid FROM dual")).single().toString().toInt()
+            val sid = connection.query(QuerySpecification.withStatement(sqlStatement("SELECT SYS_CONTEXT('USERENV', 'SID') AS sid FROM dual"))).single().toString().toInt()
             return DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), "system", OracleTestContainer.getConnectionPassword()).use { admin ->
                 fun parseCpu(): Long = admin.prepareStatement(
                     "SELECT s.value FROM v\$sesstat s JOIN v\$statname n ON n.statistic# = s.statistic# WHERE s.sid = ? AND n.name = 'parse time cpu'",
@@ -50,7 +51,7 @@ class OracleEraParseTest {
                     statement.executeQuery().use { it.next(); it.getLong(1) }
                 }
                 val before = parseCpu()
-                val rows = connection.query(QuerySpecification.withStatement("/* era parse ${System.nanoTime()} */ ${compiled.sql}").bind(compiled.parameters))
+                val rows = connection.query(QuerySpecification.withStatement(sqlStatement("/* era parse ${System.nanoTime()} */ ${compiled.sql}")).bind(compiled.parameters))
                 // Centiseconds.
                 (parseCpu() - before) * 10 to rows
             }

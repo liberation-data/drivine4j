@@ -9,6 +9,7 @@ import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.drivine.test.PostgresTestContainer
 import org.drivine.test.SqlCypherFixtures
 import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable
@@ -37,8 +38,8 @@ object PostgresTestDatabase {
         NonTransactionalPersistenceManager(provider, "postgres", DatabaseType.POSTGRES, SubtypeRegistry())
     }
 
-    /** Runs each statement on its own, committed as it runs. */
-    fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(it.trimIndent())) }
+    /** Runs each SQL statement on its own, committed as it runs. */
+    fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(sqlStatement(it.trimIndent()))) }
 
     /** A manager for the graph [graph], with its tables made. Its connections come from [provider]'s pool. */
     fun graphManager(graph: String, registry: SubtypeRegistry = SubtypeRegistry()): NonTransactionalPersistenceManager =
@@ -57,20 +58,9 @@ object PostgresTestDatabase {
     /** [pm] as the cross-engine tests use a manager: see [SqlCypherFixtures.over]. */
     fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = SqlCypherFixtures.over(pm)
 
-    /**
-     * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own:
-     * a statement of no language that is Cypher is sent as Cypher, as [SqlCypherFixtures.over] sends it.
-     */
-    fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider {
-        val provider = JdbcConnectionProvider(pm.database, DatabaseType.POSTGRES, PostgresTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
-        return object : ConnectionProvider by provider {
-            override fun connect(): Connection = provider.connect().let { connection ->
-                object : Connection by connection {
-                    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = connection.query(SqlCypherFixtures.asCypher(spec))
-                }
-            }
-        }
-    }
+    /** The provider of [pm]'s connections, for a test that runs a statement on a connection of its own. */
+    fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider =
+        JdbcConnectionProvider(pm.database, DatabaseType.POSTGRES, PostgresTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
 
     /**
      * Vacuums and analyses the node and edge tables of the graph [graph], as autovacuum does: run while they are empty, it

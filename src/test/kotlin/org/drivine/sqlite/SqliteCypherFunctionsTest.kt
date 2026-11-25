@@ -2,6 +2,7 @@ package org.drivine.sqlite
 
 import org.drivine.DrivineException
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -15,7 +16,7 @@ class SqliteCypherFunctionsTest {
 
     private val pm = SqliteTestDatabase.pm
 
-    private fun row(sql: String): Any? = pm.query(QuerySpecification.withStatement(sql)).single()
+    private fun row(sql: String): Any? = pm.query(QuerySpecification.withStatement(sqlStatement(sql))).single()
 
     @Test
     fun `drivine_equal compares as Cypher does, and null with anything is null`() {

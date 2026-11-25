@@ -19,6 +19,7 @@ import org.drivine.manager.PersistenceManagerType
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.sqlStatement
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SchemaManager
@@ -57,7 +58,7 @@ class SqliteIdsNotReusedTest {
     @Test
     fun `the tables are made with AUTOINCREMENT keys`() {
         val made = pm.query(
-            QuerySpecification.withStatement("SELECT sql FROM sqlite_master WHERE name IN ('reuse_node', 'reuse_edge') ORDER BY name").transform(String::class.java)
+            QuerySpecification.withStatement(sqlStatement("SELECT sql FROM sqlite_master WHERE name IN ('reuse_node', 'reuse_edge') ORDER BY name")).transform(String::class.java)
         )
         assertEquals(2, made.size)
         assertContains(made[0], "eid   INTEGER PRIMARY KEY AUTOINCREMENT")
