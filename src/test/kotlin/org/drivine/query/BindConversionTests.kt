@@ -52,7 +52,7 @@ class BindConversionTests @Autowired constructor(
     }
 
     @Test
-    fun `bind should convert Instant to ZonedDateTime`() {
+    fun `bind should convert Instant to OffsetDateTime`() {
         val testInstant = Instant.parse("2024-01-15T10:30:00Z")
         val uuid = UUID.randomUUID().toString()
 
@@ -139,7 +139,7 @@ class BindConversionTests @Autowired constructor(
     }
 
     @Test
-    fun `bind should convert java util Date to ZonedDateTime`() {
+    fun `bind should convert java util Date to OffsetDateTime`() {
         val uuid = UUID.randomUUID().toString()
         val testDate = Date()
 

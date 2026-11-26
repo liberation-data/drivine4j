@@ -246,7 +246,6 @@ internal fun ObjectMapper.toPropertyValue(value: Any): Any? = temporalWriteMappe
  * Converts a single value to a Neo4j-compatible format.
  *
  * This function handles type conversions for values that Neo4j's driver doesn't support directly:
- * - Instant → ZonedDateTime (at UTC)
  * - UUID → String
  * - Enum → String (enum name)
  * - Instant, Date → OffsetDateTime at offset zero (`…Z`, no zone), as Drivine for TypeScript and drivine-python write one

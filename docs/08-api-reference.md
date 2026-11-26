@@ -65,7 +65,7 @@ data class ConnectionProperties(
 Use `bindObject()` to serialize objects to Neo4j-compatible types using Jackson:
 
 ```kotlin
-// Automatically converts Enums to String, UUID to String, Instant to OffsetDateTime at offset zero
+// Automatically converts Enums to String, UUID to String, Instant to ZonedDateTime
 val task = Task(id = "1", priority = Priority.HIGH, status = Status.OPEN, dueDate = Instant.now())
 manager.execute(
     QuerySpecification

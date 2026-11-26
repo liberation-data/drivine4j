@@ -63,10 +63,9 @@ class QuerySpecification<T> private constructor(
      * Binds a map of parameters with automatic Neo4j type conversion.
      *
      * Values are converted to Neo4j-compatible types:
-     * - Instant → ZonedDateTime (at UTC)
+     * - Instant, Date → OffsetDateTime at offset zero (`…Z`, no zone)
      * - UUID → String
      * - Enum → String (enum name)
-     * - Date → ZonedDateTime (at UTC)
      * - Collections and Maps are recursively converted
      * - Primitives (String, Number, Boolean) pass through unchanged
      *
@@ -75,7 +74,7 @@ class QuerySpecification<T> private constructor(
      * QuerySpecification
      *     .withStatement("CREATE (n:Node {createdAt: \$createdAt, id: \$id})")
      *     .bind(mapOf(
-     *         "createdAt" to Instant.now(),  // Converted to ZonedDateTime
+     *         "createdAt" to Instant.now(),  // Converted to OffsetDateTime at offset zero
      *         "id" to UUID.randomUUID()      // Converted to String
      *     ))
      * ```
