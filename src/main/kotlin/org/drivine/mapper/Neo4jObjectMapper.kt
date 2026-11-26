@@ -22,7 +22,7 @@ import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.OffsetTime
 import java.time.Period
-import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.util.Date
 import java.util.UUID
@@ -249,7 +249,7 @@ internal fun ObjectMapper.toPropertyValue(value: Any): Any? = temporalWriteMappe
  * - Instant → ZonedDateTime (at UTC)
  * - UUID → String
  * - Enum → String (enum name)
- * - Date → ZonedDateTime (at UTC)
+ * - Instant, Date → OffsetDateTime at offset zero (`…Z`, no zone), as Drivine for TypeScript and drivine-python write one
  * - Collections are recursively converted
  * - Maps are recursively converted
  * - Complex objects are converted via Jackson toMap()
@@ -262,14 +262,15 @@ fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
     return when (value) {
         // Primitives that Neo4j supports directly
         is String, is Number, is Boolean -> value
-        // Convert Instant to ZonedDateTime (Neo4j doesn't support Instant)
-        is Instant -> value.atZone(ZoneId.of("UTC"))
+        // Neo4j has no instant: an OffsetDateTime at offset zero, which the driver sends as `…Z`. Not in the named zone UTC,
+        // `…Z[UTC]`, which Neo4j doesn't take as equal to `…Z`, the moment the other two libraries write (#890)
+        is Instant -> value.atOffset(ZoneOffset.UTC)
         // Convert UUID to String
         is UUID -> value.toString()
         // Convert Enum to String
         is Enum<*> -> value.name
-        // Convert legacy Date to ZonedDateTime
-        is Date -> value.toInstant().atZone(ZoneId.of("UTC"))
+        // A legacy Date as an Instant
+        is Date -> value.toInstant().atOffset(ZoneOffset.UTC)
         // Keep native temporals as-is (the Neo4j driver supports them directly, and the SQL stores tag each by its kind): a time
         // with its offset and a duration among them, which toMap() can't make a map of (liberation-data/drivine4j#833)
         is ZonedDateTime, is OffsetDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime,

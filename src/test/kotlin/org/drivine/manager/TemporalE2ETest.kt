@@ -120,6 +120,28 @@ class TemporalE2ETest @Autowired constructor(
         assertEquals(moved, gom.load("upd", TemporalsNode::class.java)!!.instant)
     }
 
+    @Test
+    fun `an Instant is stored at offset zero, so it equals the moment another library writes`() {
+        // #890: in the named zone UTC it was `…Z[UTC]`, which Neo4j doesn't take as equal to `…Z`, the form Drivine for
+        // TypeScript and drivine-python write.
+        gom.save(node.copy(id = "eq"))
+        assertEquals(
+            listOf("eq"),
+            pm.query(
+                QuerySpecification.withStatement(
+                    "MATCH (n:TemporalsNode) WHERE n.instant = datetime('2026-06-03T02:25:23.449563Z') RETURN n.id"
+                ).transform(String::class.java)
+            )
+        )
+        assertEquals(
+            listOf("eq"),
+            pm.query(
+                QuerySpecification.withStatement("MATCH (n:TemporalsNode) WHERE n.instant = \$at RETURN n.id")
+                    .bind(mapOf("at" to node.instant)).transform(String::class.java)
+            )
+        )
+    }
+
     private fun instantRange(since: Instant) = pm.query(
         QuerySpecification.withStatement("MATCH (n:TemporalsNode) WHERE n.instant >= \$s RETURN n.id")
             .bind(mapOf("s" to since)).transform(String::class.java)

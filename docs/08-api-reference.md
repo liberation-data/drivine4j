@@ -65,7 +65,7 @@ data class ConnectionProperties(
 Use `bindObject()` to serialize objects to Neo4j-compatible types using Jackson:
 
 ```kotlin
-// Automatically converts Enums to String, UUID to String, Instant to ZonedDateTime
+// Automatically converts Enums to String, UUID to String, Instant to OffsetDateTime at offset zero
 val task = Task(id = "1", priority = Priority.HIGH, status = Status.OPEN, dueDate = Instant.now())
 manager.execute(
     QuerySpecification
@@ -77,8 +77,7 @@ manager.execute(
 The Neo4j ObjectMapper automatically:
 - Converts `Enum` to `String`
 - Converts `UUID` to `String`
-- Converts `Instant` to `ZonedDateTime`
-- Converts `Date` to `ZonedDateTime`
+- Converts `Instant` and `Date` to an `OffsetDateTime` at offset zero (`…Z`, no zone), as the other Drivine libraries write a moment
 - Includes null values by default (so a bound map/object can carry explicit nulls)
 - Ignores unknown properties when deserializing
 

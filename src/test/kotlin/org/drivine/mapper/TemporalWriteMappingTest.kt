@@ -56,7 +56,18 @@ class TemporalWriteMappingTest {
         val fromWrite = m.convertValueForNeo4j(m.toMap(node(instant))["createdAt"])
         val fromParam = m.convertValueForNeo4j(instant)
         assertEquals(fromParam, fromWrite)
-        assertEquals(instant.atZone(ZoneId.of("UTC")), fromWrite)  // native ZonedDateTime, not a String
+        assertEquals(instant.atOffset(ZoneOffset.UTC), fromWrite)  // native OffsetDateTime, not a String
+    }
+
+    @Test
+    fun `an Instant and a Date are bound at offset zero, with no zone, as the other two libraries write a moment`() {
+        // #890: in the named zone UTC the driver sent `…Z[UTC]`, which Neo4j doesn't take as equal to `…Z`.
+        val millis = Instant.parse("2026-06-03T02:25:23.449Z")
+        listOf(m.convertValueForNeo4j(millis), m.convertValueForNeo4j(Date.from(millis))).forEach {
+            assertEquals<Class<*>?>(OffsetDateTime::class.java, it?.javaClass)
+            assertEquals(millis.atOffset(ZoneOffset.UTC), it)
+        }
+        assertEquals(listOf(millis.atOffset(ZoneOffset.UTC)), m.convertValueForNeo4j(listOf(millis)))
     }
 
     @Test
