@@ -3,7 +3,7 @@
   "format": "drivine-model/1",
   "generator": {
     "library": "drivine4j",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "language": "kotlin"
   },
   "module": "drivine4j-sample",
