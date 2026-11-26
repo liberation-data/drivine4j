@@ -2,7 +2,7 @@ package org.drivine.query
 
 import org.junit.jupiter.api.Test
 import java.time.Instant
-import java.time.ZonedDateTime
+import java.time.OffsetDateTime
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -166,8 +166,8 @@ class QuerySpecificationRenderTest {
 
         assertEquals(uuid.toString(), compiled.parameters["id"])
         assertTrue(
-            compiled.parameters["createdAt"] is ZonedDateTime,
-            "Instant bind value should still be converted to ZonedDateTime when render is used"
+            compiled.parameters["createdAt"] is OffsetDateTime,
+            "Instant bind value should still be converted to OffsetDateTime at offset zero when render is used (#890)"
         )
     }
 
