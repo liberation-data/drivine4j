@@ -71,9 +71,9 @@ git push origin vX.Y.Z
 - **`github-release`** then creates the GitHub release, with generated notes, marked a prerelease when the version has
   a `-suffix`. On a push to the default branch it also creates the tag `vX.Y.Z`, on the commit that was released. A
   tag made this way starts no workflow, so it doesn't release again.
-- **`cli-native`** calls `cli-native.yml`, beside `trust`, `gate` and `build` and skipped when they are: it builds the
-  `drivine` CLI as a native binary on linux and runs the CLI's tests against it on every store. Nothing published to
-  Maven Central waits on it; `macos-cli` does.
+- **`cli-native`** calls `cli-native.yml`, beside `trust`, `gate` and `build`, and is skipped, as `trust` is, on a push
+  that releases nothing: it builds the `drivine` CLI as a native binary on linux and runs the CLI's tests against it
+  on every store. Nothing published to Maven Central waits on it; `macos-cli` does.
 - **`macos-cli`** then calls `cli-macos-signed.yml`, which builds the `drivine` CLI for macOS (Apple silicon), signs it
   with the Developer ID certificate, notarizes it, and attaches `drivine-macos-arm64.zip` to the release. It runs only
   when `cli-native` passed. If either fails, the release stays published without the zip: re-run the failed jobs to
