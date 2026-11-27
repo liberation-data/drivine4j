@@ -1,6 +1,7 @@
 package org.drivine.backend.sql
 
 import org.drivine.DrivineException
+import org.drivine.annotation.Direction
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleWriteBlocks
 import org.drivine.backend.postgres.PostgresGraph
@@ -81,6 +82,38 @@ class WritePlanValuesTest {
     fun `bytes are the list of their signed values on every store`() {
         for (blocks in listOf(postgres, oracle, sqlite)) {
             assertContains(planText(blocks, mapOf("b" to byteArrayOf(1, 2, -1))), "\"b\":[1,2,-1]", message = "${blocks.store}")
+        }
+    }
+
+    @Test
+    fun `a node step, a patch and a link name what they remove as the store holds it, a dollar-named property with one more dollar (#892)`() {
+        for (blocks in listOf(postgres, oracle, sqlite)) {
+            val plan = WritePlan(blocks)
+            val shape = plan.shape(listOf("P"), "id")
+            val a = plan.node(shape, "id", "p1", "p1", listOf("P"), NodeWrites(set = mapOf("\$keep" to 1L), unset = listOf("\$score", "plain")))
+            val b = plan.node(shape, "id", "p2", "p2", listOf("P"), NodeWrites())
+            plan.patch(shape, "p3", "p3", "0", mapOf("\$keep" to 2L), listOf("\$score"))
+            plan.link(a, b, "R", Direction.OUTGOING, mapOf("\$since" to 1L), clear = listOf("\$until", "plain"))
+            val text = plan.bindings()[WritePlan.PLAN] as String
+            assertContains(text, "\"unset\":[\"\$\$score\",\"plain\"]", message = "${blocks.store}: the node step")
+            assertContains(text, "\"unset\":[\"\$\$score\"]", message = "${blocks.store}: the patch")
+            assertContains(text, "\"clear\":[\"\$\$until\",\"plain\"]", message = "${blocks.store}: the link")
+            assertContains(text, "\"\$\$keep\"", message = "${blocks.store}: as the keys it sets are")
+        }
+    }
+
+    @Test
+    fun `a bag a node step clears names what it keeps and reserves as the store holds it, a dollar-named key with one more dollar (#892)`() {
+        for (blocks in listOf(postgres, oracle, sqlite)) {
+            val plan = WritePlan(blocks)
+            val bags = listOf(
+                BagClearing("\$m.", flat = false, keep = listOf("\$m.a"), reservedKeys = emptyList(), reservedPrefixes = emptyList()),
+                BagClearing(null, flat = true, keep = listOf("\$x", "plain"), reservedKeys = listOf("\$score"), reservedPrefixes = listOf("\$m.")),
+            )
+            plan.node(plan.shape(listOf("P"), "id"), "id", "p1", "p1", listOf("P"), NodeWrites(bags = bags))
+            val text = plan.bindings()[WritePlan.PLAN] as String
+            assertContains(text, "\"prefix\":\"\$\$m.\",\"flat\":false,\"keep\":[\"\$\$m.a\"]", message = "${blocks.store}: a bag with a prefix")
+            assertContains(text, "\"keep\":[\"\$\$x\",\"plain\"],\"reservedKeys\":[\"\$\$score\"],\"reservedPrefixes\":[\"\$\$m.\"]", message = "${blocks.store}: a flat bag")
         }
     }
 

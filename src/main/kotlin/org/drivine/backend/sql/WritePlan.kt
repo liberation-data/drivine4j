@@ -68,8 +68,15 @@ internal class NodeWrites(
 
 /** A property bag whose stored keys the block clears when the object no longer holds them: see the store's `owns`. */
 internal class BagClearing(val prefix: String?, val flat: Boolean, val keep: List<String>, val reservedKeys: List<String>, val reservedPrefixes: List<String>) {
-    /** The bag as a `node` step names it, under the names `owns` reads. */
-    fun toMap(): Map<String, Any?> = mapOf("prefix" to prefix, "flat" to flat, "keep" to keep, "reservedKeys" to reservedKeys, "reservedPrefixes" to reservedPrefixes)
+    /**
+     * The bag as a `node` step names it, under the names `owns` reads. The block compares these with the keys the node
+     * holds, so each is escaped as a key is held ([ValueLayout.escape]): a `$` name, held with one more `$`, is otherwise
+     * not kept, or not reserved, and cleared (#892).
+     */
+    fun toMap(): Map<String, Any?> = mapOf(
+        "prefix" to prefix?.let(ValueLayout::escape), "flat" to flat, "keep" to keep.map(ValueLayout::escape),
+        "reservedKeys" to reservedKeys.map(ValueLayout::escape), "reservedPrefixes" to reservedPrefixes.map(ValueLayout::escape),
+    )
 }
 
 /**
@@ -138,6 +145,14 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, ValueLayout.escape(key))) { shapes.size }
 
     /**
+     * The names of properties a step removes ([NodeWrites.unset], a patch's `unset`) or a relationship must not have (a
+     * `link` step's `clear`), as the store holds them ([ValueLayout.escape]), or null where there are none: the plan's text
+     * escapes only the keys of the maps it writes, so `$score`, held as `$$score`, would be removed as a key the store
+     * doesn't hold, and its old value kept (#892).
+     */
+    private fun held(names: List<String>): List<String>? = names.takeIf { it.isNotEmpty() }?.map(ValueLayout::escape)
+
+    /**
      * The step that saves the node of [shape] whose id is [id], stored under [key], and keyed within the plan by the text
      * [storedId]: found by [id] as the node holds it, as JSON (see [NodeIds]), and locked, or made with [labels]. The key
      * is written as the store holds it ([ValueLayout.escape]). Gives the number later steps know the node by.
@@ -149,7 +164,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
         val node = nodes++
         add(
             StepKind.NODE, "r" to node, "s" to shape, "k" to storedId, "key" to ValueLayout.escape(key), "id" to id, "labels" to labels.sorted(), "fresh" to fresh(),
-            "set" to writes.set.takeIf { it.isNotEmpty() }, "unset" to writes.unset.takeIf { it.isNotEmpty() },
+            "set" to writes.set.takeIf { it.isNotEmpty() }, "unset" to held(writes.unset),
             "bags" to writes.bags.map { it.toMap() }.takeIf { it.isNotEmpty() },
             "add" to writes.addLabels.takeIf { it.isNotEmpty() }, "drop" to writes.dropLabels.takeIf { it.isNotEmpty() }, "owned" to writes.owned?.toMap(),
             "lower" to writes.lower.takeIf { it.isNotEmpty() },
@@ -179,7 +194,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun link(from: Int, to: Int, type: String, direction: Direction, properties: Map<String, Any?>, clear: List<String> = emptyList(), always: Boolean = false) =
         add(
             StepKind.LINK, "from" to from, "to" to to, "type" to type, "dir" to direction.code,
-            "props" to properties.takeIf { it.isNotEmpty() }, "clear" to clear.takeIf { it.isNotEmpty() }, "always" to always.takeIf { it },
+            "props" to properties.takeIf { it.isNotEmpty() }, "clear" to held(clear), "always" to always.takeIf { it },
         )
 
     /**
@@ -207,7 +222,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
     fun patch(shape: Int, storedId: String, id: Any?, index: String, set: Map<String, Any?>, unset: List<String>, lower: List<String> = emptyList()) =
         add(
             StepKind.PATCH, "s" to shape, "k" to storedId, "i" to index, "fresh" to fresh(),
-            "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "lower" to lower.takeIf { it.isNotEmpty() },
+            "set" to set.takeIf { it.isNotEmpty() }, "unset" to held(unset), "lower" to lower.takeIf { it.isNotEmpty() },
             keep = listOf("id" to id),
         )
 
