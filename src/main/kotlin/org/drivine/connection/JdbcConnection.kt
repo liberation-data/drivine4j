@@ -261,7 +261,7 @@ class JdbcConnection(
 
         try {
             var columns = emptyList<String>()
-            val rows = connection.prepareStatement(positional.statement).use { statement ->
+            val rows = connection.prepareStatement(apart(positional.statement, positional.names, parameters)).use { statement ->
                 // Oracle keeps a cursor's memory while the driver keeps its statement, and a compiled Cypher statement holds
                 // megabytes of it: about 4 MB, and over 20 MB where it reads a text past 32 KB. Kept in the driver's cache, up
                 // to 64 statements a session, a few dozen ran the instance out of PGA (ORA-04036, liberation-data/drivine4j#313).
@@ -336,8 +336,28 @@ class JdbcConnection(
         }
     }
 
+    /**
+     * [statement], on Oracle where it binds a NaN or an infinity, with a comment naming those parameters, on a line of its
+     * own so no comment the statement ends with takes it in: Oracle then shares its cursor only with runs that bind them
+     * alike. Shared with one whose bind of the same parameter was a NUMBER, a later run with a NaN or an infinity failed,
+     * ORA-01426: Oracle's cursor for the text, made for a BINARY_DOUBLE, takes a NUMBER for its next run, and then reads
+     * the next BINARY_DOUBLE as a NUMBER, which holds neither (liberation-data/drivine-python#575, #906).
+     */
+    private fun apart(statement: String, names: List<String>, parameters: Map<String, Any?>): String {
+        if (type != DatabaseType.ORACLE) return statement
+        val doubles = names.filter { nonFinite(parameters[it]) }.distinct()
+        return if (doubles.isEmpty()) statement else "$statement\n/* drivine: binary doubles ${doubles.joinToString(",")} */"
+    }
+
     /** Binds [value] to the marker at [index], counted from one. */
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
+        // Oracle's driver binds a double as a NUMBER, which holds no NaN or infinity, and refuses one: a BINARY_DOUBLE holds
+        // them (#906). A finite double is still a NUMBER, as the stores' writes take it.
+        is Double, is Float -> if (type == DatabaseType.ORACLE && nonFinite(value)) {
+            statement.setObject(index, (value as Number).toDouble(), ORACLE_BINARY_DOUBLE)
+        } else {
+            statement.setObject(index, value)
+        }
         // SQLite keeps a moment, a date or a time as its ISO text, and has no decimal.
         is Temporal, is java.util.Date -> if (type == DatabaseType.SQLITE) statement.setString(index, iso(value)) else statement.setObject(index, value)
         is BigDecimal -> if (type == DatabaseType.SQLITE) bindNumber(statement, index, value) else statement.setObject(index, value)
@@ -578,6 +598,12 @@ class JdbcConnection(
     private companion object {
         /** Past this a string is bound as a CLOB: the longest a PL/SQL `VARCHAR2` holds. */
         const val MAX_STRING = 32_767
+
+        /** Oracle's type code for a BINARY_DOUBLE, `oracle.jdbc.OracleTypes.BINARY_DOUBLE`: the driver isn't Drivine's to compile against. */
+        const val ORACLE_BINARY_DOUBLE = 101
+
+        /** Whether [value] is a double or a float that is NaN or an infinity. */
+        fun nonFinite(value: Any?): Boolean = (value is Double && !value.isFinite()) || (value is Float && !value.isFinite())
 
         /** The setting [buildingIndex] turns to 0 where a build's session cannot be closed after it. */
         const val PARALLEL_WORKERS = "max_parallel_maintenance_workers"

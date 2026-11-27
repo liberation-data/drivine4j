@@ -62,6 +62,44 @@ class OracleConnectionIntegrationTest {
     }
 
     @Test
+    fun `a NaN or an infinity is bound as the double it is, read back, compared and stored, and a finite double as before (#906)`() {
+        fun one(value: Any) = pm.query(spec("SELECT \$v AS \"v\" FROM dual", "v" to value)).single() as Double
+        assertTrue(one(Double.NaN).isNaN())
+        assertEquals(Double.POSITIVE_INFINITY, one(Double.POSITIVE_INFINITY))
+        assertEquals(Double.NEGATIVE_INFINITY, one(Double.NEGATIVE_INFINITY))
+        assertEquals(Double.POSITIVE_INFINITY, one(Float.POSITIVE_INFINITY))
+        assertEquals(listOf<Any>(2.5), pm.query(spec("SELECT \$v AS \"v\" FROM dual", "v" to 2.5)))
+        assertEquals(
+            listOf<Any>(listOf(1L, 1L)),
+            pm.query(
+                spec(
+                    "SELECT CASE WHEN \$i > 1e100 THEN 1 ELSE 0 END AS \"above\", CASE WHEN \$n < 0 THEN 1 ELSE 0 END AS \"below\" FROM dual",
+                    "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY,
+                ),
+            ),
+        )
+        OracleTestDatabase.run("CREATE TABLE pm_nonfinite (v BINARY_DOUBLE)")
+        try {
+            listOf(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN).forEach { pm.execute(spec("INSERT INTO pm_nonfinite (v) VALUES (\$v)", "v" to it)) }
+            val rows = pm.query(spec("SELECT v FROM pm_nonfinite")).map { it as Double }
+            assertEquals(listOf(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY), rows.filterNot { it.isNaN() }.sorted())
+            assertEquals(1, rows.count { it.isNaN() })
+        } finally {
+            OracleTestDatabase.run("DROP TABLE pm_nonfinite")
+        }
+    }
+
+    @Test
+    fun `one statement takes an infinity after a finite double and a whole number (#906)`() {
+        // Run with a NUMBER between two BINARY_DOUBLEs, one text failed the last, ORA-01426 (liberation-data/drivine-python#575).
+        val statement = "SELECT \$v AS \"v\" FROM dual WHERE 1 = 1"
+        for (value in listOf<Any>(Double.POSITIVE_INFINITY, 2.5, 7L, Double.NEGATIVE_INFINITY)) {
+            val read = pm.query(spec(statement, "v" to value)).single()
+            assertEquals((value as Number).toDouble(), (read as Number).toDouble(), "$value")
+        }
+    }
+
+    @Test
     fun `a parameter the statement names and nothing binds is refused`() {
         val failure = assertFailsWith<DrivineException> { pm.query(spec("SELECT \$missing FROM dual")) }
         assertTrue("\$missing" in failure.message.orEmpty(), failure.message)
