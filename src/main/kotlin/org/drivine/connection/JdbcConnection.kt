@@ -39,7 +39,8 @@ import java.time.temporal.Temporal
  * once for each place a name occurs. A value is bound as the driver takes it: a string (on Oracle as
  * a CLOB past what a `VARCHAR2` holds), a character as a string, a null as a character null the database
  * converts to the type the statement wants, and anything else through `setObject`, so a number, a
- * boolean, a `java.time` value or a byte array. A collection or a map is bound as JSON text, and a
+ * boolean, a `java.time` value or a byte array; on Oracle a NaN or an infinity, which a `NUMBER` can't hold, goes
+ * as a `BINARY_DOUBLE`. A collection or a map is bound as JSON text, and a
  * `ZonedDateTime` as its offset form, by [JdbcParameterCoercer] before it gets here. An array of
  * objects, or an enum, is not a bound value: the driver refuses it.
  *
@@ -338,6 +339,13 @@ class JdbcConnection(
 
     /** Binds [value] to the marker at [index], counted from one. */
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
+        // Oracle's driver binds a double as a NUMBER, which holds no NaN or infinity, and refuses one: a BINARY_DOUBLE holds
+        // them (#906). A finite double is still a NUMBER, as the stores' writes take it.
+        is Double, is Float -> if (type == DatabaseType.ORACLE && !(value as Number).toDouble().isFinite()) {
+            statement.setObject(index, value.toDouble(), ORACLE_BINARY_DOUBLE)
+        } else {
+            statement.setObject(index, value)
+        }
         // SQLite keeps a moment, a date or a time as its ISO text, and has no decimal.
         is Temporal, is java.util.Date -> if (type == DatabaseType.SQLITE) statement.setString(index, iso(value)) else statement.setObject(index, value)
         is BigDecimal -> if (type == DatabaseType.SQLITE) bindNumber(statement, index, value) else statement.setObject(index, value)
@@ -578,6 +586,9 @@ class JdbcConnection(
     private companion object {
         /** Past this a string is bound as a CLOB: the longest a PL/SQL `VARCHAR2` holds. */
         const val MAX_STRING = 32_767
+
+        /** Oracle's type code for a BINARY_DOUBLE, `oracle.jdbc.OracleTypes.BINARY_DOUBLE`: the driver isn't Drivine's to compile against. */
+        const val ORACLE_BINARY_DOUBLE = 101
 
         /** The setting [buildingIndex] turns to 0 where a build's session cannot be closed after it. */
         const val PARALLEL_WORKERS = "max_parallel_maintenance_workers"
