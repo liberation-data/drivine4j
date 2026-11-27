@@ -112,7 +112,8 @@ graalvmNative {
             )
             // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
             // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is
-            // the repository's. The CLI's own, the resource --version reads, is in META-INF/native-image.
+            // the repository's. The CLI's own, the resource --version reads, is in META-INF/native-image, as are the
+            // driver methods the core calls by reflection, which no driver's metadata registers (MetadataTest).
         }
     }
 }
