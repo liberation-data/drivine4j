@@ -281,8 +281,8 @@ abstract class CaseInsensitiveContract {
 
     /**
      * A lookup by a text whose copy has no index key, past 4,000 bytes, keeps the nodes of its own label: another label's
-     * node with an equal copy isn't one of them. On Oracle the indexed equality lets such a value through in a branch the
-     * label's labelled test isn't the whole of, so the statement keeps its own test of the label (#844).
+     * node with an equal copy isn't one of them. On Oracle the statement leaves out its own test of the label only where
+     * the module's answer says every row the condition keeps carries it (#844, drivine-cypher-spec#373).
      */
     @Test
     fun `a long text found by eqIgnoreCase through the index is found among its own label's nodes alone`() {
