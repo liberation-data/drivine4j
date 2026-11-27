@@ -119,6 +119,42 @@ class CliSpecTest {
         assert("the case's graph wasn't written" in failure.message.orEmpty()) { failure.message.orEmpty() }
     }
 
+    /** [spec]'s one case run through the CLI on SQLite in memory (no container) at [address], and what it failed with. */
+    private fun failure(spec: CypherSpec, address: String = "sqlite::memory:"): String {
+        val test = CliSpec("sqlite", address, clears = false).tests(spec, emptyMap()).single()
+        return assertThrows<AssertionError> { test.executable.execute() }.message.orEmpty()
+    }
+
+    private fun spec(vararg steps: Step, file: String = "t.yaml") = CypherSpec(file = file, cases = listOf(Case("c", steps = steps.toList())))
+
+    @Test
+    fun `a run that exits other than as a statement fails the case with its exit`() {
+        val failure = failure(spec(Step(cypher = "RETURN 1", rows = listOf(1L))), address = "nowhere://x")
+        assert("c: the run exited with" in failure) { failure }
+    }
+
+    @Test
+    fun `a step that prints more than one result, or columns not as results yaml says, fails the case`() {
+        val two = failure(spec(Step(cypher = "RETURN 1 AS a;\nRETURN 2 AS a", rows = listOf(1L))))
+        assert("printed 2 results, not one" in two) { two }
+        val columns = failure(spec(Step(cypher = "RETURN 1 AS a, 2 AS b", rows = listOf(listOf(1L, 2L)), columns = listOf("a", "c")), file = CliSpec.TYPED))
+        assert("the columns of RETURN 1 AS a, 2 AS b" in columns) { columns }
+    }
+
+    @Test
+    fun `a step's parameters, its rows of several columns and its failure go through the CLI, each step its own part`() {
+        val failure = failure(
+            spec(
+                Step(cypher = "RETURN nope(", error = true),
+                Step(cypher = "RETURN \$s AS s, \$m.k AS k", parameters = mapOf("s" to "it's", "m" to mapOf("k" to listOf(1L, mapOf("\$float" to "Infinity")))), rows = listOf(listOf("it's", listOf(1L, Double.POSITIVE_INFINITY)))),
+                Step(cypher = "RETURN \$s AS s", error = true),
+                Step(cypher = "RETURN 1 AS a", rows = listOf(2L)),
+            ),
+        )
+        // The first three pass (the third failing, as the parameters were cleared before it), and the fourth, whose rows aren't as it says, fails.
+        assert("c, step 4, on sqlite" in failure) { failure }
+    }
+
     @Test
     fun `held adds the CLI's holds to the runner's, case by case`() {
         val queries = CypherSpec.load("queries.yaml")
