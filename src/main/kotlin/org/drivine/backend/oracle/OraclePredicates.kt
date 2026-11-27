@@ -43,9 +43,13 @@ internal class OraclePredicates(
      */
     fun predicate(conditions: List<WhereCondition>, indexed: Boolean = false): String? {
         val labels = rootLabels()
-        val predicate = fragments.where(root, rootAlias, labels, conditions, viewModel, depthOverrides) ?: return null
-        if (indexed && !scope.narrowed) scope.implied += labels.filter { "CASE WHEN ${OracleSql.labelled(root, it, "k").substringAfter("CASE WHEN ").substringBefore(" THEN ")}" in predicate }
-        return predicate
+        val (cypher, parameters) = fragments.written(conditions, viewModel, depthOverrides) ?: return null
+        val fragment = fragments.compiled(root, rootAlias, labels, cypher, parameters)
+        // The labels the module says the condition tests every row for (its impliedLabels), and not those whose labelled
+        // test appears somewhere in it: a branch that lets a value with no key through, a lowered text past 4,000 bytes,
+        // held for a node of any label, so the statement read other labels' nodes (#844, drivine-cypher-spec#373).
+        if (indexed && !scope.narrowed) scope.implied += fragment.impliedLabels[rootAlias].orEmpty().filter { it in labels }
+        return fragments.take(fragment)
     }
 
     /** The `ORDER BY` terms for [order], as Cypher orders it, compiled by the module ([Fragments.orderTerms]). */
