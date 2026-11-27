@@ -168,8 +168,8 @@ class CliSpec(
 
         /**
          * [cypher] as a statement of the run's script, its indent trimmed as the root module's runners trim it, and a `;`
-         * it ends with dropped, ended by a `;` on a line of its own, so that a statement whose last line is a `//` comment doesn't take the `;`, and the marker after it, into
-         * the comment.
+         * it ends with dropped, ended by a `;` on a line of its own, so that a statement whose last line is a `//`
+         * comment doesn't take the `;`, and the marker after it, into the comment.
          */
         fun statement(cypher: String): String = cypher.trimIndent().trimEnd().removeSuffix(";") + "\n;\n"
 
