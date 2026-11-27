@@ -40,11 +40,12 @@ class CliSpec(
     /** A container of the cases of each file. */
     fun tests(): List<DynamicNode> = FILES.map { file -> DynamicContainer.dynamicContainer(file, tests(CypherSpec.load(file))) }
 
-    private fun tests(spec: CypherSpec): List<DynamicTest> {
-        val run = Runner(spec)
+    /** A test of each of [spec]'s cases, with [held] for its holds. */
+    internal fun tests(spec: CypherSpec, held: Map<String, List<CypherSpec.Hold>> = held(spec)): List<DynamicTest> {
+        val run = Runner(spec, held)
         // The runner's own tests, a case's in the order of its cases: each told the case it runs, as runner reads a step's
         // part of the case's run by its place among the steps run.
-        return spec.tests(store, before = run::reset, held = held(spec), run = run::step).zip(spec.cases) { test, case ->
+        return spec.tests(store, before = run::reset, held = held, run = run::step).zip(spec.cases) { test, case ->
             DynamicTest.dynamicTest(test.displayName) {
                 run.case = case
                 test.executable.execute()
@@ -52,18 +53,22 @@ class CliSpec(
         }
     }
 
-    private inner class Runner(private val spec: CypherSpec) {
+    private inner class Runner(private val spec: CypherSpec, private val held: Map<String, List<CypherSpec.Hold>>) {
         var case: Case? = null
-        private var parts: List<Part>? = null
+        private var parts: List<Part> = emptyList()
         private var next = 0
 
+        /**
+         * Runs the case before its first step is read, so that a run that fails (its exit, its graph, its markers) fails
+         * the case, and isn't taken for a held step still failing.
+         */
         fun reset() {
-            parts = null
+            parts = emptyList()
             next = 0
+            parts = run(requireNotNull(case))
         }
 
         fun step(step: Step): List<Any?> {
-            val parts = parts ?: run(requireNotNull(case)).also { parts = it }
             val part = parts.getOrNull(next++) ?: fail("${case?.name}: the runner asked for more steps than the run ran")
             assertEquals(part.step.cypher, step.cypher, "the step the run ran in this place")
             part.failure?.let { throw CliFailure(it) }
@@ -72,7 +77,9 @@ class CliSpec(
 
         /** The case's steps on [store], each with its part of the one run that ran them all. */
         private fun run(case: Case): List<Part> {
-            val steps = runnable(case, held(spec)[case.name].orEmpty(), store)
+            val steps = runnable(case, held[case.name].orEmpty(), store)
+            // A case with no step to run here needs no run.
+            if (steps.isEmpty()) return emptyList()
             val script = buildString {
                 if (clears) append(statement("MATCH (n) DETACH DELETE n"))
                 spec.graph?.let { append(statement(it)) }

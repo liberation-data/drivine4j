@@ -111,6 +111,15 @@ class CliSpecTest {
     }
 
     @Test
+    fun `a run that fails fails the case, where its first step is held, and isn't taken for the step still failing`() {
+        // In process, on SQLite in memory: no container.
+        val spec = CypherSpec(file = "t.yaml", graph = "CREATE (:A", cases = listOf(Case("c", steps = listOf(Step(cypher = "RETURN 1", rows = listOf(1L))))))
+        val test = CliSpec("sqlite", "sqlite::memory:", clears = false).tests(spec, mapOf("c" to listOf(Hold("x#1", on = listOf("sqlite"))))).single()
+        val failure = assertThrows<AssertionError> { test.executable.execute() }
+        assert("the case's graph wasn't written" in failure.message.orEmpty()) { failure.message.orEmpty() }
+    }
+
+    @Test
     fun `held adds the CLI's holds to the runner's, case by case`() {
         val queries = CypherSpec.load("queries.yaml")
         val held = CliSpec.held(queries)
