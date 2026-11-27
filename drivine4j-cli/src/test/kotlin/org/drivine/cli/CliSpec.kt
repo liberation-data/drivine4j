@@ -100,8 +100,14 @@ class CliSpec(
                 }
                 val run = runCli(listOf("-a", address, "--format", "json", "--continue", "-f", "case.cypher"), env, dir = dir)
                 if (run.exit !in setOf(ExitCode.OK, ExitCode.STATEMENT_FAILED)) fail("${case.name}: the run exited with ${run.exit}: ${run.stderr}")
-                val out = cut(run.stdout, steps.size) { it == "{\"columns\":[\"$MARKER\"],\"rows\":[[\"$MARKER\"]]}" }
-                val err = cut(run.stderr, steps.size) { it.startsWith("Could not find command :$MARKER") }
+                // A run cut short, as by a crash of the binary, says how it ended and what it printed on stderr.
+                fun <T> whole(read: () -> T): T = try {
+                    read()
+                } catch (e: AssertionError) {
+                    fail("${case.name}: ${e.message}\nThe run exited with ${run.exit}, and printed on stderr:\n${run.stderr}")
+                }
+                val out = whole { cut(run.stdout, steps.size) { it == "{\"columns\":[\"$MARKER\"],\"rows\":[[\"$MARKER\"]]}" } }
+                val err = whole { cut(run.stderr, steps.size) { it.startsWith("Could not find command :$MARKER") } }
                 val seeded = err[0].isEmpty() && out[0].all { it.startsWith("{\"columns\":") }
                 if (!seeded) fail("${case.name}: the case's graph wasn't written: ${err[0].joinToString("\n")}")
                 return steps.mapIndexed { i, step -> Part(step, out[i + 1], err[i + 1]) }
