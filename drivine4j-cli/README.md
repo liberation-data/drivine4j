@@ -55,7 +55,9 @@ tests. To refresh it:
    its resource entry for `org/drivine/cli/drivine-cli.properties`, which `--version` reads. Leave out what the agent
    recorded of the JVM it ran on and not of the CLI: sqlite-jdbc's native library, as
    `org/sqlite/native/Linux/x86_64/libsqlitejdbc.so`, which sqlite-jdbc's own feature adds for the platform the binary
-   is built on, and JFR's `jdk.jfr` and `jdk.management.jfr` entries. `MetadataTest` fails on them.
+   is built on, and JFR's `jdk.jfr` and `jdk.management.jfr` entries. `MetadataTest` fails on them. Keep the driver
+   methods the core calls by reflection, which a trace may not reach (Oracle's JSON reader, Postgres's catalog check):
+   `MetadataTest` fails where one is missing.
 
 ## Run
 

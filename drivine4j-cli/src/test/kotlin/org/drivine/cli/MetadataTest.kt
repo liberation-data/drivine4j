@@ -41,4 +41,31 @@ class MetadataTest {
         assertNotNull(console, "java.io.Console isn't registered")
         assertTrue(console["methods"].any { it["name"].asText() == "isTerminal" && it["parameterTypes"].isEmpty })
     }
+
+    /**
+     * Each method of a driver's class the core calls by reflection, as it doesn't compile against the driver, is registered.
+     * A trace keeps only what the tests reached, and these are reached on paths a run seldom takes. A native image without
+     * one finds no such method:
+     * - Oracle's JSON reader (JdbcResultMapper.oracleCall) fails to read the value (#900);
+     * - Postgres's catalog check (StoreIdentityResolver.inPostgresCatalog) quietly answers no, so two first boots that
+     *   race to make the store fail where one would wait for the other (#901).
+     */
+    @Test
+    fun `each driver method the core calls by reflection is kept`() {
+        val reflection = com.fasterxml.jackson.databind.ObjectMapper().readTree(metadata)["reflection"]
+        val called = listOf(
+            "oracle.sql.json.OracleJsonValue" to "getOracleJsonType",
+            "oracle.sql.json.OracleJsonString" to "getString",
+            "oracle.sql.json.OracleJsonNumber" to "doubleValue",
+            "oracle.sql.json.OracleJsonNumber" to "bigDecimalValue",
+            "org.postgresql.util.PSQLException" to "getServerErrorMessage",
+            "org.postgresql.util.ServerErrorMessage" to "getSchema",
+        )
+        val missing = called.filter { (type, method) ->
+            reflection.none { entry ->
+                entry["type"]?.asText() == type && entry["methods"]?.any { it["name"].asText() == method && it["parameterTypes"].isEmpty } == true
+            }
+        }
+        assertTrue(missing.isEmpty(), "Not registered: $missing")
+    }
 }
