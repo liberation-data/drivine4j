@@ -60,10 +60,17 @@ runs:
     # replaces any ad-hoc signature native-image left on the binary. The verify reads the signature back and fails the
     # job if it isn't well formed.
     #
-    # No --entitlements: the GraalVM native image is ahead-of-time compiled and needs no JIT or dynamic-code
-    # entitlements (allow-jit, allow-unsigned-executable-memory and the like). Plain hardened runtime is correct for
-    # this CLI. Those JIT entitlements belong to the Electron Studio app in a different repo and are deliberately kept
-    # out of here.
+    # One entitlement, drivine.entitlements beside this file: com.apple.security.cs.disable-library-validation. SQLite's
+    # driver (sqlite-jdbc) carries its native library in the binary, extracts it at run time and loads it, and that
+    # copy is unsigned: under the hardened runtime, library validation refuses to load a library not signed by Apple or
+    # by the binary's own team, so without it every sqlite: address fails (#903). The cost: the binary will load any
+    # library it opens by path unsigned, such as a copy swapped into the temp dir (DYLD_* injection stays blocked, as
+    # no allow-dyld-environment-variables is given). The extracted copy can't be signed at run time. Signing the
+    # library with this identity before native-image embeds it, in place of sqlite-jdbc's own, would need no
+    # entitlement but means repacking sqlite-jdbc's resource in the build; shipping it signed beside the binary would
+    # make the download two files that must stay together. No JIT or dynamic-code entitlements (allow-jit,
+    # allow-unsigned-executable-memory and the like): the GraalVM native image is ahead-of-time compiled and needs none.
+    # Those belong to the Electron Studio app in a different repo and are deliberately kept out of here.
     - name: Codesign the binary
       shell: bash
       run: |
@@ -71,12 +78,14 @@ runs:
         # --identifier pins the signature's bundle identifier (and so the designated requirement) to
         # org.drivine.cli, rather than letting codesign derive it from the file name "drivine".
         codesign --force --options runtime --timestamp \
+          --entitlements "$GITHUB_ACTION_PATH/drivine.entitlements" \
           --identifier org.drivine.cli \
           --sign "$APPLE_SIGNING_IDENTITY" \
           "${{ inputs.binary-path }}"
         set -x
         codesign --verify --strict --verbose=2 "${{ inputs.binary-path }}"
         codesign --display --verbose=4 "${{ inputs.binary-path }}"
+        codesign --display --entitlements - "${{ inputs.binary-path }}"
 
     # notarytool takes a zip, not a bare binary. ditto --keepParent keeps the file name inside the archive.
     - name: Zip the signed binary for submission
