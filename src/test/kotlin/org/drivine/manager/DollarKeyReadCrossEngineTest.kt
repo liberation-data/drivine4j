@@ -14,6 +14,7 @@ import org.drivine.query.dsl.query
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SqlCypherFixtures
 import org.junit.jupiter.api.Test
+import sample.graphproperty.DollarBaggedNode
 import sample.graphproperty.DollarScoredNode
 import kotlin.test.assertEquals
 
@@ -125,5 +126,18 @@ class DollarKeyReadSqliteTest {
     fun `a null removes a property under a dollar key on SQLite`() {
         SqliteTestDatabase.clear(pm)
         verifyDollarNullsRemove(pm)
+    }
+
+    @Test
+    fun `a flat bag's clearing keeps a property under a dollar key on SQLite`() {
+        SqliteTestDatabase.clear(pm)
+        val gom = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        gom.save(DollarBaggedNode("a", 5, mapOf("old" to 1L)))
+        gom.save(DollarBaggedNode("a", 5, mapOf("new" to 2L)), nullPolicy = NullPolicy.CLEAR)
+        val keys = SqlCypherFixtures.over(pm).query(
+            QuerySpecification.withStatement("MATCH (n:DollarBagged) WHERE n.id = 'a' RETURN keys(n) AS k").transform(List::class.java),
+        ).single().map { it.toString() }.filterNot { it.startsWith("__drivine.") }.sorted()
+        assertEquals(listOf("\$score", "id", "new"), keys, "the bag's stale key goes, the field's stays")
+        assertEquals(DollarBaggedNode("a", 5, mapOf("new" to 2L)), gom.load("a", DollarBaggedNode::class.java))
     }
 }

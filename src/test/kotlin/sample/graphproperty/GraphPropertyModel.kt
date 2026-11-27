@@ -6,6 +6,7 @@ import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.RangeIndex
 import org.drivine.annotation.Root
 import org.drivine.annotation.VectorIndex
@@ -99,4 +100,15 @@ data class DollarScoredNode(
     @NodeId @GraphProperty("\$key") val key: String,
     val page: String,
     @GraphProperty("\$score") val score: Long? = null,
+)
+
+/**
+ * A flat `@PropertyBag` beside a number stored under a name that begins with `$`, held as `$$score`: the bag owns every
+ * key no declared field holds, so a save that clears the bag's stale keys must count `$$score` as the field's (#892).
+ */
+@NodeFragment(labels = ["DollarBagged"])
+data class DollarBaggedNode(
+    @NodeId val id: String,
+    @GraphProperty("\$score") val score: Long? = null,
+    @PropertyBag(flat = true) val extras: Map<String, Any?> = emptyMap(),
 )
