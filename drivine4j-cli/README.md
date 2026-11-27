@@ -34,8 +34,9 @@ on the JVM's command line, or `JAVA_OPTS`, sets another.
 `.github/workflows/cli-native.yml` builds it on linux x64, records its size and the time `drivine --version` takes to
 start in the run's summary, uploads it as the artifact `drivine-linux-x64`, and runs the tests below against it, on each
 of the six stores. It runs on a pull request that changes this module, the core's `src/main`, or the build, each night,
-and by hand, apart from `ci.yml`, so a GraalVM problem doesn't block a pull request's CI. The binaries for the other
-operating systems come in [#707](https://github.com/liberation-data/drivine4j/issues/707).
+by hand, and in each release and release dry run (`release.yml`, whose macOS CLI waits on it), apart from `ci.yml`, so
+a GraalVM problem doesn't block a pull request's CI. The binaries for the other operating systems come in
+[#707](https://github.com/liberation-data/drivine4j/issues/707).
 
 ### Refreshing the reachability metadata
 
