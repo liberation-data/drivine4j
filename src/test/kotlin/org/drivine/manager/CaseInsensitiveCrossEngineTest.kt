@@ -293,7 +293,8 @@ abstract class CaseInsensitiveContract {
         stateless.saveAll(listOf(CiLongLate("other", long)))
         try {
             if (this is CaseInsensitiveNeo4jTest) assertFailsWith<DrivineException> { pm.indexes.ensure(spec) } else pm.indexes.ensure(spec)
-            val found = stateless.loadAll(CiLong::class.java, CiEmailQueryDsl.INSTANCE) { where { query.email eqIgnoreCase long.lowercase() } }
+            assertTrue(readsCopy(lookup(CiLong::class.java, long.uppercase())))
+            val found = stateless.loadAll(CiLong::class.java, CiEmailQueryDsl.INSTANCE) { where { query.email eqIgnoreCase long.uppercase() } }
             assertEquals(setOf("own"), found.map { it.id }.toSet())
         } finally {
             pm.indexes.drop(spec)
