@@ -134,6 +134,15 @@ class CliSpecTest {
     }
 
     @Test
+    fun `a run cut short fails the case with its exit and what it printed on stderr`() {
+        // :exit stops the run before the step's marker, as a crash of the binary cuts it short. It exits as a statement
+        // failed, as the CLI takes the graph's marker, a command it doesn't know, for one.
+        val failure = failure(spec(Step(cypher = ":exit", rows = listOf(1L))))
+        assert("printed 1 of its 2 markers" in failure) { failure }
+        assert("The run exited with ${ExitCode.STATEMENT_FAILED}, and printed on stderr:\nCould not find command :" in failure) { failure }
+    }
+
+    @Test
     fun `a step that prints more than one result, or columns not as results yaml says, fails the case`() {
         val two = failure(spec(Step(cypher = "RETURN 1 AS a;\nRETURN 2 AS a", rows = listOf(1L))))
         assert("printed 2 results, not one" in two) { two }
