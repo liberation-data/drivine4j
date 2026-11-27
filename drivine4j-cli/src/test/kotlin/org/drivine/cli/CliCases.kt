@@ -54,7 +54,7 @@ private fun runBinary(binary: String, args: List<String>, env: Map<String, Strin
 }
 
 /**
- * The contract's cases, `cli.yaml` (copied from drivine-cypher-spec: see `cli/VERSION` in the test resources), run
+ * The contract's cases, `cli.yaml` (the spec's `cli/cli.yaml`, copied with the spec by scripts/sync-cypher-spec.sh), run
  * against one [store] at [address], in process, as the contract's README says a runner runs them ("Cases"). The store's
  * credentials go in `DRIVINE_USER` and `DRIVINE_PASSWORD` unless a case gives those itself.
  *

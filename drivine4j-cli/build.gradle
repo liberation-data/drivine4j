@@ -46,6 +46,30 @@ dependencies {
     // cli.yaml, the contract's cases, is YAML: read as the root module's tests read the Cypher spec
     testImplementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
     testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
+    // The Cypher spec's runner (CypherSpec.kt, copied in below) reads its files into Kotlin data classes
+    testImplementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+}
+
+// The Cypher spec's cases run through the CLI too (CliSpec.kt): the root module's runner, CypherSpec.kt, and the spec
+// files it reads, copied from the root module's tests, so the CLI's tests run the same cases and holds without the
+// root module's whole test suite on their classpath.
+def cypherSpecFiles = ['queries.yaml', 'writes.yaml', 'temporal.yaml', 'results.yaml']
+def cypherSpec = tasks.register('cypherSpec', Sync) {
+    into layout.buildDirectory.dir('cypher-spec')
+    from(rootProject.file('src/test/kotlin/org/drivine/cypher/spec')) {
+        include 'CypherSpec.kt'
+        into 'kotlin/org/drivine/cypher/spec'
+    }
+    from(rootProject.file('src/test/resources/cypher')) {
+        include cypherSpecFiles
+        into 'resources/cypher'
+    }
+}
+sourceSets {
+    test {
+        kotlin.srcDir(cypherSpec.map { "${it.destinationDir}/kotlin" })
+        resources.srcDir(cypherSpec.map { "${it.destinationDir}/resources" })
+    }
 }
 
 // The root module's `api 'org.testcontainers:neo4j'`, there for its users' tests, brings Testcontainers, docker-java

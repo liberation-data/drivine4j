@@ -1,8 +1,9 @@
 # Builds the drivine CLI as a native binary with GraalVM (drivine4j-cli's nativeCompile), and runs the CLI's tests
 # against that binary on each store: drivine4j-cli's tests run it as a process when DRIVINE_CLI_BINARY names it (see
 # drivine4j-cli/README.md). Apart from ci.yml, so a GraalVM problem can't block a pull request's CI. On a pull request
-# that changes the CLI, the core it runs, or the build; each night; and by hand. The trace job, which records the
-# binary's reachability metadata, runs by hand, on a pull request labelled cli-trace, and on one whose title holds [cli-trace].
+# that changes the CLI, the core it runs, the Cypher spec it runs, or the build; each night; and by hand. The trace job,
+# which records the binary's reachability metadata, runs by hand, on a pull request labelled cli-trace, and on one whose
+# title holds [cli-trace].
 name: CLI native
 
 on:
@@ -13,6 +14,9 @@ on:
     paths:
       - 'drivine4j-cli/**'
       - 'src/main/**'
+      # The Cypher spec's runner and files, which the CLI's tests run through the binary too (drivine4j-cli's CliSpec.kt)
+      - 'src/test/kotlin/org/drivine/cypher/spec/CypherSpec.kt'
+      - 'src/test/resources/cypher/**'
       - 'build.gradle'
       - 'settings.gradle'
       - 'gradle/**'

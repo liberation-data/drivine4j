@@ -5,6 +5,7 @@ import org.drivine.test.FalkorDbTestContainer
 import org.drivine.test.MemgraphTestContainer
 import org.drivine.test.OracleTestContainer
 import org.drivine.test.PostgresTestContainer
+import org.junit.jupiter.api.DynamicNode
 import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
@@ -13,8 +14,9 @@ import kotlin.test.assertEquals
 
 /**
  * The CLI against each store but SQLite, in the containers the root module's tests run (`org.drivine.test`): a
- * statement, a failure, a refused password, and the contract's cases. Opt-in, so a plain `test` starts no container:
- * `CLI_STORE_TESTS=true` runs them, and `ORACLE_TESTS=true` with it runs Oracle's too. One store's:
+ * statement, a failure, a refused password, the contract's cases, and the Cypher spec's (CliSpec.kt). Opt-in, so a
+ * plain `test` starts no container: `CLI_STORE_TESTS=true` runs them, and `ORACLE_TESTS=true` with it runs Oracle's
+ * too. One store's:
  * `CLI_STORE_TESTS=true ./gradlew :drivine4j-cli:test --tests 'org.drivine.cli.CliPostgresTest'`.
  */
 abstract class CliStoreTest {
@@ -53,6 +55,9 @@ abstract class CliStoreTest {
 
     @TestFactory
     fun `the contract's cases`(): List<DynamicTest> = CliCases(store, address, user, password).tests()
+
+    @TestFactory
+    fun `the Cypher spec's cases`(): List<DynamicNode> = CliSpec(store, address, user, password).tests()
 }
 
 @EnabledIfEnvironmentVariable(named = "CLI_STORE_TESTS", matches = "true")

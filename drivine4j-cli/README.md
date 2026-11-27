@@ -154,9 +154,11 @@ that each connection opens. It's deleted when the run ends, by Ctrl-C or `kill` 
 
 ## Tests
 
-`./gradlew :drivine4j-cli:test` runs the CLI in process on SQLite in memory, with no container, and the contract's
-cases (`src/test/resources/cli/cli.yaml`, copied from drivine-cypher-spec as `cli/VERSION` says) that this build can
-run. The tests against the other stores start containers and are opt-in: `CLI_STORE_TESTS=true` runs them on Neo4j,
+`./gradlew :drivine4j-cli:test` runs the CLI in process on SQLite in memory, with no container, the contract's
+cases (`src/test/resources/cli/cli.yaml`, the spec's `cli/cli.yaml`, which `scripts/sync-cypher-spec.sh` copies at the
+tag `src/test/resources/cypher/VERSION` names) that this build can run, and the Cypher spec's `queries.yaml`,
+`writes.yaml`, `temporal.yaml` and `results.yaml` through the CLI with `--format json` (`CliSpec.kt`), one run of the
+CLI a case, so each step gives the rows or the failure the spec says, with the root module's holds. The tests against the other stores start containers and are opt-in: `CLI_STORE_TESTS=true` runs them on Neo4j,
 Memgraph, FalkorDB and Postgres, and `ORACLE_TESTS=true` with it on Oracle. One store's:
 
 ```

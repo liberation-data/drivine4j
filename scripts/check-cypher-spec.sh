@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Checks src/test/resources/cypher against the Cypher spec (github.com/liberation-data/drivine-cypher-spec):
+# Checks src/test/resources/cypher, and the CLI's contract in drivine4j-cli/src/test/resources/cli, against the Cypher
+# spec (github.com/liberation-data/drivine-cypher-spec):
 # - fails when a file differs from the tag VERSION names (or the commit, between tags), as a case edited here and not
 #   in the spec does;
 # - warns when the spec has a later tag than VERSION, so drivine4j can move to it.
@@ -8,7 +9,8 @@
 set -euo pipefail
 
 repo="https://github.com/liberation-data/drivine-cypher-spec"
-dir="$(cd "$(dirname "$0")/.." && pwd)/src/test/resources/cypher"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+dir="$root/src/test/resources/cypher"
 tag="$(tr -d '[:space:]' < "$dir/VERSION")"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -26,6 +28,10 @@ for file in queries.yaml writes.yaml temporal.yaml refusals.yaml schema.yaml hos
         changed=1
     fi
 done
+if ! diff -q "$tmp/cli/cli.yaml" "$root/drivine4j-cli/src/test/resources/cli/cli.yaml" > /dev/null; then
+    say error "drivine4j-cli/src/test/resources/cli/cli.yaml differs from the spec's cli/cli.yaml at $tag. Change the spec, tag it, and run scripts/sync-cypher-spec.sh <tag>."
+    changed=1
+fi
 
 if [[ "$tag" != v* ]]; then
     say warning "src/test/resources/cypher is the spec at commit $tag, which no tag names yet. Move to the tag that carries it with scripts/sync-cypher-spec.sh <tag>."
