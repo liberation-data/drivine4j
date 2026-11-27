@@ -1,9 +1,10 @@
 # Builds the drivine CLI as a native binary with GraalVM (drivine4j-cli's nativeCompile), and runs the CLI's tests
 # against that binary on each store: drivine4j-cli's tests run it as a process when DRIVINE_CLI_BINARY names it (see
 # drivine4j-cli/README.md). Apart from ci.yml, so a GraalVM problem can't block a pull request's CI. On a pull request
-# that changes the CLI, the core it runs, the Cypher spec it runs, or the build; each night; and by hand. The trace job,
+# that changes the CLI, the core it runs, the Cypher spec it runs, or the build; each night; by hand; and from
+# release.yml, whose macOS CLI waits on it, so a release attaches no binary that fails these (#707). The trace job,
 # which records the binary's reachability metadata, runs by hand, on a pull request labelled cli-trace, and on one whose
-# title holds [cli-trace].
+# title holds [cli-trace], and never from a release.
 name: CLI native
 
 on:
@@ -25,6 +26,13 @@ on:
   schedule:
     - cron: '0 18 * * *'
   workflow_dispatch:
+  # From release.yml, on the commit it releases.
+  workflow_call:
+    inputs:
+      release:
+        description: 'Called by release.yml: a group of its own, and no trace job'
+        type: boolean
+        default: false
 
 # Read only: the tests run with a token that can't write to the repository. The store tests' job adds actions: read,
 # to download the binary this run built.
@@ -32,9 +40,10 @@ permissions:
   contents: read
 
 # A pull request's newer run takes the place of the one still going. A run for a label is in a group of its own, that
-# label's, so adding a label doesn't cancel the build.
+# label's, so adding a label doesn't cancel the build. A release's is its run's own, so its dry run on a pull request
+# doesn't take the pull request's run's place, nor the other way round.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('cli-native-pr-{0}{1}', github.event.pull_request.number, github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '') || format('cli-native-{0}', github.run_id) }}
+  group: ${{ inputs.release && format('cli-native-release-{0}', github.run_id) || github.event_name == 'pull_request' && format('cli-native-pr-{0}{1}', github.event.pull_request.number, github.event.action == 'labeled' && format('-label-{0}', github.event.label.name) || '') || format('cli-native-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -212,11 +221,11 @@ jobs:
   trace:
     name: trace metadata (${{ matrix.store }})
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      !inputs.release && (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'cli-trace') &&
        (github.event.action != 'labeled' || github.event.label.name == 'cli-trace')) ||
       (github.event_name == 'pull_request' && github.event.action != 'labeled' &&
-       contains(github.event.pull_request.title, '[cli-trace]'))
+       contains(github.event.pull_request.title, '[cli-trace]')))
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.store == 'oracle' && 45 || 30 }}
     permissions:
