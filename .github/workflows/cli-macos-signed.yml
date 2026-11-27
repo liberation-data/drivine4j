@@ -1,6 +1,9 @@
 # Builds the drivine CLI as a native binary on macOS with GraalVM, exactly as cli-native.yml builds it on linux, then
 # signs it with a Developer ID Application certificate and notarizes it with Apple's notarytool, and uploads the
-# signed, notarized binary as an artifact. This is how a macOS user's download is trusted by Gatekeeper.
+# signed, notarized binary as an artifact. This is how a macOS user's download is trusted by Gatekeeper. The signed
+# binary, as a user downloads it, then runs the CLI's tests on SQLite, the Cypher spec's cases among them, and a release
+# is given the zip only when they pass (#707): signing turns on the hardened runtime, which a binary can fail under where
+# the unsigned one, or the linux one cli-native.yml tests, does not.
 #
 # arm64 (Apple silicon) only: GraalVM Community 25 ships macOS on aarch64 alone (it dropped the Intel image with 25),
 # and Intel Macs are effectively end-of-life, so the CLI is built and shipped for Apple silicon only. If an Intel
@@ -148,11 +151,64 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Attach the signed zip to the release. A job of its own, so the token that may write to the repo never shares a job
-  # with the Gradle and GraalVM build or with the Apple secrets. Skipped on a by-hand run, which has no tag.
+  # The CLI's tests on SQLite in memory against the signed binary the zip holds, as a user unzips it (#707): what runs on
+  # macOS with no container. A job of its own, with no Apple secret and no signing keychain, so the tests, which run the
+  # build's code, never share a job with them; the other stores' tests are cli-native.yml's, on linux.
+  sqlite-tests:
+    name: store tests (sqlite, macos-15 arm64, signed)
+    needs: build-sign
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: drivine-macos-arm64-signed
+          path: ${{ runner.temp }}/zip
+      # Unzipped as a user's download is, with ditto, which keeps the file mode and the signature; checked signed.
+      - name: Unzip the signed binary
+        run: |
+          ditto -x -k "$RUNNER_TEMP/zip/drivine-macos-arm64.zip" "$RUNNER_TEMP/drivine"
+          codesign --verify --strict --verbose=2 "$RUNNER_TEMP/drivine/drivine"
+          "$RUNNER_TEMP/drivine/drivine" --version
+
+      - name: Run the CLI's tests on SQLite against the signed binary
+        run: |
+          export DRIVINE_CLI_BINARY="$RUNNER_TEMP/drivine/drivine"
+          ./gradlew --no-daemon :drivine4j-cli:test --tests 'org.drivine.cli.CliSqliteTest'
+
+      - name: Upload the test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos-test-results-sqlite
+          path: |
+            drivine4j-cli/build/test-results/test/
+            drivine4j-cli/build/reports/tests/test/
+          retention-days: 30
+
+  # Attach the signed zip to the release, once the signed binary passed its tests. A job of its own, so the token that
+  # may write to the repo never shares a job with the Gradle and GraalVM build or with the Apple secrets. Skipped on a
+  # by-hand run, which has no tag.
   attach:
     name: attach to the release
-    needs: build-sign
+    needs: [build-sign, sqlite-tests]
     if: ${{ (inputs.tag || github.event.release.tag_name) != '' }}
     runs-on: ubuntu-latest
     permissions:

@@ -35,8 +35,9 @@ on the JVM's command line, or `JAVA_OPTS`, sets another.
 start in the run's summary, uploads it as the artifact `drivine-linux-x64`, and runs the tests below against it, on each
 of the six stores. It runs on a pull request that changes this module, the core's `src/main`, or the build, each night,
 by hand, and in each release and release dry run (`release.yml`, whose macOS CLI waits on it), apart from `ci.yml`, so
-a GraalVM problem doesn't block a pull request's CI. The binaries for the other operating systems come in
-[#707](https://github.com/liberation-data/drivine4j/issues/707).
+a GraalVM problem doesn't block a pull request's CI. `.github/workflows/cli-macos-signed.yml` builds it on macOS
+(Apple silicon), signs and notarizes it, and runs the tests below on SQLite against the signed binary, which a release
+attaches only when they pass; it runs by hand and from a release, as signing needs secrets only main and tags reach.
 
 ### Refreshing the reachability metadata
 

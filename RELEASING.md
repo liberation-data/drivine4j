@@ -75,8 +75,8 @@ git push origin vX.Y.Z
   that releases nothing: it builds the `drivine` CLI as a native binary on linux and runs the CLI's tests against it
   on every store. Nothing published to Maven Central waits on it; `macos-cli` does.
 - **`macos-cli`** then calls `cli-macos-signed.yml`, which builds the `drivine` CLI for macOS (Apple silicon), signs it
-  with the Developer ID certificate, notarizes it, and attaches `drivine-macos-arm64.zip` to the release. It runs only
-  when `cli-native` passed. If either fails, the release stays published without the zip: re-run the failed jobs to
+  with the Developer ID certificate, notarizes it, runs the CLI's tests on SQLite against the signed binary on macOS,
+  and attaches `drivine-macos-arm64.zip` to the release only when they pass. It runs only when `cli-native` passed. If either fails, the release stays published without the zip: re-run the failed jobs to
   attach it. A real failure of the binary's tests needs a new release to fix.
 
 A tag that fails `check` publishes nothing. Delete it (`git push origin :refs/tags/vX.Y.Z`), fix what the message
