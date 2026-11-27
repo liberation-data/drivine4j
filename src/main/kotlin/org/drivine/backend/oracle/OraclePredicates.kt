@@ -38,14 +38,17 @@ internal class OraclePredicates(
      * With [indexed], a condition every root the statement reads by its labels meets, a label whose labelled index the module
      * reads an equality through, which only a node of the label meets, is not tested again ([OracleStatementScope.implied]):
      * the index gives the nodes of the label that meet it and nothing else, whether the value is rare or held by most of them.
+     * Those labels are the ones the module's answer names for the root (`SqlFragment.impliedLabels`), never read from the
+     * condition's text, where a labelled test may be one branch of a term a node of any label meets (#844).
      * Tested on their own in the form the index over labels answers, the labels would be read through that index instead:
      * Oracle estimates it gives one row, and it gives every node of the label.
      */
     fun predicate(conditions: List<WhereCondition>, indexed: Boolean = false): String? {
         val labels = rootLabels()
-        val predicate = fragments.where(root, rootAlias, labels, conditions, viewModel, depthOverrides) ?: return null
-        if (indexed && !scope.narrowed) scope.implied += labels.filter { "CASE WHEN ${OracleSql.labelled(root, it, "k").substringAfter("CASE WHEN ").substringBefore(" THEN ")}" in predicate }
-        return predicate
+        val (cypher, parameters) = fragments.written(conditions, viewModel, depthOverrides) ?: return null
+        val fragment = fragments.compiled(root, rootAlias, labels, cypher, parameters)
+        if (indexed && !scope.narrowed) scope.implied += fragment.impliedLabels[rootAlias].orEmpty().filter { it in labels }
+        return fragments.take(fragment)
     }
 
     /** The `ORDER BY` terms for [order], as Cypher orders it, compiled by the module ([Fragments.orderTerms]). */

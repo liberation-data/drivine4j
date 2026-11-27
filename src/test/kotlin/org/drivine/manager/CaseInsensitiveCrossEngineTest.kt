@@ -279,6 +279,29 @@ abstract class CaseInsensitiveContract {
         assertEquals(long, assertNotNull(stateless.load("g1", CiLong::class.java)).email)
     }
 
+    /**
+     * A lookup by a text whose copy has no index key, past 4,000 bytes, keeps the nodes of its own label: another label's
+     * node with an equal copy isn't one of them. On Oracle the statement leaves out its own test of the label only where
+     * the module's answer says every row the condition keeps carries it (#844, drivine-cypher-spec#373).
+     */
+    @Test
+    fun `a long text found by eqIgnoreCase through the index is found among its own label's nodes alone`() {
+        assumeFalse(this is CaseInsensitiveFalkorDbTest, "FalkorDB finds no node by eqIgnoreCase on a text this long")
+        val spec = RangeIndexSpec("CiLong", "email", ignoreCase = true)
+        val long = "Xy".repeat(2_500) + "Z"
+        stateless.saveAll(listOf(CiLong("own", long)))
+        stateless.saveAll(listOf(CiLongLate("other", long)))
+        try {
+            // 5,001 characters, which Neo4j's range index holds too, where the 40,001 above are too long for it.
+            pm.indexes.ensure(spec)
+            assertTrue(readsCopy(lookup(CiLong::class.java, long.uppercase())))
+            val found = stateless.loadAll(CiLong::class.java, CiEmailQueryDsl.INSTANCE) { where { query.email eqIgnoreCase long.uppercase() } }
+            assertEquals(setOf("own"), found.map { it.id }.toSet())
+        } finally {
+            pm.indexes.drop(spec)
+        }
+    }
+
     @Test
     fun `ensuring the index fills in the copy of a node saved before with a text of 5,000 bytes, and a lookup finds it`() {
         assumeFalse(this is CaseInsensitiveFalkorDbTest, "FalkorDB finds no node by eqIgnoreCase on a text this long")
