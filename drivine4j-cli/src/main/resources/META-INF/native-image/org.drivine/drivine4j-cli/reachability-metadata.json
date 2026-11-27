@@ -1302,6 +1302,24 @@
       "type": "org.postgresql.jdbc.PgStatement"
     },
     {
+      "methods": [
+        {
+          "name": "getServerErrorMessage",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.postgresql.util.PSQLException"
+    },
+    {
+      "methods": [
+        {
+          "name": "getSchema",
+          "parameterTypes": []
+        }
+      ],
+      "type": "org.postgresql.util.ServerErrorMessage"
+    },
+    {
       "type": "org.sqlite.JDBC"
     },
     {

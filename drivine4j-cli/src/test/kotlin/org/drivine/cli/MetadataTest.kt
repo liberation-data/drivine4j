@@ -36,9 +36,37 @@ class MetadataTest {
      */
     @Test
     fun `Console's isTerminal, which the CLI calls by reflection, is kept`() {
-        val console = com.fasterxml.jackson.databind.ObjectMapper().readTree(metadata)["reflection"]
-            .firstOrNull { it["type"]?.asText() == "java.io.Console" }
-        assertNotNull(console, "java.io.Console isn't registered")
-        assertTrue(console["methods"].any { it["name"].asText() == "isTerminal" && it["parameterTypes"].isEmpty })
+        assertTrue(registered("java.io.Console", "isTerminal"), "java.io.Console's isTerminal isn't registered")
     }
+
+    /**
+     * Each method of a driver's class the core calls by reflection, as it doesn't compile against the driver, is registered.
+     * A trace keeps only what the tests reached, and these are reached on paths a run seldom takes. A native image without
+     * one finds no such method:
+     * - Oracle's JSON reader (JdbcResultMapper.oracleCall) fails to read the value (#900);
+     * - Postgres's catalog check (StoreIdentityResolver.inPostgresCatalog) quietly answers no, so a first boot whose
+     *   making of the store's key constraint loses the race in the catalog to another's isn't read as made meanwhile:
+     *   it doesn't ensure the constraint again, and, finding the winner's not yet in force, warns and writes its stamp
+     *   best-effort (#901).
+     */
+    @Test
+    fun `each driver method the core calls by reflection is kept`() {
+        val called = listOf(
+            "oracle.sql.json.OracleJsonValue" to "getOracleJsonType",
+            "oracle.sql.json.OracleJsonString" to "getString",
+            "oracle.sql.json.OracleJsonNumber" to "doubleValue",
+            "oracle.sql.json.OracleJsonNumber" to "bigDecimalValue",
+            "org.postgresql.util.PSQLException" to "getServerErrorMessage",
+            "org.postgresql.util.ServerErrorMessage" to "getSchema",
+        )
+        val missing = called.filterNot { (type, method) -> registered(type, method) }
+        assertTrue(missing.isEmpty(), "Not registered: $missing")
+    }
+
+    /** Whether [type]'s method [name] of no parameters is registered for reflection. */
+    private fun registered(type: String, name: String): Boolean =
+        com.fasterxml.jackson.databind.ObjectMapper().readTree(metadata)["reflection"].any { entry ->
+            entry["type"]?.asText() == type &&
+                entry["methods"]?.any { it["name"]?.asText() == name && it["parameterTypes"]?.isEmpty == true } == true
+        }
 }
