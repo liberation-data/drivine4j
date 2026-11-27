@@ -139,8 +139,8 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
 
       # Zip the signed binary for the artifact (an artifact keeps no file mode, and the binary is a lone executable),
-      # so the download is the signed, notarized arm64 drivine, at the zip's top as the install hint says: --keepParent
-      # would put it under nativeCompile/, the build's folder.
+      # so the download is the signed, notarized arm64 drivine, at the zip's top as drivine.org's install hint says:
+      # --keepParent would put it under nativeCompile/, the build's folder.
       - name: Package the signed binary
         run: |
           ditto -c -k drivine4j-cli/build/native/nativeCompile/drivine "$RUNNER_TEMP/drivine-macos-arm64.zip"
