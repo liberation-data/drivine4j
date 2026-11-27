@@ -292,7 +292,8 @@ abstract class CaseInsensitiveContract {
         stateless.saveAll(listOf(CiLong("own", long)))
         stateless.saveAll(listOf(CiLongLate("other", long)))
         try {
-            if (this is CaseInsensitiveNeo4jTest) assertFailsWith<DrivineException> { pm.indexes.ensure(spec) } else pm.indexes.ensure(spec)
+            // 5,001 characters, which Neo4j's range index holds too, where the 40,001 above are too long for it.
+            pm.indexes.ensure(spec)
             assertTrue(readsCopy(lookup(CiLong::class.java, long.uppercase())))
             val found = stateless.loadAll(CiLong::class.java, CiEmailQueryDsl.INSTANCE) { where { query.email eqIgnoreCase long.uppercase() } }
             assertEquals(setOf("own"), found.map { it.id }.toSet())
