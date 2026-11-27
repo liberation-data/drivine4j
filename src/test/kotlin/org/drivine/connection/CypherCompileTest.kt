@@ -111,4 +111,12 @@ class CypherCompileTest {
         val unindexed = CypherCompile.oracle(graph, cypher, mapOf("id" to "a"), { true }, { true }, { true }).sql
         assertFalse(throughIndex.any { it in unindexed }, unindexed)
     }
+
+    @Test
+    fun `a compiled statement given NaN or an infinity binds no double of its own, so its values never reach the driver's NUMBER bind (#906)`() {
+        val given = mapOf("n" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "f" to Float.NEGATIVE_INFINITY, "l" to listOf(Double.NaN))
+        val compiled = CypherCompile.oracle(graph, "RETURN \$n AS n, \$i AS i, \$f AS f, \$l AS l", given, { true }, { true }, { true })
+        assertTrue(compiled.nonFinite)
+        assertFalse(compiled.parameters.values.any { it is Double || it is Float }, "${compiled.parameters}")
+    }
 }
