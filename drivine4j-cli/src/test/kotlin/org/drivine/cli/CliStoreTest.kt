@@ -56,8 +56,11 @@ abstract class CliStoreTest {
     @TestFactory
     fun `the contract's cases`(): List<DynamicTest> = CliCases(store, address, user, password).tests()
 
+    /** Whether the Cypher spec's cases run here: on the stores the root module runs them on, and not Memgraph or FalkorDB. */
+    open val spec: Boolean = true
+
     @TestFactory
-    fun `the Cypher spec's cases`(): List<DynamicNode> = CliSpec(store, address, user, password).tests()
+    fun `the Cypher spec's cases`(): List<DynamicNode> = if (spec) CliSpec(store, address, user, password).tests() else emptyList()
 }
 
 @EnabledIfEnvironmentVariable(named = "CLI_STORE_TESTS", matches = "true")
@@ -71,12 +74,14 @@ class CliNeo4jTest : CliStoreTest() {
 @EnabledIfEnvironmentVariable(named = "CLI_STORE_TESTS", matches = "true")
 class CliMemgraphTest : CliStoreTest() {
     override val store = "memgraph"
+    override val spec = false
     override val address: String get() = "memgraph://${MemgraphTestContainer.getConnectionHost()}:${MemgraphTestContainer.getConnectionPort()}"
 }
 
 @EnabledIfEnvironmentVariable(named = "CLI_STORE_TESTS", matches = "true")
 class CliFalkorDbTest : CliStoreTest() {
     override val store = "falkordb"
+    override val spec = false
     override val address: String get() = "falkordb://${FalkorDbTestContainer.getConnectionHost()}:${FalkorDbTestContainer.getConnectionPort()}"
 }
 

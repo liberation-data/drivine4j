@@ -44,7 +44,7 @@ class CliSpec(
         val run = Runner(spec)
         // The runner's own tests, a case's in the order of its cases: each told the case it runs, as runner reads a step's
         // part of the case's run by its place among the steps run.
-        return spec.tests(store, before = run::reset, run = run::step).zip(spec.cases) { test, case ->
+        return spec.tests(store, before = run::reset, held = held(spec), run = run::step).zip(spec.cases) { test, case ->
             DynamicTest.dynamicTest(test.displayName) {
                 run.case = case
                 test.executable.execute()
@@ -105,7 +105,7 @@ class CliSpec(
 
         /** The steps the runner runs on [store], in order: up to a step skipped there, which ends the case on it. */
         private fun runnable(case: Case): List<Step> {
-            val holds = spec.held()[case.name].orEmpty().filter { it.skip && Step(cypher = "", only = it.on).runsOn(store) }
+            val holds = held(spec)[case.name].orEmpty().filter { it.skip && Step(cypher = "", only = it.on).runsOn(store) }
             return case.steps.withIndex()
                 .takeWhile { (i, _) -> holds.none { it.steps == null || i + 1 in it.steps } }
                 .map { it.value }
@@ -146,6 +146,26 @@ class CliSpec(
 
     companion object {
         val FILES = listOf("queries.yaml", "writes.yaml", "temporal.yaml", "results.yaml")
+
+        /**
+         * The steps that fail through the CLI alone, by file and case, as the runner's own holds are: each is run, and
+         * must fail, so its hold is taken out when its fix lands. A parameter the CLI sets is a Cypher literal the store
+         * works out (`:param`), where the library binds the value as it is.
+         */
+        private val HELD_HERE: Map<String, Map<String, List<CypherSpec.Hold>>> = mapOf(
+            "queries.yaml" to mapOf(
+                // A map literal with an empty key, `{``: 9}`, fails on Oracle (ORA-40595), where a parameter of that map works.
+                "A key worked out at run time" to listOf(CypherSpec.Hold(EMPTY_KEY, on = listOf("oracle"), steps = listOf(13))),
+            ),
+        )
+
+        private const val EMPTY_KEY = "liberation-data/drivine-cypher-spec#438"
+
+        /** The holds of [spec]'s steps: the runner's own, and those of the CLI's ([HELD_HERE]). */
+        private fun held(spec: CypherSpec): Map<String, List<CypherSpec.Hold>> {
+            val here = HELD_HERE[spec.file].orEmpty()
+            return (spec.held().keys + here.keys).associateWith { spec.held()[it].orEmpty() + here[it].orEmpty() }
+        }
 
         /** The marker's name, a command the CLI doesn't know and the column of its `RETURN`. */
         private const val MARKER = "drivinespecstep"
