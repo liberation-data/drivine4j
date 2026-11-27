@@ -1506,11 +1506,24 @@
     {
       "methods": [
         {
+          "name": "bigDecimalValue",
+          "parameterTypes": []
+        },
+        {
           "name": "doubleValue",
           "parameterTypes": []
         }
       ],
       "type": "oracle.sql.json.OracleJsonNumber"
+    },
+    {
+      "methods": [
+        {
+          "name": "getString",
+          "parameterTypes": []
+        }
+      ],
+      "type": "oracle.sql.json.OracleJsonString"
     },
     {
       "methods": [

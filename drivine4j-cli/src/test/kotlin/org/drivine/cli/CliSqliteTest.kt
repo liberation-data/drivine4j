@@ -1,5 +1,6 @@
 package org.drivine.cli
 
+import org.junit.jupiter.api.DynamicNode
 import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
@@ -579,4 +580,8 @@ class CliSqliteTest {
 
     @TestFactory
     fun `the contract's cases`(): List<DynamicTest> = CliCases("sqlite", "sqlite::memory:", clears = false).tests()
+
+    /** SQLite in memory is a store of each case's run alone, so nothing is cleared before a case: see CliSpec. */
+    @TestFactory
+    fun `the Cypher spec's cases`(): List<DynamicNode> = CliSpec("sqlite", "sqlite::memory:", clears = false).tests()
 }
