@@ -39,8 +39,8 @@ import java.time.temporal.Temporal
  * once for each place a name occurs. A value is bound as the driver takes it: a string (on Oracle as
  * a CLOB past what a `VARCHAR2` holds), a character as a string, a null as a character null the database
  * converts to the type the statement wants, and anything else through `setObject`, so a number, a
- * boolean, a `java.time` value or a byte array; on Oracle a NaN or an infinity goes as a `BINARY_DOUBLE`, which a
- * `NUMBER` can't hold. A collection or a map is bound as JSON text, and a
+ * boolean, a `java.time` value or a byte array; on Oracle a NaN or an infinity, which a `NUMBER` can't hold, goes
+ * as a `BINARY_DOUBLE`. A collection or a map is bound as JSON text, and a
  * `ZonedDateTime` as its offset form, by [JdbcParameterCoercer] before it gets here. An array of
  * objects, or an enum, is not a bound value: the driver refuses it.
  *
