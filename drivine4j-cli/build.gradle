@@ -48,6 +48,8 @@ dependencies {
     testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
     // The Cypher spec's runner (CypherSpec.kt, copied in below) reads its files into Kotlin data classes
     testImplementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+    // At this build's Kotlin, as the root module takes it: jackson-module-kotlin alone would ask for an older one
+    testImplementation 'org.jetbrains.kotlin:kotlin-reflect'
 }
 
 // The Cypher spec's cases run through the CLI too (CliSpec.kt): the root module's runner, CypherSpec.kt, and the spec
