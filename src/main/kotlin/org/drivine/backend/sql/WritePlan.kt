@@ -68,8 +68,15 @@ internal class NodeWrites(
 
 /** A property bag whose stored keys the block clears when the object no longer holds them: see the store's `owns`. */
 internal class BagClearing(val prefix: String?, val flat: Boolean, val keep: List<String>, val reservedKeys: List<String>, val reservedPrefixes: List<String>) {
-    /** The bag as a `node` step names it, under the names `owns` reads. */
-    fun toMap(): Map<String, Any?> = mapOf("prefix" to prefix, "flat" to flat, "keep" to keep, "reservedKeys" to reservedKeys, "reservedPrefixes" to reservedPrefixes)
+    /**
+     * The bag as a `node` step names it, under the names `owns` reads. The block compares these with the keys the node
+     * holds, so each is escaped as a key is held ([ValueLayout.escape]): a `$` name, held with one more `$`, is otherwise
+     * not kept, or not reserved, and cleared (#892).
+     */
+    fun toMap(): Map<String, Any?> = mapOf(
+        "prefix" to prefix?.let(ValueLayout::escape), "flat" to flat, "keep" to keep.map(ValueLayout::escape),
+        "reservedKeys" to reservedKeys.map(ValueLayout::escape), "reservedPrefixes" to reservedPrefixes.map(ValueLayout::escape),
+    )
 }
 
 /**

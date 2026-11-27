@@ -103,6 +103,21 @@ class WritePlanValuesTest {
     }
 
     @Test
+    fun `a bag a node step clears names what it keeps and reserves as the store holds it, a dollar-named key with one more dollar (#892)`() {
+        for (blocks in listOf(postgres, oracle, sqlite)) {
+            val plan = WritePlan(blocks)
+            val bags = listOf(
+                BagClearing("\$m.", flat = false, keep = listOf("\$m.a"), reservedKeys = emptyList(), reservedPrefixes = emptyList()),
+                BagClearing(null, flat = true, keep = listOf("\$x", "plain"), reservedKeys = listOf("\$score"), reservedPrefixes = listOf("\$m.")),
+            )
+            plan.node(plan.shape(listOf("P"), "id"), "id", "p1", "p1", listOf("P"), NodeWrites(bags = bags))
+            val text = plan.bindings()[WritePlan.PLAN] as String
+            assertContains(text, "\"prefix\":\"\$\$m.\",\"flat\":false,\"keep\":[\"\$\$m.a\"]", message = "${blocks.store}: a bag with a prefix")
+            assertContains(text, "\"keep\":[\"\$\$x\",\"plain\"],\"reservedKeys\":[\"\$\$score\"],\"reservedPrefixes\":[\"\$\$m.\"]", message = "${blocks.store}: a flat bag")
+        }
+    }
+
+    @Test
     fun `a user's map with the key numberDouble is held with one more dollar, so no store reads it as a float`() {
         for (blocks in listOf(postgres, oracle, sqlite)) {
             assertContains(planText(blocks, mapOf("m" to mapOf("\$numberDouble" to "NaN"))), "\"m\":{\"\$\$numberDouble\":\"NaN\"}", message = "${blocks.store}")
