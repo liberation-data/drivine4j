@@ -341,8 +341,8 @@ class JdbcConnection(
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
         // Oracle's driver binds a double as a NUMBER, which holds no NaN or infinity, and refuses one: a BINARY_DOUBLE holds
         // them (#906). A finite double is still a NUMBER, as the stores' writes take it.
-        is Double, is Float -> if (type == DatabaseType.ORACLE && nonFinite(value)) {
-            statement.setObject(index, (value as Number).toDouble(), ORACLE_BINARY_DOUBLE)
+        is Double, is Float -> if (type == DatabaseType.ORACLE && !(value as Number).toDouble().isFinite()) {
+            statement.setObject(index, value.toDouble(), ORACLE_BINARY_DOUBLE)
         } else {
             statement.setObject(index, value)
         }
@@ -589,9 +589,6 @@ class JdbcConnection(
 
         /** Oracle's type code for a BINARY_DOUBLE, `oracle.jdbc.OracleTypes.BINARY_DOUBLE`: the driver isn't Drivine's to compile against. */
         const val ORACLE_BINARY_DOUBLE = 101
-
-        /** Whether [value] is a double or a float that is NaN or an infinity. */
-        fun nonFinite(value: Any?): Boolean = (value is Double && !value.isFinite()) || (value is Float && !value.isFinite())
 
         /** The setting [buildingIndex] turns to 0 where a build's session cannot be closed after it. */
         const val PARALLEL_WORKERS = "max_parallel_maintenance_workers"
