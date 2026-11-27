@@ -63,11 +63,14 @@ runs:
     # One entitlement, drivine.entitlements beside this file: com.apple.security.cs.disable-library-validation. SQLite's
     # driver (sqlite-jdbc) carries its native library in the binary, extracts it at run time and loads it, and that
     # copy is unsigned: under the hardened runtime, library validation refuses to load a library not signed by Apple or
-    # by the binary's own team, so without it every sqlite: address fails (#903). Signing the extracted copy isn't
-    # possible, and shipping the library signed beside the binary would make the download two files that must stay
-    # together. No JIT or dynamic-code entitlements (allow-jit, allow-unsigned-executable-memory and the like): the
-    # GraalVM native image is ahead-of-time compiled and needs none. Those belong to the Electron Studio app in a
-    # different repo and are deliberately kept out of here.
+    # by the binary's own team, so without it every sqlite: address fails (#903). The cost: the binary will load any
+    # library it opens by path unsigned, such as a copy swapped into the temp dir (DYLD_* injection stays blocked, as
+    # no allow-dyld-environment-variables is given). The extracted copy can't be signed at run time. Signing the
+    # library with this identity before native-image embeds it, in place of sqlite-jdbc's own, would need no
+    # entitlement but means repacking sqlite-jdbc's resource in the build; shipping it signed beside the binary would
+    # make the download two files that must stay together. No JIT or dynamic-code entitlements (allow-jit,
+    # allow-unsigned-executable-memory and the like): the GraalVM native image is ahead-of-time compiled and needs none.
+    # Those belong to the Electron Studio app in a different repo and are deliberately kept out of here.
     - name: Codesign the binary
       shell: bash
       run: |
