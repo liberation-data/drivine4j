@@ -91,7 +91,9 @@ class OracleConnectionIntegrationTest {
 
     @Test
     fun `one statement takes an infinity after a finite double and a whole number (#906)`() {
-        // Run with a NUMBER between two BINARY_DOUBLEs, one text failed the last, ORA-01426 (liberation-data/drivine-python#575).
+        // Through python-oracledb and node-oracledb, a NUMBER between two BINARY_DOUBLEs on one text failed the last,
+        // ORA-01426, which they keep apart with a comment (liberation-data/drivine-python#575). Oracle's JDBC driver doesn't:
+        // this pins that it needs none.
         val statement = "SELECT \$v AS \"v\" FROM dual WHERE 1 = 1"
         for (value in listOf<Any>(Double.POSITIVE_INFINITY, 2.5, 7L, Double.NEGATIVE_INFINITY)) {
             val read = pm.query(spec(statement, "v" to value)).single()
