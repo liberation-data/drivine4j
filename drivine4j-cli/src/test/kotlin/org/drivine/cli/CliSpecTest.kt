@@ -156,6 +156,33 @@ class CliSpecTest {
     }
 
     @Test
+    fun `a case with no step to run on the store runs no CLI, so its graph isn't written`() {
+        // The graph fails to write, and the case passes: on SQLite, its one step is Postgres's, and its other is skipped.
+        val spec = CypherSpec(
+            file = "t.yaml",
+            graph = "CREATE (:A",
+            cases = listOf(Case("c", steps = listOf(Step(cypher = "RETURN 1", only = listOf("postgres")), Step(cypher = "RETURN 2")))),
+        )
+        CliSpec("sqlite", "sqlite::memory:", clears = false).tests(spec, mapOf("c" to listOf(Hold("x#1", on = listOf("sqlite"), steps = listOf(2), skip = true)))).single().executable.execute()
+    }
+
+    @Test
+    fun `where it clears, a case's graph is written after the clear, and both their results are taken for the graph's part`() {
+        val spec = CypherSpec(file = "t.yaml", graph = "CREATE (:A {x: 1}), (:A {x: 2})", cases = listOf(Case("c", steps = listOf(Step(cypher = "MATCH (a:A) RETURN a.x ORDER BY a.x", rows = listOf(1L, 2L))))))
+        CliSpec("sqlite", "sqlite::memory:").tests(spec, emptyMap()).single().executable.execute()
+    }
+
+    @Test
+    fun `a held step the CLI fails passes its case, and one it passes fails the case to take the hold out`() {
+        val held = mapOf("c" to listOf(Hold("x#1", on = listOf("sqlite"), steps = listOf(2))))
+        fun test(second: String) = CliSpec("sqlite", "sqlite::memory:", clears = false)
+            .tests(spec(Step(cypher = "RETURN 1 AS a", rows = listOf(1L)), Step(cypher = second, rows = listOf(1L))), held).single()
+        test("RETURN nope(").executable.execute()
+        val passing = assertThrows<AssertionError> { test("RETURN 1 AS a").executable.execute() }
+        assert("step 2 (x#1) held on sqlite, and passing" in passing.message.orEmpty()) { passing.message.orEmpty() }
+    }
+
+    @Test
     fun `held adds the CLI's holds to the runner's, case by case`() {
         val queries = CypherSpec.load("queries.yaml")
         val held = CliSpec.held(queries)
