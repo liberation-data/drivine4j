@@ -72,15 +72,15 @@ class CliSpec(
 
         /** The case's steps on [store], each with its part of the one run that ran them all. */
         private fun run(case: Case): List<Part> {
-            val steps = runnable(case)
+            val steps = runnable(case, held(spec)[case.name].orEmpty(), store)
             val script = buildString {
-                if (clears) statement("MATCH (n) DETACH DELETE n")
-                spec.graph?.let { statement(it) }
+                if (clears) append(statement("MATCH (n) DETACH DELETE n"))
+                spec.graph?.let { append(statement(it)) }
                 marker(0)
                 steps.forEachIndexed { i, step ->
                     appendLine(":params clear")
                     CypherSpec.expanded(step.parameters).forEach { (name, value) -> appendLine(":param ${escaped(name)} => ${literal(value)}") }
-                    statement(step.cypher)
+                    append(statement(step.cypher))
                     marker(i + 1)
                 }
             }
@@ -101,20 +101,6 @@ class CliSpec(
             } finally {
                 dir.deleteRecursively()
             }
-        }
-
-        /** The steps the runner runs on [store], in order: up to a step skipped there, which ends the case on it. */
-        private fun runnable(case: Case): List<Step> {
-            val holds = held(spec)[case.name].orEmpty().filter { it.skip && Step(cypher = "", only = it.on).runsOn(store) }
-            return case.steps.withIndex()
-                .takeWhile { (i, _) -> holds.none { it.steps == null || i + 1 in it.steps } }
-                .map { it.value }
-                .filter { it.runsOn(store) }
-        }
-
-        private fun StringBuilder.statement(cypher: String) {
-            append(cypher.trimIndent().trimEnd().removeSuffix(";"))
-            appendLine(";")
         }
 
         private fun StringBuilder.marker(n: Int) {
@@ -162,10 +148,30 @@ class CliSpec(
         private const val EMPTY_KEY = "liberation-data/drivine-cypher-spec#438"
 
         /** The holds of [spec]'s steps: the runner's own, and those of the CLI's ([HELD_HERE]). */
-        private fun held(spec: CypherSpec): Map<String, List<CypherSpec.Hold>> {
+        internal fun held(spec: CypherSpec): Map<String, List<CypherSpec.Hold>> {
             val here = HELD_HERE[spec.file].orEmpty()
             return (spec.held().keys + here.keys).associateWith { spec.held()[it].orEmpty() + here[it].orEmpty() }
         }
+
+        /**
+         * The steps of [case] the runner runs on [store], in order, as CypherSpec.tests runs them: those that run there, up
+         * to one that [holds] skip there, which ends the case on it. A skip of a step that doesn't run on [store] ends
+         * nothing, as the runner passes that step over before it reads its holds.
+         */
+        internal fun runnable(case: Case, holds: List<CypherSpec.Hold>, store: String): List<Step> {
+            val skips = holds.filter { it.skip && Step(cypher = "", only = it.on).runsOn(store) }
+            return case.steps.withIndex()
+                .filter { (_, step) -> step.runsOn(store) }
+                .takeWhile { (i, _) -> skips.none { it.steps == null || i + 1 in it.steps } }
+                .map { it.value }
+        }
+
+        /**
+         * [cypher] as a statement of the run's script, its indent trimmed as the root module's runners trim it, and a `;`
+         * it ends with dropped, ended by a `;` on a line of its own, so that a statement whose last line is a `//` comment doesn't take the `;`, and the marker after it, into
+         * the comment.
+         */
+        fun statement(cypher: String): String = cypher.trimIndent().trimEnd().removeSuffix(";") + "\n;\n"
 
         /** The marker's name, a command the CLI doesn't know and the column of its `RETURN`. */
         private const val MARKER = "drivinespecstep"
@@ -203,9 +209,11 @@ class CliSpec(
          */
         fun value(value: Any?, typed: Boolean): Any? = when (value) {
             is Map<*, *> -> {
-                val read = value.mapValues { (_, it) -> value(it, typed) }
+                val read by lazy { value.mapValues { (_, it) -> value(it, typed) } }
                 when {
-                    value.keys == setOf("\$t", "v") && value["\$t"] == "map" -> if (typed) mapOf("\$map" to read["v"]) else read["v"]
+                    // The user's own map, its entries read and not itself: its `$t` names no kind.
+                    value.keys == setOf("\$t", "v") && value["\$t"] == "map" ->
+                        (value["v"] as Map<*, *>).mapValues { (_, it) -> value(it, typed) }.let { if (typed) mapOf("\$map" to it) else it }
                     value["\$t"] == "path" && typed -> read - "forward"
                     (value["\$t"] == "node" || value["\$t"] == "relationship") && !typed -> read["properties"]
                     else -> CypherSpec.expanded<Any?>(read)
@@ -218,7 +226,8 @@ class CliSpec(
         /** [value], a spec parameter, as a Cypher literal for `:param`: NaN and the infinities as a division that gives them. */
         fun literal(value: Any?): String = when (value) {
             null -> "null"
-            is String -> "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            // A line break escaped too, as `:param` is a command of one line.
+            is String -> "'" + value.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r") + "'"
             is Boolean, is Long, is Int -> value.toString()
             is Double -> when {
                 value.isNaN() -> "0.0 / 0.0"

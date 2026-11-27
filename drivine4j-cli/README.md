@@ -156,10 +156,13 @@ that each connection opens. It's deleted when the run ends, by Ctrl-C or `kill` 
 
 `./gradlew :drivine4j-cli:test` runs the CLI in process on SQLite in memory, with no container, the contract's
 cases (`src/test/resources/cli/cli.yaml`, the spec's `cli/cli.yaml`, which `scripts/sync-cypher-spec.sh` copies at the
-tag `src/test/resources/cypher/VERSION` names) that this build can run, and the Cypher spec's `queries.yaml`,
-`writes.yaml`, `temporal.yaml` and `results.yaml` through the CLI with `--format json` (`CliSpec.kt`), one run of the
-CLI a case, so each step gives the rows or the failure the spec says, with the root module's holds. The tests against the other stores start containers and are opt-in: `CLI_STORE_TESTS=true` runs them on Neo4j,
-Memgraph, FalkorDB and Postgres, and `ORACLE_TESTS=true` with it on Oracle. One store's:
+tag the root module's `src/test/resources/cypher/VERSION` names) that this build can run, and the Cypher spec's
+`queries.yaml`, `writes.yaml`, `temporal.yaml` and `results.yaml` through the CLI with `--format json` (`CliSpec.kt`),
+one run of the CLI a case, so each step gives the rows or the failure the spec says, with the root module's holds and
+the CLI's own (`HELD_HERE`). The tests against the other stores start containers and are opt-in: `CLI_STORE_TESTS=true`
+runs them on Neo4j, Memgraph, FalkorDB and Postgres, and `ORACLE_TESTS=true` with it on Oracle. The Cypher spec's
+cases run on Neo4j, Postgres, Oracle and SQLite, the stores the root module runs them on, and not on Memgraph or
+FalkorDB, which it holds to no spec. One store's:
 
 ```
 CLI_STORE_TESTS=true ./gradlew :drivine4j-cli:test --tests 'org.drivine.cli.CliPostgresTest'
