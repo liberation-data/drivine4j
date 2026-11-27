@@ -2,7 +2,8 @@
 # against that binary on each store: drivine4j-cli's tests run it as a process when DRIVINE_CLI_BINARY names it (see
 # drivine4j-cli/README.md). Apart from ci.yml, so a GraalVM problem can't block a pull request's CI. On a pull request
 # that changes the CLI, the core it runs, the Cypher spec it runs, or the build; each night; by hand; and from
-# release.yml, whose macOS CLI waits on it, so a release attaches no binary that fails these (#707). The trace job,
+# release.yml, whose macOS CLI waits on it, so a release attaches no CLI from a commit whose binary fails these (#707):
+# the linux binary is the one tested, not the macOS one attached. The trace job,
 # which records the binary's reachability metadata, runs by hand, on a pull request labelled cli-trace, and on one whose
 # title holds [cli-trace], and never from a release.
 name: CLI native

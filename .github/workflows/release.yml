@@ -372,8 +372,9 @@ jobs:
 
   # The CLI built as a native binary, and its tests run against that binary on every store, the Cypher spec's cases
   # among them, as cli-native.yml runs them on a pull request: the macOS CLI below waits on it, so a release attaches no
-  # binary that fails them (#707). Beside the gate and the build, not before them: the libraries' release doesn't wait
-  # on the CLI's. Skipped, as trust is, on a push that releases nothing.
+  # CLI from a commit whose binary fails them (#707). The binary tested is the linux one; the macOS one isn't. Beside
+  # the gate and the build, not before them: the libraries' release doesn't wait on the CLI's. Skipped, as trust is, on
+  # a push that releases nothing.
   cli-native:
     needs: check
     if: needs.check.outputs.publish == 'true' || github.event_name != 'push'
@@ -389,7 +390,8 @@ jobs:
   # it is called here because a release created with GITHUB_TOKEN fires no `release` event, so its own release
   # trigger never sees these. Its signing job reads the Apple secrets from the `apple-signing` environment, which
   # allows main and v* tags: the refs a release runs on. A failure here, or of cli-native, leaves the release published
-  # without the macOS zip; re-run this job to attach it, once cli-native passes.
+  # without the macOS zip; re-run the failed jobs to attach it: that re-runs cli-native's failed jobs, then this one.
+  # Re-running this job alone, while cli-native has failed, skips it again.
   #
   # `secrets: inherit` is needed even though the secrets are the environment's: without it the called job gets the
   # environment (its deployment is recorded) but every secret reads empty, and its first step fails (#885).
