@@ -3,15 +3,25 @@ package org.drivine.schema
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphProperty
+import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.RelationshipFragment
+import org.drivine.annotation.Root
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
+import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.NodeRef
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
+import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -34,6 +44,43 @@ data class InvoiceFixture(
 @NodeFragment(labels = ["Note"])
 data class NoteWithoutIdFixture(
     val text: String,
+)
+
+@GraphView
+data class OrderInvoicesFixture(
+    @Root val order: OrderFixture,
+    @GraphRelationship(type = "BILLED_AS", direction = Direction.OUTGOING)
+    val invoices: List<InvoiceFixture> = emptyList(),
+)
+
+@NodeFragment(labels = ["Customer"])
+data class CustomerFixture(
+    @NodeId
+    val id: String,
+)
+
+/** A view nested in itself. */
+@GraphView
+data class OrderChainFixture(
+    @Root val order: OrderFixture,
+    @GraphRelationship(type = "FOLLOWS", direction = Direction.OUTGOING)
+    val previous: OrderChainFixture? = null,
+)
+
+@RelationshipFragment
+data class BilledFixture(
+    val on: String,
+    val invoice: InvoiceFixture,
+)
+
+/** A view whose relationships reach a nested view, nested in itself, and a relationship fragment's target. */
+@GraphView
+data class CustomerOrdersFixture(
+    @Root val customer: CustomerFixture,
+    @GraphRelationship(type = "PLACED", direction = Direction.OUTGOING)
+    val orders: List<OrderChainFixture> = emptyList(),
+    @GraphRelationship(type = "BILLED", direction = Direction.OUTGOING)
+    val billed: List<BilledFixture> = emptyList(),
 )
 
 /** The warning of a fragment whose `@NodeId` no index serves (#828): once per fragment and database, and never in a save. */
@@ -297,4 +344,198 @@ class NodeIdIndexCheckTest {
         NodeIdIndexCheck.listed("default", emptyList())
         assertEquals(emptyList(), warnings())
     }
+
+    /** A fragment used on a database no catalog names it on is checked there all the same: its saves scan the label there (#858). */
+    @Test
+    fun `a fragment used on a database is checked there, whether it was used before the listing or after it`() {
+        NodeIdIndexCheck.managed()
+        // Order is catalogued for a alone, but is used on b, and later on c.
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "b" to emptySet(), "c" to emptySet()))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.used("b", OrderFixture::class.java)
+        NodeIdIndexCheck.listed("a", emptyList())
+        NodeIdIndexCheck.listed("b", emptyList())
+        NodeIdIndexCheck.listed("c", emptyList())
+        assertEquals(listOf(orderWarning + on("a"), orderWarning + on("b")), warnings(), "not on c, where it isn't used yet")
+        NodeIdIndexCheck.used("c", OrderFixture::class.java)
+        NodeIdIndexCheck.used("c", OrderFixture::class.java)
+        NodeIdIndexCheck.used("b", OrderFixture::class.java)
+        assertEquals(listOf(orderWarning + on("a"), orderWarning + on("b"), orderWarning + on("c")), warnings(), "once per database")
+    }
+
+    @Test
+    fun `a fragment used on a database where an index serves its id is not warned of there`() {
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "b" to emptySet()))
+        NodeIdIndexCheck.listed("b", listOf(range("Purchase", "id")))
+        NodeIdIndexCheck.used("b", OrderFixture::class.java)
+        NodeIdIndexCheck.used("unlisted", OrderFixture::class.java)
+        assertEquals(emptyList(), warnings(), "served under its other label on b; nothing is known of a database no enforce listed")
+    }
+
+    @Test
+    fun `a view used on a database has its root and the fragments of its relationships checked there`() {
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order", "Invoice"), "b" to emptySet()))
+        NodeIdIndexCheck.listed("b", emptyList())
+        NodeIdIndexCheck.used("b", OrderInvoicesFixture::class.java)
+        assertEquals(listOf(orderWarning + on("b")), warnings().filter { it.contains("OrderFixture") })
+        assertEquals(1, warnings().count { it.contains("InvoiceFixture") && it.endsWith(on("b")) })
+    }
+
+    @Test
+    fun `a view's nested views, one nested in itself, and a relationship fragment's target are checked where the view is used`() {
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order", "Invoice", "Customer"), "b" to emptySet()))
+        NodeIdIndexCheck.listed("b", emptyList())
+        NodeIdIndexCheck.used("b", CustomerOrdersFixture::class.java)
+        assertEquals(
+            listOf(1, 1, 1),
+            listOf("CustomerFixture", "OrderFixture", "InvoiceFixture").map { fragment -> warnings().count { it.contains("of $fragment ") && it.endsWith(on("b")) } },
+            "${warnings()}",
+        )
+    }
+
+    @Test
+    fun `a reset forgets where a fragment was used`() {
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "b" to emptySet()))
+        NodeIdIndexCheck.used("b", OrderFixture::class.java)
+        NodeIdIndexCheck.reset()
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "b" to emptySet()))
+        FragmentModel.from(OrderFixture::class.java)
+        NodeIdIndexCheck.listed("b", emptyList())
+        assertEquals(emptyList(), warnings())
+        NodeIdIndexCheck.used("b", OrderFixture::class.java)
+        assertEquals(listOf(orderWarning + on("b")), warnings(), "used again after the reset, it is checked again")
+    }
+
+    /** A manager's operation tells the check its database, by the name it is registered under (#858, #886). */
+    @Test
+    fun `a load through the default manager is a use on the database it is registered as`() {
+        val provider = object : ConnectionProvider {
+            override val name = "neo"
+            override val type = DatabaseType.NEO4J
+            override val subtypeRegistry = null
+            override fun connect(): Connection = throw UnsupportedOperationException("no store in this test")
+            override fun end() = Unit
+        }
+        val objects = StatelessGraphObjectManager(
+            NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J, SubtypeRegistry()),
+            Neo4jObjectMapper.instance,
+            SubtypeRegistry(),
+        )
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "neo" to emptySet()))
+        NodeIdIndexCheck.listed("neo", emptyList())
+        runCatching { objects.load("o1", OrderFixture::class.java) }
+        assertEquals(listOf(orderWarning + on("neo")), warnings())
+    }
+
+    /** Each operation of a manager, and of a stateless one beside it, tells the check of the class it uses (#858). */
+    @Test
+    fun `each operation of a manager is a use on its database`() {
+        val provider = object : ConnectionProvider {
+            override val name = "neo"
+            override val type = DatabaseType.NEO4J
+            override val subtypeRegistry = null
+            override fun connect(): Connection = throw UnsupportedOperationException("no store in this test")
+            override fun end() = Unit
+        }
+        val persistence = NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J, SubtypeRegistry())
+        val managed = GraphObjectManager(persistence, SessionManager(Neo4jObjectMapper.instance), Neo4jObjectMapper.instance, SubtypeRegistry())
+        val stateless = StatelessGraphObjectManager(persistence, Neo4jObjectMapper.instance, SubtypeRegistry())
+        val order = OrderFixture("o1")
+        val operations: List<Pair<String, () -> Any?>> = listOf(
+            "loadAll" to { managed.loadAll(OrderFixture::class.java) },
+            "loadAll where" to { managed.loadAll(OrderFixture::class.java, "true") },
+            "count" to { managed.count(OrderFixture::class.java) },
+            "count where" to { managed.count(OrderFixture::class.java, "true") },
+            "load" to { managed.load("o1", OrderFixture::class.java) },
+            "delete" to { managed.delete("o1", OrderFixture::class.java) },
+            "deleteAll" to { managed.deleteAll(OrderFixture::class.java) },
+            "save" to { managed.save(order) },
+            "saveAll" to { managed.saveAll(listOf(order)) },
+            "stateless save" to { stateless.save(order) },
+            "stateless create" to { stateless.create(order) },
+            "stateless saveAll" to { stateless.saveAll(listOf(order)) },
+            "stateless patchAll" to { stateless.patchAllFields(listOf(order), only = setOf("id")) },
+            "stateless patch" to { stateless.patch("o1", OrderFixture::class.java, Unit) {} },
+        )
+        val missed = operations.filter { (_, operation) ->
+            NodeIdIndexCheck.reset()
+            appender.list.clear()
+            NodeIdIndexCheck.managed()
+            NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order"), "neo" to emptySet()))
+            NodeIdIndexCheck.listed("neo", emptyList())
+            runCatching { operation() }
+            warnings() != listOf(orderWarning + on("neo"))
+        }.map { it.first }
+        assertEquals(emptyList(), missed, "operations that told the check nothing")
+    }
+
+    /** A relationship between nodes matched by id, and a grouped read, use the fragments they name (#858). */
+    @Test
+    fun `an edge's nodes and a grouped read are uses on the database they run on`() {
+        val provider = object : ConnectionProvider {
+            override val name = "neo"
+            override val type = DatabaseType.NEO4J
+            override val subtypeRegistry = null
+            override fun connect(): Connection = throw UnsupportedOperationException("no store in this test")
+            override fun end() = Unit
+        }
+        val objects = StatelessGraphObjectManager(
+            NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J, SubtypeRegistry()),
+            Neo4jObjectMapper.instance,
+            SubtypeRegistry(),
+        )
+        NodeIdIndexCheck.managed()
+        NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order", "Invoice", "Customer"), "neo" to emptySet()))
+        NodeIdIndexCheck.listed("neo", emptyList())
+        runCatching { objects.edges.relate(NodeRef(OrderFixture::class.java, "o1"), NodeRef(InvoiceFixture::class.java, "i1"), "BILLED_AS") }
+        runCatching { objects.groups.countBy(CustomerFixture::class.java, "id") }
+        assertEquals(
+            listOf(1, 1, 1),
+            listOf("OrderFixture", "InvoiceFixture", "CustomerFixture").map { fragment -> warnings().count { it.contains("of $fragment ") && it.endsWith(on("neo")) } },
+            "${warnings()}",
+        )
+    }
+
+    /** Each edge operation tells the check of the nodes it names, and a related read of its target too (#858). */
+    @Test
+    fun `each edge operation is a use of the fragments it names`() {
+        val provider = object : ConnectionProvider {
+            override val name = "neo"
+            override val type = DatabaseType.NEO4J
+            override val subtypeRegistry = null
+            override fun connect(): Connection = throw UnsupportedOperationException("no store in this test")
+            override fun end() = Unit
+        }
+        val objects = StatelessGraphObjectManager(
+            NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J, SubtypeRegistry()),
+            Neo4jObjectMapper.instance,
+            SubtypeRegistry(),
+        )
+        val order = NodeRef(OrderFixture::class.java, "o1")
+        val invoice = NodeRef(InvoiceFixture::class.java, "i1")
+        val operations: List<Triple<String, List<String>, () -> Any?>> = listOf(
+            Triple("unrelate", listOf("OrderFixture", "InvoiceFixture")) { objects.edges.unrelate(order, invoice, "BILLED_AS") },
+            Triple("unrelateAll", listOf("OrderFixture")) { objects.edges.unrelateAll(order, "BILLED_AS") },
+            Triple("loadRelated", listOf("OrderFixture", "InvoiceFixture")) {
+                objects.edges.loadRelated(order, "BILLED_AS", Direction.OUTGOING, InvoiceFixture::class.java)
+            },
+        )
+        val missed = operations.filter { (_, fragments, operation) ->
+            NodeIdIndexCheck.reset()
+            appender.list.clear()
+            NodeIdIndexCheck.managed()
+            NodeIdIndexCheck.catalogued(mapOf("a" to setOf("Order", "Invoice"), "neo" to emptySet()))
+            NodeIdIndexCheck.listed("neo", emptyList())
+            runCatching { operation() }
+            warnings().map { warning -> fragments.firstOrNull { warning.contains("of $it ") && warning.endsWith(on("neo")) } } != fragments
+        }.map { it.first }
+        assertEquals(emptyList(), missed, "edge operations that told the check otherwise")
+    }
+
 }

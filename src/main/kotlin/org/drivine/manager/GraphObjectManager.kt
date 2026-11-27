@@ -23,6 +23,7 @@ import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.NodeIdIndexCheck
 import org.drivine.session.SessionManager
 import org.drivine.store.StoreIdentity
 import org.drivine.query.Statement
@@ -124,6 +125,17 @@ class GraphObjectManager internal constructor(
      */
     fun clearSession() = sessionManager.clear()
 
+    /**
+     * The name [NodeIdIndexCheck] knows this manager's database by: the one it is registered under, which an enforce lists,
+     * as its [org.drivine.schema.IndexManager] has it (#886). Null where it can't be told: nothing is checked.
+     */
+    private val checkedAs: String? by lazy { runCatching { persistenceManager.indexes.database ?: database }.getOrNull() }
+
+    /** [graphClass] is used through this manager: [NodeIdIndexCheck] checks the fragments it reads and writes on this database (#858). */
+    internal fun used(graphClass: Class<*>) {
+        checkedAs?.let { NodeIdIndexCheck.used(it, graphClass) }
+    }
+
     private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes, persistenceManager.constraints)
 
     /**
@@ -137,6 +149,7 @@ class GraphObjectManager internal constructor(
     override var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
     override fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
+        used(graphClass)
         // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -146,6 +159,7 @@ class GraphObjectManager internal constructor(
     }
 
     override fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
+        used(graphClass)
         // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -154,17 +168,22 @@ class GraphObjectManager internal constructor(
         return results
     }
 
-    override fun <T : Any> count(graphClass: Class<T>): Long =
-        persistenceManager.getOne(backend.count(graphClass).spec().transform(Long::class.java))
+    override fun <T : Any> count(graphClass: Class<T>): Long {
+        used(graphClass)
+        return persistenceManager.getOne(backend.count(graphClass).spec().transform(Long::class.java))
+    }
 
-    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long =
-        persistenceManager.getOne(backend.count(graphClass, whereClause).spec().transform(Long::class.java))
+    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
+        used(graphClass)
+        return persistenceManager.getOne(backend.count(graphClass, whereClause).spec().transform(Long::class.java))
+    }
 
     override fun <T : Any, Q : Any> count(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): Long {
+        used(graphClass)
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
         return persistenceManager.getOne(backend.count(graphClass, querySpec).spec().transform(Long::class.java))
@@ -251,6 +270,7 @@ class GraphObjectManager internal constructor(
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
     ): List<T> {
+        used(graphClass)
         // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -266,6 +286,7 @@ class GraphObjectManager internal constructor(
     }
 
     override fun <T : Any> load(id: String, graphClass: Class<T>): T? {
+        used(graphClass)
         // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -334,6 +355,7 @@ class GraphObjectManager internal constructor(
         searchK: Int?,
     ): Map<String, List<Scored<String>>> {
         requireValidSearchK(topK, searchK)
+        used(graphClass)
         val set = ids.distinct()
         // The module reads each id's place among them: for each pair once, and to break a tie of two scores (#868, #412).
         val ordered = AmongOrder.of(graphClass, set, objectMapper)
@@ -435,6 +457,7 @@ class GraphObjectManager internal constructor(
         graphClass: Class<T>,
         plan: ScoredSearchPlan,
     ): List<Scored<T>> {
+        used(graphClass)
         autoRegisterSubtypesIfNeeded(graphClass)
 
         val rows = persistenceManager.query(
@@ -566,6 +589,7 @@ class GraphObjectManager internal constructor(
     }
 
     override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
+        used(graphClass)
         validateCascadeSupport(cascade)
         if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) refuseCascadeBelowDepth(id, graphClass, whereClause)
         return deleted(backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java))
@@ -583,14 +607,17 @@ class GraphObjectManager internal constructor(
         return deleteAll(graphClass, null as String?)
     }
 
-    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int =
-        deleted(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
+    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
+        used(graphClass)
+        return deleted(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
+    }
 
     override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
     ): Int {
+        used(graphClass)
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
         return deleted(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
@@ -625,6 +652,7 @@ class GraphObjectManager internal constructor(
         requireCypher()
         validateCascadeSupport(cascade)
         val graphClass = obj.javaClass
+        used(graphClass)
 
         val mergeBuilder = GraphObjectMergeBuilder.forClass(
             graphClass,
@@ -685,6 +713,7 @@ class GraphObjectManager internal constructor(
         validateCascadeSupport(cascade)
         val items = objs.toList()
         if (items.isEmpty()) return emptyList()
+        items.map { it.javaClass }.distinct().forEach(::used)
 
         // Statement building lives in BatchSaveOperations; the manager owns execution + snapshotting.
         persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade, nullPolicy))

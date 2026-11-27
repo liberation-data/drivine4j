@@ -65,6 +65,7 @@ class GroupOperations internal constructor(
      */
     @JvmSynthetic // Java has the overload below: a Java lambda would fit both, and name neither.
     fun <T : Any, Q : Any, R> load(graphClass: Class<T>, queryObject: Q, spec: GroupQuerySpec<Q>.() -> GroupRows<R>): List<R> {
+        manager.used(graphClass)
         val query = GroupQuerySpec(queryObject)
         val rows = query.spec()
         query.closed = true

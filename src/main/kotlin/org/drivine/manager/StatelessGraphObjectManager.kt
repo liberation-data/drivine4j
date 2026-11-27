@@ -157,6 +157,7 @@ class StatelessGraphObjectManager private constructor(
     ): T {
         // Everything is validated before anything is written: the arguments, that the object is a copy
         // of what it was loaded from, and that it can be handed its stamps.
+        objects.used(obj.javaClass)
         val fields = writeFields(obj, only, except)
         val (saved, asLoaded) = from?.let { loadedAs(obj, it) } ?: (obj to null)
         val statement = statementFor(saved, relationships, nullPolicy, fields, checked = true, asLoaded)
@@ -246,6 +247,7 @@ class StatelessGraphObjectManager private constructor(
             Save it, or update it. To make the node anew, give the object without its stamp.
             """.trimIndent()
         }
+        objects.used(obj.javaClass)
         val statement = backend.save(SaveRequest.absent(obj))
         requireStampable(obj, statement)
         return try {
@@ -363,6 +365,7 @@ class StatelessGraphObjectManager private constructor(
         // The names are checked against each class of the batch once, before anything is written.
         val fields: Map<Class<*>, Set<String>?> = items.map { it.javaClass }.distinct().associateWith { batchWriteFields(it, only, except) }
         if (items.isEmpty()) return emptyList()
+        fields.keys.forEach(objects::used)
         val views = items.filter { it.javaClass.isAnnotationPresent(GraphView::class.java) }
         // In lock order, so that two batches over the same nodes take their locks in the same order.
         val fragments = items.withIndex().filterNot { it.value.javaClass.isAnnotationPresent(GraphView::class.java) }
@@ -538,6 +541,7 @@ class StatelessGraphObjectManager private constructor(
         require(classes.size == 1) {
             "A patch writes nodes of one class, and these are of ${classes.joinToString { it.simpleName }}. Patch each class by a call of its own."
         }
+        objects.used(classes.single())
         val model = rootModel(classes.single())
         val idField = requireNotNull(model.nodeIdField) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
         // In the order the class declares them, so one patch is one text however its fields were named.
@@ -606,6 +610,7 @@ class StatelessGraphObjectManager private constructor(
      */
     @JvmSynthetic // Java has the overload below: with both in its sight, a lambda with no type given fits either.
     fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: PatchSpec<Q>.() -> Unit): PatchResult {
+        objects.used(graphClass)
         val patch = PatchSpec(queryObject).apply(spec)
         val values = PatchedValues(graphClass, objectMapper).of(patch.writes)
         // The id as a save stores it: a value class is its value, and a UUID its text.
