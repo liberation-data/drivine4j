@@ -386,6 +386,32 @@ jobs:
     with:
       release: true
 
+  # Attach the linux x64 CLI to the release: the binary cli-native built and tested on every store, in a tar.gz that
+  # keeps its file mode, with its SHA-256 beside it, which drivine.org/install.sh checks the download against (#711).
+  # A job of its own, so the token that may write to the repo never shares a job with the build. A failure of
+  # cli-native skips it, as it does the macOS CLI's; re-running the release's failed jobs runs it again.
+  linux-cli:
+    needs: [check, github-release, cli-native]
+    if: ${{ !cancelled() && needs.github-release.result == 'success' && needs.cli-native.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: drivine-linux-x64
+          path: ${{ runner.temp }}/drivine
+      # An artifact keeps no file mode, so the binary is made executable before it is packed.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          chmod +x "$RUNNER_TEMP/drivine/drivine"
+          tar -czf drivine-linux-x64.tar.gz -C "$RUNNER_TEMP/drivine" drivine
+          sha256sum drivine-linux-x64.tar.gz > drivine-linux-x64.tar.gz.sha256
+          gh release upload "$TAG" drivine-linux-x64.tar.gz drivine-linux-x64.tar.gz.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+
   # Sign and notarize the macOS CLI for this release, and attach the zip to it. cli-macos-signed.yml does the work;
   # it is called here because a release created with GITHUB_TOKEN fires no `release` event, so its own release
   # trigger never sees these. Its signing job reads the Apple secrets from the `apple-signing` environment, which

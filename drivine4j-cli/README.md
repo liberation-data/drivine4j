@@ -38,6 +38,9 @@ by hand, and in each release and release dry run (`release.yml`, whose macOS CLI
 a GraalVM problem doesn't block a pull request's CI. `.github/workflows/cli-macos-signed.yml` builds it on macOS
 (Apple silicon), signs and notarizes it, and runs the tests below on SQLite against the signed binary, which a release
 attaches only when they pass; it runs by hand and from a release, as signing needs secrets only main and tags reach.
+A release attaches both, `drivine-linux-x64.tar.gz` and `drivine-macos-arm64.zip`, each with its `.sha256` (see
+RELEASING.md). Both are built with `-march=compatibility`, so they run on any machine of their arch, and the linux
+build's summary says the oldest glibc its binary runs on.
 
 ### Refreshing the reachability metadata
 

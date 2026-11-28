@@ -97,6 +97,8 @@ jobs:
             echo
             echo "- Size: $bytes bytes ($(du -h "$binary" | cut -f1))"
             echo "- \`drivine --version\` took $(cat time.txt)"
+            # The release attaches this binary (release.yml's linux-cli), which runs on a glibc at least this one.
+            echo "- Needs glibc $(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2) or later"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run one statement with the binary

@@ -73,12 +73,16 @@ git push origin vX.Y.Z
   tag made this way starts no workflow, so it doesn't release again.
 - **`cli-native`** calls `cli-native.yml`, beside `trust`, `gate` and `build`, and is skipped, as `trust` is, on a push
   that releases nothing: it builds the `drivine` CLI as a native binary on linux and runs the CLI's tests against it
-  on every store. Nothing published to Maven Central waits on it; `macos-cli` does.
+  on every store. Nothing published to Maven Central waits on it; `linux-cli` and `macos-cli` do.
+- **`linux-cli`** attaches that linux binary to the release as `drivine-linux-x64.tar.gz`, once `cli-native` passed.
 - **`macos-cli`** then calls `cli-macos-signed.yml`, which builds the `drivine` CLI for macOS (Apple silicon), signs it
   with the Developer ID certificate, notarizes it, runs the CLI's tests on SQLite against the signed binary on macOS,
   and attaches `drivine-macos-arm64.zip` to the release only when they pass. It runs only when `cli-native` passed.
-  If either fails, the release stays published without the zip: re-run the failed jobs to attach it. A real failure
-  of the binary's tests, the linux one's or the signed macOS one's, needs a new release to fix.
+  If either fails, the release stays published without the binaries: re-run the failed jobs to attach them. A real
+  failure of the binary's tests, the linux one's or the signed macOS one's, needs a new release to fix.
+
+Each binary is attached with its SHA-256 beside it, `<asset>.sha256` as `sha256sum` writes it, which
+drivine.org's `install.sh` checks a download against.
 
 A tag that fails `check` publishes nothing. Delete it (`git push origin :refs/tags/vX.Y.Z`), fix what the message
 says, and tag again. A tag pushed by hand for a version that merging has already released fails in `build`, as the
