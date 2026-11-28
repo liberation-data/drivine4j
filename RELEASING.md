@@ -119,8 +119,8 @@ own run, when the pull request is up to date with its base.
   or the CI run `trust` found on this tree, ran the tests). Every module's publication is staged and signed, as nmcp
   stages it, and zipped into the one bundle nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
-  verifies, and its pom names the version and no `org.drivine` module the release doesn't publish (a user's JBang or
-  Maven would fail to resolve it). `build` also fails a release whose version Maven Central already has, and
+  verifies, and its pom names the version and no `org.drivine:drivine4j…` module the release doesn't publish (a user's
+  JBang or Maven would fail to resolve it). `build` also fails a release whose version Maven Central already has, and
   only warns when Maven Central can't be asked (the portal rejects a duplicate anyway). Before any of it, `check`
   validates `gradle/wrapper/gradle-wrapper.jar` against Gradle's released checksums, since `publish` runs `./gradlew`
   with the release secrets.
