@@ -13,8 +13,23 @@ and `table`'s `--sample-rows` and `--wrap` come later.
 ./gradlew :drivine4j-cli:installDist
 ```
 
-That gives `drivine4j-cli/build/install/drivine/bin/drivine`, a script that runs the CLI on a JDK 21 or later. The
-module isn't published.
+That gives `drivine4j-cli/build/install/drivine/bin/drivine`, a script that runs the CLI on a JDK 21 or later.
+
+### On a JVM, with JBang
+
+Each release publishes the module's jar to Maven Central, `org.drivine:drivine4j-cli`, with `Main-Class` in its
+manifest, and `jbang-catalog.json`, at the repository's root, gives it an alias. On any OS and arch, with only
+[JBang](https://www.jbang.dev) installed (it fetches a JDK 21 if there's none), that runs the release's CLI:
+
+```
+jbang drivine@liberation-data/drivine4j -a sqlite::memory: 'RETURN 1'
+```
+
+The alias's version is the release's: Prepare release moves it with `build.gradle`'s (`scripts/release_version.py`),
+and `JbangCatalogTest` checks it is this build's, on the module's JDK with the options `installDist`'s script has. The
+published POM leaves out of drivine4j's dependencies what the CLI's runtime classpath leaves out (Testcontainers and
+what it brings), so JBang doesn't fetch them. `cli-native.yml`'s `jbang` job runs the alias against the jar published
+to Maven local, from the POMs a release would publish.
 
 ### The native binary
 

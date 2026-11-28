@@ -367,6 +367,7 @@ nmcp {
 		project(':drivine4j-codegen')
 		project(':drivine4j-codegen-java')
 		project(':drivine4j-codegen-model')
+		project(':drivine4j-cli')
 		project(':drivine4j-coroutines')
 		project(':drivine4j-spring')
 		project(':drivine4j-spring-boot-starter')

@@ -100,7 +100,7 @@ own run, when the pull request is up to date with its base.
   sample's model file, `drivine4j-sample/.drivine/model.json` (the code generator stamps it with the version it was
   built at, and CI fails when the committed file isn't what the build writes), and the install snippets in
   `README.md`, `docs/03-installation.md` and `docs/07-core-features.md`, Gradle's `org.drivine:drivine4j…:X.Y.Z`
-  and Maven's `<version>` in a `drivine4j` dependency. The
+  and Maven's `<version>` in a `drivine4j` dependency, and the CLI jar that `jbang-catalog.json`'s alias runs. The
   script's `REFERENCES` lists each file, with a pattern anchored on drivine4j's own coordinates and how many times it
   is found; Prepare release fails, changing nothing, when one is missing or a count is off, so a moved file or a
   reworded snippet is noticed. A snippet added, moved or reworded changes the list with it, and its test, run in CI,
@@ -110,15 +110,17 @@ own run, when the pull request is up to date with its base.
   `gradle/cypher-compiler.properties` pins, so the build job fails a release while that is a commit's build
   (`0.0.0-<commit>`, which CI publishes into `.compiler-repo` and no user could resolve). Pin a version Maven Central
   has first. A dry run goes on, building the pinned commit.
-- **Modules:** seven are published, all under `org.drivine`: `drivine4j`, `drivine4j-codegen`,
-  `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
-  `drivine4j-spring-boot-starter`. `drivine4j-sample` is not. A new published module is added to `MODULES` in
+- **Modules:** eight are published, all under `org.drivine`: `drivine4j`, `drivine4j-cli` (the `drivine` CLI's jar,
+  which JBang runs: `jbang drivine@liberation-data/drivine4j`), `drivine4j-codegen`, `drivine4j-codegen-java`,
+  `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and `drivine4j-spring-boot-starter`.
+  `drivine4j-sample` is not. A new published module is added to `MODULES` in
   `release.yml` and to `publishAggregation` in the root `build.gradle`, or `build` fails.
 - **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate,
   or the CI run `trust` found on this tree, ran the tests). Every module's publication is staged and signed, as nmcp
   stages it, and zipped into the one bundle nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
-  verifies, and its pom names the version. `build` also fails a release whose version Maven Central already has, and
+  verifies, and its pom names the version and no `org.drivine` module the release doesn't publish (a user's JBang or
+  Maven would fail to resolve it). `build` also fails a release whose version Maven Central already has, and
   only warns when Maven Central can't be asked (the portal rejects a duplicate anyway). Before any of it, `check`
   validates `gradle/wrapper/gradle-wrapper.jar` against Gradle's released checksums, since `publish` runs `./gradlew`
   with the release secrets.

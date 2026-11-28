@@ -171,7 +171,18 @@ class ReleaseVersionTest(unittest.TestCase):
         "ksp version 2.2.20-0.3.0.\n"
     )
     _CORE_FEATURES = 'implementation("org.drivine:drivine4j-coroutines:0.3.0")\n'
-    _FILES = ["drivine4j-sample/.drivine/model.json", "README.md", "docs/03-installation.md", "docs/07-core-features.md"]
+    _CATALOG = (
+        '{\n  "aliases": {\n    "drivine": {\n      "script-ref": "org.drivine:drivine4j-cli:0.3.0",\n'
+        # A dependency's version that looks the same: left as it is.
+        '      "description": "com.example:drivine4j-extras:0.3.0"\n    }\n  }\n}\n'
+    )
+    _FILES = [
+        "drivine4j-sample/.drivine/model.json",
+        "README.md",
+        "docs/03-installation.md",
+        "docs/07-core-features.md",
+        "jbang-catalog.json",
+    ]
 
     def _repository(self, directory: str) -> Path:
         root = Path(directory)
@@ -181,6 +192,7 @@ class ReleaseVersionTest(unittest.TestCase):
         (root / "README.md").write_text(self._README)
         (root / "docs" / "03-installation.md").write_text(self._INSTALLATION)
         (root / "docs" / "07-core-features.md").write_text(self._CORE_FEATURES)
+        (root / "jbang-catalog.json").write_text(self._CATALOG)
         return root
 
     def test_references_moves_every_reference_to_the_version(self) -> None:
@@ -199,7 +211,10 @@ class ReleaseVersionTest(unittest.TestCase):
                 self.assertEqual(installation.count(f"drivine4j:{version}"), 3)
                 self.assertEqual(installation.count(f"<version>{version}</version>"), 2)
                 self.assertIn(f"drivine4j-coroutines:{version}", (root / "docs" / "07-core-features.md").read_text())
-                self.assertEqual([found for _, found in release_version.references(root)], [version] * 11)
+                catalog = (root / "jbang-catalog.json").read_text()
+                self.assertIn(f'"org.drivine:drivine4j-cli:{version}"', catalog)
+                self.assertIn("com.example:drivine4j-extras:0.3.0", catalog)
+                self.assertEqual([found for _, found in release_version.references(root)], [version] * 12)
 
     def test_references_leaves_a_dependencys_version_alone(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
