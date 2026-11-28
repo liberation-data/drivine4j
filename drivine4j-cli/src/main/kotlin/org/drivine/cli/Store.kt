@@ -92,10 +92,24 @@ class Store private constructor(private val drivine: Drivine, private val scratc
      * on a signal because it's built with `--install-exit-handlers`. Only a `kill -9` leaves it behind, in the temp dir.
      */
     internal class Scratch private constructor(val dir: Path) {
-        private val hook = Thread { dir.toFile().deleteRecursively() }
+        private val hook = Thread { removeDir() }
+
+        /**
+         * Deletes [dir] and what's in it, again and again until [dir] itself is gone or [patience] runs out. On a
+         * signal the hook runs while the store is still open: the pool may open a connection between one pass's listing
+         * and its removal of [dir], and SQLite, whose log is a write-ahead one, makes the file and its `-wal` and `-shm`
+         * again, so [dir] isn't empty (#913). Once [dir] is gone nothing makes it again, as SQLite makes no directory.
+         */
+        internal fun removeDir(patience: java.time.Duration = java.time.Duration.ofSeconds(5)) {
+            val file = dir.toFile()
+            val deadline = System.nanoTime() + patience.toNanos()
+            while (!file.deleteRecursively() && file.exists() && System.nanoTime() < deadline) {
+                Thread.sleep(10)
+            }
+        }
 
         fun delete() {
-            dir.toFile().deleteRecursively()
+            removeDir()
             try {
                 Runtime.getRuntime().removeShutdownHook(hook)
             } catch (e: IllegalStateException) {
@@ -105,6 +119,9 @@ class Store private constructor(private val drivine: Drivine, private val scratc
 
         companion object {
             fun create(): Scratch = Scratch(Files.createTempDirectory("drivine-")).also { Runtime.getRuntime().addShutdownHook(it.hook) }
+
+            /** A scratch in [dir], with no shutdown hook: for its tests. */
+            internal fun at(dir: Path): Scratch = Scratch(dir)
         }
     }
 
