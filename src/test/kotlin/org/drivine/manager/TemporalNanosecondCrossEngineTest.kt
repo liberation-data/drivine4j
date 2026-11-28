@@ -29,18 +29,6 @@ import java.time.temporal.Temporal
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * A java.time value with all nine digits of its second, as a parameter, keeps them on every store: in its text, its
- * nanosecond field, a comparison a nanosecond apart, a property it is stored in and read back, and read back as its
- * own type (#421). The Cypher spec's parameters are JSON, so they can't give a typed java.time value, and the round
- * trip an application makes with one is pinned here instead: drivine4j hands the value to the compiler's module, which
- * writes its text on a SQL store (`StoreValues`), and reads the store's tag back as the value (`HeldTemporals`,
- * the result mapper and Jackson). An Instant, a ZonedDateTime and a LocalDateTime are also saved and loaded by the
- * object manager.
- *
- * A moment with an offset read back as its own type is the same instant at UTC on every store, Neo4j's too: that is
- * drivine4j's mapping, not the store's, so it's compared as an instant.
- */
 private val NANOS = 645876123
 
 private val VALUES: List<Pair<Temporal, String>> = listOf(
@@ -55,13 +43,25 @@ private val VALUES: List<Pair<Temporal, String>> = listOf(
 /** [value] a nanosecond later. */
 private fun later(value: Temporal): Temporal = value.plus(1, java.time.temporal.ChronoUnit.NANOS)
 
-/** Whether [a] and [b] are the same value, a moment with an offset by its instant (see the class's KDoc). */
-private fun same(a: Any?, b: Any?): Boolean = when {
-    a is OffsetDateTime && b is OffsetDateTime -> a.isEqual(b)
-    a is ZonedDateTime && b is ZonedDateTime -> a.isEqual(b)
-    else -> a == b
+/** Whether [read], read back, is the same value as [a]: a moment with an offset, the same instant at UTC (see [verifyNanoseconds]). */
+private fun same(a: Any?, read: Any?): Boolean = when {
+    a is OffsetDateTime && read is OffsetDateTime -> a.isEqual(read) && read.offset == ZoneOffset.UTC
+    a is ZonedDateTime && read is ZonedDateTime -> a.isEqual(read) && read.offset == ZoneOffset.UTC
+    else -> a == read
 }
 
+/**
+ * A java.time value with all nine digits of its second, as a parameter, keeps them on every store: in its text, its
+ * nanosecond field, a comparison a nanosecond apart, a property it is stored in and read back, and read back as its
+ * own type (#421). The Cypher spec's parameters are JSON, so they can't give a typed java.time value, and the round
+ * trip an application makes with one is pinned here instead: drivine4j hands the value to the compiler's module, which
+ * writes its text on a SQL store (`StoreValues`), and drivine4j reads the store's tag back as the value (`HeldTemporals`,
+ * the result mapper and Jackson). An Instant, a ZonedDateTime and a LocalDateTime are also saved and loaded by the
+ * object manager.
+ *
+ * A moment with an offset read back as its own type is the same instant at UTC on every store, Neo4j's too: that is
+ * drivine4j's mapping, not the store's, so it's compared as that instant at UTC.
+ */
 private fun verifyNanoseconds(cypher: PersistenceManager, gom: StatelessGraphObjectManager) {
     fun <T : Any> one(statement: String, parameters: Map<String, Any?>, type: Class<T>): T =
         cypher.query(QuerySpecification.withStatement(statement).bind(parameters).transform(type)).single()
