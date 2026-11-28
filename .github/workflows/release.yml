@@ -371,8 +371,8 @@ jobs:
           fi
 
   # The CLI built as a native binary, and its tests run against that binary on every store, the Cypher spec's cases
-  # among them, as cli-native.yml runs them on a pull request: the macOS CLI below waits on it, so a release attaches no
-  # CLI from a commit whose binary fails them (#707). The binary tested here is the linux one; the macOS one is tested
+  # among them, as cli-native.yml runs them on a pull request: the linux and macOS CLIs below wait on it, so a release
+  # attaches no CLI from a commit whose binary fails them (#707). The binary tested here is the linux one; the macOS one is tested
   # on SQLite alone, by cli-macos-signed.yml before it attaches the zip. Beside the gate and the build, not before them:
   # the libraries' release doesn't wait on the CLI's. Skipped, as trust is, on a push that releases nothing.
   cli-native:
