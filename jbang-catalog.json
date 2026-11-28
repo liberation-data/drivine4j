@@ -1,0 +1,11 @@
+{
+  "catalogs": {},
+  "aliases": {
+    "drivine": {
+      "script-ref": "org.drivine:drivine4j-cli:0.9.0",
+      "description": "The drivine command line: Cypher from your shell, on Neo4j, Memgraph, FalkorDB, Postgres, Oracle and SQLite. https://drivine.org",
+      "java": "21+",
+      "java-options": ["--enable-native-access=ALL-UNNAMED"]
+    }
+  }
+}

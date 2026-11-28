@@ -46,9 +46,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The modules published to Maven Central, by artifactId. drivine4j-sample is not published.
+  # The modules published to Maven Central, by artifactId. drivine4j-sample is not published. drivine4j-cli is the
+  # drivine CLI's jar, which JBang runs (jbang-catalog.json).
   MODULES: >-
     drivine4j
+    drivine4j-cli
     drivine4j-codegen
     drivine4j-codegen-java
     drivine4j-codegen-model
@@ -263,6 +265,16 @@ jobs:
               gpg --batch --verify "$dir/$f.asc" "$dir/$f" 2> /dev/null || { echo "::error::$f's signature doesn't verify."; exit 1; }
             done
             grep -q "<version>$VERSION</version>" "$dir/$m-$VERSION.pom" || { echo "::error::$m's pom isn't version $VERSION."; exit 1; }
+            # A module's POM names only drivine4j modules this release publishes too: one it doesn't would fail to
+            # resolve on a user's machine, as JBang resolves the CLI's from its POM, not here. The Cypher compiler,
+            # org.drivine:drivine-cypher-compiler-jvm, is the spec's release, checked above.
+            for dep in $(python3 -c 'import sys, xml.etree.ElementTree as ET
+          n = "{http://maven.apache.org/POM/4.0.0}"
+          for d in ET.parse(sys.argv[1]).getroot().iter(n + "dependency"):
+              a = d.findtext(n + "artifactId")
+              if d.findtext(n + "groupId") == "org.drivine" and a.startswith("drivine4j"): print(a)' "$dir/$m-$VERSION.pom"); do
+              [[ " $MODULES " == *" $dep "* ]] || { echo "::error::$m's pom depends on org.drivine:$dep, which this release doesn't publish."; exit 1; }
+            done
           done
           {
             echo "### Staged for Maven Central: $VERSION"

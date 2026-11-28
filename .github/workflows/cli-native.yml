@@ -23,6 +23,8 @@ on:
       - 'build.gradle'
       - 'settings.gradle'
       - 'gradle/**'
+      # The alias JBang runs the CLI's jar from (the jbang job below)
+      - 'jbang-catalog.json'
       - '.github/workflows/cli-native.yml'
   # At 18:00 UTC, an hour after nightly.yml starts.
   schedule:
@@ -215,6 +217,56 @@ jobs:
             drivine4j-cli/build/test-results/test/
             drivine4j-cli/build/reports/tests/test/
           retention-days: 30
+
+  # The CLI's jar as JBang runs it for a user (`jbang drivine@liberation-data/drivine4j`, #711): jbang-catalog.json's
+  # alias, resolved from the POMs this commit publishes, to Maven local here and to Maven Central in a release. A POM
+  # that names a module or a dependency JBang can't resolve, or a jar it can't run, fails here and not on a user's
+  # machine. JBang, from its release, checked against the SHA-256 pinned here.
+  jbang:
+    name: JBang (the CLI's jar)
+    if: github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JBANG_VERSION: '0.143.0'
+      JBANG_SHA256: 301c5ef16a7b2a4725515477b03f11f491501eb6db57adfa59393433d4d8f3b2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Cache the pinned Cypher compiler
+        uses: actions/cache@v4
+        with:
+          path: .compiler-repo
+          key: cypher-compiler-${{ hashFiles('gradle/cypher-compiler.properties') }}
+      - name: Publish the pinned Cypher compiler
+        run: scripts/compiler-local.sh
+      - name: Publish drivine4j and the CLI to Maven local
+        run: ./gradlew --no-daemon publishMavenJavaPublicationToMavenLocal :drivine4j-cli:publishMavenJavaPublicationToMavenLocal
+      - name: Install JBang
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/jbang.zip" "https://github.com/jbangdev/jbang/releases/download/v$JBANG_VERSION/jbang-$JBANG_VERSION.zip"
+          echo "$JBANG_SHA256  $RUNNER_TEMP/jbang.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/jbang.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/jbang-$JBANG_VERSION/bin" >> "$GITHUB_PATH"
+      # From the repository's root, where JBang finds jbang-catalog.json's alias as it finds it in the repository's
+      # catalog for a user. The Cypher compiler a commit pins may be a commit's build, in .compiler-repo.
+      - name: Run the CLI with JBang
+        run: |
+          repos="mavenlocal,mavencentral,compiler=file://$PWD/.compiler-repo"
+          version=$(sed -n "s/^version = '\([^']*\)'[[:space:]]*$/\1/p" build.gradle)
+          out=$(jbang --repos "$repos" drivine --version)
+          echo "$out"
+          [[ "$out" == *"$version"* ]] || { echo "::error::jbang drivine --version says '$out', not $version."; exit 1; }
+          rows=$(jbang --repos "$repos" drivine -a sqlite::memory: --format json 'RETURN 1 AS n')
+          echo "$rows"
+          [[ "$rows" == *'"n"'*1* ]] || { echo "::error::jbang drivine didn't return the row."; exit 1; }
 
   # The reachability metadata the binary needs at run time, recorded by GraalVM's tracing agent: the CLI's tests on each
   # store run the CLI on GraalVM's JVM under the agent, through DRIVINE_CLI_BINARY, and not the binary. The CLI itself is

@@ -69,6 +69,8 @@ REFERENCES: list[tuple[str, re.Pattern[str], int]] = [
     ("docs/03-installation.md", _GRADLE, 6),
     ("docs/03-installation.md", _MAVEN, 2),
     ("docs/07-core-features.md", _GRADLE, 1),
+    # The CLI's jar that JBang's alias runs: `jbang drivine@liberation-data/drivine4j` (JbangCatalogTest checks it is the build's).
+    ("jbang-catalog.json", _GRADLE, 1),
 ]
 # What counts towards a { } block's depth in build.gradle: braces, outside comments and strings.
 BRACE_TOKENS = re.compile(r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|[{}]", re.DOTALL)
