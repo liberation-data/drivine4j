@@ -109,6 +109,9 @@ graalvmNative {
                 // (applicationDefaultJvmArgs above), the binary lets the classpath call it, so it prints no warning
                 // on stderr. native-image takes the java launcher's spelling, the module after an `=`.
                 '--enable-native-access=ALL-UNNAMED',
+                // A binary for any machine of its arch, as a released one must be: native-image's default for x64 is
+                // x86-64-v3, which an older CPU can't run; compatibility is the oldest each arch supports.
+                '-march=compatibility',
             )
             // The drivers need nothing more here: sqlite-jdbc's jar adds its feature and --enable-url-protocols=jar,
             // ojdbc11's its feature, and the Neo4j driver's its Netty properties; the Postgres driver's metadata is

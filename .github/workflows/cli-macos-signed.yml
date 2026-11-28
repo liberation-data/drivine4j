@@ -218,9 +218,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: drivine-macos-arm64-signed
-      # --clobber, so re-running a failed release run replaces the asset rather than failing on it.
+      # With its SHA-256 beside it, as sha256sum writes it, which drivine.org/install.sh checks the download against
+      # (#711). --clobber, so re-running a failed release run replaces the assets rather than failing on them.
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
-        run: gh release upload "$TAG" drivine-macos-arm64.zip --repo "$GITHUB_REPOSITORY" --clobber
+        run: |
+          sha256sum drivine-macos-arm64.zip > drivine-macos-arm64.zip.sha256
+          gh release upload "$TAG" drivine-macos-arm64.zip drivine-macos-arm64.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
